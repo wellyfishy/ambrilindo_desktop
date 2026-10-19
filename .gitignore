@@ -1,0 +1,23 @@
+.DS_Store
+node_modules
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Rust & Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+target/
+
+# SQLite lock and temporary files
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
+# Logs
+*.log
