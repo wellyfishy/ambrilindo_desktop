@@ -12,6 +12,7 @@
     SyncQueueEntry,
     PullResult,
   } from "$lib/types";
+  import FuzzySelect, { type SelectOption } from "./FuzzySelect.svelte";
 
   interface Props {
     eventId: number;
@@ -64,6 +65,13 @@
   let isLoadingHostedEvents = $state<boolean>(false);
   let selectedHostedId = $state<number | null>(null);
   let selectedHostedName = $state<string>("");
+
+  let hostedEventOptions = $derived<SelectOption[]>(
+    hostedEvents.map((ev) => ({
+      value: ev.id,
+      label: `[#${ev.id}] ${ev.nama_event}`,
+    }))
+  );
 
   let showPushBaganModal = $state<boolean>(false);
   let pushScope = $state<"all" | "selected">("all");
@@ -833,15 +841,15 @@
         {:else}
           <div>
             <div class="text-xs font-bold text-zinc-300 mb-1">Pilih Event di Web Public:</div>
-            <select
+            <FuzzySelect
+              items={hostedEventOptions}
               bind:value={selectedHostedId}
-              class="w-full bg-[#111215] text-xs text-white p-2.5 rounded-xl border border-white/[0.08] focus:border-white outline-none"
-            >
-              <option value={null}>-- Pilih Event --</option>
-              {#each hostedEvents as ev}
-                <option value={ev.id}>[#{ev.id}] {ev.nama_event}</option>
-              {/each}
-            </select>
+              placeholder="-- Pilih Event --"
+              allowClear={true}
+              clearLabel="-- Batalkan Pilihan --"
+              clearValue={null}
+              class="w-full"
+            />
           </div>
         {/if}
       </div>

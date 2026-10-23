@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import type { EnrichedAtletItem, UtusanItem, PerguruanItem, NomorTandingItem, PullResult } from "$lib/types";
+  import FuzzySelect, { type SelectOption } from "./FuzzySelect.svelte";
 
   interface Props {
     viewType: 'roster' | 'contingent' | 'sync';
@@ -155,6 +156,55 @@
     const tipe = (a.nomor_tanding_tipe || "").toLowerCase();
     return nt.includes("festival") || tipe.includes("festival");
   }
+
+  function getCategoryBadge(c: NomorTandingItem): string {
+    if (c.is_bob) return "BOB";
+    const nt = (c.nama_nomor_tanding || "").toLowerCase();
+    const tipe = (c.tipe || "").toLowerCase();
+    if (nt.includes("festival") || tipe.includes("festival")) return "FESTIVAL";
+    return "PRESTASI";
+  }
+
+  // --- Option Lists for FuzzySelect ---
+  let categoryFilterOptions = $derived<SelectOption[]>([
+    { value: "all", label: "Semua Kategori" },
+    ...categories.map((c) => ({
+      value: String(c.id),
+      label: c.nama_nomor_tanding || `[#${c.id}] Tanpa Nama`,
+      badge: getCategoryBadge(c),
+    })),
+  ]);
+
+  let contingentFilterOptions = $derived<SelectOption[]>([
+    { value: "all", label: "Semua Kontingen" },
+    ...contingents.map((c) => ({
+      value: String(c.id),
+      label: c.nama_utusan || `[#${c.id}] Tanpa Nama`,
+    })),
+  ]);
+
+  let modalCategoryOptions = $derived<SelectOption[]>(
+    categories.map((c) => ({
+      value: c.id,
+      label: c.nama_nomor_tanding || `[#${c.id}] Tanpa Nama`,
+      badge: getCategoryBadge(c),
+    }))
+  );
+
+  let modalContingentOptions = $derived<SelectOption[]>(
+    contingents.map((c) => ({
+      value: c.id,
+      label: c.nama_utusan || `[#${c.id}] Tanpa Nama`,
+    }))
+  );
+
+  let modalPerguruanOptions = $derived<SelectOption[]>([
+    { value: null, label: "-- Tanpa Perguruan --" },
+    ...perguruans.map((p) => ({
+      value: p.id,
+      label: p.nama_perguruan || `[#${p.id}] Tanpa Nama`,
+    })),
+  ]);
 
   // --- Metrics Derivation ---
   let totalCount = $derived(athletes.length);
@@ -549,26 +599,28 @@
       <!-- Dropdown Filters & Search Bar -->
       <div class="flex items-center space-x-2 shrink-0">
         <!-- Filter Nomor Tanding -->
-        <select
+        <FuzzySelect
+          items={categoryFilterOptions}
           bind:value={selectedCategoryFilter}
-          class="bg-[#181a20] text-xs text-zinc-200 px-2.5 py-1.5 rounded-xl border border-white/[0.1] outline-none max-w-[160px] truncate"
-        >
-          <option value="all">Semua Kategori</option>
-          {#each categories as cat}
-            <option value={String(cat.id)}>{cat.nama_nomor_tanding}</option>
-          {/each}
-        </select>
+          placeholder="Filter Kategori"
+          allowClear={true}
+          clearLabel="Semua Kategori"
+          clearValue="all"
+          compact={true}
+          class="w-44"
+        />
 
         <!-- Filter Kontingen -->
-        <select
+        <FuzzySelect
+          items={contingentFilterOptions}
           bind:value={selectedContingentFilter}
-          class="bg-[#181a20] text-xs text-zinc-200 px-2.5 py-1.5 rounded-xl border border-white/[0.1] outline-none max-w-[150px] truncate"
-        >
-          <option value="all">Semua Kontingen</option>
-          {#each contingents as cont}
-            <option value={String(cont.id)}>{cont.nama_utusan}</option>
-          {/each}
-        </select>
+          placeholder="Filter Kontingen"
+          allowClear={true}
+          clearLabel="Semua Kontingen"
+          clearValue="all"
+          compact={true}
+          class="w-40"
+        />
 
         <!-- Search Input -->
         <div class="relative w-56">
@@ -959,42 +1011,39 @@
         <!-- Nomor Tanding Dropdown -->
         <div>
           <label for="nomor_tanding" class="block text-xs font-bold text-zinc-300 uppercase mb-1">Nomor Tanding / Kelas</label>
-          <select
+          <FuzzySelect
             id="nomor_tanding"
+            items={modalCategoryOptions}
             bind:value={formInput.nomor_tanding_id}
-            class="w-full bg-[#111215] text-xs text-white px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none"
-          >
-            {#each categories as cat}
-              <option value={cat.id}>{cat.nama_nomor_tanding}</option>
-            {/each}
-          </select>
+            placeholder="Pilih Nomor Tanding..."
+            class="w-full"
+          />
         </div>
 
         <!-- Kontingen & Perguruan Row -->
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label for="utusan" class="block text-xs font-bold text-zinc-300 uppercase mb-1">Kontingen / Utusan</label>
-            <select
+            <FuzzySelect
               id="utusan"
+              items={modalContingentOptions}
               bind:value={formInput.utusan_id}
-              class="w-full bg-[#111215] text-xs text-white px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none"
-            >
-              {#each contingents as cont}
-                <option value={cont.id}>{cont.nama_utusan}</option>
-              {/each}
-            </select>
+              placeholder="Pilih Kontingen..."
+              class="w-full"
+            />
           </div>
           <div>
             <label for="perguruan" class="block text-xs font-bold text-zinc-300 uppercase mb-1">Perguruan</label>
-            <select
+            <FuzzySelect
               id="perguruan"
+              items={modalPerguruanOptions}
               bind:value={formInput.perguruan_id}
-              class="w-full bg-[#111215] text-xs text-white px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none"
-            >
-              {#each perguruans as perg}
-                <option value={perg.id}>{perg.nama_perguruan}</option>
-              {/each}
-            </select>
+              placeholder="Pilih Perguruan..."
+              allowClear={true}
+              clearLabel="-- Tanpa Perguruan --"
+              clearValue={null}
+              class="w-full"
+            />
           </div>
         </div>
 
