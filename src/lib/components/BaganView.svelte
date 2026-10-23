@@ -26,6 +26,9 @@
   let matches = $state<DetailBaganItem[]>([]);
   let isLoading = $state(true);
 
+  // App Theme state: Dark mode by default for desktop app, white for print
+  let isDarkMode = $state(true);
+
   // Zoom & Viewport adaptivity state
   let zoom = $state(1.0);
   let userHasZoomed = $state(false);
@@ -241,6 +244,7 @@
     l.setAttribute("y1", y1.toString());
     l.setAttribute("x2", x2.toString());
     l.setAttribute("y2", y2.toString());
+    l.setAttribute("class", "connector-line");
     l.setAttribute("stroke", color);
     l.setAttribute("stroke-width", width);
     l.setAttribute("stroke-linecap", "round");
@@ -266,8 +270,8 @@
     const cols = Array.from(gridEl.querySelectorAll<HTMLElement>(".round-col-elim"));
     if (cols.length < 2) return;
 
-    // High contrast slate connectors matching legacy print/screen
-    const strokeColor = "#475569";
+    // Line color adapts to active theme on screen, overridden to solid ink in print
+    const strokeColor = isDarkMode ? "rgba(255, 255, 255, 0.42)" : "#475569";
     const strokeWidth = "1.5";
 
     for (let ri = 0; ri < cols.length - 1; ri++) {
@@ -405,27 +409,47 @@
   });
 </script>
 
-<div class="h-full flex flex-col p-4 select-none bg-slate-100 text-slate-800 overflow-hidden font-sans print-sheet">
+<div class="h-full flex flex-col p-4 select-none {isDarkMode ? 'bg-[#14161b] text-zinc-200' : 'bg-slate-100 text-slate-800'} overflow-hidden font-sans print-sheet">
   <!-- Top Control Bar (Hidden on Print) -->
-  <div class="no-print flex items-center justify-between pb-2.5 mb-2 border-b border-slate-300 shrink-0">
+  <div class="no-print flex items-center justify-between pb-2.5 mb-2 border-b {isDarkMode ? 'border-white/[0.08]' : 'border-slate-300'} shrink-0">
     <div class="flex items-center space-x-2">
-      <span class="text-xs font-black text-slate-800 uppercase tracking-wider">
+      <span class="text-xs font-black {isDarkMode ? 'text-white' : 'text-slate-800'} uppercase tracking-wider">
         Bagan Pertandingan
       </span>
-      <span class="text-slate-300">•</span>
-      <span class="text-xs text-slate-500 font-mono">
+      <span class="{isDarkMode ? 'text-zinc-600' : 'text-slate-300'}">•</span>
+      <span class="text-xs {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} font-mono">
         {elimMatchesCount} Partai Terdaftar
       </span>
     </div>
 
     <!-- Zoom & Action Toolbar -->
     <div class="flex items-center space-x-2">
-      <div class="flex items-center bg-white border border-slate-300 rounded-lg p-0.5 text-xs font-mono shadow-xs">
+      <!-- Dark/Light Mode Toggle -->
+      <button
+        type="button"
+        onclick={() => {
+          isDarkMode = !isDarkMode;
+          tick().then(() => requestAnimationFrame(drawConnectors));
+        }}
+        class="px-2.5 h-7 flex items-center space-x-1.5 font-medium {isDarkMode ? 'text-zinc-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.1]' : 'text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border-slate-300'} rounded-lg transition text-xs shadow-xs active:scale-95 border"
+        title={isDarkMode ? "Ganti ke mode terang (preview cetak)" : "Ganti ke mode gelap"}
+      >
+        {#if isDarkMode}
+          <span class="text-amber-400">☀️</span>
+          <span class="text-[11px] font-sans">Terang</span>
+        {:else}
+          <span class="text-indigo-400">🌙</span>
+          <span class="text-[11px] font-sans">Gelap</span>
+        {/if}
+      </button>
+
+      <!-- Zoom Toolbar -->
+      <div class="flex items-center {isDarkMode ? 'bg-[#181a20] border-white/[0.08]' : 'bg-white border-slate-300'} border rounded-lg p-0.5 text-xs font-mono shadow-xs">
         <button
           type="button"
           onclick={zoomOut}
           disabled={zoom <= 0.5}
-          class="w-7 h-7 flex items-center justify-center text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition disabled:opacity-30 disabled:hover:bg-transparent active:scale-95"
+          class="w-7 h-7 flex items-center justify-center {isDarkMode ? 'text-zinc-400 hover:text-white hover:bg-white/[0.08]' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} rounded-md transition disabled:opacity-30 disabled:hover:bg-transparent active:scale-95"
           title="Perkecil Tampilan (Ctrl + -)"
         >
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -436,7 +460,7 @@
         <button
           type="button"
           onclick={resetZoom}
-          class="px-2 h-7 flex items-center justify-center font-bold text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-md transition min-w-[50px] text-[11px]"
+          class="px-2 h-7 flex items-center justify-center font-bold {isDarkMode ? 'text-zinc-200 hover:text-white hover:bg-white/[0.08]' : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'} rounded-md transition min-w-[50px] text-[11px]"
           title="Klik untuk reset ke 100% (Ctrl + 0)"
         >
           {Math.round(zoom * 100)}%
@@ -446,7 +470,7 @@
           type="button"
           onclick={zoomIn}
           disabled={zoom >= 2.5}
-          class="w-7 h-7 flex items-center justify-center text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition disabled:opacity-30 disabled:hover:bg-transparent active:scale-95"
+          class="w-7 h-7 flex items-center justify-center {isDarkMode ? 'text-zinc-400 hover:text-white hover:bg-white/[0.08]' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'} rounded-md transition disabled:opacity-30 disabled:hover:bg-transparent active:scale-95"
           title="Perbesar Tampilan (Ctrl + +)"
         >
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -454,12 +478,12 @@
           </svg>
         </button>
 
-        <div class="h-4 w-px bg-slate-200 mx-0.5"></div>
+        <div class="h-4 w-px {isDarkMode ? 'bg-white/[0.1]' : 'bg-slate-200'} mx-0.5"></div>
 
         <button
           type="button"
           onclick={fitToScreen}
-          class="px-2.5 h-7 flex items-center space-x-1 font-semibold text-amber-700 hover:text-amber-800 hover:bg-amber-100/60 rounded-md transition active:scale-95"
+          class="px-2.5 h-7 flex items-center space-x-1 font-semibold {isDarkMode ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-400/10' : 'text-amber-700 hover:text-amber-800 hover:bg-amber-100/60'} rounded-md transition active:scale-95"
           title="Sesuaikan skala otomatis dengan layar"
         >
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -469,13 +493,14 @@
         </button>
       </div>
 
+      <!-- Print Button -->
       <button
         type="button"
         onclick={() => window.print()}
-        class="px-3 py-1.5 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+        class="px-3 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
         title="Cetak format kertas A4 Landscape"
       >
-        <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg class="w-3.5 h-3.5 {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
         </svg>
         <span>Cetak (A4)</span>
@@ -484,15 +509,15 @@
       <button
         type="button"
         onclick={loadBracketData}
-        class="px-3 py-1.5 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 border border-slate-300 rounded-lg transition shadow-xs active:scale-95"
+        class="px-3 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition shadow-xs active:scale-95"
       >
         Segarkan
       </button>
     </div>
   </div>
 
-  <!-- Tournament Header Banner (Matches Legacy & Printed Reference) -->
-  <div class="bracket-banner relative flex items-center justify-between pb-2.5 pt-1 border-b-2 border-slate-900 mb-3 shrink-0">
+  <!-- Tournament Header Banner -->
+  <div class="bracket-banner relative flex items-center justify-between pb-2.5 pt-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-3 shrink-0">
     <!-- Left Logo / Dojo Emblem -->
     <div class="flex items-center min-w-[140px]">
       <img
@@ -504,13 +529,13 @@
 
     <!-- Center Category & Tournament Info -->
     <div class="text-center flex-1 px-4">
-      <h1 class="text-base md:text-lg font-black text-slate-950 tracking-tight uppercase leading-tight">
+      <h1 class="text-base md:text-lg font-black {isDarkMode ? 'text-white' : 'text-slate-950'} tracking-tight uppercase leading-tight">
         {#if baganInfo?.kode}
           ({baganInfo.kode})
         {/if}
         {baganName}
       </h1>
-      <p class="text-[11px] font-semibold text-slate-600 mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
+      <p class="text-[11px] font-semibold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
         <span>🏆</span>
         <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
         <span>•</span>
@@ -523,7 +548,7 @@
     </div>
 
     <!-- Right Spacer to preserve exact center alignment -->
-    <div class="min-w-[140px] flex justify-end items-center text-right text-[10px] text-slate-400 font-mono no-print">
+    <div class="min-w-[140px] flex justify-end items-center text-right text-[10px] {isDarkMode ? 'text-zinc-500' : 'text-slate-400'} font-mono no-print">
       <span>{elimMatchesCount} Partai</span>
     </div>
   </div>
@@ -532,16 +557,16 @@
   <div
     bind:this={viewportEl}
     onwheel={handleWheel}
-    class="flex-1 overflow-x-auto overflow-y-auto py-2 px-1 scrollbar-thin relative bg-white/70 rounded-xl border border-slate-200/80"
+    class="flex-1 overflow-x-auto overflow-y-auto py-2 px-1 scrollbar-thin relative {isDarkMode ? 'bg-[#101216] border-white/[0.06]' : 'bg-white/70 border-slate-200/80'} rounded-xl border"
   >
     {#if isLoading}
-      <div class="h-64 flex items-center justify-center text-sm text-slate-500 font-medium">
+      <div class="h-64 flex items-center justify-center text-sm {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} font-medium">
         Memuat struktur bagan turnamen...
       </div>
     {:else if elimRounds.length === 0}
       <div class="h-64 flex flex-col items-center justify-center text-center">
-        <p class="text-sm font-bold text-slate-700">Belum ada partai untuk bagan ini</p>
-        <p class="text-xs text-slate-400 mt-1 font-normal">Pengundian nomor tanding belum dilakukan.</p>
+        <p class="text-sm font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'}">Belum ada partai untuk bagan ini</p>
+        <p class="text-xs {isDarkMode ? 'text-zinc-500' : 'text-slate-400'} mt-1 font-normal">Pengundian nomor tanding belum dilakukan.</p>
       </div>
     {:else}
       <!-- Scaled Scroll Wrapper -->
@@ -563,13 +588,13 @@
               {@const slotHeightClass = getSlotHeightClass(roundNum)}
 
               <div class="round-col round-col-elim w-[246px] shrink-0 flex flex-col relative">
-                <!-- Column Header with Black Circle Step Badge -->
-                <div class="h-9 shrink-0 flex items-center justify-between pb-1.5 border-b-2 border-slate-900 mb-2">
+                <!-- Column Header with Black/Dark Circle Step Badge -->
+                <div class="col-header-line h-9 shrink-0 flex items-center justify-between pb-1.5 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-2">
                   <div class="flex items-center space-x-2">
-                    <span class="w-5 h-5 rounded-full bg-slate-900 text-white text-[10px] font-black font-mono flex items-center justify-center shrink-0">
+                    <span class="col-header-badge w-5 h-5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/20 text-white' : 'bg-slate-900 text-white'} text-[10px] font-black font-mono flex items-center justify-center shrink-0">
                       {getRoundBadge(roundNum, elimRounds.length)}
                     </span>
-                    <span class="text-[12px] font-bold uppercase tracking-tight text-slate-900">
+                    <span class="col-header-title text-[12px] font-bold uppercase tracking-tight {isDarkMode ? 'text-white' : 'text-slate-900'}">
                       {getRoundTitle(roundNum, elimRounds.length)}
                     </span>
                   </div>
@@ -581,12 +606,12 @@
                     {@const match = getMatchForSlot(roundMatches, slotNum)}
                     <div data-slot={slotNum} class="{slotHeightClass} flex items-center justify-center">
                       {#if match}
-                        <div class="match-card w-full bg-white border border-slate-400/90 rounded-md overflow-hidden shadow-xs hover:border-slate-800 transition relative z-10 {roundNum === 4 ? 'border-amber-500 shadow-md' : ''}">
+                        <div class="match-card w-full {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs transition relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}">
                           <!-- Match Card Header -->
-                          <div class="flex items-center justify-between px-2.5 py-1 bg-slate-100 border-b border-slate-300 text-[10px] font-bold font-mono tracking-wider text-slate-800">
+                          <div class="card-header-bar flex items-center justify-between px-2.5 py-1 {isDarkMode ? 'bg-[#131518] border-white/[0.08] text-zinc-300' : 'bg-slate-100 border-slate-300 text-slate-800'} border-b text-[10px] font-bold font-mono tracking-wider">
                             <span class="flex items-center space-x-1">
                               {#if roundNum === 4}
-                                <span class="text-amber-700 font-extrabold flex items-center gap-1">
+                                <span class="final-title {isDarkMode ? 'text-amber-400' : 'text-amber-700'} font-extrabold flex items-center gap-1">
                                   <span>🏆</span> PARTAI FINAL
                                 </span>
                               {:else if roundNum === 3}
@@ -600,36 +625,36 @@
                                 LIVE T{match.assigned_tatami_id}
                               </span>
                             {:else if match.selesai}
-                              <span class="text-[8.5px] font-bold text-emerald-700 bg-emerald-100 border border-emerald-300 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                              <span class="text-[8.5px] font-bold {isDarkMode ? 'text-emerald-400 bg-emerald-500/15 border-emerald-500/30' : 'text-emerald-700 bg-emerald-100 border-emerald-300'} border px-1.5 py-0.2 rounded flex items-center gap-0.5">
                                 ✓ Selesai
                               </span>
                             {/if}
                           </div>
 
                           <!-- AKA (Red) Row -->
-                          <div class="flex items-center justify-between px-2 py-1.5 min-h-[38px] transition relative {match.pemenang === '1' ? 'bg-[#fef3c7] border-l-4 border-amber-500' : 'bg-white'}">
+                          <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1.5 min-h-[38px] transition relative">
                             <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
-                              <span class="text-[9px] font-mono font-black text-white bg-[#dc2626] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                              <span class="side-pill-aka text-[9px] font-mono font-black text-white bg-[#dc2626] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AKA
                               </span>
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '1'}
-                                    <span class="text-amber-600 text-[11px]" title="Pemenang">👑</span>
+                                    <span class="text-amber-400 text-[11px]" title="Pemenang">👑</span>
                                   {/if}
-                                  <span class="truncate block text-[11.5px] {match.atlet1_nama ? 'font-bold text-slate-900' : 'italic text-slate-400 font-medium'}">
+                                  <span class="player-name-text truncate block text-[11.5px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')}">
                                     {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
                                   </span>
                                   {#if match.vr1}
                                     <span class="text-[7.5px] font-mono font-bold px-1 bg-red-600 text-white rounded shrink-0">VR</span>
                                   {/if}
                                 </div>
-                                <div class="text-[9.5px] text-slate-500 truncate mt-0.5">
+                                <div class="player-sub-text text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate mt-0.5">
                                   {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
                                 </div>
                                 {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
                                   <div class="mt-0.5">
-                                    <span class="text-[8.5px] font-medium px-1.5 py-0.2 bg-red-50 text-red-700 border border-red-200 rounded inline-block truncate max-w-[150px]">
+                                    <span class="kata-badge-aka text-[8.5px] font-medium px-1.5 py-0.2 {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded inline-block truncate max-w-[150px]">
                                       {match.kata1}
                                     </span>
                                   </div>
@@ -637,36 +662,36 @@
                               </div>
                             </div>
                             <div class="shrink-0 flex items-center">
-                              <span class="min-w-[24px] h-[22px] px-1.5 font-mono text-[11.5px] flex items-center justify-center rounded border {match.pemenang === '1' ? 'bg-[#fde047] border-amber-500 text-amber-950 font-black' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold'}">
+                              <span class="score-box min-w-[24px] h-[22px] px-1.5 font-mono text-[11.5px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
                                 {match.score1 ?? '-'}
                               </span>
                             </div>
                           </div>
 
                           <!-- AO (Blue) Row -->
-                          <div class="flex items-center justify-between px-2 py-1.5 min-h-[38px] transition relative border-t border-slate-200 {match.pemenang === '2' ? 'bg-[#fef3c7] border-l-4 border-amber-500' : 'bg-white'}">
+                          <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1.5 min-h-[38px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
                             <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
-                              <span class="text-[9px] font-mono font-black text-white bg-[#2563eb] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                              <span class="side-pill-ao text-[9px] font-mono font-black text-white bg-[#2563eb] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AO
                               </span>
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '2'}
-                                    <span class="text-amber-600 text-[11px]" title="Pemenang">👑</span>
+                                    <span class="text-amber-400 text-[11px]" title="Pemenang">👑</span>
                                   {/if}
-                                  <span class="truncate block text-[11.5px] {match.atlet2_nama ? 'font-bold text-slate-900' : 'italic text-slate-400 font-medium'}">
+                                  <span class="player-name-text truncate block text-[11.5px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')}">
                                     {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
                                   </span>
                                   {#if match.vr2}
                                     <span class="text-[7.5px] font-mono font-bold px-1 bg-blue-600 text-white rounded shrink-0">VR</span>
                                   {/if}
                                 </div>
-                                <div class="text-[9.5px] text-slate-500 truncate mt-0.5">
+                                <div class="player-sub-text text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate mt-0.5">
                                   {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
                                 </div>
                                 {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
                                   <div class="mt-0.5">
-                                    <span class="text-[8.5px] font-medium px-1.5 py-0.2 bg-blue-50 text-blue-700 border border-blue-200 rounded inline-block truncate max-w-[150px]">
+                                    <span class="kata-badge-ao text-[8.5px] font-medium px-1.5 py-0.2 {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded inline-block truncate max-w-[150px]">
                                       {match.kata2}
                                     </span>
                                   </div>
@@ -674,14 +699,14 @@
                               </div>
                             </div>
                             <div class="shrink-0 flex items-center">
-                              <span class="min-w-[24px] h-[22px] px-1.5 font-mono text-[11.5px] flex items-center justify-center rounded border {match.pemenang === '2' ? 'bg-[#fde047] border-amber-500 text-amber-950 font-black' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold'}">
+                              <span class="score-box min-w-[24px] h-[22px] px-1.5 font-mono text-[11.5px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
                                 {match.score2 ?? '-'}
                               </span>
                             </div>
                           </div>
                         </div>
                       {:else}
-                        <div class="w-full border border-dashed border-slate-300 rounded-md h-12 flex items-center justify-center text-[9px] text-slate-400 font-mono bg-white/40">
+                        <div class="w-full border border-dashed {isDarkMode ? 'border-white/[0.08] text-zinc-600 bg-white/[0.01]' : 'border-slate-300 text-slate-400 bg-white/40'} rounded-md h-12 flex items-center justify-center text-[9px] font-mono">
                           Kosong
                         </div>
                       {/if}
@@ -700,57 +725,57 @@
                         />
                       </div>
 
-                      <!-- Hasil Juara Podium Card (Matches Reference Image) -->
-                      <div class="w-full bg-white border border-amber-500 rounded-lg overflow-hidden shadow-sm">
-                        <div class="px-3 py-1.5 bg-[#fef3c7] border-b border-amber-300 flex items-center justify-between">
+                      <!-- Hasil Juara Podium Card -->
+                      <div class="podium-card w-full {isDarkMode ? 'bg-[#181a20] border-amber-500/70 shadow-lg' : 'bg-white border-amber-500 shadow-sm'} border rounded-lg overflow-hidden">
+                        <div class="podium-header px-3 py-1.5 {isDarkMode ? 'bg-amber-500/15 border-amber-500/30' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
                           <div class="flex items-center space-x-1.5">
-                            <span class="text-amber-700 text-xs">🏆</span>
-                            <span class="text-[11.5px] font-bold text-amber-900 tracking-tight">Hasil Juara</span>
+                            <span class="{isDarkMode ? 'text-amber-400' : 'text-amber-700'} text-xs">🏆</span>
+                            <span class="text-[11.5px] font-bold {isDarkMode ? 'text-amber-300' : 'text-amber-900'} tracking-tight">Hasil Juara</span>
                           </div>
                         </div>
 
-                        <div class="divide-y divide-slate-100 text-[11px]">
+                        <div class="divide-y {isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-100'} text-[11px]">
                           <!-- Juara 1 (Gold) -->
-                          <div class="px-2.5 py-1.5 flex items-center space-x-2.5 bg-white">
+                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-5 h-5 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
                               1
                             </span>
                             <div class="min-w-0 truncate">
-                              <div class="font-bold text-slate-900 truncate leading-tight">{podium.j1.name}</div>
-                              <div class="text-[9.5px] text-slate-500 truncate">{podium.j1.contingent}</div>
+                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j1.name}</div>
+                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j1.contingent}</div>
                             </div>
                           </div>
 
                           <!-- Juara 2 (Silver) -->
-                          <div class="px-2.5 py-1.5 flex items-center space-x-2.5 bg-white">
+                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-5 h-5 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
                               2
                             </span>
                             <div class="min-w-0 truncate">
-                              <div class="font-bold text-slate-900 truncate leading-tight">{podium.j2.name}</div>
-                              <div class="text-[9.5px] text-slate-500 truncate">{podium.j2.contingent}</div>
+                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j2.name}</div>
+                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j2.contingent}</div>
                             </div>
                           </div>
 
                           <!-- Juara 3A (Bronze) -->
-                          <div class="px-2.5 py-1.5 flex items-center space-x-2.5 bg-white">
+                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-5 h-5 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
                             <div class="min-w-0 truncate">
-                              <div class="font-bold text-slate-900 truncate leading-tight">{podium.j3a.name}</div>
-                              <div class="text-[9.5px] text-slate-500 truncate">{podium.j3a.contingent}</div>
+                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3a.name}</div>
+                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j3a.contingent}</div>
                             </div>
                           </div>
 
                           <!-- Juara 3B (Bronze) -->
-                          <div class="px-2.5 py-1.5 flex items-center space-x-2.5 bg-white">
+                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-5 h-5 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
                             <div class="min-w-0 truncate">
-                              <div class="font-bold text-slate-900 truncate leading-tight">{podium.j3b.name}</div>
-                              <div class="text-[9.5px] text-slate-500 truncate">{podium.j3b.contingent}</div>
+                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3b.name}</div>
+                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j3b.contingent}</div>
                             </div>
                           </div>
                         </div>
@@ -807,15 +832,134 @@
     .round-col {
       width: 236px !important;
     }
+
+    /* Print Header Banner */
+    .bracket-banner {
+      border-color: #0f172a !important;
+    }
+    .bracket-banner h1 {
+      color: #020617 !important;
+    }
+    .bracket-banner p,
+    .bracket-banner span {
+      color: #334155 !important;
+    }
+
+    /* Print Column Headers */
+    .col-header-badge {
+      background: #0f172a !important;
+      color: #ffffff !important;
+      border-color: #0f172a !important;
+    }
+    .col-header-title {
+      color: #020617 !important;
+    }
+    .col-header-line {
+      border-color: #0f172a !important;
+    }
+
+    /* Print Match Cards */
     .match-card {
       background: #ffffff !important;
-      border: 1px solid #1e293b !important;
-      color: #000000 !important;
+      border: 1.5px solid #334155 !important;
       box-shadow: none !important;
     }
-    :global(svg line) {
+    .card-header-bar {
+      background: #f1f5f9 !important;
+      border-color: #cbd5e1 !important;
+      color: #020617 !important;
+    }
+    .card-header-bar span {
+      color: #020617 !important;
+    }
+    .card-header-bar .final-title {
+      color: #b45309 !important;
+    }
+
+    /* Player Rows */
+    .player-row {
+      background: #ffffff !important;
+      border-color: #e2e8f0 !important;
+    }
+    .player-name-text {
+      color: #020617 !important;
+    }
+    .player-sub-text {
+      color: #475569 !important;
+    }
+    .score-box {
+      background: #f8fafc !important;
+      border-color: #cbd5e1 !important;
+      color: #020617 !important;
+    }
+
+    /* Winner Row Highlighting in Print */
+    .player-row-winner {
+      background: #fef3c7 !important;
+      border-left: 4.5px solid #d97706 !important;
+    }
+    .player-row-winner .player-name-text {
+      color: #78350f !important;
+      font-weight: 800 !important;
+    }
+    .player-row-winner .score-box {
+      background: #fde047 !important;
+      border: 2px solid #d97706 !important;
+      color: #78350f !important;
+      font-weight: 900 !important;
+    }
+
+    /* Side Pills in Print */
+    .side-pill-aka {
+      background: #dc2626 !important;
+      color: #ffffff !important;
+    }
+    .side-pill-ao {
+      background: #2563eb !important;
+      color: #ffffff !important;
+    }
+
+    /* Kata Badges in Print */
+    .kata-badge-aka {
+      background: #fee2e2 !important;
+      color: #991b1b !important;
+      border-color: #f87171 !important;
+    }
+    .kata-badge-ao {
+      background: #dbeafe !important;
+      color: #1e40af !important;
+      border-color: #60a5fa !important;
+    }
+
+    /* Connector SVG Lines in Print */
+    :global(svg line.connector-line) {
       stroke: #0f172a !important;
       stroke-width: 1.2px !important;
+    }
+
+    /* Hasil Juara Card in Print */
+    .podium-card {
+      background: #ffffff !important;
+      border: 1.5px solid #d97706 !important;
+      box-shadow: none !important;
+    }
+    .podium-header {
+      background: #fef3c7 !important;
+      border-color: #fde68a !important;
+      color: #78350f !important;
+    }
+    .podium-header span {
+      color: #78350f !important;
+    }
+    .podium-row {
+      background: #ffffff !important;
+      border-color: #f1f5f9 !important;
+    }
+    .podium-name {
+      color: #020617 !important;
+    }
+    .podium-sub {
+      color: #475569 !important;
     }
   }
 </style>
