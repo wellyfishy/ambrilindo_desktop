@@ -243,9 +243,17 @@ impl DatabaseManager {
                 d.vr1, d.vr2, d.kata1, d.kata2, d.pemenang, d.hantei, d.selesai, d.team,
                 d.assigned_tatami_id, d.kode,
                 a1.nama_atlet as atlet1_nama,
-                COALESCE(u1.nama_utusan, p1.nama_perguruan) as atlet1_kontingen,
+                CASE 
+                    WHEN p1.nama_perguruan IS NOT NULL AND u1.nama_utusan IS NOT NULL AND p1.nama_perguruan != u1.nama_utusan 
+                        THEN p1.nama_perguruan || ' • ' || u1.nama_utusan
+                    ELSE COALESCE(u1.nama_utusan, p1.nama_perguruan)
+                END as atlet1_kontingen,
                 a2.nama_atlet as atlet2_nama,
-                COALESCE(u2.nama_utusan, p2.nama_perguruan) as atlet2_kontingen
+                CASE 
+                    WHEN p2.nama_perguruan IS NOT NULL AND u2.nama_utusan IS NOT NULL AND p2.nama_perguruan != u2.nama_utusan 
+                        THEN p2.nama_perguruan || ' • ' || u2.nama_utusan
+                    ELSE COALESCE(u2.nama_utusan, p2.nama_perguruan)
+                END as atlet2_kontingen
             FROM backend_detailbagan d
             LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
             LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id

@@ -386,6 +386,8 @@
           <BaganView
             baganId={typeof activeChannel.id === "number" ? activeChannel.id : (bagans[0]?.id || 1)}
             baganName={activeChannel.name}
+            baganInfo={bagans.find((b) => b.id === (typeof activeChannel.id === "number" ? activeChannel.id : (bagans[0]?.id || 1)))}
+            eventName={activeEvent?.nama_event || ""}
           />
         {:else if activeChannel.type === "sync"}
           <!-- Web Sync Monitor View -->
