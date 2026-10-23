@@ -1,7 +1,7 @@
 export type AppMode = 'landing' | 'solo' | 'host' | 'client';
 
 export interface ActiveChannel {
-  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'sync' | 'overview';
+  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'sync' | 'overview' | 'master';
   id: number | string;
   name: string;
   subtitle?: string;

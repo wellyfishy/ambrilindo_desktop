@@ -235,6 +235,21 @@
             <span class="text-zinc-500 font-mono">#</span>
             <span>sinkronisasi-web</span>
           </button>
+
+          <!-- Data Master & Reset -->
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "master",
+                id: "master-data",
+                name: "data-master",
+                subtitle: "Reset Bagan & Manajemen Data Master",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'data-master' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>data-master</span>
+          </button>
         </div>
       {/if}
     </div>

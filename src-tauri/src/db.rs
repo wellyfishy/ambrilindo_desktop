@@ -389,6 +389,41 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Deletes all athletes for an entire event, clearing bracket/match references
+    pub async fn delete_all_athletes(&self, event_id: i64) -> Result<u64, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Clear athlete references in detailbagan for this event
+        sqlx::query(
+            "UPDATE backend_detailbagan SET atlet1_id = NULL, atlet2_id = NULL WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)"
+        )
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal mereset atlet pada partai: {}", e))?;
+
+        // 2. Clear winner references in bagan for this event
+        sqlx::query(
+            "UPDATE backend_bagan SET juara_1_id = NULL, juara_2_id = NULL, juara_3a_id = NULL, juara_3b_id = NULL, peringkat_5_id = NULL, peringkat_6_id = NULL, peringkat_7_id = NULL, peringkat_8_id = NULL WHERE event_id = ?"
+        )
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal mereset juara pada bagan: {}", e))?;
+
+        // 3. Delete athletes
+        let res = sqlx::query("DELETE FROM backend_atlet WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus atlet: {}", e))?;
+
+        let affected = res.rows_affected();
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan perubahan: {}", e))?;
+        Ok(affected)
+    }
+
     /// Deletes brackets and match records for a single category
     pub async fn delete_category_bagans(&self, _event_id: i64, category_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;

@@ -21,6 +21,7 @@
   import BaganView from "$lib/components/BaganView.svelte";
   import RosterView from "$lib/components/RosterView.svelte";
   import SyncMonitorView from "$lib/components/SyncMonitorView.svelte";
+  import DataMasterView from "$lib/components/DataMasterView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
@@ -402,6 +403,15 @@
             viewType={activeChannel.type}
             eventId={selectedEventId || 1}
             hostAddress={hostUrl}
+          />
+        {:else if activeChannel.type === "master"}
+          <!-- Tournament Data Master & Reset Control View -->
+          <DataMasterView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            onRefreshEvent={() => selectedEventId && selectEvent(selectedEventId)}
+            onNavigate={(channel) => handleSelectChannel(channel)}
+            onShowToast={showToast}
           />
         {/if}
       </main>
