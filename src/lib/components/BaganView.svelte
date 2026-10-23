@@ -32,8 +32,8 @@
   // Zoom & Viewport adaptivity state
   let zoom = $state(1.0);
   let userHasZoomed = $state(false);
-  let contentWidth = $state(1120);
-  let contentHeight = $state(920);
+  let contentWidth = $state(1064);
+  let contentHeight = $state(692);
 
   let viewportEl = $state<HTMLDivElement | null>(null);
   let svgEl = $state<SVGSVGElement | null>(null);
@@ -41,8 +41,8 @@
 
   function updateContentDimensions() {
     if (gridEl) {
-      contentWidth = Math.max(1080, gridEl.scrollWidth);
-      contentHeight = Math.max(880, gridEl.scrollHeight);
+      contentWidth = Math.max(1064, gridEl.scrollWidth);
+      contentHeight = Math.max(692, gridEl.scrollHeight);
     }
   }
 
@@ -152,13 +152,13 @@
 
   function getSlotHeightClass(roundNum: number): string {
     switch (roundNum) {
-      case 1: return "h-[108px]";
-      case 2: return "h-[216px]";
-      case 3: return "h-[432px]";
-      case 4: return "h-[864px]";
-      default: return "h-[108px]";
-    }
-  }
+      case 1: return "h-[82px]";
+      case 2: return "h-[164px]";
+      case 3: return "h-[328px]";
+      case 4: return "h-[656px]";
+      default: return "h-[82px]";
+     }
+   }
 
   function getMatchForSlot(roundMatches: DetailBaganItem[], slotNum: number): DetailBaganItem | undefined {
     return roundMatches.find((m) => (m.urutan || 0) === slotNum) || roundMatches[slotNum - 1];
@@ -253,22 +253,22 @@
       list.push({ x1: xMid, y1: yOut, x2: xTo, y2: yOut });
     };
 
-    // Column width = 246px, gap = 36px (gap-9)
-    // Round 1 (x: 0 -> 246) into Round 2 (x: 282 -> 528)
-    addFork(246, 282, 98, 206, 152);
-    addFork(246, 282, 314, 422, 368);
-    addFork(246, 282, 530, 638, 584);
-    addFork(246, 282, 746, 854, 800);
+    // Column width = 242px, gap = 32px (gap-8)
+    // Round 1 (x: 0 -> 242) into Round 2 (x: 274 -> 516)
+    addFork(242, 274, 77, 159, 118);
+    addFork(242, 274, 241, 323, 282);
+    addFork(242, 274, 405, 487, 446);
+    addFork(242, 274, 569, 651, 610);
 
     if (elimRounds.length >= 3) {
-      // Round 2 (x: 282 -> 528) into Round 3 (x: 564 -> 810)
-      addFork(528, 564, 152, 368, 260);
-      addFork(528, 564, 584, 800, 692);
+      // Round 2 (x: 274 -> 516) into Round 3 (x: 548 -> 790)
+      addFork(516, 548, 118, 282, 200);
+      addFork(516, 548, 446, 610, 528);
     }
 
     if (elimRounds.length >= 4) {
-      // Round 3 (x: 564 -> 810) into Round 4 (x: 846 -> 1092)
-      addFork(810, 846, 260, 692, 476);
+      // Round 3 (x: 548 -> 790) into Round 4 (x: 822 -> 1064)
+      addFork(790, 822, 200, 528, 364);
     }
 
     return list;
@@ -506,7 +506,7 @@
           <svg
             bind:this={svgEl}
             class="bracket-svg absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible"
-            viewBox="0 0 1100 920"
+            viewBox="0 0 1064 692"
           >
             {#each connectorLines as line}
               <line
@@ -523,14 +523,14 @@
           </svg>
 
           <!-- Bracket Columns Grid Container -->
-          <div bind:this={gridEl} class="bracket-grid flex items-start gap-9 relative z-10 min-w-max pb-4 pr-4">
+          <div bind:this={gridEl} class="bracket-grid flex items-start gap-8 relative z-10 min-w-max pb-2 pr-2">
             {#each elimRounds as [roundNum, roundMatches]}
               {@const slotCount = getSlotCountForRound(roundNum)}
               {@const slotHeightClass = getSlotHeightClass(roundNum)}
 
-              <div class="round-col round-col-elim w-[246px] shrink-0 flex flex-col relative">
+              <div class="round-col round-col-elim w-[242px] shrink-0 flex flex-col relative">
                 <!-- Column Header with Black/Dark Circle Step Badge -->
-                <div class="col-header-line h-9 shrink-0 flex items-center justify-between pb-1.5 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-2">
+                <div class="col-header-line h-8 shrink-0 flex items-center justify-between pb-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-1">
                   <div class="flex items-center space-x-2">
                     <span class="col-header-badge w-5 h-5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/20 text-white' : 'bg-slate-900 text-white'} text-[10px] font-black font-mono flex items-center justify-center shrink-0">
                       {getRoundBadge(roundNum, elimRounds.length)}
@@ -541,15 +541,15 @@
                   </div>
                 </div>
 
-                <!-- Matches Slots in this Round (Exact 864px height across rounds for perfect alignment) -->
-                <div class="round-slots flex flex-col h-[864px] relative">
+                <!-- Matches Slots in this Round (Exact 656px height across rounds for perfect alignment) -->
+                <div class="round-slots flex flex-col h-[656px] relative">
                   {#each Array.from({ length: slotCount }, (_, i) => i + 1) as slotNum}
                     {@const match = getMatchForSlot(roundMatches, slotNum)}
                     <div data-slot={slotNum} class="{slotHeightClass} flex items-center justify-center">
                       {#if match}
                         <div class="match-card w-full {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs transition relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}">
                           <!-- Match Card Header -->
-                          <div class="card-header-bar flex items-center justify-between px-2.5 py-1 {isDarkMode ? 'bg-[#131518] border-white/[0.08] text-zinc-300' : 'bg-slate-100 border-slate-300 text-slate-800'} border-b text-[10px] font-bold font-mono tracking-wider">
+                          <div class="card-header-bar flex items-center justify-between px-2 py-0.5 {isDarkMode ? 'bg-[#131518] border-white/[0.08] text-zinc-300' : 'bg-slate-100 border-slate-300 text-slate-800'} border-b text-[9.5px] font-bold font-mono tracking-wider">
                             <span class="flex items-center space-x-1">
                               {#if roundNum === 4}
                                 <span class="final-title {isDarkMode ? 'text-amber-400' : 'text-amber-700'} font-extrabold flex items-center gap-1">
@@ -573,29 +573,29 @@
                           </div>
 
                           <!-- AKA (Red) Row -->
-                          <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1.5 min-h-[38px] transition relative">
+                          <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative">
                             <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
-                              <span class="side-pill-aka text-[9px] font-mono font-black text-white bg-[#dc2626] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                              <span class="side-pill-aka text-[8px] font-mono font-black text-white bg-[#dc2626] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AKA
                               </span>
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '1'}
-                                    <span class="text-amber-400 text-[11px]" title="Pemenang">👑</span>
+                                    <span class="text-amber-400 text-[10px]" title="Pemenang">👑</span>
                                   {/if}
-                                  <span class="player-name-text truncate block text-[11.5px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')}">
+                                  <span class="player-name-text truncate block text-[10.5px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
                                     {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
                                   </span>
                                   {#if match.vr1}
                                     <span class="text-[7.5px] font-mono font-bold px-1 bg-red-600 text-white rounded shrink-0">VR</span>
                                   {/if}
                                 </div>
-                                <div class="player-sub-text text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate mt-0.5">
+                                <div class="player-sub-text text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">
                                   {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
                                 </div>
                                 {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
                                   <div class="mt-0.5">
-                                    <span class="kata-badge-aka text-[8.5px] font-medium px-1.5 py-0.2 {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded inline-block truncate max-w-[150px]">
+                                    <span class="kata-badge-aka text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded inline-block truncate max-w-[150px]">
                                       {match.kata1}
                                     </span>
                                   </div>
@@ -603,36 +603,36 @@
                               </div>
                             </div>
                             <div class="shrink-0 flex items-center">
-                              <span class="score-box min-w-[24px] h-[22px] px-1.5 font-mono text-[11.5px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
+                              <span class="score-box min-w-[22px] h-[20px] px-1 font-mono text-[10px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
                                 {match.score1 ?? '-'}
                               </span>
                             </div>
                           </div>
 
                           <!-- AO (Blue) Row -->
-                          <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1.5 min-h-[38px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
+                          <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
                             <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
-                              <span class="side-pill-ao text-[9px] font-mono font-black text-white bg-[#2563eb] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                              <span class="side-pill-ao text-[8px] font-mono font-black text-white bg-[#2563eb] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AO
                               </span>
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '2'}
-                                    <span class="text-amber-400 text-[11px]" title="Pemenang">👑</span>
+                                    <span class="text-amber-400 text-[10px]" title="Pemenang">👑</span>
                                   {/if}
-                                  <span class="player-name-text truncate block text-[11.5px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')}">
+                                  <span class="player-name-text truncate block text-[10.5px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
                                     {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
                                   </span>
                                   {#if match.vr2}
                                     <span class="text-[7.5px] font-mono font-bold px-1 bg-blue-600 text-white rounded shrink-0">VR</span>
                                   {/if}
                                 </div>
-                                <div class="player-sub-text text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate mt-0.5">
+                                <div class="player-sub-text text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">
                                   {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
                                 </div>
                                 {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
                                   <div class="mt-0.5">
-                                    <span class="kata-badge-ao text-[8.5px] font-medium px-1.5 py-0.2 {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded inline-block truncate max-w-[150px]">
+                                    <span class="kata-badge-ao text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded inline-block truncate max-w-[150px]">
                                       {match.kata2}
                                     </span>
                                   </div>
@@ -640,14 +640,14 @@
                               </div>
                             </div>
                             <div class="shrink-0 flex items-center">
-                              <span class="score-box min-w-[24px] h-[22px] px-1.5 font-mono text-[11.5px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
+                              <span class="score-box min-w-[22px] h-[20px] px-1 font-mono text-[10px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
                                 {match.score2 ?? '-'}
                               </span>
                             </div>
                           </div>
                         </div>
                       {:else}
-                        <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-white/[0.08] text-zinc-600 bg-white/[0.01]' : 'border-slate-300 text-slate-400 bg-white/40'} rounded-md h-12 flex items-center justify-center text-[9px] font-mono">
+                        <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-white/[0.08] text-zinc-600 bg-white/[0.01]' : 'border-slate-300 text-slate-400 bg-white/40'} rounded-md h-10 flex items-center justify-center text-[9px] font-mono">
                           Kosong
                         </div>
                       {/if}
@@ -658,65 +658,65 @@
                   {#if roundNum === 4}
                     <div class="absolute bottom-0 right-0 w-full flex flex-col items-end z-20">
                       <!-- Ambrilindo Brand Logo -->
-                      <div class="mb-2.5 flex items-center justify-end w-full pr-1">
+                      <div class="mb-2 flex items-center justify-end w-full pr-1">
                         <img
                           src="/img/ambrilindo-logo.webp"
                           alt="Ambrilindo"
-                          class="h-9 max-w-[160px] object-contain"
+                          class="h-7 max-w-[130px] object-contain"
                         />
                       </div>
 
                       <!-- Hasil Juara Podium Card -->
                       <div class="podium-card w-full {isDarkMode ? 'bg-[#181a20] border-amber-500/70 shadow-lg' : 'bg-white border-amber-500 shadow-sm'} border rounded-lg overflow-hidden">
-                        <div class="podium-header px-3 py-1.5 {isDarkMode ? 'bg-amber-500/15 border-amber-500/30' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
+                        <div class="podium-header px-2.5 py-1 {isDarkMode ? 'bg-amber-500/15 border-amber-500/30' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
                           <div class="flex items-center space-x-1.5">
                             <span class="{isDarkMode ? 'text-amber-400' : 'text-amber-700'} text-xs">🏆</span>
-                            <span class="text-[11.5px] font-bold {isDarkMode ? 'text-amber-300' : 'text-amber-900'} tracking-tight">Hasil Juara</span>
+                            <span class="text-[10.5px] font-bold {isDarkMode ? 'text-amber-300' : 'text-amber-900'} tracking-tight">Hasil Juara</span>
                           </div>
                         </div>
 
-                        <div class="divide-y {isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-100'} text-[11px]">
+                        <div class="divide-y {isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-100'} text-[10px]">
                           <!-- Juara 1 (Gold) -->
-                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-5 h-5 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               1
                             </span>
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j1.name}</div>
-                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j1.contingent}</div>
+                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j1.contingent}</div>
                             </div>
                           </div>
 
                           <!-- Juara 2 (Silver) -->
-                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-5 h-5 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               2
                             </span>
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j2.name}</div>
-                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j2.contingent}</div>
+                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j2.contingent}</div>
                             </div>
                           </div>
 
                           <!-- Juara 3A (Bronze) -->
-                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-5 h-5 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3a.name}</div>
-                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j3a.contingent}</div>
+                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j3a.contingent}</div>
                             </div>
                           </div>
 
                           <!-- Juara 3B (Bronze) -->
-                          <div class="podium-row px-2.5 py-1.5 flex items-center space-x-2.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-5 h-5 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[10px] flex items-center justify-center shrink-0 shadow-xs">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3b.name}</div>
-                              <div class="podium-sub text-[9.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">{podium.j3b.contingent}</div>
+                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j3b.contingent}</div>
                             </div>
                           </div>
                         </div>
@@ -808,8 +808,8 @@
       max-height: 184mm !important;
     }
     .zoom-container {
-      width: 100% !important;
-      height: 100% !important;
+      width: 1064px !important;
+      height: 692px !important;
       min-width: 0 !important;
       min-height: 0 !important;
       background: #ffffff !important;
@@ -818,10 +818,9 @@
     }
     .bracket-outer {
       position: relative !important;
-      transform: scale(0.97, 0.745) !important;
-      transform-origin: top left !important;
-      width: 1100px !important;
-      height: 924px !important;
+      transform: none !important;
+      width: 1064px !important;
+      height: 692px !important;
       background: #ffffff !important;
       overflow: hidden !important;
       page-break-inside: avoid !important;
@@ -857,9 +856,9 @@
       color: #020617 !important;
     }
     .col-header-line {
-      height: 28px !important;
-      padding-bottom: 2px !important;
-      margin-bottom: 2px !important;
+      height: 32px !important;
+      padding-bottom: 4px !important;
+      margin-bottom: 4px !important;
       border-bottom: 1.5px solid #0f172a !important;
     }
 
