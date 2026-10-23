@@ -200,6 +200,38 @@ async fn list_contingents_api(Path(event_id): Path<i64>, State(state): State<Arc
     }
 }
 
+async fn media_file_api(
+    Path(file_path): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    if let Some(media_dir) = db.get_media_dir() {
+        let clean_path = file_path.trim_start_matches('/').trim_start_matches('\\');
+        let full_path = media_dir.join(clean_path);
+        if full_path.exists() && full_path.is_file() {
+            if let Ok(bytes) = tokio::fs::read(&full_path).await {
+                let mime = if clean_path.ends_with(".png") {
+                    "image/png"
+                } else if clean_path.ends_with(".webp") {
+                    "image/webp"
+                } else if clean_path.ends_with(".jpg") || clean_path.ends_with(".jpeg") {
+                    "image/jpeg"
+                } else if clean_path.ends_with(".svg") {
+                    "image/svg+xml"
+                } else {
+                    "application/octet-stream"
+                };
+                return (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, mime)],
+                    bytes,
+                ).into_response();
+            }
+        }
+    }
+    (StatusCode::NOT_FOUND, "Media not found").into_response()
+}
+
 pub fn create_router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -215,6 +247,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/detail-bagan/:bagan_id", get(detail_bagan_api))
         .route("/api/athletes/:event_id", get(list_athletes_api))
         .route("/api/contingents/:event_id", get(list_contingents_api))
+        .route("/media/*file_path", get(media_file_api))
         .route("/ws/:channel/:tatami_pk", get(ws_handler))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

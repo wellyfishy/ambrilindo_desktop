@@ -10,6 +10,7 @@
     eventName?: string;
     eventVenue?: string;
     eventDate?: string;
+    hostUrl?: string;
     onDispatchToTatami?: (tatamiNum: number, matchId: number) => void;
   }
 
@@ -20,11 +21,41 @@
     eventName = "",
     eventVenue = "Venue Pertandingan",
     eventDate = "",
+    hostUrl = "",
     onDispatchToTatami,
   }: Props = $props();
 
   let matches = $state<DetailBaganItem[]>([]);
   let isLoading = $state(true);
+  let logoMap = $state<Record<string, string>>({});
+
+  async function resolveLogos(items: DetailBaganItem[]) {
+    const needed = new Set<string>();
+    for (const item of items) {
+      if (item.atlet1_logo) needed.add(item.atlet1_logo);
+      if (item.atlet2_logo) needed.add(item.atlet2_logo);
+    }
+
+    for (const path of needed) {
+      if (logoMap[path]) continue;
+      if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:")) {
+        logoMap[path] = path;
+        continue;
+      }
+      try {
+        const dataUrl = await invoke<string | null>("get_media_data_url", { relativePath: path });
+        if (dataUrl) {
+          logoMap[path] = dataUrl;
+          continue;
+        }
+      } catch {
+        // Not running in Tauri desktop or IPC unavailable, fallback to HTTP
+      }
+      if (hostUrl) {
+        logoMap[path] = `${hostUrl.replace(/\/$/, "")}/media/${path.replace(/^\//, "")}`;
+      }
+    }
+  }
 
   // App Theme state: Dark mode by default for desktop app, white for print
   let isDarkMode = $state(true);
@@ -92,6 +123,7 @@
     try {
       const data = await invoke<DetailBaganItem[]>("get_detail_bagan", { baganId });
       matches = data;
+      resolveLogos(data);
     } catch (err) {
       console.error("Gagal memuat detail bagan:", err);
       matches = [];
@@ -173,29 +205,33 @@
     const semi1 = semiMatches[0];
     const semi2 = semiMatches[1];
 
-    let j1 = { name: "Belum Ditentukan", contingent: "—" };
-    let j2 = { name: "Belum Ditentukan", contingent: "—" };
-    let j3a = { name: "Belum Ditentukan", contingent: "—" };
-    let j3b = { name: "Belum Ditentukan", contingent: "—" };
+    let j1 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
+    let j2 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
+    let j3a = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
+    let j3b = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
 
     if (finalMatch && finalMatch.selesai) {
       if (finalMatch.pemenang === "1") {
         j1 = {
           name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
           contingent: finalMatch.atlet1_kontingen || "—",
+          logo: finalMatch.atlet1_logo || null,
         };
         j2 = {
           name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
           contingent: finalMatch.atlet2_kontingen || "—",
+          logo: finalMatch.atlet2_logo || null,
         };
       } else if (finalMatch.pemenang === "2") {
         j1 = {
           name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
           contingent: finalMatch.atlet2_kontingen || "—",
+          logo: finalMatch.atlet2_logo || null,
         };
         j2 = {
           name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
           contingent: finalMatch.atlet1_kontingen || "—",
+          logo: finalMatch.atlet1_logo || null,
         };
       }
     }
@@ -206,11 +242,13 @@
         j3a = {
           name: semi1.atlet2_nama || (semi1.atlet2_id ? `Atlet #${semi1.atlet2_id}` : "BYE"),
           contingent: semi1.atlet2_kontingen || "—",
+          logo: semi1.atlet2_logo || null,
         };
       } else if (semi1.pemenang === "2") {
         j3a = {
           name: semi1.atlet1_nama || (semi1.atlet1_id ? `Atlet #${semi1.atlet1_id}` : "BYE"),
           contingent: semi1.atlet1_kontingen || "—",
+          logo: semi1.atlet1_logo || null,
         };
       }
     }
@@ -221,11 +259,13 @@
         j3b = {
           name: semi2.atlet2_nama || (semi2.atlet2_id ? `Atlet #${semi2.atlet2_id}` : "BYE"),
           contingent: semi2.atlet2_kontingen || "—",
+          logo: semi2.atlet2_logo || null,
         };
       } else if (semi2.pemenang === "2") {
         j3b = {
           name: semi2.atlet1_nama || (semi2.atlet1_id ? `Atlet #${semi2.atlet1_id}` : "BYE"),
           contingent: semi2.atlet1_kontingen || "—",
+          logo: semi2.atlet1_logo || null,
         };
       }
     }
@@ -574,10 +614,17 @@
 
                           <!-- AKA (Red) Row -->
                           <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative">
-                            <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
+                            <div class="flex items-center space-x-1.5 truncate mr-2 min-w-0">
                               <span class="side-pill-aka w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AKA
                               </span>
+                              {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
+                                <img
+                                  src={logoMap[match.atlet1_logo]}
+                                  alt="Logo"
+                                  class="player-dojo-logo w-5 h-5 max-w-5 max-h-5 object-contain shrink-0"
+                                />
+                              {/if}
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '1'}
@@ -611,10 +658,17 @@
 
                           <!-- AO (Blue) Row -->
                           <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
-                            <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
+                            <div class="flex items-center space-x-1.5 truncate mr-2 min-w-0">
                               <span class="side-pill-ao w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AO
                               </span>
+                              {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
+                                <img
+                                  src={logoMap[match.atlet2_logo]}
+                                  alt="Logo"
+                                  class="player-dojo-logo w-5 h-5 max-w-5 max-h-5 object-contain shrink-0"
+                                />
+                              {/if}
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '2'}
@@ -677,10 +731,17 @@
 
                         <div class="divide-y {isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-100'} text-[10px]">
                           <!-- Juara 1 (Gold) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               1
                             </span>
+                            {#if podium.j1.logo && logoMap[podium.j1.logo]}
+                              <img
+                                src={logoMap[podium.j1.logo]}
+                                alt="Logo"
+                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
+                              />
+                            {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j1.name}</div>
                               <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j1.contingent}</div>
@@ -688,10 +749,17 @@
                           </div>
 
                           <!-- Juara 2 (Silver) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               2
                             </span>
+                            {#if podium.j2.logo && logoMap[podium.j2.logo]}
+                              <img
+                                src={logoMap[podium.j2.logo]}
+                                alt="Logo"
+                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
+                              />
+                            {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j2.name}</div>
                               <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j2.contingent}</div>
@@ -699,10 +767,17 @@
                           </div>
 
                           <!-- Juara 3A (Bronze) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
+                            {#if podium.j3a.logo && logoMap[podium.j3a.logo]}
+                              <img
+                                src={logoMap[podium.j3a.logo]}
+                                alt="Logo"
+                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
+                              />
+                            {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3a.name}</div>
                               <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j3a.contingent}</div>
@@ -710,10 +785,17 @@
                           </div>
 
                           <!-- Juara 3B (Bronze) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-2 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
+                            {#if podium.j3b.logo && logoMap[podium.j3b.logo]}
+                              <img
+                                src={logoMap[podium.j3b.logo]}
+                                alt="Logo"
+                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
+                              />
+                            {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3b.name}</div>
                               <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j3b.contingent}</div>
@@ -1050,5 +1132,34 @@
       font-size: 8px !important;
       line-height: 1 !important;
     }
+
+    /* Contingent Dojo Logos in Print */
+    .player-dojo-logo {
+      width: 18px !important;
+      height: 18px !important;
+      max-width: 18px !important;
+      max-height: 18px !important;
+      object-fit: contain !important;
+      flex-shrink: 0 !important;
+      display: inline-block !important;
+      border: none !important;
+    }
+    .podium-dojo-logo {
+      width: 14px !important;
+      height: 14px !important;
+      max-width: 14px !important;
+      max-height: 14px !important;
+      object-fit: contain !important;
+      flex-shrink: 0 !important;
+      display: inline-block !important;
+      border: none !important;
+    }
+  }
+
+  .player-dojo-logo {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    flex-shrink: 0;
   }
 </style>

@@ -268,6 +268,38 @@ async fn get_detail_bagan(
 }
 
 #[tauri::command]
+async fn get_media_data_url(
+    relative_path: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<String>, String> {
+    let db = state.db.lock().await;
+    if let Some(media_dir) = db.get_media_dir() {
+        let clean_path = relative_path.trim_start_matches('/').trim_start_matches('\\');
+        let full_path = media_dir.join(clean_path);
+        if full_path.exists() && full_path.is_file() {
+            if let Ok(bytes) = std::fs::read(&full_path) {
+                let ext = full_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("png")
+                    .to_lowercase();
+                let mime = match ext.as_str() {
+                    "png" => "image/png",
+                    "webp" => "image/webp",
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "svg" => "image/svg+xml",
+                    _ => "application/octet-stream",
+                };
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                return Ok(Some(format!("data:{};base64,{}", mime, b64)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
 async fn get_athletes(
     event_id: i64,
     state: tauri::State<'_, DesktopState>,
@@ -619,6 +651,7 @@ pub fn run() {
             delete_all_athletes,
             get_bagans,
             get_detail_bagan,
+            get_media_data_url,
             get_athletes,
             get_contingents,
             play_buzzer,

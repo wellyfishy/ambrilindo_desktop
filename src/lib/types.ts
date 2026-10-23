@@ -78,8 +78,10 @@ export interface DetailBaganItem {
   kode: string | null;
   atlet1_nama?: string | null;
   atlet1_kontingen?: string | null;
+  atlet1_logo?: string | null;
   atlet2_nama?: string | null;
   atlet2_kontingen?: string | null;
+  atlet2_logo?: string | null;
 }
 
 export interface AtletItem {

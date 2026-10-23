@@ -117,8 +117,10 @@ pub struct EnrichedDetailBagan {
     pub kode: Option<String>,
     pub atlet1_nama: Option<String>,
     pub atlet1_kontingen: Option<String>,
+    pub atlet1_logo: Option<String>,
     pub atlet2_nama: Option<String>,
     pub atlet2_kontingen: Option<String>,
+    pub atlet2_logo: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
