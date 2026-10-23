@@ -283,7 +283,13 @@ impl DatabaseManager {
                 a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
                 a.perguruan_id, p.nama_perguruan as perguruan_nama,
                 a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
-                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama, nt.tipe as nomor_tanding_tipe, nt.is_bob
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama,
+                CASE 
+                    WHEN nt.is_bob = 1 THEN 'BOB'
+                    WHEN UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%' THEN 'Festival'
+                    ELSE 'Tournament'
+                END as nomor_tanding_tipe,
+                nt.is_bob
             FROM backend_atlet a
             LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
             LEFT JOIN backend_utusan u ON a.utusan_id = u.id
@@ -335,7 +341,13 @@ impl DatabaseManager {
                 a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
                 a.perguruan_id, p.nama_perguruan as perguruan_nama,
                 a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
-                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama, nt.tipe as nomor_tanding_tipe, nt.is_bob
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama,
+                CASE 
+                    WHEN nt.is_bob = 1 THEN 'BOB'
+                    WHEN UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%' THEN 'Festival'
+                    ELSE 'Tournament'
+                END as nomor_tanding_tipe,
+                nt.is_bob
             FROM backend_atlet a
             LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
             LEFT JOIN backend_utusan u ON a.utusan_id = u.id
@@ -390,7 +402,13 @@ impl DatabaseManager {
                 a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
                 a.perguruan_id, p.nama_perguruan as perguruan_nama,
                 a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
-                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama, nt.tipe as nomor_tanding_tipe, nt.is_bob
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama,
+                CASE 
+                    WHEN nt.is_bob = 1 THEN 'BOB'
+                    WHEN UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%' THEN 'Festival'
+                    ELSE 'Tournament'
+                END as nomor_tanding_tipe,
+                nt.is_bob
             FROM backend_atlet a
             LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
             LEFT JOIN backend_utusan u ON a.utusan_id = u.id

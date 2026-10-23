@@ -127,9 +127,10 @@
       } else if (viewType === 'contingent') {
         contingents = await invoke<UtusanItem[]>("get_contingents", { eventId });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Gagal memuat data roster:", err);
-      showToast("Gagal memuat data dari database");
+      const msg = typeof err === "string" ? err : err?.message || JSON.stringify(err);
+      showToast(`Gagal memuat data: ${msg}`);
     } finally {
       isLoading = false;
     }
