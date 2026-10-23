@@ -8,7 +8,8 @@ use tracing::info;
 
 use crate::bracket::{build_bracket_in_memory, split_athletes_into_pools, AthleteInput};
 use crate::models::{
-    Atlet, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedDetailBagan, Event, NomorTanding, Tatami, Utusan,
+    Atlet, AthleteMutationInput, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, Tatami, Utusan,
 };
 
 #[derive(Clone)]
@@ -273,6 +274,210 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal memuat detail bagan: {}", e))
     }
 
+    /// Fetches all athletes for an event with contingent, club, and category details
+    pub async fn get_enriched_athletes(&self, event_id: i64) -> Result<Vec<EnrichedAtlet>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, EnrichedAtlet>(
+            r#"
+            SELECT 
+                a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
+                a.perguruan_id, p.nama_perguruan as perguruan_nama,
+                a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama, nt.tipe as nomor_tanding_tipe, nt.is_bob
+            FROM backend_atlet a
+            LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+            LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+            LEFT JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+            WHERE a.event_id = ?
+            ORDER BY a.nama_atlet ASC
+            "#
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat daftar atlet lengkap: {}", e))
+    }
+
+    /// Creates a new athlete
+    pub async fn create_athlete(&self, input: AthleteMutationInput) -> Result<EnrichedAtlet, String> {
+        let pool = self.get_pool()?;
+        let clean_name = input.nama_atlet.trim().to_uppercase();
+        if clean_name.is_empty() {
+            return Err("Nama atlet tidak boleh kosong.".to_string());
+        }
+
+        let res = sqlx::query(
+            r#"
+            INSERT INTO backend_atlet (
+                event_id, nama_atlet, nik, kode_atlet, additional_code, is_priority,
+                perguruan_id, utusan_id, nomor_tanding_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#
+        )
+        .bind(input.event_id)
+        .bind(&clean_name)
+        .bind(input.nik.filter(|s| !s.trim().is_empty()))
+        .bind(input.kode_atlet.filter(|s| !s.trim().is_empty()))
+        .bind(input.additional_code.filter(|s| !s.trim().is_empty()))
+        .bind(input.is_priority)
+        .bind(input.perguruan_id)
+        .bind(input.utusan_id)
+        .bind(input.nomor_tanding_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menyimpan atlet: {}", e))?;
+
+        let new_id = res.last_insert_rowid();
+
+        sqlx::query_as::<_, EnrichedAtlet>(
+            r#"
+            SELECT 
+                a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
+                a.perguruan_id, p.nama_perguruan as perguruan_nama,
+                a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama, nt.tipe as nomor_tanding_tipe, nt.is_bob
+            FROM backend_atlet a
+            LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+            LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+            LEFT JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+            WHERE a.id = ?
+            "#
+        )
+        .bind(new_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat atlet yang baru dibuat: {}", e))
+    }
+
+    /// Updates an existing athlete
+    pub async fn update_athlete(&self, id: i64, input: AthleteMutationInput) -> Result<EnrichedAtlet, String> {
+        let pool = self.get_pool()?;
+        let clean_name = input.nama_atlet.trim().to_uppercase();
+        if clean_name.is_empty() {
+            return Err("Nama atlet tidak boleh kosong.".to_string());
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE backend_atlet SET
+                nama_atlet = ?,
+                nik = ?,
+                kode_atlet = ?,
+                additional_code = ?,
+                is_priority = ?,
+                perguruan_id = ?,
+                utusan_id = ?,
+                nomor_tanding_id = ?
+            WHERE id = ?
+            "#
+        )
+        .bind(&clean_name)
+        .bind(input.nik.filter(|s| !s.trim().is_empty()))
+        .bind(input.kode_atlet.filter(|s| !s.trim().is_empty()))
+        .bind(input.additional_code.filter(|s| !s.trim().is_empty()))
+        .bind(input.is_priority)
+        .bind(input.perguruan_id)
+        .bind(input.utusan_id)
+        .bind(input.nomor_tanding_id)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal mengupdate data atlet: {}", e))?;
+
+        sqlx::query_as::<_, EnrichedAtlet>(
+            r#"
+            SELECT 
+                a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
+                a.perguruan_id, p.nama_perguruan as perguruan_nama,
+                a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama, nt.tipe as nomor_tanding_tipe, nt.is_bob
+            FROM backend_atlet a
+            LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+            LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+            LEFT JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+            WHERE a.id = ?
+            "#
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat atlet yang diupdate: {}", e))
+    }
+
+    /// Deletes a single athlete with validation check against active bracket matches
+    pub async fn delete_athlete(&self, id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let linked_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM backend_detailbagan WHERE atlet1_id = ? OR atlet2_id = ?"
+        )
+        .bind(id)
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memeriksa keterikatan atlet: {}", e))?;
+
+        if linked_count.0 > 0 {
+            return Err(format!(
+                "Atlet tidak dapat dihapus karena sudah terdaftar di {} partai bagan tanding. Hapus bagan terlebih dahulu.",
+                linked_count.0
+            ));
+        }
+
+        sqlx::query("DELETE FROM backend_atlet WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menghapus atlet: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Batch deletes athletes (skips any currently locked in active bracket matches)
+    pub async fn delete_athletes_batch(&self, ids: Vec<i64>) -> Result<u64, String> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        let mut deleted_count = 0u64;
+        for id in ids {
+            let linked: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM backend_detailbagan WHERE atlet1_id = ? OR atlet2_id = ?"
+            )
+            .bind(id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or((0,));
+
+            if linked.0 == 0 {
+                let res = sqlx::query("DELETE FROM backend_atlet WHERE id = ?")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await;
+                if let Ok(r) = res {
+                    deleted_count += r.rows_affected();
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan transaksi: {}", e))?;
+        Ok(deleted_count)
+    }
+
+    /// Toggles an athlete's seed/priority flag
+    pub async fn toggle_athlete_priority(&self, id: i64, is_priority: bool) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query("UPDATE backend_atlet SET is_priority = ? WHERE id = ?")
+            .bind(is_priority)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal mengubah status prioritas atlet: {}", e))?;
+        Ok(())
+    }
+
     /// Fetches all athletes for an event
     pub async fn get_athletes(&self, event_id: i64) -> Result<Vec<Atlet>, String> {
         let pool = self.get_pool()?;
@@ -283,6 +488,18 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat daftar atlet: {}", e))
+    }
+
+    /// Fetches all perguruans for an event
+    pub async fn get_perguruans(&self, event_id: i64) -> Result<Vec<Perguruan>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, Perguruan>(
+            "SELECT id, event_id, nama_perguruan FROM backend_perguruan WHERE event_id = ? ORDER BY nama_perguruan ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat daftar perguruan: {}", e))
     }
 
     /// Fetches all contingents/clubs for an event

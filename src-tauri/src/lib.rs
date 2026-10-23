@@ -12,7 +12,8 @@ use tauri::Manager;
 use audio::{AudioService, SoundType};
 use db::DatabaseManager;
 use models::{
-    Atlet, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedDetailBagan, Event, NomorTanding, Tatami, Utusan,
+    AthleteMutationInput, Atlet, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, Tatami, Utusan,
 };
 use server::{ArenaMessage, NetworkInfo};
 
@@ -306,6 +307,71 @@ async fn get_athletes(
 ) -> Result<Vec<Atlet>, String> {
     let db = state.db.lock().await;
     db.get_athletes(event_id).await
+}
+
+#[tauri::command]
+async fn get_enriched_athletes(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<EnrichedAtlet>, String> {
+    let db = state.db.lock().await;
+    db.get_enriched_athletes(event_id).await
+}
+
+#[tauri::command]
+async fn create_athlete(
+    input: AthleteMutationInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<EnrichedAtlet, String> {
+    let db = state.db.lock().await;
+    db.create_athlete(input).await
+}
+
+#[tauri::command]
+async fn update_athlete(
+    id: i64,
+    input: AthleteMutationInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<EnrichedAtlet, String> {
+    let db = state.db.lock().await;
+    db.update_athlete(id, input).await
+}
+
+#[tauri::command]
+async fn delete_athlete(
+    id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_athlete(id).await
+}
+
+#[tauri::command]
+async fn delete_athletes_batch(
+    ids: Vec<i64>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<u64, String> {
+    let db = state.db.lock().await;
+    db.delete_athletes_batch(ids).await
+}
+
+#[tauri::command]
+async fn toggle_athlete_priority(
+    id: i64,
+    is_priority: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.toggle_athlete_priority(id, is_priority).await
+}
+
+#[tauri::command]
+async fn get_perguruans(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<Perguruan>, String> {
+    let db = state.db.lock().await;
+    db.get_perguruans(event_id).await
 }
 
 #[tauri::command]
@@ -653,6 +719,13 @@ pub fn run() {
             get_detail_bagan,
             get_media_data_url,
             get_athletes,
+            get_enriched_athletes,
+            create_athlete,
+            update_athlete,
+            delete_athlete,
+            delete_athletes_batch,
+            toggle_athlete_priority,
+            get_perguruans,
             get_contingents,
             play_buzzer,
             get_available_monitors,

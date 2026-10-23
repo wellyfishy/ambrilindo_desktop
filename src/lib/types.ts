@@ -21,6 +21,15 @@ export interface EventItem {
   is_live_sync_enabled: boolean;
 }
 
+export interface NomorTandingItem {
+  id: number;
+  event_id: number | null;
+  nama_nomor_tanding: string | null;
+  tipe: string | null;
+  is_bob: boolean;
+  has_vr: boolean;
+}
+
 export interface DatabaseSummary {
   db_path: string;
   media_path: string;
@@ -95,6 +104,44 @@ export interface AtletItem {
   perguruan_id: number | null;
   utusan_id: number | null;
   nomor_tanding_id: number | null;
+}
+
+export interface EnrichedAtletItem {
+  id: number;
+  event_id: number | null;
+  nama_atlet: string | null;
+  nik: string | null;
+  kode_atlet: string | null;
+  additional_code: string | null;
+  is_priority: boolean;
+  perguruan_id: number | null;
+  perguruan_nama: string | null;
+  utusan_id: number | null;
+  utusan_nama: string | null;
+  utusan_logo: string | null;
+  nomor_tanding_id: number | null;
+  nomor_tanding_nama: string | null;
+  nomor_tanding_tipe: string | null;
+  is_bob: boolean | null;
+}
+
+export interface AthleteMutationInput {
+  id?: number | null;
+  event_id: number;
+  nama_atlet: string;
+  nik?: string | null;
+  kode_atlet?: string | null;
+  additional_code?: string | null;
+  is_priority: boolean;
+  perguruan_id?: number | null;
+  utusan_id?: number | null;
+  nomor_tanding_id?: number | null;
+}
+
+export interface PerguruanItem {
+  id: number;
+  event_id: number | null;
+  nama_perguruan: string | null;
 }
 
 export interface UtusanItem {
