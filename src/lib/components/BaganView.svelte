@@ -441,19 +441,19 @@
   </div>
 
   <!-- Tournament Header Banner -->
-  <div class="bracket-banner relative flex items-center justify-between pb-2.5 pt-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-3 shrink-0">
+  <div class="bracket-banner relative flex items-center justify-center pb-2.5 pt-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-3 shrink-0">
     <!-- Left Logo / Dojo Emblem -->
-    <div class="flex items-center min-w-[140px]">
+    <div class="banner-logo-wrapper absolute left-0 top-1/2 -translate-y-1/2 flex items-center z-10">
       <img
         src="/img/ambrilindo-logo.webp"
         alt="Ambrilindo Logo"
-        class="h-10 max-h-10 w-auto object-contain"
+        class="h-9 max-h-9 w-auto object-contain"
       />
     </div>
 
-    <!-- Center Category & Tournament Info -->
-    <div class="text-center flex-1 px-4">
-      <h1 class="text-base md:text-lg font-black {isDarkMode ? 'text-white' : 'text-slate-950'} tracking-tight uppercase leading-tight">
+    <!-- Center Category & Tournament Info (True Center) -->
+    <div class="banner-title-wrapper text-center w-full px-28">
+      <h1 class="text-base md:text-lg font-black {isDarkMode ? 'text-white' : 'text-slate-950'} tracking-tight uppercase leading-tight truncate">
         {#if baganInfo?.kode}
           ({baganInfo.kode})
         {/if}
@@ -472,7 +472,7 @@
     </div>
 
     <!-- Right Spacer to preserve exact center alignment -->
-    <div class="min-w-[140px] flex justify-end items-center text-right text-[10px] {isDarkMode ? 'text-zinc-500' : 'text-slate-400'} font-mono no-print">
+    <div class="banner-info-wrapper absolute right-0 top-1/2 -translate-y-1/2 flex justify-end items-center text-right text-[10px] {isDarkMode ? 'text-zinc-500' : 'text-slate-400'} font-mono no-print z-10">
       <span>{elimMatchesCount} Partai</span>
     </div>
   </div>
@@ -575,7 +575,7 @@
                           <!-- AKA (Red) Row -->
                           <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative">
                             <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
-                              <span class="side-pill-aka text-[8px] font-mono font-black text-white bg-[#dc2626] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                              <span class="side-pill-aka w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AKA
                               </span>
                               <div class="truncate min-w-0 leading-tight">
@@ -612,7 +612,7 @@
                           <!-- AO (Blue) Row -->
                           <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
                             <div class="flex items-center space-x-2 truncate mr-2 min-w-0">
-                              <span class="side-pill-ao text-[8px] font-mono font-black text-white bg-[#2563eb] px-1.5 py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                              <span class="side-pill-ao w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AO
                               </span>
                               <div class="truncate min-w-0 leading-tight">
@@ -773,12 +773,31 @@
       break-after: avoid !important;
     }
     .bracket-banner {
+      position: relative !important;
       border-bottom: 1.5px solid #0f172a !important;
       padding-top: 0 !important;
       padding-bottom: 2px !important;
       margin-bottom: 3px !important;
       height: 38px !important;
       box-sizing: border-box !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      width: 1064px !important;
+    }
+    .banner-logo-wrapper {
+      position: absolute !important;
+      left: 0 !important;
+      top: 50% !important;
+      transform: translateY(-50%) !important;
+      display: flex !important;
+      align-items: center !important;
+    }
+    .banner-title-wrapper {
+      width: 100% !important;
+      text-align: center !important;
+      padding-left: 100px !important;
+      padding-right: 100px !important;
     }
     .bracket-banner img {
       height: 26px !important;
@@ -789,11 +808,13 @@
       font-size: 13px !important;
       line-height: 1.15 !important;
       color: #020617 !important;
+      text-align: center !important;
     }
     .bracket-banner p,
     .bracket-banner span {
       font-size: 8.5px !important;
       color: #334155 !important;
+      text-align: center !important;
     }
     .bracket-viewport {
       background: #ffffff !important;
@@ -938,14 +959,28 @@
       background-color: #dc2626 !important;
       color: #ffffff !important;
       font-size: 8px !important;
-      padding: 1px 3px !important;
+      width: 25px !important;
+      min-width: 25px !important;
+      max-width: 25px !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      padding: 1px 0 !important;
+      text-align: center !important;
     }
     .side-pill-ao {
       background: #2563eb !important;
       background-color: #2563eb !important;
       color: #ffffff !important;
       font-size: 8px !important;
-      padding: 1px 3px !important;
+      width: 25px !important;
+      min-width: 25px !important;
+      max-width: 25px !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      padding: 1px 0 !important;
+      text-align: center !important;
     }
 
     /* Empty Slots */
