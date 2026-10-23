@@ -49,12 +49,9 @@
 
   // Main elimination tree rounds (1 to 4)
   let elimRounds = $derived(rounds.filter(([r]) => r <= 4));
-
-  // Standalone bronze medal match (Round 5)
-  let bronzeRound = $derived(rounds.find(([r]) => r === 5));
+  let elimMatchesCount = $derived(matches.filter((m) => (m.round || 1) <= 4).length);
 
   function getRoundTitle(roundNum: number, totalElimRounds: number): string {
-    if (roundNum === 5) return "PEREBUTAN JUARA 3";
     if (roundNum === 4) return "FINAL";
     if (roundNum === 3) return totalElimRounds >= 4 ? "SEMI FINAL" : "FINAL";
     if (roundNum === 2) return totalElimRounds >= 4 ? "PEREMPAT FINAL" : "SEMI FINAL";
@@ -67,7 +64,6 @@
       case 2: return 4;
       case 3: return 2;
       case 4: return 1;
-      case 5: return 1;
       default: return 1;
     }
   }
@@ -78,7 +74,6 @@
       case 2: return "h-[128px]";
       case 3: return "h-[256px]";
       case 4: return "h-[512px]";
-      case 5: return "h-[512px]";
       default: return "h-[64px]";
     }
   }
@@ -89,7 +84,6 @@
       case 2: return `QF #${urutan}`;
       case 3: return `SF #${urutan}`;
       case 4: return "FINAL";
-      case 5: return "JUARA 3";
       default: return `#${urutan}`;
     }
   }
@@ -251,7 +245,7 @@
     <div>
       <h2 class="text-lg font-black text-white tracking-tight uppercase">{baganName}</h2>
       <p class="text-xs text-zinc-400 mt-0.5 font-normal">
-        Struktur bagan eliminasi turnamen • {matches.length} Partai terdaftar
+        Struktur bagan eliminasi turnamen • {elimMatchesCount} Partai terdaftar
       </p>
     </div>
 
@@ -284,7 +278,7 @@
         <p class="text-[9.5px] text-slate-600 font-sans">Ambrilindo Karate Tournament System • Bagan Resmi Pertandingan</p>
       </div>
       <div class="text-right text-[9px] text-slate-500 font-mono">
-        <span>{matches.length} Partai Eliminasi</span>
+        <span>{elimMatchesCount} Partai Eliminasi</span>
       </div>
     </div>
   </div>
@@ -391,82 +385,6 @@
               </div>
             </div>
           {/each}
-
-          <!-- Round 5: Perebutan Juara 3 (Bronze Match) -->
-          {#if bronzeRound && bronzeRound[1].length > 0}
-            <div class="round-col round-col-bronze w-56 shrink-0 flex flex-col border-l border-white/[0.08] pl-6">
-              <!-- Round Header -->
-              <div class="h-8 shrink-0 bg-amber-950/20 border border-amber-500/30 rounded-lg px-2.5 py-1 mb-2.5 flex items-center justify-between shadow-sm">
-                <span class="text-[11px] font-mono font-bold uppercase tracking-wider text-amber-400">
-                  PEREBUTAN JUARA 3
-                </span>
-                <span class="text-[9px] text-amber-500/70 font-mono">
-                  Perunggu
-                </span>
-              </div>
-
-              <!-- Match in Perebutan Juara 3 centered -->
-              <div class="round-slots flex flex-col h-[512px]">
-                {#each bronzeRound[1] as match}
-                  <div class="h-[512px] flex items-center justify-center">
-                    <div class="match-card w-full bg-[#181a20] border {match.selesai ? 'border-amber-500/40' : 'border-white/[0.08]'} rounded-md overflow-hidden shadow-sm hover:border-amber-500/30 transition relative z-10">
-                      <!-- Micro Header -->
-                      <div class="flex items-center justify-between px-2 py-0.5 bg-amber-500/10 border-b border-amber-500/20 text-[8.5px] font-mono text-amber-300">
-                        <span class="font-bold tracking-wider">JUARA 3</span>
-                        {#if match.assigned_tatami_id}
-                          <span class="text-[8px] font-bold text-amber-400 bg-amber-500/20 px-1 rounded">
-                            T{match.assigned_tatami_id}
-                          </span>
-                        {:else}
-                          <span class="text-[7.5px] {match.selesai ? 'text-amber-400 font-bold' : 'text-zinc-600'}">
-                            {match.selesai ? 'SELESAI' : 'STANDBY'}
-                          </span>
-                        {/if}
-                      </div>
-
-                      <!-- AKA (Red) Row -->
-                      <div class="flex items-center justify-between px-2 py-0.5 text-[10.5px] leading-tight {match.pemenang === '1' ? 'bg-red-500/15 font-semibold text-white' : 'text-zinc-200'}">
-                        <div class="flex items-center space-x-1.5 truncate mr-1.5 min-w-0">
-                          <span class="text-[8.5px] font-mono font-bold text-red-400 shrink-0">AKA</span>
-                          {#if match.vr1}
-                            <span class="text-[7px] font-mono font-bold px-0.5 bg-amber-500/20 text-amber-300 rounded shrink-0">VR</span>
-                          {/if}
-                          <span class="truncate block font-medium">
-                            {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
-                          </span>
-                          {#if match.atlet1_kontingen}
-                            <span class="text-[8.5px] text-zinc-400 truncate shrink-0">
-                              ({match.atlet1_kontingen})
-                            </span>
-                          {/if}
-                        </div>
-                        <span class="font-mono text-[11px] font-bold shrink-0">{match.score1 || '0'}</span>
-                      </div>
-
-                      <!-- AO (Blue) Row -->
-                      <div class="flex items-center justify-between px-2 py-0.5 text-[10.5px] leading-tight border-t border-white/[0.04] {match.pemenang === '2' ? 'bg-blue-500/15 font-semibold text-white' : 'text-zinc-200'}">
-                        <div class="flex items-center space-x-1.5 truncate mr-1.5 min-w-0">
-                          <span class="text-[8.5px] font-mono font-bold text-blue-400 shrink-0">AO</span>
-                          {#if match.vr2}
-                            <span class="text-[7px] font-mono font-bold px-0.5 bg-amber-500/20 text-amber-300 rounded shrink-0">VR</span>
-                          {/if}
-                          <span class="truncate block font-medium">
-                            {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
-                          </span>
-                          {#if match.atlet2_kontingen}
-                            <span class="text-[8.5px] text-zinc-400 truncate shrink-0">
-                              ({match.atlet2_kontingen})
-                            </span>
-                          {/if}
-                        </div>
-                        <span class="font-mono text-[11px] font-bold shrink-0">{match.score2 || '0'}</span>
-                      </div>
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/if}
         </div>
       </div>
     {/if}
