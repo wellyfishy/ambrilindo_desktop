@@ -737,12 +737,19 @@
   @media print {
     @page {
       size: A4 landscape;
-      margin: 6mm 8mm;
+      margin: 4mm 6mm;
     }
-    :global(body) {
+    :global(html), :global(body) {
       background: #ffffff !important;
       background-color: #ffffff !important;
       color: #000000 !important;
+      width: 285mm !important;
+      max-width: 285mm !important;
+      height: 198mm !important;
+      max-height: 198mm !important;
+      overflow: hidden !important;
+      margin: 0 !important;
+      padding: 0 !important;
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
     }
@@ -753,38 +760,74 @@
       background: #ffffff !important;
       background-color: #ffffff !important;
       color: #000000 !important;
+      width: 285mm !important;
+      max-width: 285mm !important;
+      height: 198mm !important;
+      max-height: 198mm !important;
       padding: 0 !important;
       margin: 0 !important;
-      overflow: visible !important;
-      width: 100% !important;
-      height: auto !important;
+      overflow: hidden !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+      page-break-after: avoid !important;
+      break-after: avoid !important;
+    }
+    .bracket-banner {
+      border-bottom: 1.5px solid #0f172a !important;
+      padding-top: 0 !important;
+      padding-bottom: 2px !important;
+      margin-bottom: 3px !important;
+      height: 38px !important;
+      box-sizing: border-box !important;
+    }
+    .bracket-banner img {
+      height: 26px !important;
+      max-height: 26px !important;
+      width: auto !important;
+    }
+    .bracket-banner h1 {
+      font-size: 13px !important;
+      line-height: 1.15 !important;
+      color: #020617 !important;
+    }
+    .bracket-banner p,
+    .bracket-banner span {
+      font-size: 8.5px !important;
+      color: #334155 !important;
     }
     .bracket-viewport {
       background: #ffffff !important;
       background-color: #ffffff !important;
       border: none !important;
-      overflow: visible !important;
+      overflow: hidden !important;
       padding: 0 !important;
       margin: 0 !important;
-      width: 100% !important;
-      height: auto !important;
+      width: 285mm !important;
+      max-width: 285mm !important;
+      height: 184mm !important;
+      max-height: 184mm !important;
     }
     .zoom-container {
       width: 100% !important;
-      height: auto !important;
+      height: 100% !important;
       min-width: 0 !important;
       min-height: 0 !important;
       background: #ffffff !important;
-      overflow: visible !important;
+      overflow: hidden !important;
+      display: block !important;
     }
     .bracket-outer {
       position: relative !important;
-      transform: scale(0.92) !important;
+      transform: scale(0.97, 0.745) !important;
       transform-origin: top left !important;
-      width: 1120px !important;
-      height: 920px !important;
+      width: 1100px !important;
+      height: 924px !important;
       background: #ffffff !important;
-      overflow: visible !important;
+      overflow: hidden !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+      page-break-after: avoid !important;
+      break-after: avoid !important;
     }
     .bracket-svg {
       position: absolute !important;
@@ -803,18 +846,6 @@
       z-index: 2 !important;
     }
 
-    /* Print Header Banner */
-    .bracket-banner {
-      border-bottom: 2px solid #0f172a !important;
-    }
-    .bracket-banner h1 {
-      color: #020617 !important;
-    }
-    .bracket-banner p,
-    .bracket-banner span {
-      color: #334155 !important;
-    }
-
     /* Print Column Headers */
     .col-header-badge {
       background: #0f172a !important;
@@ -826,7 +857,10 @@
       color: #020617 !important;
     }
     .col-header-line {
-      border-bottom: 2px solid #0f172a !important;
+      height: 28px !important;
+      padding-bottom: 2px !important;
+      margin-bottom: 2px !important;
+      border-bottom: 1.5px solid #0f172a !important;
     }
 
     /* Print Match Cards */
@@ -841,6 +875,8 @@
       background-color: #f1f5f9 !important;
       border-bottom: 1px solid #cbd5e1 !important;
       color: #020617 !important;
+      padding: 1.5px 6px !important;
+      font-size: 8.5px !important;
     }
     .card-header-bar span {
       color: #020617 !important;
@@ -854,18 +890,29 @@
       background: #ffffff !important;
       background-color: #ffffff !important;
       border-color: #e2e8f0 !important;
+      min-height: 24px !important;
+      padding: 1.5px 6px !important;
     }
     .player-name-text {
       color: #020617 !important;
+      font-size: 9.5px !important;
+      line-height: 1.15 !important;
     }
     .player-sub-text {
       color: #475569 !important;
+      font-size: 8px !important;
+      line-height: 1 !important;
+      margin-top: 0px !important;
     }
     .score-box {
       background: #f8fafc !important;
       background-color: #f8fafc !important;
       border: 1px solid #cbd5e1 !important;
       color: #020617 !important;
+      min-width: 20px !important;
+      height: 18px !important;
+      font-size: 9.5px !important;
+      padding: 0 2px !important;
     }
 
     /* Winner Row Highlighting in Print */
@@ -891,11 +938,15 @@
       background: #dc2626 !important;
       background-color: #dc2626 !important;
       color: #ffffff !important;
+      font-size: 8px !important;
+      padding: 1px 3px !important;
     }
     .side-pill-ao {
       background: #2563eb !important;
       background-color: #2563eb !important;
       color: #ffffff !important;
+      font-size: 8px !important;
+      padding: 1px 3px !important;
     }
 
     /* Empty Slots */
@@ -912,12 +963,18 @@
       background-color: #fee2e2 !important;
       color: #991b1b !important;
       border: 1px solid #f87171 !important;
+      font-size: 7.5px !important;
+      padding: 0px 3px !important;
+      margin-top: 0px !important;
     }
     .kata-badge-ao {
       background: #dbeafe !important;
       background-color: #dbeafe !important;
       color: #1e40af !important;
       border: 1px solid #60a5fa !important;
+      font-size: 7.5px !important;
+      padding: 0px 3px !important;
+      margin-top: 0px !important;
     }
 
     /* Connector SVG Lines in Print */
@@ -938,6 +995,7 @@
       background-color: #fef3c7 !important;
       border-bottom: 1px solid #fde68a !important;
       color: #78350f !important;
+      padding: 2px 6px !important;
     }
     .podium-header span {
       color: #78350f !important;
@@ -946,12 +1004,17 @@
       background: #ffffff !important;
       background-color: #ffffff !important;
       border-bottom: 1px solid #f1f5f9 !important;
+      padding: 1.5px 6px !important;
     }
     .podium-name {
       color: #020617 !important;
+      font-size: 9.5px !important;
+      line-height: 1.15 !important;
     }
     .podium-sub {
       color: #475569 !important;
+      font-size: 8px !important;
+      line-height: 1 !important;
     }
   }
 </style>
