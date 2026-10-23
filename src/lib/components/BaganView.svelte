@@ -14,8 +14,67 @@
   let matches = $state<DetailBaganItem[]>([]);
   let isLoading = $state(true);
 
+  // Zoom & Viewport adaptivity state
+  let zoom = $state(1.0);
+  let userHasZoomed = $state(false);
+  let contentWidth = $state(1024);
+  let contentHeight = $state(580);
+
+  let viewportEl = $state<HTMLDivElement | null>(null);
   let svgEl = $state<SVGSVGElement | null>(null);
   let gridEl = $state<HTMLDivElement | null>(null);
+
+  function updateContentDimensions() {
+    if (gridEl) {
+      contentWidth = Math.max(980, gridEl.scrollWidth);
+      contentHeight = Math.max(540, gridEl.scrollHeight);
+    }
+  }
+
+  function zoomIn() {
+    userHasZoomed = true;
+    zoom = Math.min(2.5, Math.round((zoom + 0.15) * 100) / 100);
+    tick().then(() => requestAnimationFrame(drawConnectors));
+  }
+
+  function zoomOut() {
+    userHasZoomed = true;
+    zoom = Math.max(0.5, Math.round((zoom - 0.15) * 100) / 100);
+    tick().then(() => requestAnimationFrame(drawConnectors));
+  }
+
+  function resetZoom() {
+    userHasZoomed = true;
+    zoom = 1.0;
+    tick().then(() => requestAnimationFrame(drawConnectors));
+  }
+
+  function fitToScreen() {
+    if (!viewportEl || !gridEl) return;
+    updateContentDimensions();
+    const vpWidth = viewportEl.clientWidth - 40;
+    const vpHeight = viewportEl.clientHeight - 40;
+
+    if (vpWidth <= 0 || vpHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) return;
+
+    const scaleX = vpWidth / contentWidth;
+    const scaleY = vpHeight / contentHeight;
+    const optimalScale = Math.min(scaleX, scaleY);
+
+    zoom = Math.max(0.65, Math.min(2.0, Math.round(optimalScale * 20) / 20));
+    tick().then(() => requestAnimationFrame(drawConnectors));
+  }
+
+  function handleWheel(e: WheelEvent) {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      if (e.deltaY < 0) {
+        zoomIn();
+      } else {
+        zoomOut();
+      }
+    }
+  }
 
   async function loadBracketData() {
     isLoading = true;
@@ -28,7 +87,13 @@
     } finally {
       isLoading = false;
       await tick();
-      requestAnimationFrame(drawConnectors);
+      requestAnimationFrame(() => {
+        updateContentDimensions();
+        drawConnectors();
+        if (!userHasZoomed) {
+          fitToScreen();
+        }
+      });
     }
   }
 
@@ -109,9 +174,15 @@
     svgEl.innerHTML = "";
 
     const outer = svgEl.getBoundingClientRect();
-    if (outer.width > 0 && outer.height > 0) {
-      svgEl.setAttribute("width", Math.round(outer.width).toString());
-      svgEl.setAttribute("height", Math.round(outer.height).toString());
+    const z = zoom || 1;
+
+    const localWidth = Math.round(outer.width / z);
+    const localHeight = Math.round(outer.height / z);
+
+    if (localWidth > 0 && localHeight > 0) {
+      svgEl.setAttribute("width", localWidth.toString());
+      svgEl.setAttribute("height", localHeight.toString());
+      svgEl.setAttribute("viewBox", `0 0 ${localWidth} ${localHeight}`);
     }
 
     const cols = Array.from(gridEl.querySelectorAll<HTMLElement>(".round-col-elim"));
@@ -141,17 +212,17 @@
         const cardB = slotB?.querySelector<HTMLElement>(".match-card");
 
         const rOut = cardOut.getBoundingClientRect();
-        const yTo = Math.round(rOut.top + rOut.height / 2 - outer.top);
-        const xTo = Math.round(rOut.left - outer.left);
+        const yTo = Math.round((rOut.top + rOut.height / 2 - outer.top) / z);
+        const xTo = Math.round((rOut.left - outer.left) / z);
 
         if (cardA && cardB) {
           const rA = cardA.getBoundingClientRect();
           const rB = cardB.getBoundingClientRect();
 
-          const yA = Math.round(rA.top + rA.height / 2 - outer.top);
-          const yB = Math.round(rB.top + rB.height / 2 - outer.top);
-          const xFromA = Math.round(rA.right - outer.left);
-          const xFromB = Math.round(rB.right - outer.left);
+          const yA = Math.round((rA.top + rA.height / 2 - outer.top) / z);
+          const yB = Math.round((rB.top + rB.height / 2 - outer.top) / z);
+          const xFromA = Math.round((rA.right - outer.left) / z);
+          const xFromB = Math.round((rB.right - outer.left) / z);
 
           const maxXFrom = Math.max(xFromA, xFromB);
           const xMid = Math.round(maxXFrom + (xTo - maxXFrom) / 2);
@@ -171,8 +242,8 @@
           seg(svgEl, xMid, yTo, xTo, yTo, strokeColor, strokeWidth);
         } else if (cardA) {
           const rA = cardA.getBoundingClientRect();
-          const yA = Math.round(rA.top + rA.height / 2 - outer.top);
-          const xFrom = Math.round(rA.right - outer.left);
+          const yA = Math.round((rA.top + rA.height / 2 - outer.top) / z);
+          const xFrom = Math.round((rA.right - outer.left) / z);
           const xMid = Math.round(xFrom + (xTo - xFrom) / 2);
 
           seg(svgEl, xFrom, yA, xMid, yA, strokeColor, strokeWidth);
@@ -182,8 +253,8 @@
           seg(svgEl, xMid, yTo, xTo, yTo, strokeColor, strokeWidth);
         } else if (cardB) {
           const rB = cardB.getBoundingClientRect();
-          const yB = Math.round(rB.top + rB.height / 2 - outer.top);
-          const xFrom = Math.round(rB.right - outer.left);
+          const yB = Math.round((rB.top + rB.height / 2 - outer.top) / z);
+          const xFrom = Math.round((rB.right - outer.left) / z);
           const xMid = Math.round(xFrom + (xTo - xFrom) / 2);
 
           seg(svgEl, xFrom, yB, xMid, yB, strokeColor, strokeWidth);
@@ -205,6 +276,7 @@
   $effect(() => {
     if (matches.length > 0) {
       tick().then(() => {
+        updateContentDimensions();
         requestAnimationFrame(drawConnectors);
       });
     }
@@ -216,18 +288,37 @@
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver(() => {
+        updateContentDimensions();
         requestAnimationFrame(drawConnectors);
       });
       if (gridEl) ro.observe(gridEl);
+      if (viewportEl) ro.observe(viewportEl);
     }
 
     const handleWindowResize = () => {
+      updateContentDimensions();
       requestAnimationFrame(drawConnectors);
     };
     window.addEventListener("resize", handleWindowResize);
 
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if ((e.ctrlKey || e.metaKey) && (e.key === "+" || e.key === "=")) {
+        e.preventDefault();
+        zoomIn();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "-" || e.key === "_")) {
+        e.preventDefault();
+        zoomOut();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "0") {
+        e.preventDefault();
+        resetZoom();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+
     if (typeof document !== "undefined" && document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => {
+        updateContentDimensions();
         requestAnimationFrame(drawConnectors);
       });
     }
@@ -235,6 +326,7 @@
     return () => {
       ro?.disconnect();
       window.removeEventListener("resize", handleWindowResize);
+      window.removeEventListener("keydown", handleKeyDown);
     };
   });
 </script>
@@ -250,6 +342,56 @@
     </div>
 
     <div class="flex items-center space-x-2">
+      <!-- Zoom & Adaptive Viewport Toolbar -->
+      <div class="flex items-center bg-[#181a20] border border-white/[0.08] rounded-xl p-0.5 text-xs font-mono shadow-sm">
+        <button
+          type="button"
+          onclick={zoomOut}
+          disabled={zoom <= 0.5}
+          class="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/[0.08] rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent active:scale-95"
+          title="Perkecil Tampilan (Ctrl + -)"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M20 12H4" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          onclick={resetZoom}
+          class="px-2 h-7 flex items-center justify-center font-bold text-zinc-300 hover:text-white hover:bg-white/[0.08] rounded-lg transition min-w-[50px] text-[11px]"
+          title="Klik untuk reset ke 100% (Ctrl + 0)"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+
+        <button
+          type="button"
+          onclick={zoomIn}
+          disabled={zoom >= 2.5}
+          class="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/[0.08] rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent active:scale-95"
+          title="Perbesar Tampilan (Ctrl + +)"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+
+        <div class="h-4 w-px bg-white/[0.1] mx-0.5"></div>
+
+        <button
+          type="button"
+          onclick={fitToScreen}
+          class="px-2.5 h-7 flex items-center space-x-1 font-semibold text-amber-400 hover:text-amber-300 hover:bg-amber-400/10 rounded-lg transition active:scale-95"
+          title="Sesuaikan skala otomatis dengan layar"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+          </svg>
+          <span class="text-[11px] font-sans">Sesuaikan</span>
+        </button>
+      </div>
+
       <button
         onclick={() => window.print()}
         class="px-3 py-1.5 bg-white/[0.04] hover:bg-white/[0.08] text-xs font-medium text-zinc-300 border border-white/[0.08] rounded-xl transition flex items-center space-x-1.5 shadow-sm active:scale-95"
@@ -284,7 +426,11 @@
   </div>
 
   <!-- Interactive Bracket Tree Viewport (Horizontally & vertically scrollable) -->
-  <div class="flex-1 overflow-x-auto overflow-y-auto py-3 px-1 scrollbar-thin">
+  <div
+    bind:this={viewportEl}
+    onwheel={handleWheel}
+    class="flex-1 overflow-x-auto overflow-y-auto py-3 px-2 scrollbar-thin relative"
+  >
     {#if isLoading}
       <div class="h-64 flex items-center justify-center text-sm text-zinc-500">
         Memuat struktur bagan...
@@ -295,12 +441,20 @@
         <p class="text-xs text-zinc-500 mt-1 font-normal">Pengundian nomor tanding belum dilakukan.</p>
       </div>
     {:else}
-      <div class="bracket-outer relative min-w-max flex pb-4">
-        <!-- Dynamic SVG Connector Canvas -->
-        <svg bind:this={svgEl} class="absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible"></svg>
+      <!-- Scaled Scroll Wrapper: bounds scrollable area to scaled content size -->
+      <div
+        class="zoom-container relative min-w-full min-h-full flex items-start"
+        style="width: {contentWidth * zoom}px; height: {contentHeight * zoom}px;"
+      >
+        <div
+          class="bracket-outer relative flex origin-top-left transition-transform duration-100 ease-out"
+          style="transform: scale({zoom}); transform-origin: top left; width: {contentWidth}px; height: {contentHeight}px;"
+        >
+          <!-- Dynamic SVG Connector Canvas -->
+          <svg bind:this={svgEl} class="absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible"></svg>
 
-        <!-- Bracket Columns Container -->
-        <div bind:this={gridEl} class="bracket-grid flex items-start gap-8 relative z-10 min-w-max">
+          <!-- Bracket Columns Container -->
+          <div bind:this={gridEl} class="bracket-grid flex items-start gap-8 relative z-10 min-w-max pb-6 pr-6">
           {#each elimRounds as [roundNum, roundMatches]}
             {@const slotCount = getSlotCountForRound(roundNum)}
             {@const slotHeightClass = getSlotHeightClass(roundNum)}
@@ -385,6 +539,7 @@
               </div>
             </div>
           {/each}
+          </div>
         </div>
       </div>
     {/if}
@@ -414,6 +569,16 @@
       color: #000000 !important;
       padding: 0 !important;
       overflow: visible !important;
+      width: 100% !important;
+      height: auto !important;
+    }
+    .zoom-container {
+      width: 100% !important;
+      height: auto !important;
+      min-width: 0 !important;
+    }
+    .bracket-outer {
+      transform: none !important;
       width: 100% !important;
       height: auto !important;
     }
