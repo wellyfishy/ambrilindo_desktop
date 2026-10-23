@@ -102,7 +102,7 @@
 
 <aside
   style="width: {sidebarWidth}px;"
-  class="bg-[#111216] flex flex-col justify-between shrink-0 select-none z-10 border-r border-white/[0.08] font-sans relative"
+  class="no-print bg-[#111216] flex flex-col justify-between shrink-0 select-none z-10 border-r border-white/[0.08] font-sans relative"
 >
   <!-- Top Tournament Event Header -->
   <div class="h-14 border-b border-white/[0.08] px-4 flex items-center justify-between shadow-sm">

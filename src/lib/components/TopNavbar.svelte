@@ -8,7 +8,7 @@
   let { activeChannel }: Props = $props();
 </script>
 
-<header class="h-14 bg-[#111216] border-b border-white/[0.08] px-5 flex items-center justify-between shadow-sm select-none shrink-0 z-10 font-sans">
+<header class="no-print h-14 bg-[#111216] border-b border-white/[0.08] px-5 flex items-center justify-between shadow-sm select-none shrink-0 z-10 font-sans">
   <!-- Left: Channel Title & Description -->
   <div class="flex items-center space-x-3 truncate">
     <div class="flex items-center space-x-2 font-bold text-white text-sm truncate">

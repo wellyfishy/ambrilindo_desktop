@@ -49,19 +49,16 @@
   function zoomIn() {
     userHasZoomed = true;
     zoom = Math.min(2.5, Math.round((zoom + 0.15) * 100) / 100);
-    tick().then(() => requestAnimationFrame(drawConnectors));
   }
 
   function zoomOut() {
     userHasZoomed = true;
     zoom = Math.max(0.5, Math.round((zoom - 0.15) * 100) / 100);
-    tick().then(() => requestAnimationFrame(drawConnectors));
   }
 
   function resetZoom() {
     userHasZoomed = true;
     zoom = 1.0;
-    tick().then(() => requestAnimationFrame(drawConnectors));
   }
 
   function fitToScreen() {
@@ -77,7 +74,6 @@
     const optimalScale = Math.min(scaleX, scaleY);
 
     zoom = Math.max(0.6, Math.min(1.8, Math.round(optimalScale * 20) / 20));
-    tick().then(() => requestAnimationFrame(drawConnectors));
   }
 
   function handleWheel(e: WheelEvent) {
@@ -104,7 +100,6 @@
       await tick();
       requestAnimationFrame(() => {
         updateContentDimensions();
-        drawConnectors();
         if (!userHasZoomed) {
           fitToScreen();
         }
@@ -238,112 +233,46 @@
     return { j1, j2, j3a, j3b };
   });
 
-  function seg(svg: SVGSVGElement, x1: number, y1: number, x2: number, y2: number, color: string, width: string) {
-    const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    l.setAttribute("x1", x1.toString());
-    l.setAttribute("y1", y1.toString());
-    l.setAttribute("x2", x2.toString());
-    l.setAttribute("y2", y2.toString());
-    l.setAttribute("class", "connector-line");
-    l.setAttribute("stroke", color);
-    l.setAttribute("stroke-width", width);
-    l.setAttribute("stroke-linecap", "round");
-    svg.appendChild(l);
+  interface ConnectorLine {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
   }
 
-  function drawConnectors() {
-    if (!svgEl || !gridEl) return;
-    svgEl.innerHTML = "";
+  // Exact mathematical bracket connectors (zero DOM measurement jitter, 100% print/screen alignment)
+  let connectorLines = $derived.by(() => {
+    const list: ConnectorLine[] = [];
+    if (elimRounds.length < 2) return list;
 
-    const outer = svgEl.getBoundingClientRect();
-    const z = zoom || 1;
+    const addFork = (xFrom: number, xTo: number, yA: number, yB: number, yOut: number) => {
+      const xMid = Math.round((xFrom + xTo) / 2);
+      list.push({ x1: xFrom, y1: yA, x2: xMid, y2: yA });
+      list.push({ x1: xFrom, y1: yB, x2: xMid, y2: yB });
+      list.push({ x1: xMid, y1: yA, x2: xMid, y2: yB });
+      list.push({ x1: xMid, y1: yOut, x2: xTo, y2: yOut });
+    };
 
-    const localWidth = Math.round(outer.width / z);
-    const localHeight = Math.round(outer.height / z);
+    // Column width = 246px, gap = 36px (gap-9)
+    // Round 1 (x: 0 -> 246) into Round 2 (x: 282 -> 528)
+    addFork(246, 282, 98, 206, 152);
+    addFork(246, 282, 314, 422, 368);
+    addFork(246, 282, 530, 638, 584);
+    addFork(246, 282, 746, 854, 800);
 
-    if (localWidth > 0 && localHeight > 0) {
-      svgEl.setAttribute("width", localWidth.toString());
-      svgEl.setAttribute("height", localHeight.toString());
-      svgEl.setAttribute("viewBox", `0 0 ${localWidth} ${localHeight}`);
+    if (elimRounds.length >= 3) {
+      // Round 2 (x: 282 -> 528) into Round 3 (x: 564 -> 810)
+      addFork(528, 564, 152, 368, 260);
+      addFork(528, 564, 584, 800, 692);
     }
 
-    const cols = Array.from(gridEl.querySelectorAll<HTMLElement>(".round-col-elim"));
-    if (cols.length < 2) return;
-
-    // Line color adapts to active theme on screen, overridden to solid ink in print
-    const strokeColor = isDarkMode ? "rgba(255, 255, 255, 0.42)" : "#475569";
-    const strokeWidth = "1.5";
-
-    for (let ri = 0; ri < cols.length - 1; ri++) {
-      const fromCol = cols[ri];
-      const toCol = cols[ri + 1];
-
-      // Match each slot in target round
-      const toSlots = Array.from(toCol.querySelectorAll<HTMLElement>("[data-slot]"));
-
-      for (let i = 0; i < toSlots.length; i++) {
-        const slotOut = toSlots[i];
-        const cardOut = slotOut.querySelector<HTMLElement>(".match-card");
-        if (!cardOut) continue;
-
-        // Slot i (0-based) is fed by slots (2*i + 1) and (2*i + 2) in previous round
-        const slotA = fromCol.querySelector<HTMLElement>(`[data-slot="${i * 2 + 1}"]`);
-        const slotB = fromCol.querySelector<HTMLElement>(`[data-slot="${i * 2 + 2}"]`);
-
-        const cardA = slotA?.querySelector<HTMLElement>(".match-card");
-        const cardB = slotB?.querySelector<HTMLElement>(".match-card");
-
-        const rOut = cardOut.getBoundingClientRect();
-        const yTo = Math.round((rOut.top + rOut.height / 2 - outer.top) / z);
-        const xTo = Math.round((rOut.left - outer.left) / z);
-
-        if (cardA && cardB) {
-          const rA = cardA.getBoundingClientRect();
-          const rB = cardB.getBoundingClientRect();
-
-          const yA = Math.round((rA.top + rA.height / 2 - outer.top) / z);
-          const yB = Math.round((rB.top + rB.height / 2 - outer.top) / z);
-          const xFromA = Math.round((rA.right - outer.left) / z);
-          const xFromB = Math.round((rB.right - outer.left) / z);
-
-          const maxXFrom = Math.max(xFromA, xFromB);
-          const xMid = Math.round(maxXFrom + (xTo - maxXFrom) / 2);
-          const yMid = Math.round((yA + yB) / 2);
-
-          // 1. Horizontal from upper card A to xMid
-          seg(svgEl, xFromA, yA, xMid, yA, strokeColor, strokeWidth);
-          // 2. Horizontal from lower card B to xMid
-          seg(svgEl, xFromB, yB, xMid, yB, strokeColor, strokeWidth);
-          // 3. Vertical crossbar between yA and yB at xMid
-          seg(svgEl, xMid, yA, xMid, yB, strokeColor, strokeWidth);
-          // 4. Center horizontal branch into target card Out
-          seg(svgEl, xMid, yTo, xTo, yTo, strokeColor, strokeWidth);
-        } else if (cardA) {
-          const rA = cardA.getBoundingClientRect();
-          const yA = Math.round((rA.top + rA.height / 2 - outer.top) / z);
-          const xFrom = Math.round((rA.right - outer.left) / z);
-          const xMid = Math.round(xFrom + (xTo - xFrom) / 2);
-
-          seg(svgEl, xFrom, yA, xMid, yA, strokeColor, strokeWidth);
-          if (yA !== yTo) {
-            seg(svgEl, xMid, yA, xMid, yTo, strokeColor, strokeWidth);
-          }
-          seg(svgEl, xMid, yTo, xTo, yTo, strokeColor, strokeWidth);
-        } else if (cardB) {
-          const rB = cardB.getBoundingClientRect();
-          const yB = Math.round((rB.top + rB.height / 2 - outer.top) / z);
-          const xFrom = Math.round((rB.right - outer.left) / z);
-          const xMid = Math.round(xFrom + (xTo - xFrom) / 2);
-
-          seg(svgEl, xFrom, yB, xMid, yB, strokeColor, strokeWidth);
-          if (yB !== yTo) {
-            seg(svgEl, xMid, yB, xMid, yTo, strokeColor, strokeWidth);
-          }
-          seg(svgEl, xMid, yTo, xTo, yTo, strokeColor, strokeWidth);
-        }
-      }
+    if (elimRounds.length >= 4) {
+      // Round 3 (x: 564 -> 810) into Round 4 (x: 846 -> 1092)
+      addFork(810, 846, 260, 692, 476);
     }
-  }
+
+    return list;
+  });
 
   $effect(() => {
     if (baganId) {
@@ -355,7 +284,6 @@
     if (matches.length > 0) {
       tick().then(() => {
         updateContentDimensions();
-        requestAnimationFrame(drawConnectors);
       });
     }
   });
@@ -367,7 +295,6 @@
     if (typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver(() => {
         updateContentDimensions();
-        requestAnimationFrame(drawConnectors);
       });
       if (gridEl) ro.observe(gridEl);
       if (viewportEl) ro.observe(viewportEl);
@@ -375,7 +302,6 @@
 
     const handleWindowResize = () => {
       updateContentDimensions();
-      requestAnimationFrame(drawConnectors);
     };
     window.addEventListener("resize", handleWindowResize);
 
@@ -397,7 +323,6 @@
     if (typeof document !== "undefined" && document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => {
         updateContentDimensions();
-        requestAnimationFrame(drawConnectors);
       });
     }
 
@@ -429,7 +354,6 @@
         type="button"
         onclick={() => {
           isDarkMode = !isDarkMode;
-          tick().then(() => requestAnimationFrame(drawConnectors));
         }}
         class="px-2.5 h-7 flex items-center space-x-1.5 font-medium {isDarkMode ? 'text-zinc-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.1]' : 'text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border-slate-300'} rounded-lg transition text-xs shadow-xs active:scale-95 border"
         title={isDarkMode ? "Ganti ke mode terang (preview cetak)" : "Ganti ke mode gelap"}
@@ -557,7 +481,7 @@
   <div
     bind:this={viewportEl}
     onwheel={handleWheel}
-    class="flex-1 overflow-x-auto overflow-y-auto py-2 px-1 scrollbar-thin relative {isDarkMode ? 'bg-[#101216] border-white/[0.06]' : 'bg-white/70 border-slate-200/80'} rounded-xl border"
+    class="bracket-viewport flex-1 overflow-x-auto overflow-y-auto py-2 px-1 scrollbar-thin relative {isDarkMode ? 'bg-[#101216] border-white/[0.06]' : 'bg-white/70 border-slate-200/80'} rounded-xl border"
   >
     {#if isLoading}
       <div class="h-64 flex items-center justify-center text-sm {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} font-medium">
@@ -579,7 +503,24 @@
           style="transform: scale({zoom}); transform-origin: top left; width: {contentWidth}px; height: {contentHeight}px;"
         >
           <!-- Dynamic SVG Connector Canvas -->
-          <svg bind:this={svgEl} class="absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible"></svg>
+          <svg
+            bind:this={svgEl}
+            class="bracket-svg absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible"
+            viewBox="0 0 1100 920"
+          >
+            {#each connectorLines as line}
+              <line
+                x1={line.x1}
+                y1={line.y1}
+                x2={line.x2}
+                y2={line.y2}
+                class="connector-line"
+                stroke={isDarkMode ? "rgba(255, 255, 255, 0.42)" : "#475569"}
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+            {/each}
+          </svg>
 
           <!-- Bracket Columns Grid Container -->
           <div bind:this={gridEl} class="bracket-grid flex items-start gap-9 relative z-10 min-w-max pb-4 pr-4">
@@ -706,7 +647,7 @@
                           </div>
                         </div>
                       {:else}
-                        <div class="w-full border border-dashed {isDarkMode ? 'border-white/[0.08] text-zinc-600 bg-white/[0.01]' : 'border-slate-300 text-slate-400 bg-white/40'} rounded-md h-12 flex items-center justify-center text-[9px] font-mono">
+                        <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-white/[0.08] text-zinc-600 bg-white/[0.01]' : 'border-slate-300 text-slate-400 bg-white/40'} rounded-md h-12 flex items-center justify-center text-[9px] font-mono">
                           Kosong
                         </div>
                       {/if}
@@ -800,6 +741,7 @@
     }
     :global(body) {
       background: #ffffff !important;
+      background-color: #ffffff !important;
       color: #000000 !important;
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
@@ -809,9 +751,21 @@
     }
     .print-sheet {
       background: #ffffff !important;
+      background-color: #ffffff !important;
       color: #000000 !important;
       padding: 0 !important;
+      margin: 0 !important;
       overflow: visible !important;
+      width: 100% !important;
+      height: auto !important;
+    }
+    .bracket-viewport {
+      background: #ffffff !important;
+      background-color: #ffffff !important;
+      border: none !important;
+      overflow: visible !important;
+      padding: 0 !important;
+      margin: 0 !important;
       width: 100% !important;
       height: auto !important;
     }
@@ -819,23 +773,39 @@
       width: 100% !important;
       height: auto !important;
       min-width: 0 !important;
+      min-height: 0 !important;
+      background: #ffffff !important;
+      overflow: visible !important;
     }
     .bracket-outer {
+      position: relative !important;
       transform: scale(0.92) !important;
       transform-origin: top left !important;
+      width: 1120px !important;
+      height: 920px !important;
+      background: #ffffff !important;
+      overflow: visible !important;
+    }
+    .bracket-svg {
+      position: absolute !important;
+      top: 0 !important;
+      left: 0 !important;
       width: 100% !important;
-      height: auto !important;
+      height: 100% !important;
+      pointer-events: none !important;
+      overflow: visible !important;
+      display: block !important;
+      z-index: 1 !important;
     }
     .bracket-grid {
-      gap: 24px !important;
-    }
-    .round-col {
-      width: 236px !important;
+      position: relative !important;
+      background: transparent !important;
+      z-index: 2 !important;
     }
 
     /* Print Header Banner */
     .bracket-banner {
-      border-color: #0f172a !important;
+      border-bottom: 2px solid #0f172a !important;
     }
     .bracket-banner h1 {
       color: #020617 !important;
@@ -848,25 +818,28 @@
     /* Print Column Headers */
     .col-header-badge {
       background: #0f172a !important;
+      background-color: #0f172a !important;
       color: #ffffff !important;
-      border-color: #0f172a !important;
+      border: 1px solid #0f172a !important;
     }
     .col-header-title {
       color: #020617 !important;
     }
     .col-header-line {
-      border-color: #0f172a !important;
+      border-bottom: 2px solid #0f172a !important;
     }
 
     /* Print Match Cards */
     .match-card {
       background: #ffffff !important;
+      background-color: #ffffff !important;
       border: 1.5px solid #334155 !important;
       box-shadow: none !important;
     }
     .card-header-bar {
       background: #f1f5f9 !important;
-      border-color: #cbd5e1 !important;
+      background-color: #f1f5f9 !important;
+      border-bottom: 1px solid #cbd5e1 !important;
       color: #020617 !important;
     }
     .card-header-bar span {
@@ -879,6 +852,7 @@
     /* Player Rows */
     .player-row {
       background: #ffffff !important;
+      background-color: #ffffff !important;
       border-color: #e2e8f0 !important;
     }
     .player-name-text {
@@ -889,13 +863,15 @@
     }
     .score-box {
       background: #f8fafc !important;
-      border-color: #cbd5e1 !important;
+      background-color: #f8fafc !important;
+      border: 1px solid #cbd5e1 !important;
       color: #020617 !important;
     }
 
     /* Winner Row Highlighting in Print */
     .player-row-winner {
       background: #fef3c7 !important;
+      background-color: #fef3c7 !important;
       border-left: 4.5px solid #d97706 !important;
     }
     .player-row-winner .player-name-text {
@@ -904,6 +880,7 @@
     }
     .player-row-winner .score-box {
       background: #fde047 !important;
+      background-color: #fde047 !important;
       border: 2px solid #d97706 !important;
       color: #78350f !important;
       font-weight: 900 !important;
@@ -912,23 +889,35 @@
     /* Side Pills in Print */
     .side-pill-aka {
       background: #dc2626 !important;
+      background-color: #dc2626 !important;
       color: #ffffff !important;
     }
     .side-pill-ao {
       background: #2563eb !important;
+      background-color: #2563eb !important;
       color: #ffffff !important;
+    }
+
+    /* Empty Slots */
+    .empty-slot {
+      background: #ffffff !important;
+      background-color: #ffffff !important;
+      border: 1px dashed #cbd5e1 !important;
+      color: #94a3b8 !important;
     }
 
     /* Kata Badges in Print */
     .kata-badge-aka {
       background: #fee2e2 !important;
+      background-color: #fee2e2 !important;
       color: #991b1b !important;
-      border-color: #f87171 !important;
+      border: 1px solid #f87171 !important;
     }
     .kata-badge-ao {
       background: #dbeafe !important;
+      background-color: #dbeafe !important;
       color: #1e40af !important;
-      border-color: #60a5fa !important;
+      border: 1px solid #60a5fa !important;
     }
 
     /* Connector SVG Lines in Print */
@@ -940,12 +929,14 @@
     /* Hasil Juara Card in Print */
     .podium-card {
       background: #ffffff !important;
+      background-color: #ffffff !important;
       border: 1.5px solid #d97706 !important;
       box-shadow: none !important;
     }
     .podium-header {
       background: #fef3c7 !important;
-      border-color: #fde68a !important;
+      background-color: #fef3c7 !important;
+      border-bottom: 1px solid #fde68a !important;
       color: #78350f !important;
     }
     .podium-header span {
@@ -953,7 +944,8 @@
     }
     .podium-row {
       background: #ffffff !important;
-      border-color: #f1f5f9 !important;
+      background-color: #ffffff !important;
+      border-bottom: 1px solid #f1f5f9 !important;
     }
     .podium-name {
       color: #020617 !important;

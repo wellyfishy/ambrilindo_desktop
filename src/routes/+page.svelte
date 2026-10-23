@@ -322,7 +322,7 @@
   <title>Ambrilindo — {activeChannel.name}</title>
 </svelte:head>
 
-<div class="h-screen w-screen bg-[#0d0e12] text-zinc-200 flex overflow-hidden font-sans select-none">
+<div class="app-shell h-screen w-screen bg-[#0d0e12] text-zinc-200 flex overflow-hidden font-sans select-none">
   {#if appMode === "landing"}
     <!-- Mode Picker / Gateway Landing Screen -->
     <LandingGateway
@@ -366,12 +366,12 @@
     />
 
     <!-- 3. Channel Main Workspace -->
-    <div class="flex-1 flex flex-col min-w-0 bg-[#14161b] overflow-hidden">
+    <div class="workspace-column flex-1 flex flex-col min-w-0 bg-[#14161b] overflow-hidden">
       <!-- Top Navbar (Channel Header) -->
       <TopNavbar {activeChannel} />
 
       <!-- Main Workspace Views -->
-      <main class="flex-1 overflow-hidden relative bg-[#14161b]">
+      <main class="main-content flex-1 overflow-hidden relative bg-[#14161b]">
         {#if activeChannel.type === "tatami"}
           <!-- Tatami CRUD Manager View -->
           <TatamiManagerView

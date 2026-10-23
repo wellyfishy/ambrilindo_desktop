@@ -27,7 +27,7 @@
   }
 </script>
 
-<nav class="w-[72px] bg-[#0d0e12] flex flex-col items-center py-3 select-none shrink-0 z-20 border-r border-white/[0.08]">
+<nav class="no-print w-[72px] bg-[#0d0e12] flex flex-col items-center py-3 select-none shrink-0 z-20 border-r border-white/[0.08]">
   <!-- Top Home / Gateway Switcher Icon -->
   <div class="relative group flex items-center justify-center w-full my-1">
     <div
