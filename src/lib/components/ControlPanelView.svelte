@@ -28,8 +28,19 @@
     onSave,
   }: Props = $props();
 
-  // Automatic Discipline Detection (No manual switching required)
+  // Automatic Discipline Detection (No manual switching required, with manual override for festival)
+  let isFestival = $derived(match.id === 0 || match.kode === "000" || baganInfo?.kode === "000");
+  let manualDiscipline = $state<"kumite" | "kata" | null>(null);
+  let activeTatami = $state<number>(1);
+
+  $effect(() => {
+    activeTatami = tatamiNumber;
+  });
+
   let isKata = $derived.by(() => {
+    if (manualDiscipline === "kata") return true;
+    if (manualDiscipline === "kumite") return false;
+
     // 1. Check tipe_tanding (Ambrilindo standard: '1' is Kata, '2' is Kumite)
     const tt = String(baganInfo?.tipe_tanding || "").trim().toLowerCase();
     if (tt === "1" || tt === "kata") return true;
@@ -520,7 +531,7 @@
   // ==================== REALTIME LOCAL IPC BROADCAST ====================
   function broadcastLiveState() {
     const payload = {
-      tatami: tatamiNumber,
+      tatami: activeTatami,
       matchId: match.id,
       category: baganName,
       round: match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`,
@@ -643,7 +654,7 @@
     // Listen for requests from newly opened scoreboard windows
     let unlistenRequest: (() => void) | undefined;
     listen("request_tatami_state", (event: any) => {
-      if (!event.payload?.tatami || event.payload?.tatami === tatamiNumber) {
+      if (!event.payload?.tatami || event.payload?.tatami === activeTatami) {
         broadcastLiveState();
       }
     }).then((unsub) => {
@@ -717,11 +728,30 @@
       </button>
     </div>
 
-    <!-- Match Identity Badge (Discipline locked automatically) -->
+    <!-- Match Identity Badge (Discipline locked automatically, toggleable for festival) -->
     <div class="flex items-center space-x-2 text-xs font-mono">
-      <span class="px-2.5 py-0.5 rounded font-black uppercase {isKata ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'}">
-        {isKata ? "KATA" : "KUMITE"}
-      </span>
+      {#if isFestival}
+        <div class="flex items-center bg-[#111216] border border-white/10 rounded-lg p-0.5">
+          <button
+            type="button"
+            onclick={() => { manualDiscipline = "kumite"; broadcastLiveState(); }}
+            class="px-2 py-0.5 rounded text-[10px] font-bold transition {!isKata ? 'bg-blue-600 text-white shadow-xs' : 'text-zinc-400 hover:text-white'}"
+          >
+            KUMITE
+          </button>
+          <button
+            type="button"
+            onclick={() => { manualDiscipline = "kata"; broadcastLiveState(); }}
+            class="px-2 py-0.5 rounded text-[10px] font-bold transition {isKata ? 'bg-amber-500 text-slate-950 shadow-xs' : 'text-zinc-400 hover:text-white'}"
+          >
+            KATA
+          </button>
+        </div>
+      {:else}
+        <span class="px-2.5 py-0.5 rounded font-black uppercase {isKata ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'}">
+          {isKata ? "KATA" : "KUMITE"}
+        </span>
+      {/if}
       <span class="text-zinc-200 font-bold uppercase truncate max-w-[320px]">
         {baganName || "Kategori Turnamen"}
       </span>
@@ -732,7 +762,22 @@
         {match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`}
       </span>
       <span class="text-zinc-500">•</span>
-      <span class="text-amber-400 font-bold">Tatami {tatamiNumber}</span>
+      {#if isFestival}
+        <div class="flex items-center space-x-1">
+          <span class="text-zinc-400 text-[11px]">Tatami:</span>
+          <select
+            bind:value={activeTatami}
+            onchange={() => broadcastLiveState()}
+            class="bg-[#111216] border border-amber-500/40 text-amber-300 font-bold text-xs rounded px-1.5 py-0.5 focus:outline-none"
+          >
+            {#each [1, 2, 3, 4, 5, 6, 7, 8] as t}
+              <option value={t}>Tatami {t}</option>
+            {/each}
+          </select>
+        </div>
+      {:else}
+        <span class="text-amber-400 font-bold">Tatami {activeTatami}</span>
+      {/if}
     </div>
 
     <!-- Active Indicator -->
@@ -1505,7 +1550,7 @@
       </div>
       <div class="flex items-center space-x-1.5">
         <span class="px-1.5 py-0.2 rounded bg-amber-500/20 border border-amber-500/40 font-mono font-black text-[9px] text-amber-300">
-          TATAMI {tatamiNumber}
+          TATAMI {activeTatami}
         </span>
         <button
           type="button"

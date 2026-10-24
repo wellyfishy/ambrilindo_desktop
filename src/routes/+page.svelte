@@ -199,6 +199,30 @@
     }
   }
 
+  function withFestivalBagan(list: BaganItem[], eventId: number = 1): BaganItem[] {
+    const festivalBagan: BaganItem = {
+      id: 0,
+      event_id: eventId,
+      nama_bagan: "Festival",
+      nomor_tanding_id: null,
+      tipe_tanding: "2",
+      juara_1_id: null,
+      juara_2_id: null,
+      juara_3a_id: null,
+      juara_3b_id: null,
+      peringkat_5_id: null,
+      peringkat_6_id: null,
+      peringkat_7_id: null,
+      peringkat_8_id: null,
+      round_robin: false,
+      pool: 1,
+      kode: "000",
+      is_bob: false,
+      has_vr: false,
+    };
+    return [festivalBagan, ...list.filter((b) => b.id !== 0 && b.kode !== "000")];
+  }
+
   async function selectEvent(eventId: number) {
     selectedEventId = eventId;
     try {
@@ -207,7 +231,7 @@
         invoke<BaganItem[]>("get_bagans", { eventId }),
       ]);
       tatamis = tatamiList;
-      bagans = baganList;
+      bagans = withFestivalBagan(baganList, eventId);
     } catch (err) {
       console.error("Gagal memuat data event:", err);
     }
@@ -236,7 +260,29 @@
     }
   }
 
-  function handleSelectChannel(channel: ActiveChannel) {
+  async function handleSelectChannel(channel: ActiveChannel) {
+    if (channel.type === "bagan" && (channel.id === 0 || channel.name === "Festival")) {
+      const assignedTatami = activeRole.startsWith("admin_tatami_")
+        ? parseInt(activeRole.replace("admin_tatami_", "")) || 1
+        : 1;
+      try {
+        await invoke("open_control_panel_window", {
+          matchId: 0,
+          baganId: 0,
+          tatami: assignedTatami,
+        });
+      } catch (err) {
+        console.warn("Tauri open_control_panel_window failed, fallback window.open:", err);
+        if (typeof window !== "undefined" && window.open) {
+          window.open(
+            `/control-panel?matchId=0&baganId=0&isFestival=true&tatami=${assignedTatami}`,
+            "control_panel_0",
+            "width=1366,height=820"
+          );
+        }
+      }
+      return;
+    }
     activeChannel = channel;
   }
 

@@ -352,10 +352,12 @@ async fn open_control_panel_window(
     app: tauri::AppHandle,
     match_id: i64,
     bagan_id: i64,
+    tatami: Option<i64>,
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
     let win_label = format!("control-panel-{}", match_id);
+    let t_num = tatami.unwrap_or(1);
 
     // If window for the exact same match already exists:
     // Close any other control panels, bring this one forward, reload, and focus
@@ -378,9 +380,20 @@ async fn open_control_panel_window(
         }
     }
 
-    let url = format!("/control-panel?matchId={}&baganId={}", match_id, bagan_id);
+    let (url, title) = if match_id == 0 {
+        (
+            format!("/control-panel?matchId=0&baganId=0&isFestival=true&tatami={}", t_num),
+            format!("Ambrilindo - Control Panel Festival (Bagan 000) - Tatami {}", t_num),
+        )
+    } else {
+        (
+            format!("/control-panel?matchId={}&baganId={}&tatami={}", match_id, bagan_id, t_num),
+            format!("Ambrilindo - Control Panel Partai #{}", match_id),
+        )
+    };
+
     let _win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
-        .title(format!("Ambrilindo - Control Panel Partai #{}", match_id))
+        .title(title)
         .inner_size(1366.0, 820.0)
         .min_inner_size(1024.0, 700.0)
         .center()

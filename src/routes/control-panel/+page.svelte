@@ -9,6 +9,10 @@
 
   let matchId = $derived(Number(page.url.searchParams.get("matchId") || "0"));
   let baganId = $derived(Number(page.url.searchParams.get("baganId") || "0"));
+  let isFestival = $derived(
+    page.url.searchParams.get("isFestival") === "true" ||
+    (matchId === 0 && baganId === 0)
+  );
 
   let currentMatch = $state<DetailBaganItem | null>(null);
   let baganInfo = $state<BaganItem | null>(null);
@@ -22,6 +26,62 @@
   async function loadMatchData() {
     isLoading = true;
     errorMessage = null;
+
+    const urlTatami = parseInt(page.url.searchParams.get("tatami") || "1", 10);
+    tatamiNumber = !isNaN(urlTatami) && urlTatami > 0 ? urlTatami : 1;
+
+    // Handle stateless Festival match (no database required)
+    if (isFestival) {
+      currentMatch = {
+        id: 0,
+        bagan_id: 0,
+        round: 1,
+        urutan: 1,
+        atlet1_id: null,
+        atlet2_id: null,
+        score1: "0",
+        score2: "0",
+        scorekecil1: null,
+        scorekecil2: null,
+        vr1: false,
+        vr2: false,
+        kata1: null,
+        kata2: null,
+        pemenang: null,
+        hantei: false,
+        selesai: false,
+        team: false,
+        assigned_tatami_id: tatamiNumber,
+        kode: "000",
+        atlet1_nama: "Aka Contestant",
+        atlet1_kontingen: "None",
+        atlet2_nama: "Ao Contestant",
+        atlet2_kontingen: "None",
+      };
+      baganName = "FESTIVAL";
+      baganInfo = {
+        id: 0,
+        event_id: 1,
+        nama_bagan: "Festival",
+        nomor_tanding_id: null,
+        tipe_tanding: "2", // Default Kumite
+        juara_1_id: null,
+        juara_2_id: null,
+        juara_3a_id: null,
+        juara_3b_id: null,
+        peringkat_5_id: null,
+        peringkat_6_id: null,
+        peringkat_7_id: null,
+        peringkat_8_id: null,
+        round_robin: false,
+        pool: 1,
+        kode: "000",
+        is_bob: false,
+        has_vr: false,
+      };
+      isLoading = false;
+      return;
+    }
 
     try {
       if (!matchId || !baganId) {
@@ -147,6 +207,11 @@
   }
 
   async function handleSaveMatchResult(input: SaveMatchInput) {
+    if (isFestival) {
+      // Festival matches are stateless (not saved to database)
+      await handleCloseWindow();
+      return;
+    }
     try {
       await invoke("save_match_result", { input });
       // Notify parent bracket window to reload data

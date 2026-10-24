@@ -87,12 +87,13 @@
       await invoke("open_control_panel_window", {
         matchId: match.id,
         baganId: match.bagan_id || baganId,
+        tatami: match.assigned_tatami_id || 1,
       });
     } catch (err) {
       console.warn("Tauri open_control_panel_window failed, fallback to window.open or in-page:", err);
       if (typeof window !== "undefined" && window.open) {
         window.open(
-          `/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}`,
+          `/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}&tatami=${match.assigned_tatami_id || 1}`,
           "control_panel",
           "width=1366,height=820"
         );

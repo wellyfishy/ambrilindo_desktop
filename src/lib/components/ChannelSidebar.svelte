@@ -181,8 +181,34 @@
     window.addEventListener("mouseup", onMouseUp);
   }
 
+  const defaultFestivalBagan: BaganItem = {
+    id: 0,
+    event_id: 1,
+    nama_bagan: "Festival",
+    nomor_tanding_id: null,
+    tipe_tanding: "2",
+    juara_1_id: null,
+    juara_2_id: null,
+    juara_3a_id: null,
+    juara_3b_id: null,
+    peringkat_5_id: null,
+    peringkat_6_id: null,
+    peringkat_7_id: null,
+    peringkat_8_id: null,
+    round_robin: false,
+    pool: 1,
+    kode: "000",
+    is_bob: false,
+    has_vr: false,
+  };
+
+  let allBagans = $derived.by(() => {
+    const list = bagans.filter((b) => b.id !== 0 && b.kode !== "000");
+    return [defaultFestivalBagan, ...list];
+  });
+
   let filteredBagans = $derived(
-    bagans.filter((b) =>
+    allBagans.filter((b) =>
       (b.nama_bagan || "").toLowerCase().includes(searchBagan.toLowerCase()) ||
       (b.kode || "").toLowerCase().includes(searchBagan.toLowerCase())
     )
@@ -529,7 +555,7 @@
           onclick={() => (collapseBagan = !collapseBagan)}
           class="flex items-center space-x-1.5 hover:text-zinc-300 uppercase transition"
         >
-          <span>BAGAN KATEGORI ({bagans.length})</span>
+          <span>BAGAN KATEGORI ({allBagans.length})</span>
           <span class="text-[9px]">{collapseBagan ? '▶' : '▼'}</span>
         </button>
 
@@ -562,6 +588,7 @@
         <div class="mt-1 space-y-0.5">
           {#if filteredBagans.length > 0}
             {#each filteredBagans as bagan}
+              {@const isFestival = bagan.id === 0 || bagan.kode === '000'}
               {@const isKata = String(bagan.tipe_tanding) === '1'}
               {@const isActive = activeChannel.type === 'bagan' && activeChannel.id === bagan.id}
               {@const baganCode = bagan.kode || String(bagan.id).padStart(3, '0')}
@@ -571,19 +598,24 @@
                     type: "bagan",
                     id: bagan.id,
                     name: bagan.nama_bagan || `bagan-${bagan.id}`,
-                    subtitle: `Bagan [${baganCode}]: ${bagan.nama_bagan || ''}`,
+                    subtitle: isFestival
+                      ? "Bagan Default Festival [000]: Scoring Langsung Tanpa Data"
+                      : `Bagan [${baganCode}]: ${bagan.nama_bagan || ''}`,
                   })}
-                title="[{baganCode}] {bagan.nama_bagan || `bagan-${bagan.id}`}"
-                class="w-full flex items-start space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-left group {isActive ? (isKata ? 'bg-sky-500/10 text-sky-200 font-semibold border border-sky-500/20 shadow-sm' : 'bg-amber-500/10 text-amber-200 font-semibold border border-amber-500/20 shadow-sm') : 'hover:bg-white/[0.04]'}"
+                title={isFestival ? "[000] Bagan Festival Bebas (Klik untuk langsung buka Control Panel)" : `[${baganCode}] ${bagan.nama_bagan || `bagan-${bagan.id}`}`}
+                class="w-full flex items-start space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-left group {isFestival ? 'hover:bg-emerald-500/10 border border-emerald-500/20 bg-emerald-950/20' : (isActive ? (isKata ? 'bg-sky-500/10 text-sky-200 font-semibold border border-sky-500/20 shadow-sm' : 'bg-amber-500/10 text-amber-200 font-semibold border border-amber-500/20 shadow-sm') : 'hover:bg-white/[0.04]')}"
               >
                 <!-- Monospace Bagan Code Badge replacing '#' -->
-                <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wider shrink-0 mt-0.5 {isKata ? 'bg-sky-950/50 text-sky-400/80 border border-sky-500/20' : 'bg-amber-950/50 text-amber-400/80 border border-amber-500/20'}">
+                <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wider shrink-0 mt-0.5 {isFestival ? 'bg-emerald-950/70 text-emerald-400 border border-emerald-500/30' : (isKata ? 'bg-sky-950/50 text-sky-400/80 border border-sky-500/20' : 'bg-amber-950/50 text-amber-400/80 border border-amber-500/20')}">
                   {baganCode}
                 </span>
 
                 <!-- Multi-line title wrap with toned-down, eye-friendly soft colors -->
-                <span class="line-clamp-2 leading-snug break-words flex-1 {isActive ? (isKata ? 'text-sky-200' : 'text-amber-200') : (isKata ? 'text-sky-300/70 group-hover:text-sky-200' : 'text-amber-300/70 group-hover:text-amber-200')}">
+                <span class="line-clamp-2 leading-snug break-words flex-1 {isFestival ? 'text-emerald-300 font-bold group-hover:text-emerald-200' : (isActive ? (isKata ? 'text-sky-200' : 'text-amber-200') : (isKata ? 'text-sky-300/70 group-hover:text-sky-200' : 'text-amber-300/70 group-hover:text-amber-200'))}">
                   {bagan.nama_bagan || `bagan-${bagan.id}`}
+                  {#if isFestival}
+                    <span class="text-[9px] font-mono text-emerald-400/80 font-normal ml-1">(Festival)</span>
+                  {/if}
                 </span>
               </button>
             {/each}
