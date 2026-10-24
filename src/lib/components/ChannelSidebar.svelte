@@ -1,6 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import type { ActiveChannel, AppMode, BaganItem, EventItem, TatamiItem } from "$lib/types";
+
+  interface MonitorOption {
+    id: number;
+    name: string;
+    width: number;
+    height: number;
+    is_primary: boolean;
+    label: string;
+  }
 
   interface Props {
     activeChannel: ActiveChannel;
@@ -38,6 +48,44 @@
   let collapseBagan = $state(false);
   let searchBagan = $state("");
   let isRoleDropdownOpen = $state(false);
+
+  // Scoreboard monitor & flyout state
+  let monitors = $state<MonitorOption[]>([]);
+  let isScoreboardMenuOpen = $state(false);
+  let hoveredTatami = $state<number | null>(null);
+  let scoreboardBtnEl = $state<HTMLElement | null>(null);
+  let scoreboardFlyoutPos = $state<{ top: number; left: number }>({ top: 0, left: 330 });
+
+  function openScoreboardMenu(el: HTMLElement) {
+    const rect = el.getBoundingClientRect();
+    scoreboardFlyoutPos = {
+      top: Math.max(10, rect.top),
+      left: rect.right + 6,
+    };
+    loadMonitors();
+    isScoreboardMenuOpen = true;
+  }
+
+  async function loadMonitors() {
+    try {
+      monitors = await invoke("get_available_monitors");
+    } catch (e) {
+      console.warn("Failed to get monitors:", e);
+      monitors = [{ id: 0, name: "Display 1", width: 1920, height: 1080, is_primary: true, label: "Monitor 1 (Utama)" }];
+    }
+  }
+
+  async function handleLaunchScoreboard(tatamiNum: number, monitorId: number) {
+    try {
+      await invoke("project_scoreboard", { monitorId, tatamiNumber: tatamiNum });
+    } catch (err) {
+      console.warn("Tauri project_scoreboard failed, fallback to window.open:", err);
+      window.open(`/scoreboard?tatami=${tatamiNum}`, `scoreboard_tatami_${tatamiNum}`);
+    } finally {
+      isScoreboardMenuOpen = false;
+      hoveredTatami = null;
+    }
+  }
 
   // Horizontal resizer state (resizable channel bar)
   let sidebarWidth = $state(260);
@@ -117,7 +165,7 @@
   </div>
 
   <!-- Channel Navigation (Scrollable) -->
-  <div class="flex-1 overflow-y-auto px-2 py-3 space-y-4 scrollbar-thin">
+  <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 py-3 space-y-4 scrollbar-thin">
     <!-- Group 1: Dashboard -->
     <div>
       <button
@@ -177,6 +225,121 @@
             <span class="text-zinc-500 font-mono">#</span>
             <span>nomor-tanding</span>
           </button>
+
+          <!-- Buka Scoring Board Channel Item -->
+          <div
+            bind:this={scoreboardBtnEl}
+            class="relative"
+            role="region"
+            aria-label="Menu Scoring Board"
+            onmouseenter={() => {
+              if (scoreboardBtnEl) openScoreboardMenu(scoreboardBtnEl);
+            }}
+            onmouseleave={() => {
+              isScoreboardMenuOpen = false;
+              hoveredTatami = null;
+            }}
+          >
+            <button
+              type="button"
+              onclick={() => {
+                if (scoreboardBtnEl) {
+                  if (isScoreboardMenuOpen) {
+                    isScoreboardMenuOpen = false;
+                    hoveredTatami = null;
+                  } else {
+                    openScoreboardMenu(scoreboardBtnEl);
+                  }
+                }
+              }}
+              class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200"
+              title="Buka Layar Scoring Board Arena"
+            >
+              <div class="flex items-center space-x-2 truncate">
+                <span class="text-amber-500 font-mono">#</span>
+                <span class="truncate">buka-scoring-board</span>
+              </div>
+              <span class="text-[9px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1 py-0.2 rounded font-bold">
+                ARENA
+              </span>
+            </button>
+
+            <!-- Flyout Menu Popover (Fixed to viewport so it never causes scroll or gets clipped) -->
+            {#if isScoreboardMenuOpen}
+              <div
+                style="top: {scoreboardFlyoutPos.top}px; left: {scoreboardFlyoutPos.left}px;"
+                class="fixed z-50 bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-56 text-xs animate-in fade-in zoom-in-95 duration-100"
+              >
+                {#if activeRole === "admin_utama"}
+                  <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500 border-b border-[#2b2d31] mb-1">
+                    Pilih Tatami:
+                  </div>
+                  <div class="space-y-0.5">
+                    {#each (tatamis.length > 0 ? tatamis : [{ id: 1, tatami_number: 1 }]) as tItem}
+                      {@const tNum = tItem.tatami_number || 1}
+                      <div
+                        class="relative"
+                        role="menuitem"
+                        tabindex="-1"
+                        onmouseenter={() => (hoveredTatami = tNum)}
+                      >
+                        <button
+                          type="button"
+                          class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg font-bold transition {hoveredTatami === tNum ? 'bg-[#5865f2] text-white shadow' : 'text-zinc-300 hover:bg-white/[0.05]'}"
+                        >
+                          <span>Tatami {tNum}</span>
+                          <span class="text-[10px] font-mono">›</span>
+                        </button>
+
+                        <!-- Nested Monitors Menu -->
+                        {#if hoveredTatami === tNum}
+                          <div class="absolute left-full top-0 ml-1 z-50 bg-[#14161b] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-56 text-xs">
+                            <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400 border-b border-[#2b2d31] mb-1">
+                              Tatami {tNum} - Pilih Monitor:
+                            </div>
+                            {#if monitors.length === 0}
+                              <div class="px-2 py-2 text-zinc-500 text-[11px]">Memuat monitor...</div>
+                            {:else}
+                              {#each monitors as mon}
+                                <button
+                                  type="button"
+                                  onclick={() => handleLaunchScoreboard(tNum, mon.id)}
+                                  class="w-full text-left px-2 py-1.5 rounded-lg text-zinc-200 hover:bg-[#5865f2] hover:text-white transition flex flex-col mb-0.5"
+                                >
+                                  <span class="font-bold">{mon.name} {mon.is_primary ? '(Utama)' : '(Eksternal)'}</span>
+                                  <span class="text-[10px] font-mono text-zinc-400">{mon.width}x{mon.height}</span>
+                                </button>
+                              {/each}
+                            {/if}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <!-- Admin Tatami X: Tatami automatically locked, only select monitor -->
+                  {@const assignedTatamiNum = parseInt(activeRole.replace("admin_tatami_", "")) || 1}
+                  <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400 border-b border-[#2b2d31] mb-1">
+                    Tatami {assignedTatamiNum} - Pilih Monitor:
+                  </div>
+                  {#if monitors.length === 0}
+                    <div class="px-2 py-2 text-zinc-500 text-[11px]">Memuat monitor...</div>
+                  {:else}
+                    {#each monitors as mon}
+                      <button
+                        type="button"
+                        onclick={() => handleLaunchScoreboard(assignedTatamiNum, mon.id)}
+                        class="w-full text-left px-2 py-1.5 rounded-lg text-zinc-200 hover:bg-[#5865f2] hover:text-white transition flex flex-col mb-0.5"
+                      >
+                        <span class="font-bold">{mon.name} {mon.is_primary ? '(Utama)' : '(Eksternal)'}</span>
+                        <span class="text-[10px] font-mono text-zinc-400">{mon.width}x{mon.height}</span>
+                      </button>
+                    {/each}
+                  {/if}
+                {/if}
+              </div>
+            {/if}
+          </div>
         </div>
       {/if}
     </div>

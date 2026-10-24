@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { emit, listen } from "@tauri-apps/api/event";
   import type { DetailBaganItem, BaganItem, SaveMatchInput } from "$lib/types";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
 
@@ -27,12 +28,11 @@
     onSave,
   }: Props = $props();
 
-  // Mode detection
-  let detectedIsKata = $derived(
+  // Automatic Discipline Detection (No manual switching required)
+  let isKata = $derived(
     (baganInfo?.tipe_tanding?.toLowerCase() || "").includes("kata") ||
     baganName.toLowerCase().includes("kata")
   );
-  let activeTab = $state<"kumite" | "kata">("kumite");
 
   // Common Match State
   let matchWinner = $state<string>("");
@@ -55,6 +55,10 @@
   let kataAoName = $state<string>("");
   let akaJudgeScores = $state<string[]>(["", "", "", "", ""]);
   let aoJudgeScores = $state<string[]>(["", "", "", "", ""]);
+
+  // Quick Score Picker Popover State
+  let activeScorePicker = $state<{ side: "aka" | "ao"; idx: number } | null>(null);
+  const COMMON_SCORE_PRESETS = ["7.0", "7.5", "8.0", "8.2", "8.4", "8.5", "8.6", "8.8", "9.0"];
 
   // Kata Discord-style Selection Modal State
   let isKataModalOpen = $state<boolean>(false);
@@ -91,6 +95,7 @@
       kataAoName = item.label;
     }
     isKataModalOpen = false;
+    broadcastLiveState();
   }
 
   function handleKataModalKeydown(e: KeyboardEvent) {
@@ -119,7 +124,6 @@
   }
 
   // ==================== MATCH TIMER STATE & PRESETS ====================
-  // Presets requested: 30, 60, 90, 120, 150, 180, 300
   const TIMER_PRESETS = [30, 60, 90, 120, 150, 180, 300];
   let selectedPresetSeconds = $state<number>(120);
   let timerSeconds = $state<number>(120);
@@ -150,23 +154,28 @@
       clearInterval(timerInterval);
       isTimerRunning = false;
     }
+    broadcastLiveState();
   }
 
   function toggleTimer() {
     if (isTimerRunning) {
       clearInterval(timerInterval);
       isTimerRunning = false;
+      broadcastLiveState();
     } else {
       if (timerSeconds <= 0) {
         timerSeconds = selectedPresetSeconds;
       }
       isTimerRunning = true;
+      broadcastLiveState();
       timerInterval = setInterval(() => {
         if (timerSeconds > 0) {
           timerSeconds -= 1;
+          broadcastLiveState();
         } else {
           clearInterval(timerInterval);
           isTimerRunning = false;
+          broadcastLiveState();
         }
       }, 1000);
     }
@@ -178,17 +187,15 @@
       isTimerRunning = false;
     }
     timerSeconds = selectedPresetSeconds;
+    broadcastLiveState();
   }
 
   function adjustTimer(delta: number) {
     timerSeconds = Math.max(0, timerSeconds + delta);
+    broadcastLiveState();
   }
 
   // ==================== 5-JUDGE COMPARATIVE SCORING LOGIC ====================
-  // For each of 5 judges:
-  // If AKA > AO: J1 highlights red, AKA gets +1 flag point
-  // If AO > AKA: J1 highlights blue, AO gets +1 flag point
-  // If equal / unfilled: neutral
   let judgeComparisons = $derived.by(() => {
     let akaPoints = 0;
     let aoPoints = 0;
@@ -237,7 +244,7 @@
 
   // Reactive auto winner for Kata
   $effect(() => {
-    if (activeTab === "kata") {
+    if (isKata) {
       const { akaPoints, aoPoints } = judgeComparisons;
       if (akaPoints > aoPoints) {
         matchWinner = "1";
@@ -247,15 +254,43 @@
     }
   });
 
+  // Guardrails & Input Validation for Kata Judge Score
+  function sanitizeScore(val: string): string {
+    const trimmed = val.trim();
+    if (!trimmed) return "";
+    const num = parseFloat(trimmed);
+    if (isNaN(num)) return "";
+    if (num === 0) return "0.0"; // Valid Kiken
+    // Guardrail: cannot be less than 5.0
+    let clamped = num;
+    if (clamped < 5.0) clamped = 5.0;
+    if (clamped > 10.0) clamped = 10.0;
+    return clamped.toFixed(1);
+  }
+
   function updateJudgeScore(side: "aka" | "ao", judgeIdx: number, val: string) {
     if (side === "aka") {
       akaJudgeScores[judgeIdx] = val;
+      akaJudgeScores = [...akaJudgeScores];
     } else {
       aoJudgeScores[judgeIdx] = val;
+      aoJudgeScores = [...aoJudgeScores];
     }
+    broadcastLiveState();
   }
 
-  // Kiken Handlers (Replaces DQ, no "(Aka Menang)" / "(Ao Menang)" text)
+  function handleScoreInputBlur(side: "aka" | "ao", judgeIdx: number, val: string) {
+    const cleaned = sanitizeScore(val);
+    updateJudgeScore(side, judgeIdx, cleaned);
+  }
+
+  function pickPresetScore(val: string) {
+    if (!activeScorePicker) return;
+    updateJudgeScore(activeScorePicker.side, activeScorePicker.idx, val);
+    activeScorePicker = null;
+  }
+
+  // Kiken Handlers
   function applyKiken(side: "aka" | "ao") {
     if (side === "aka") {
       akaJudgeScores = ["0.0", "0.0", "0.0", "0.0", "0.0"];
@@ -266,6 +301,7 @@
       akaJudgeScores = akaJudgeScores.map((s) => (s && s !== "0.0" ? s : "8.0"));
       matchWinner = "1";
     }
+    broadcastLiveState();
   }
 
   // ==================== KUMITE SCORING ====================
@@ -276,6 +312,7 @@
       aoScore = Math.max(0, aoScore + pts);
     }
     autoSuggestKumiteWinner();
+    broadcastLiveState();
   }
 
   function toggleSenshu(side: "aka" | "ao") {
@@ -287,6 +324,7 @@
       if (aoSenshu) akaSenshu = false;
     }
     autoSuggestKumiteWinner();
+    broadcastLiveState();
   }
 
   function togglePenalty(side: "aka" | "ao", code: "c1" | "c2" | "c3" | "hc" | "h") {
@@ -301,6 +339,7 @@
         matchWinner = "1";
       }
     }
+    broadcastLiveState();
   }
 
   function autoSuggestKumiteWinner() {
@@ -321,6 +360,49 @@
     } else {
       matchWinner = winner;
     }
+    broadcastLiveState();
+  }
+
+  // ==================== REALTIME LOCAL IPC BROADCAST ====================
+  function broadcastLiveState() {
+    const payload = {
+      tatami: tatamiNumber,
+      matchId: match.id,
+      category: baganName,
+      round: match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`,
+      matchNumber: match.urutan || 1,
+      timerSeconds,
+      isTimerRunning,
+      isKata,
+      aka: {
+        name: match.atlet1_nama || "Sudut Merah",
+        contingent: match.atlet1_kontingen || "-",
+        kataName: kataAkaName,
+        totalPoints: judgeComparisons.akaPoints,
+        judgeScores: akaJudgeScores,
+        score: akaScore,
+        senshu: akaSenshu,
+        penalties: akaPenalties,
+        vr: hasVr1,
+      },
+      ao: {
+        name: match.atlet2_nama || "Sudut Biru",
+        contingent: match.atlet2_kontingen || "-",
+        kataName: kataAoName,
+        totalPoints: judgeComparisons.aoPoints,
+        judgeScores: aoJudgeScores,
+        score: aoScore,
+        senshu: aoSenshu,
+        penalties: aoPenalties,
+        vr: hasVr2,
+      },
+      winner: matchWinner,
+      isFinished: isMatchFinished,
+    };
+
+    emit("tatami_live_state", $state.snapshot(payload)).catch((err) => {
+      console.warn("Local IPC emit tatami_live_state failed:", err);
+    });
   }
 
   // ==================== SAVING & EXIT ====================
@@ -329,8 +411,8 @@
     isSaving = true;
 
     try {
-      const finalScore1 = activeTab === "kata" ? String(judgeComparisons.akaPoints) : String(akaScore);
-      const finalScore2 = activeTab === "kata" ? String(judgeComparisons.aoPoints) : String(aoScore);
+      const finalScore1 = isKata ? String(judgeComparisons.akaPoints) : String(akaScore);
+      const finalScore2 = isKata ? String(judgeComparisons.aoPoints) : String(aoScore);
 
       const input: SaveMatchInput = {
         match_id: match.id,
@@ -358,20 +440,32 @@
 
   // Initialize values from match prop
   onMount(() => {
-    activeTab = detectedIsKata ? "kata" : "kumite";
     matchWinner = match.pemenang || "";
     isMatchFinished = match.selesai || false;
     hasVr1 = match.vr1 || false;
     hasVr2 = match.vr2 || false;
     isHantei = match.hantei || false;
 
-    // Kumite initial scores
     akaScore = parseInt(match.score1 || "0", 10) || 0;
     aoScore = parseInt(match.score2 || "0", 10) || 0;
 
-    // Kata initial scores
     kataAkaName = match.kata1 || "";
     kataAoName = match.kata2 || "";
+
+    // Broadcast initial state immediately
+    setTimeout(() => {
+      broadcastLiveState();
+    }, 100);
+
+    // Listen for requests from newly opened scoreboard windows
+    let unlistenRequest: (() => void) | undefined;
+    listen("request_tatami_state", (event: any) => {
+      if (!event.payload?.tatami || event.payload?.tatami === tatamiNumber) {
+        broadcastLiveState();
+      }
+    }).then((unsub) => {
+      unlistenRequest = unsub;
+    }).catch(() => {});
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Spacebar for Timer Start/Stop
@@ -380,7 +474,7 @@
         toggleTimer();
       }
       // Kumite Hotkeys (1/2/3 for AO, 7/8/9 for AKA)
-      if (activeTab === "kumite" && !(e.target instanceof HTMLInputElement)) {
+      if (!isKata && !(e.target instanceof HTMLInputElement)) {
         if (e.key === "1") addKumiteScore("ao", 1);
         if (e.key === "2") addKumiteScore("ao", 2);
         if (e.key === "3") addKumiteScore("ao", 3);
@@ -394,6 +488,7 @@
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
       if (timerInterval) clearInterval(timerInterval);
+      if (unlistenRequest) unlistenRequest();
     };
   });
 </script>
@@ -429,32 +524,14 @@
         </svg>
         <span>{isSaving ? "Menyimpan..." : "Simpan & Keluar"}</span>
       </button>
-
-      <!-- Mode Switcher Tabs -->
-      <div class="flex items-center bg-[#111216] border border-[#2b2d31] rounded-lg p-0.5 text-xs font-medium ml-2">
-        <button
-          type="button"
-          onclick={() => (activeTab = "kata")}
-          class="px-3 py-1 rounded-md transition {activeTab === 'kata' ? 'bg-[#5865f2] text-white font-bold shadow' : 'text-zinc-400 hover:text-white'}"
-        >
-          Mode Kata
-        </button>
-        <button
-          type="button"
-          onclick={() => (activeTab = "kumite")}
-          class="px-3 py-1 rounded-md transition {activeTab === 'kumite' ? 'bg-[#5865f2] text-white font-bold shadow' : 'text-zinc-400 hover:text-white'}"
-        >
-          Mode Kumite
-        </button>
-      </div>
     </div>
 
-    <!-- Match Identity Badge -->
+    <!-- Match Identity Badge (Discipline locked automatically) -->
     <div class="flex items-center space-x-2 text-xs font-mono">
-      <span class="px-2 py-0.5 rounded font-bold uppercase {activeTab === 'kata' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'}">
-        {activeTab === "kata" ? "KATA" : "KUMITE"}
+      <span class="px-2.5 py-0.5 rounded font-black uppercase {isKata ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'}">
+        {isKata ? "KATA" : "KUMITE"}
       </span>
-      <span class="text-zinc-200 font-bold uppercase truncate max-w-[280px]">
+      <span class="text-zinc-200 font-bold uppercase truncate max-w-[320px]">
         {baganName || "Kategori Turnamen"}
       </span>
       <span class="text-zinc-500">•</span>
@@ -476,8 +553,8 @@
     </div>
   </div>
 
-  <!-- Main View Area (Kata vs Kumite) -->
-  {#if activeTab === "kata"}
+  <!-- Main View Area (Kata vs Kumite automatically) -->
+  {#if isKata}
     <!-- ==================== KATA COMPARATIVE SCORING DASHBOARD ==================== -->
     <div class="flex-1 flex flex-col gap-3 min-h-0 overflow-y-auto pr-1">
       <!-- Top Row: Match Timer Deck (Presetted 30s..300s, MM:SS) -->
@@ -557,9 +634,9 @@
       </div>
 
       <!-- KATA 5-JUDGE COMPARATIVE SCORING TABLE -->
-      <div class="flex-1 bg-[#181a20] border border-[#2b2d31] rounded-xl p-4 shadow-xl flex flex-col justify-between">
+      <div class="flex-1 bg-[#181a20] border border-[#2b2d31] rounded-xl p-4 shadow-xl flex flex-col justify-between relative">
         <div>
-          <!-- Header Bar with Kiken Overrides -->
+          <!-- Header Bar with Kiken Overrides (Redundant text removed) -->
           <div class="flex items-center justify-between pb-3 mb-3 border-b border-[#2b2d31] flex-wrap gap-2">
             <div>
               <h2 class="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
@@ -568,12 +645,9 @@
                 </svg>
                 Penilaian Komparatif Juri Kata (5 Juri)
               </h2>
-              <p class="text-[11px] text-zinc-400 mt-0.5">
-                Nilai manual 5.0 s/d 10.0 per juri. Juri dengan skor lebih tinggi otomatis memberikan +1 poin bendera ke sudut tersebut.
-              </p>
             </div>
 
-            <!-- Kiken Buttons (Clean: Kiken AKA & Kiken AO, without DQ / Aka Menang text) -->
+            <!-- Kiken Buttons -->
             <div class="flex items-center space-x-2">
               <button
                 type="button"
@@ -641,16 +715,19 @@
                   <!-- 5 Judge Input Columns for AKA -->
                   {#each [0, 1, 2, 3, 4] as idx}
                     {@const decision = judgeComparisons.decisions[idx]}
-                    <td class="py-2.5 px-1.5 {decision?.winner === 'aka' ? 'bg-red-500/10' : ''}">
+                    <td class="py-2.5 px-1.5 relative {decision?.winner === 'aka' ? 'bg-red-500/10' : ''}">
                       <input
                         type="number"
                         step="0.1"
-                        min="0"
-                        max="10"
+                        min="5.0"
+                        max="10.0"
                         placeholder="0.0"
                         value={akaJudgeScores[idx]}
+                        onclick={() => (activeScorePicker = { side: "aka", idx })}
+                        onblur={(e) => handleScoreInputBlur("aka", idx, e.currentTarget.value)}
                         oninput={(e) => updateJudgeScore("aka", idx, e.currentTarget.value)}
-                        class="w-20 h-11 bg-[#111216] border-2 {decision?.winner === 'aka' ? 'border-red-500 text-red-200 ring-2 ring-red-500/30' : 'border-[#2b2d31] text-zinc-200'} focus:border-red-400 text-center font-mono font-bold text-lg rounded-lg outline-none transition"
+                        class="w-20 h-11 bg-[#111216] border-2 cursor-pointer {decision?.winner === 'aka' ? 'border-red-500 text-red-200 ring-2 ring-red-500/30' : 'border-[#2b2d31] text-zinc-200'} focus:border-red-400 text-center font-mono font-bold text-lg rounded-lg outline-none transition"
+                        title="Klik untuk memilih nilai dari daftar cepat, atau ketik manual (Min 5.0)"
                       />
                     </td>
                   {/each}
@@ -714,16 +791,19 @@
                   <!-- 5 Judge Input Columns for AO -->
                   {#each [0, 1, 2, 3, 4] as idx}
                     {@const decision = judgeComparisons.decisions[idx]}
-                    <td class="py-2.5 px-1.5 {decision?.winner === 'ao' ? 'bg-blue-500/10' : ''}">
+                    <td class="py-2.5 px-1.5 relative {decision?.winner === 'ao' ? 'bg-blue-500/10' : ''}">
                       <input
                         type="number"
                         step="0.1"
-                        min="0"
-                        max="10"
+                        min="5.0"
+                        max="10.0"
                         placeholder="0.0"
                         value={aoJudgeScores[idx]}
+                        onclick={() => (activeScorePicker = { side: "ao", idx })}
+                        onblur={(e) => handleScoreInputBlur("ao", idx, e.currentTarget.value)}
                         oninput={(e) => updateJudgeScore("ao", idx, e.currentTarget.value)}
-                        class="w-20 h-11 bg-[#111216] border-2 {decision?.winner === 'ao' ? 'border-blue-500 text-blue-200 ring-2 ring-blue-500/30' : 'border-[#2b2d31] text-zinc-200'} focus:border-blue-400 text-center font-mono font-bold text-lg rounded-lg outline-none transition"
+                        class="w-20 h-11 bg-[#111216] border-2 cursor-pointer {decision?.winner === 'ao' ? 'border-blue-500 text-blue-200 ring-2 ring-blue-500/30' : 'border-[#2b2d31] text-zinc-200'} focus:border-blue-400 text-center font-mono font-bold text-lg rounded-lg outline-none transition"
+                        title="Klik untuk memilih nilai dari daftar cepat, atau ketik manual (Min 5.0)"
                       />
                     </td>
                   {/each}
@@ -755,7 +835,7 @@
                     <button
                       type="button"
                       onclick={() => selectWinner("2")}
-                      class="w-full py-2.5 rounded-lg text-xs font-black transition flex items-center justify-center gap-1.5 shadow active:scale-95 {matchWinner === '2' ? 'bg-blue-600 text-white shadow-blue-600/40 border border-blue-400' : 'bg-[#1e293b] text-zinc-400 hover:text-white border border-[#2b2d31]'}"
+                      class="w-full py-2.5 rounded-lg text-xs font-black transition flex items-center justify-center gap-1.5 shadow active:scale-95 {matchWinner === '2' ? 'bg-blue-600 text-white shadow-blue-600/40 border border-blue-400' : 'bg-[#1e2029] text-zinc-400 hover:text-white border border-[#2b2d31]'}"
                     >
                       {#if matchWinner === "2"}
                         <svg class="w-3.5 h-3.5 text-amber-300" fill="currentColor" viewBox="0 0 20 20">
@@ -786,6 +866,80 @@
             </label>
           </div>
         </div>
+
+        <!-- QUICK SCORE PICKER POPOVER -->
+        {#if activeScorePicker}
+          <div class="absolute z-40 top-16 left-1/2 -translate-x-1/2 bg-[#181a20] border-2 border-[#5865f2] rounded-2xl p-4 shadow-2xl max-w-lg w-full animate-in fade-in zoom-in-95 duration-150">
+            <div class="flex items-center justify-between pb-2 mb-3 border-b border-[#2b2d31]">
+              <div class="flex items-center space-x-2">
+                <span class="px-2 py-0.5 text-xs font-mono font-bold rounded {activeScorePicker.side === 'aka' ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}">
+                  {activeScorePicker.side.toUpperCase()}
+                </span>
+                <span class="font-bold text-xs text-white">
+                  Pilih Nilai Cepat untuk Juri {activeScorePicker.idx + 1}
+                </span>
+              </div>
+              <button
+                type="button"
+                onclick={() => (activeScorePicker = null)}
+                class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-white rounded"
+                aria-label="Tutup picker"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+
+            <!-- Quick Common Presets -->
+            <div class="mb-3">
+              <div class="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Preset Populer:</div>
+              <div class="grid grid-cols-5 gap-1.5">
+                {#each COMMON_SCORE_PRESETS as presetVal}
+                  <button
+                    type="button"
+                    onclick={() => pickPresetScore(presetVal)}
+                    class="py-2 bg-[#111216] hover:bg-[#5865f2] hover:text-white border border-[#2b2d31] rounded-lg font-mono font-bold text-sm text-zinc-200 transition"
+                  >
+                    {presetVal}
+                  </button>
+                {/each}
+                <button
+                  type="button"
+                  onclick={() => pickPresetScore("0.0")}
+                  class="py-2 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/40 rounded-lg font-mono font-bold text-xs transition"
+                >
+                  0.0 (Kiken)
+                </button>
+              </div>
+            </div>
+
+            <!-- Quick Ranges: 5.x to 9.x / 10.0 -->
+            <div class="mb-2">
+              <div class="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Rentang Standar (5.0 s/d 10.0):</div>
+              <div class="grid grid-cols-6 gap-1 font-mono text-xs">
+                {#each ["5.0", "5.5", "6.0", "6.5", "7.0", "7.5", "8.0", "8.3", "8.5", "8.7", "9.0", "9.5", "9.8", "10.0"] as rVal}
+                  <button
+                    type="button"
+                    onclick={() => pickPresetScore(rVal)}
+                    class="py-1.5 bg-[#1e2029] hover:bg-white/10 border border-white/5 rounded font-bold text-zinc-300 transition"
+                  >
+                    {rVal}
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            <div class="pt-2 border-t border-[#2b2d31] flex items-center justify-between text-[11px] text-zinc-400 font-mono">
+              <span>Guardrail: Nilai minimal 5.0 (kecuali 0.0 Kiken)</span>
+              <button
+                type="button"
+                onclick={() => pickPresetScore("")}
+                class="text-amber-400 hover:underline font-bold"
+              >
+                Hapus Nilai
+              </button>
+            </div>
+          </div>
+        {/if}
       </div>
     </div>
 
@@ -1088,7 +1242,6 @@
 <!-- ==================== DISCORD-STYLED KATA SELECT MODAL ==================== -->
 {#if isKataModalOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-    <!-- Click backdrop to close -->
     <button
       type="button"
       class="absolute inset-0 w-full h-full cursor-default"
@@ -1183,6 +1336,7 @@
             if (kataModalTarget === "aka") kataAkaName = "";
             else kataAoName = "";
             isKataModalOpen = false;
+            broadcastLiveState();
           }}
           class="text-red-400 hover:underline font-bold"
         >
