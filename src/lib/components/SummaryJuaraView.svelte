@@ -200,7 +200,7 @@
         </span>
       </div>
       <p class="text-[11px] text-zinc-400 mt-0.5">
-        Perhitungan klasemen Juara Umum resmi (Kategori tanpa lawan mendapatkan medali emas namun tidak dihitung poin juara umum)
+        Perhitungan klasemen Juara Umum resmi berdasarkan hasil bagan tunggal & final (penyisihan pool dan Best of the Best tidak diperhitungkan; kategori tanpa lawan mendapat emas tanpa poin juara umum)
       </p>
     </div>
 

@@ -1747,26 +1747,30 @@ impl DatabaseManager {
             }
         }
 
-        // 5. Fetch all bagans for this event
+        // 5. Fetch all candidate bagans for this event
         #[derive(sqlx::FromRow)]
         struct BaganMedalRow {
             id: i64,
             nama_bagan: Option<String>,
             kode: Option<String>,
+            nomor_tanding_id: Option<i64>,
+            pool: Option<i32>,
+            is_bob: Option<bool>,
+            nt_nama: Option<String>,
+            nt_is_bob: Option<bool>,
             juara_1_id: Option<i64>,
             juara_2_id: Option<i64>,
             juara_3a_id: Option<i64>,
             juara_3b_id: Option<i64>,
         }
-        let bagans = sqlx::query_as::<_, BaganMedalRow>(
+        let all_raw_bagans = sqlx::query_as::<_, BaganMedalRow>(
             r#"
-            SELECT b.id, b.nama_bagan, b.kode, b.juara_1_id, b.juara_2_id, b.juara_3a_id, b.juara_3b_id
+            SELECT b.id, b.nama_bagan, b.kode, b.nomor_tanding_id, b.pool, b.is_bob,
+                   nt.nama_nomor_tanding AS nt_nama, nt.is_bob AS nt_is_bob,
+                   b.juara_1_id, b.juara_2_id, b.juara_3a_id, b.juara_3b_id
             FROM backend_bagan b
             LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
             WHERE b.event_id = ?
-              AND b.is_bob = 0
-              AND (nt.is_bob IS NULL OR nt.is_bob = 0)
-              AND (nt.nama_nomor_tanding IS NULL OR LOWER(nt.nama_nomor_tanding) NOT LIKE '%festival%')
             ORDER BY CAST(COALESCE(b.kode, '9999') AS INTEGER) ASC, b.id ASC
             "#
         )
@@ -1774,6 +1778,80 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat bagan untuk rekap juara: {}", e))?;
+
+        // Helper: Check if a name or category is BOB (Best of the Best)
+        let is_bob = |b_name: &str, nt_name: &str, b_bob: bool, nt_bob: bool| -> bool {
+            if b_bob || nt_bob {
+                return true;
+            }
+            for s in [b_name, nt_name] {
+                let u = s.to_uppercase();
+                if u.contains("BEST OF THE BEST")
+                    || u.contains("(BOB)")
+                    || u.contains(" BOB")
+                    || u.contains("BOB ")
+                    || u == "BOB"
+                {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // Helper: Check if festival
+        let is_festival = |b_name: &str, nt_name: &str| -> bool {
+            for s in [b_name, nt_name] {
+                if s.to_uppercase().contains("FESTIVAL") {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // Step A: Exclude BOB & Festival, and group bagans by category to identify multi-pool categories
+        let mut non_bob_bagans: Vec<BaganMedalRow> = Vec::new();
+        let mut cat_count_map: HashMap<i64, usize> = HashMap::new();
+
+        for b in all_raw_bagans {
+            let b_name = b.nama_bagan.as_deref().unwrap_or_default();
+            let nt_name = b.nt_nama.as_deref().unwrap_or_default();
+            let b_bob = b.is_bob.unwrap_or(false);
+            let nt_bob = b.nt_is_bob.unwrap_or(false);
+
+            if is_bob(b_name, nt_name, b_bob, nt_bob) || is_festival(b_name, nt_name) {
+                continue;
+            }
+
+            if let Some(cat_id) = b.nomor_tanding_id {
+                *cat_count_map.entry(cat_id).or_insert(0) += 1;
+            }
+            non_bob_bagans.push(b);
+        }
+
+        // Step B: Only keep Bagan Tunggal or Bagan Final (exclude preliminary non-final pools e.g. Pool A, Pool B)
+        let mut bagans: Vec<BaganMedalRow> = Vec::new();
+        for b in non_bob_bagans {
+            let b_name = b.nama_bagan.as_deref().unwrap_or_default();
+            let pool_val = b.pool.unwrap_or(1);
+
+            let is_multi = b.nomor_tanding_id.map(|cat_id| {
+                cat_count_map.get(&cat_id).copied().unwrap_or(1) > 1
+            }).unwrap_or(false);
+
+            if is_multi {
+                // Multi-pool category: only keep Final!
+                let is_final = pool_val == 0 || b_name.to_uppercase().contains("FINAL");
+                if is_final {
+                    bagans.push(b);
+                }
+            } else {
+                // Bagan tunggal: make sure it is not an orphaned pool
+                let is_pool = b_name.to_uppercase().contains("POOL ") && !b_name.to_uppercase().contains("FINAL");
+                if !is_pool {
+                    bagans.push(b);
+                }
+            }
+        }
 
         // 6. Collect all winner athlete IDs to fetch their names & affiliations in one query
         let mut needed_athlete_ids: HashSet<i64> = HashSet::new();
@@ -2106,28 +2184,31 @@ impl DatabaseManager {
             if let Some(a2) = m.atlet2_id { set.insert(a2); }
         }
 
-        // 3. Fetch all bagans for this event
+        // 3. Fetch all candidate bagans for this event
         #[derive(sqlx::FromRow)]
         struct BaganSummaryRow {
             id: i64,
             nama_bagan: Option<String>,
             kode: Option<String>,
             tipe_tanding: Option<String>,
+            nomor_tanding_id: Option<i64>,
+            pool: Option<i32>,
+            is_bob: Option<bool>,
+            nt_nama: Option<String>,
+            nt_is_bob: Option<bool>,
             juara_1_id: Option<i64>,
             juara_2_id: Option<i64>,
             juara_3a_id: Option<i64>,
             juara_3b_id: Option<i64>,
         }
-        let bagan_rows = sqlx::query_as::<_, BaganSummaryRow>(
+        let all_raw_bagans = sqlx::query_as::<_, BaganSummaryRow>(
             r#"
-            SELECT b.id, b.nama_bagan, b.kode, b.tipe_tanding,
+            SELECT b.id, b.nama_bagan, b.kode, b.tipe_tanding, b.nomor_tanding_id, b.pool, b.is_bob,
+                   nt.nama_nomor_tanding AS nt_nama, nt.is_bob AS nt_is_bob,
                    b.juara_1_id, b.juara_2_id, b.juara_3a_id, b.juara_3b_id
             FROM backend_bagan b
             LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
             WHERE b.event_id = ?
-              AND b.is_bob = 0
-              AND (nt.is_bob IS NULL OR nt.is_bob = 0)
-              AND (nt.nama_nomor_tanding IS NULL OR LOWER(nt.nama_nomor_tanding) NOT LIKE '%festival%')
             ORDER BY CAST(COALESCE(b.kode, '9999') AS INTEGER) ASC, b.id ASC
             "#
         )
@@ -2135,6 +2216,74 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat bagan untuk summary: {}", e))?;
+
+        let is_bob = |b_name: &str, nt_name: &str, b_bob: bool, nt_bob: bool| -> bool {
+            if b_bob || nt_bob {
+                return true;
+            }
+            for s in [b_name, nt_name] {
+                let u = s.to_uppercase();
+                if u.contains("BEST OF THE BEST")
+                    || u.contains("(BOB)")
+                    || u.contains(" BOB")
+                    || u.contains("BOB ")
+                    || u == "BOB"
+                {
+                    return true;
+                }
+            }
+            false
+        };
+
+        let is_festival = |b_name: &str, nt_name: &str| -> bool {
+            for s in [b_name, nt_name] {
+                if s.to_uppercase().contains("FESTIVAL") {
+                    return true;
+                }
+            }
+            false
+        };
+
+        let mut non_bob_bagans: Vec<BaganSummaryRow> = Vec::new();
+        let mut cat_count_map: HashMap<i64, usize> = HashMap::new();
+
+        for b in all_raw_bagans {
+            let b_name = b.nama_bagan.as_deref().unwrap_or_default();
+            let nt_name = b.nt_nama.as_deref().unwrap_or_default();
+            let b_bob = b.is_bob.unwrap_or(false);
+            let nt_bob = b.nt_is_bob.unwrap_or(false);
+
+            if is_bob(b_name, nt_name, b_bob, nt_bob) || is_festival(b_name, nt_name) {
+                continue;
+            }
+
+            if let Some(cat_id) = b.nomor_tanding_id {
+                *cat_count_map.entry(cat_id).or_insert(0) += 1;
+            }
+            non_bob_bagans.push(b);
+        }
+
+        let mut bagan_rows: Vec<BaganSummaryRow> = Vec::new();
+        for b in non_bob_bagans {
+            let b_name = b.nama_bagan.as_deref().unwrap_or_default();
+            let pool_val = b.pool.unwrap_or(1);
+
+            let is_multi = b.nomor_tanding_id.map(|cat_id| {
+                cat_count_map.get(&cat_id).copied().unwrap_or(1) > 1
+            }).unwrap_or(false);
+
+            if is_multi {
+                let is_final = pool_val == 0 || b_name.to_uppercase().contains("FINAL");
+                if is_final {
+                    bagan_rows.push(b);
+                }
+            } else {
+                let is_pool = b_name.to_uppercase().contains("POOL ") && !b_name.to_uppercase().contains("FINAL");
+                if !is_pool {
+                    bagan_rows.push(b);
+                }
+            }
+        }
 
         // 4. Collect athlete IDs needed for affiliations
         let mut needed_athlete_ids: HashSet<i64> = HashSet::new();
