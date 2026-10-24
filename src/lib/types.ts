@@ -258,3 +258,18 @@ export interface SaveMatchInput {
   selesai: boolean;
 }
 
+export interface PodiumAthlete {
+  id: number;
+  name: string;
+  contingent: string;
+  logo: string | null;
+  is_priority: boolean;
+}
+
+export interface BaganPodium {
+  j1: PodiumAthlete | null;
+  j2: PodiumAthlete | null;
+  j3a: PodiumAthlete | null;
+  j3b: PodiumAthlete | null;
+}
+

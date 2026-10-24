@@ -319,3 +319,20 @@ pub struct SaveMatchInput {
     pub hantei: bool,
     pub selesai: bool,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PodiumAthlete {
+    pub id: i64,
+    pub name: String,
+    pub contingent: String,
+    pub logo: Option<String>,
+    pub is_priority: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaganPodium {
+    pub j1: Option<PodiumAthlete>,
+    pub j2: Option<PodiumAthlete>,
+    pub j3a: Option<PodiumAthlete>,
+    pub j3b: Option<PodiumAthlete>,
+}

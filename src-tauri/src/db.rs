@@ -8,8 +8,8 @@ use tracing::info;
 
 use crate::bracket::{build_bracket_in_memory, split_athletes_into_pools, AthleteInput};
 use crate::models::{
-    Atlet, AthleteMutationInput, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, Tatami, Utusan,
+    Atlet, AthleteMutationInput, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, Tatami, Utusan,
 };
 
 #[derive(Clone)]
@@ -243,6 +243,90 @@ impl DatabaseManager {
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("Gagal memuat bagan #{}: {}", bagan_id, e))
+    }
+
+    /// Fetches podium standings (Juara 1, 2, 3A, 3B) for a bagan or category
+    pub async fn get_bagan_podium(&self, bagan_id: i64) -> Result<BaganPodium, String> {
+        let pool = self.get_pool()?;
+
+        // Fetch juara IDs from the bagan
+        let bagan_row: Option<(Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, i32)> = sqlx::query_as(
+            "SELECT juara_1_id, juara_2_id, juara_3a_id, juara_3b_id, nomor_tanding_id, nama_bagan, pool FROM backend_bagan WHERE id = ?"
+        )
+        .bind(bagan_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat juara bagan: {}", e))?;
+
+        let (mut j1_id, mut j2_id, mut j3a_id, mut j3b_id, nt_id, _nama_bagan, _pool_num) = match bagan_row {
+            Some(row) => row,
+            None => return Ok(BaganPodium { j1: None, j2: None, j3a: None, j3b: None }),
+        };
+
+        // If this bagan has related pool bagans or final bagan in the same category, check them for any missing juara IDs
+        if let Some(category_id) = nt_id {
+            if j1_id.is_none() || j2_id.is_none() || j3a_id.is_none() || j3b_id.is_none() {
+                let related_ids: Vec<(Option<i64>, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
+                    "SELECT juara_1_id, juara_2_id, juara_3a_id, juara_3b_id FROM backend_bagan WHERE nomor_tanding_id = ? AND id != ?"
+                )
+                .bind(category_id)
+                .bind(bagan_id)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+
+                for (r1, r2, r3a, r3b) in related_ids {
+                    if j1_id.is_none() && r1.is_some() { j1_id = r1; }
+                    if j2_id.is_none() && r2.is_some() { j2_id = r2; }
+                    if j3a_id.is_none() && r3a.is_some() { j3a_id = r3a; }
+                    if j3b_id.is_none() && r3b.is_some() { j3b_id = r3b; }
+                }
+            }
+        }
+
+        async fn fetch_podium_athlete(pool: &sqlx::SqlitePool, athlete_id: i64) -> Option<PodiumAthlete> {
+            sqlx::query_as::<_, (i64, Option<String>, Option<String>, Option<String>, Option<String>, bool)>(
+                r#"
+                SELECT 
+                    a.id, a.nama_atlet,
+                    p.nama_perguruan,
+                    u.nama_utusan,
+                    u.logo,
+                    COALESCE(a.is_priority, 0)
+                FROM backend_atlet a
+                LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                WHERE a.id = ?
+                "#
+            )
+            .bind(athlete_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|(id, name, perguruan, utusan, logo, is_priority)| {
+                let contingent = match (perguruan, utusan) {
+                    (Some(p), Some(u)) if p != u => format!("{} • {}", p, u),
+                    (Some(p), _) => p,
+                    (_, Some(u)) => u,
+                    _ => "—".to_string(),
+                };
+                PodiumAthlete {
+                    id,
+                    name: name.unwrap_or_else(|| format!("Atlet #{}", id)),
+                    contingent,
+                    logo,
+                    is_priority,
+                }
+            })
+        }
+
+        let j1 = if let Some(id) = j1_id { fetch_podium_athlete(pool, id).await } else { None };
+        let j2 = if let Some(id) = j2_id { fetch_podium_athlete(pool, id).await } else { None };
+        let j3a = if let Some(id) = j3a_id { fetch_podium_athlete(pool, id).await } else { None };
+        let j3b = if let Some(id) = j3b_id { fetch_podium_athlete(pool, id).await } else { None };
+
+        Ok(BaganPodium { j1, j2, j3a, j3b })
     }
 
     /// Fetches matches (DetailBagan) for a bracket enriched with athlete names and clubs
@@ -1093,6 +1177,22 @@ impl DatabaseManager {
 
         let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id) = current_match;
 
+        // Fetch bagan metadata to identify pool / multi-pool context
+        let bagan_meta: Option<(i32, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT pool, nomor_tanding_id, nama_bagan FROM backend_bagan WHERE id = ?"
+        )
+        .bind(bagan_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal memuat info bagan #{}: {}", bagan_id, e))?;
+
+        let (bagan_pool, nomor_tanding_id, nama_bagan) = bagan_meta.unwrap_or((1, None, None));
+        let nama_bagan_upper = nama_bagan.unwrap_or_default().to_uppercase();
+        let is_pool_bracket = bagan_pool == 2 || nama_bagan_upper.contains("POOL A") || nama_bagan_upper.contains("POOL B") || nama_bagan_upper.contains("POOL 1") || nama_bagan_upper.contains("POOL 2");
+        let is_pool_a = nama_bagan_upper.contains("POOL A") || nama_bagan_upper.contains("POOL 1");
+        let _is_pool_b = nama_bagan_upper.contains("POOL B") || nama_bagan_upper.contains("POOL 2");
+        let is_final_bagan = bagan_pool == 0 || nama_bagan_upper.ends_with("- FINAL") || nama_bagan_upper.ends_with("FINAL");
+
         // 2. Update current match in backend_detailbagan
         sqlx::query(
             r#"
@@ -1134,98 +1234,309 @@ impl DatabaseManager {
             };
 
             if let Some(w_id) = winner_id {
-                // If round < 4, advance winner to the next round match
-                if round_num < 4 {
-                    let next_round = round_num + 1;
-                    let next_urutan = (urutan_num + 1) / 2;
+                if is_pool_bracket && !is_final_bagan {
+                    // Pool Preliminary Bracket (Pool A / Pool B):
+                    if round_num < 4 {
+                        // Advance winner within this pool bracket
+                        let next_round = round_num + 1;
+                        let next_urutan = (urutan_num + 1) / 2;
+                        if urutan_num % 2 == 1 {
+                            sqlx::query(
+                                "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                            )
+                            .bind(w_id)
+                            .bind(bagan_id)
+                            .bind(next_round)
+                            .bind(next_urutan)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| format!("Gagal memajukan pemenang pool: {}", e))?;
+                        } else {
+                            sqlx::query(
+                                "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                            )
+                            .bind(w_id)
+                            .bind(bagan_id)
+                            .bind(next_round)
+                            .bind(next_urutan)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| format!("Gagal memajukan pemenang pool: {}", e))?;
+                        }
+                    } else if round_num == 4 {
+                        // Round 4 is the SEMIFINAL of this pool!
+                        // Find the Final bagan of this category
+                        let final_bagan_id: Option<i64> = if let Some(nt_id) = nomor_tanding_id {
+                            sqlx::query_scalar(
+                                "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ? AND (pool = 0 OR UPPER(nama_bagan) LIKE '%- FINAL' OR UPPER(nama_bagan) LIKE '%FINAL') LIMIT 1"
+                            )
+                            .bind(nt_id)
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .unwrap_or(None)
+                        } else {
+                            None
+                        };
 
-                    if urutan_num % 2 == 1 {
-                        sqlx::query(
-                            "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
-                        )
-                        .bind(w_id)
-                        .bind(bagan_id)
-                        .bind(next_round)
-                        .bind(next_urutan)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| format!("Gagal memajukan pemenang ke ronde berikutnya: {}", e))?;
-                    } else {
-                        sqlx::query(
-                            "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
-                        )
-                        .bind(w_id)
-                        .bind(bagan_id)
-                        .bind(next_round)
-                        .bind(next_urutan)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| format!("Gagal memajukan pemenang ke ronde berikutnya: {}", e))?;
+                        if is_pool_a {
+                            // Pool A winner -> Final match (Round 4 slot 1, atlet1)
+                            if let Some(fb_id) = final_bagan_id {
+                                sqlx::query(
+                                    "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = 4 AND urutan = 1"
+                                )
+                                .bind(w_id)
+                                .bind(fb_id)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(|e| format!("Gagal memajukan pemenang Pool A ke final: {}", e))?;
+
+                                // Pool A loser -> Juara 3A!
+                                sqlx::query("UPDATE backend_bagan SET juara_3a_id = ? WHERE id = ?")
+                                    .bind(loser_id)
+                                    .bind(fb_id)
+                                    .execute(&mut *tx)
+                                    .await
+                                    .map_err(|e| format!("Gagal memperbarui juara 3A pada final: {}", e))?;
+                            }
+                            let _ = sqlx::query("UPDATE backend_bagan SET juara_3a_id = ? WHERE id = ?")
+                                .bind(loser_id)
+                                .bind(bagan_id)
+                                .execute(&mut *tx)
+                                .await;
+                        } else {
+                            // Pool B (or subsequent pool) winner -> Final match (Round 4 slot 2, atlet2)
+                            if let Some(fb_id) = final_bagan_id {
+                                sqlx::query(
+                                    "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = 4 AND urutan = 1"
+                                )
+                                .bind(w_id)
+                                .bind(fb_id)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(|e| format!("Gagal memajukan pemenang Pool B ke final: {}", e))?;
+
+                                // Pool B loser -> Juara 3B!
+                                sqlx::query("UPDATE backend_bagan SET juara_3b_id = ? WHERE id = ?")
+                                    .bind(loser_id)
+                                    .bind(fb_id)
+                                    .execute(&mut *tx)
+                                    .await
+                                    .map_err(|e| format!("Gagal memperbarui juara 3B pada final: {}", e))?;
+                            }
+                            let _ = sqlx::query("UPDATE backend_bagan SET juara_3b_id = ? WHERE id = ?")
+                                .bind(loser_id)
+                                .bind(bagan_id)
+                                .execute(&mut *tx)
+                                .await;
+                        }
                     }
-                } else if round_num == 4 {
-                    // Final: Winner is Juara 1, Loser is Juara 2
-                    sqlx::query(
-                        "UPDATE backend_bagan SET juara_1_id = ?, juara_2_id = ? WHERE id = ?"
-                    )
-                    .bind(w_id)
-                    .bind(loser_id)
-                    .bind(bagan_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Gagal memperbarui juara 1 & 2: {}", e))?;
-                }
+                } else {
+                    // Standard Single Pool or Final Bagan:
+                    if round_num < 4 {
+                        let next_round = round_num + 1;
+                        let next_urutan = (urutan_num + 1) / 2;
 
-                // If round == 3 (Semifinal), loser becomes Juara 3A (semi 1) or Juara 3B (semi 2)
-                if round_num == 3 {
-                    if urutan_num == 1 {
-                        sqlx::query("UPDATE backend_bagan SET juara_3a_id = ? WHERE id = ?")
-                            .bind(loser_id)
+                        if urutan_num % 2 == 1 {
+                            sqlx::query(
+                                "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                            )
+                            .bind(w_id)
                             .bind(bagan_id)
+                            .bind(next_round)
+                            .bind(next_urutan)
                             .execute(&mut *tx)
                             .await
-                            .map_err(|e| format!("Gagal memperbarui juara 3A: {}", e))?;
-                    } else if urutan_num == 2 {
-                        sqlx::query("UPDATE backend_bagan SET juara_3b_id = ? WHERE id = ?")
-                            .bind(loser_id)
+                            .map_err(|e| format!("Gagal memajukan pemenang ke ronde berikutnya: {}", e))?;
+                        } else {
+                            sqlx::query(
+                                "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                            )
+                            .bind(w_id)
                             .bind(bagan_id)
+                            .bind(next_round)
+                            .bind(next_urutan)
                             .execute(&mut *tx)
                             .await
-                            .map_err(|e| format!("Gagal memperbarui juara 3B: {}", e))?;
+                            .map_err(|e| format!("Gagal memajukan pemenang ke ronde berikutnya: {}", e))?;
+                        }
+                    } else if round_num == 4 {
+                        // Final: Winner is Juara 1, Loser is Juara 2
+                        sqlx::query(
+                            "UPDATE backend_bagan SET juara_1_id = ?, juara_2_id = ? WHERE id = ?"
+                        )
+                        .bind(w_id)
+                        .bind(loser_id)
+                        .bind(bagan_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| format!("Gagal memperbarui juara 1 & 2: {}", e))?;
+
+                        // If multi-pool category, also sync juara 1 & 2 to related pool bagans
+                        if let Some(nt_id) = nomor_tanding_id {
+                            let _ = sqlx::query(
+                                "UPDATE backend_bagan SET juara_1_id = ?, juara_2_id = ? WHERE nomor_tanding_id = ?"
+                            )
+                            .bind(w_id)
+                            .bind(loser_id)
+                            .bind(nt_id)
+                            .execute(&mut *tx)
+                            .await;
+                        }
+                    }
+
+                    // If round == 3 (Semifinal), loser becomes Juara 3A (semi 1) or Juara 3B (semi 2)
+                    if round_num == 3 {
+                        if urutan_num == 1 {
+                            sqlx::query("UPDATE backend_bagan SET juara_3a_id = ? WHERE id = ?")
+                                .bind(loser_id)
+                                .bind(bagan_id)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(|e| format!("Gagal memperbarui juara 3A: {}", e))?;
+                        } else if urutan_num == 2 {
+                            sqlx::query("UPDATE backend_bagan SET juara_3b_id = ? WHERE id = ?")
+                                .bind(loser_id)
+                                .bind(bagan_id)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(|e| format!("Gagal memperbarui juara 3B: {}", e))?;
+                        }
                     }
                 }
             }
         } else if !input.selesai {
             // Match is re-opened or reset: if next match hasn't started, clear winner from next round
-            if round_num < 4 {
-                let next_round = round_num + 1;
-                let next_urutan = (urutan_num + 1) / 2;
+            if is_pool_bracket && !is_final_bagan {
+                if round_num < 4 {
+                    let next_round = round_num + 1;
+                    let next_urutan = (urutan_num + 1) / 2;
 
-                if urutan_num % 2 == 1 {
-                    let _ = sqlx::query(
-                        "UPDATE backend_detailbagan SET atlet1_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
-                    )
-                    .bind(bagan_id)
-                    .bind(next_round)
-                    .bind(next_urutan)
-                    .execute(&mut *tx)
-                    .await;
-                } else {
-                    let _ = sqlx::query(
-                        "UPDATE backend_detailbagan SET atlet2_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
-                    )
-                    .bind(bagan_id)
-                    .bind(next_round)
-                    .bind(next_urutan)
-                    .execute(&mut *tx)
-                    .await;
+                    if urutan_num % 2 == 1 {
+                        let _ = sqlx::query(
+                            "UPDATE backend_detailbagan SET atlet1_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
+                        )
+                        .bind(bagan_id)
+                        .bind(next_round)
+                        .bind(next_urutan)
+                        .execute(&mut *tx)
+                        .await;
+                    } else {
+                        let _ = sqlx::query(
+                            "UPDATE backend_detailbagan SET atlet2_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
+                        )
+                        .bind(bagan_id)
+                        .bind(next_round)
+                        .bind(next_urutan)
+                        .execute(&mut *tx)
+                        .await;
+                    }
+                } else if round_num == 4 {
+                    // Semifinal reset
+                    let final_bagan_id: Option<i64> = if let Some(nt_id) = nomor_tanding_id {
+                        sqlx::query_scalar(
+                            "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ? AND (pool = 0 OR UPPER(nama_bagan) LIKE '%- FINAL' OR UPPER(nama_bagan) LIKE '%FINAL') LIMIT 1"
+                        )
+                        .bind(nt_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .unwrap_or(None)
+                    } else {
+                        None
+                    };
+
+                    if is_pool_a {
+                        if let Some(fb_id) = final_bagan_id {
+                            let _ = sqlx::query(
+                                "UPDATE backend_detailbagan SET atlet1_id = NULL WHERE bagan_id = ? AND round = 4 AND urutan = 1 AND selesai = 0"
+                            )
+                            .bind(fb_id)
+                            .execute(&mut *tx)
+                            .await;
+
+                            let _ = sqlx::query("UPDATE backend_bagan SET juara_3a_id = NULL WHERE id = ?")
+                                .bind(fb_id)
+                                .execute(&mut *tx)
+                                .await;
+                        }
+                        let _ = sqlx::query("UPDATE backend_bagan SET juara_3a_id = NULL WHERE id = ?")
+                            .bind(bagan_id)
+                            .execute(&mut *tx)
+                            .await;
+                    } else {
+                        if let Some(fb_id) = final_bagan_id {
+                            let _ = sqlx::query(
+                                "UPDATE backend_detailbagan SET atlet2_id = NULL WHERE bagan_id = ? AND round = 4 AND urutan = 1 AND selesai = 0"
+                            )
+                            .bind(fb_id)
+                            .execute(&mut *tx)
+                            .await;
+
+                            let _ = sqlx::query("UPDATE backend_bagan SET juara_3b_id = NULL WHERE id = ?")
+                                .bind(fb_id)
+                                .execute(&mut *tx)
+                                .await;
+                        }
+                        let _ = sqlx::query("UPDATE backend_bagan SET juara_3b_id = NULL WHERE id = ?")
+                            .bind(bagan_id)
+                            .execute(&mut *tx)
+                            .await;
+                    }
                 }
-            } else if round_num == 4 {
-                let _ = sqlx::query(
-                    "UPDATE backend_bagan SET juara_1_id = NULL, juara_2_id = NULL WHERE id = ?"
-                )
-                .bind(bagan_id)
-                .execute(&mut *tx)
-                .await;
+            } else {
+                // Standard Single Pool or Final Bagan
+                if round_num < 4 {
+                    let next_round = round_num + 1;
+                    let next_urutan = (urutan_num + 1) / 2;
+
+                    if urutan_num % 2 == 1 {
+                        let _ = sqlx::query(
+                            "UPDATE backend_detailbagan SET atlet1_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
+                        )
+                        .bind(bagan_id)
+                        .bind(next_round)
+                        .bind(next_urutan)
+                        .execute(&mut *tx)
+                        .await;
+                    } else {
+                        let _ = sqlx::query(
+                            "UPDATE backend_detailbagan SET atlet2_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
+                        )
+                        .bind(bagan_id)
+                        .bind(next_round)
+                        .bind(next_urutan)
+                        .execute(&mut *tx)
+                        .await;
+                    }
+                }
+                if round_num == 3 {
+                    if urutan_num == 1 {
+                        let _ = sqlx::query("UPDATE backend_bagan SET juara_3a_id = NULL WHERE id = ?")
+                            .bind(bagan_id)
+                            .execute(&mut *tx)
+                            .await;
+                    } else if urutan_num == 2 {
+                        let _ = sqlx::query("UPDATE backend_bagan SET juara_3b_id = NULL WHERE id = ?")
+                            .bind(bagan_id)
+                            .execute(&mut *tx)
+                            .await;
+                    }
+                } else if round_num == 4 {
+                    let _ = sqlx::query(
+                        "UPDATE backend_bagan SET juara_1_id = NULL, juara_2_id = NULL WHERE id = ?"
+                    )
+                    .bind(bagan_id)
+                    .execute(&mut *tx)
+                    .await;
+
+                    if let Some(nt_id) = nomor_tanding_id {
+                        let _ = sqlx::query(
+                            "UPDATE backend_bagan SET juara_1_id = NULL, juara_2_id = NULL WHERE nomor_tanding_id = ?"
+                        )
+                        .bind(nt_id)
+                        .execute(&mut *tx)
+                        .await;
+                    }
+                }
             }
         }
 

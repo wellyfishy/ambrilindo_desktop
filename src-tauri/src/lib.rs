@@ -12,7 +12,7 @@ use tauri::Manager;
 use audio::{AudioService, SoundType};
 use db::DatabaseManager;
 use models::{
-    AthleteMutationInput, Atlet, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
+    AthleteMutationInput, Atlet, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
     EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, Tatami, Utusan,
 };
 use server::{ArenaMessage, NetworkInfo};
@@ -275,6 +275,15 @@ async fn get_bagan_by_id(
 ) -> Result<Option<Bagan>, String> {
     let db = state.db.lock().await;
     db.get_bagan_by_id(bagan_id).await
+}
+
+#[tauri::command]
+async fn get_bagan_podium(
+    bagan_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<BaganPodium, String> {
+    let db = state.db.lock().await;
+    db.get_bagan_podium(bagan_id).await
 }
 
 #[tauri::command]
@@ -830,6 +839,7 @@ pub fn run() {
             delete_all_athletes,
             get_bagans,
             get_bagan_by_id,
+            get_bagan_podium,
             get_detail_bagan,
             save_match_result,
             open_control_panel_window,

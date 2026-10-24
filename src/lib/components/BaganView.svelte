@@ -2,7 +2,7 @@
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import type { DetailBaganItem, BaganItem, SaveMatchInput } from "$lib/types";
+  import type { DetailBaganItem, BaganItem, SaveMatchInput, BaganPodium, PodiumAthlete } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
 
   interface Props {
@@ -31,6 +31,13 @@
   let isLoading = $state(true);
   let logoMap = $state<Record<string, string>>({});
   let activeMatchForControl = $state<DetailBaganItem | null>(null);
+
+  let currentBaganInfo = $state<BaganItem | null>(null);
+  $effect(() => {
+    currentBaganInfo = baganInfo;
+  });
+
+  let dbPodium = $state<BaganPodium | null>(null);
 
   async function handleSaveMatchResult(input: SaveMatchInput) {
     try {
@@ -165,12 +172,41 @@
     }
   }
 
+  async function loadPodiumData() {
+    try {
+      const data = await invoke<BaganPodium>("get_bagan_podium", { baganId });
+      if (data) {
+        dbPodium = data;
+        const logosToResolve = [data.j1?.logo, data.j2?.logo, data.j3a?.logo, data.j3b?.logo].filter(Boolean) as string[];
+        for (const path of logosToResolve) {
+          if (!logoMap[path]) {
+            if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:")) {
+              logoMap[path] = path;
+            } else {
+              try {
+                const dataUrl = await invoke<string | null>("get_media_data_url", { relativePath: path });
+                if (dataUrl) logoMap[path] = dataUrl;
+              } catch {}
+            }
+          }
+        }
+      }
+    } catch {
+      // In browser fallback or if IPC not ready
+    }
+  }
+
   async function loadBracketData() {
     isLoading = true;
     try {
       const data = await invoke<DetailBaganItem[]>("get_detail_bagan", { baganId });
       matches = data;
       resolveLogos(data);
+      try {
+        const b = await invoke<BaganItem | null>("get_bagan_by_id", { baganId });
+        if (b) currentBaganInfo = b;
+      } catch {}
+      await loadPodiumData();
     } catch (err) {
       console.error("Gagal memuat detail bagan:", err);
       matches = [];
@@ -205,7 +241,48 @@
   let elimRounds = $derived(rounds.filter(([r]) => r <= 4));
   let elimMatchesCount = $derived(matches.filter((m) => (m.round || 1) <= 4).length);
 
+  let poolCount = $derived.by(() => {
+    const p = currentBaganInfo?.pool ?? (baganInfo?.pool ?? 1);
+    if (p === 2 || p === 4) return p;
+    const name = (baganName || "").toLowerCase();
+    if (
+      name.includes("pool a") ||
+      name.includes("pool b") ||
+      name.includes("pool 1") ||
+      name.includes("pool 2") ||
+      name.includes("2 pool")
+    ) {
+      return 2;
+    }
+    if (
+      name.includes("pool c") ||
+      name.includes("pool d") ||
+      name.includes("4 pool")
+    ) {
+      return 4;
+    }
+    return 1;
+  });
+
+  let isFinalBagan = $derived.by(() => {
+    if (currentBaganInfo?.pool === 0 || baganInfo?.pool === 0) return true;
+    const name = (baganName || "").toUpperCase().trim();
+    return name.endsWith("- FINAL") || name.endsWith("FINAL");
+  });
+
   function getRoundBadge(roundNum: number, totalElimRounds: number): string {
+    if (poolCount === 2 && !isFinalBagan) {
+      if (roundNum === 4) return "SF";
+      if (roundNum === 3) return "R3";
+      if (roundNum === 2) return "R2";
+      return "R1";
+    }
+    if (poolCount === 4 && !isFinalBagan) {
+      if (roundNum === 4) return "R4";
+      if (roundNum === 3) return "R3";
+      if (roundNum === 2) return "R2";
+      return "R1";
+    }
     if (roundNum === 4) return "FN";
     if (roundNum === 3) return totalElimRounds >= 4 ? "SF" : "FN";
     if (roundNum === 2) return totalElimRounds >= 4 ? "R2" : "SF";
@@ -213,6 +290,18 @@
   }
 
   function getRoundTitle(roundNum: number, totalElimRounds: number): string {
+    if (poolCount === 2 && !isFinalBagan) {
+      if (roundNum === 4) return "SEMI FINAL";
+      if (roundNum === 3) return "BABAK 8 BESAR";
+      if (roundNum === 2) return "BABAK 16 BESAR";
+      return "BABAK 32 BESAR";
+    }
+    if (poolCount === 4 && !isFinalBagan) {
+      if (roundNum === 4) return "BABAK 8 BESAR";
+      if (roundNum === 3) return "BABAK 16 BESAR";
+      if (roundNum === 2) return "BABAK 32 BESAR";
+      return "BABAK 64 BESAR";
+    }
     if (roundNum === 4) return "PARTAI FINAL";
     if (roundNum === 3) return totalElimRounds >= 4 ? "SEMI FINAL" : "PARTAI FINAL";
     if (roundNum === 2) return totalElimRounds >= 4 ? "PEREMPAT FINAL" : "SEMI FINAL";
@@ -245,83 +334,158 @@
 
   // Calculate podium / Hasil Juara standings (Juara 1, 2, 3A, 3B for Juara 3 Bersama)
   let podium = $derived.by(() => {
-    const finalMatch = matches.find((m) => m.round === 4) || elimRounds[elimRounds.length - 1]?.[1]?.[0];
-    const semiMatches = matches
-      .filter((m) => m.round === 3)
-      .sort((a, b) => (a.urutan || 0) - (b.urutan || 0));
-    const semi1 = semiMatches[0];
-    const semi2 = semiMatches[1];
+    // 1. Initial values from dbPodium if loaded from backend
+    let j1 = dbPodium?.j1
+      ? {
+          name: dbPodium.j1.name,
+          contingent: dbPodium.j1.contingent,
+          logo: dbPodium.j1.logo,
+          is_priority: dbPodium.j1.is_priority,
+        }
+      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
 
-    let j1 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
-    let j2 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
-    let j3a = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
-    let j3b = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
+    let j2 = dbPodium?.j2
+      ? {
+          name: dbPodium.j2.name,
+          contingent: dbPodium.j2.contingent,
+          logo: dbPodium.j2.logo,
+          is_priority: dbPodium.j2.is_priority,
+        }
+      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
 
-    if (finalMatch && finalMatch.selesai) {
-      if (finalMatch.pemenang === "1") {
-        j1 = {
-          name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
-          contingent: finalMatch.atlet1_kontingen || "—",
-          logo: finalMatch.atlet1_logo || null,
-          is_priority: !!finalMatch.atlet1_is_priority,
-        };
-        j2 = {
-          name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
-          contingent: finalMatch.atlet2_kontingen || "—",
-          logo: finalMatch.atlet2_logo || null,
-          is_priority: !!finalMatch.atlet2_is_priority,
-        };
-      } else if (finalMatch.pemenang === "2") {
-        j1 = {
-          name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
-          contingent: finalMatch.atlet2_kontingen || "—",
-          logo: finalMatch.atlet2_logo || null,
-          is_priority: !!finalMatch.atlet2_is_priority,
-        };
-        j2 = {
-          name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
-          contingent: finalMatch.atlet1_kontingen || "—",
-          logo: finalMatch.atlet1_logo || null,
-          is_priority: !!finalMatch.atlet1_is_priority,
-        };
+    let j3a = dbPodium?.j3a
+      ? {
+          name: dbPodium.j3a.name,
+          contingent: dbPodium.j3a.contingent,
+          logo: dbPodium.j3a.logo,
+          is_priority: dbPodium.j3a.is_priority,
+        }
+      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
+
+    let j3b = dbPodium?.j3b
+      ? {
+          name: dbPodium.j3b.name,
+          contingent: dbPodium.j3b.contingent,
+          logo: dbPodium.j3b.logo,
+          is_priority: dbPodium.j3b.is_priority,
+        }
+      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
+
+    // 2. Real-time in-memory calculation from matches (reactive instant update)
+    if (poolCount === 2 && !isFinalBagan) {
+      // 2-pool preliminary: Round 4 is the pool Semifinal!
+      const semiMatch = matches.find((m) => m.round === 4);
+      if (semiMatch && semiMatch.selesai && semiMatch.pemenang) {
+        const loserIsA1 = semiMatch.pemenang === "2";
+        const loserName = loserIsA1
+          ? semiMatch.atlet1_nama || (semiMatch.atlet1_id ? `Atlet #${semiMatch.atlet1_id}` : "BYE")
+          : semiMatch.atlet2_nama || (semiMatch.atlet2_id ? `Atlet #${semiMatch.atlet2_id}` : "BYE");
+        const loserContingent = loserIsA1 ? semiMatch.atlet1_kontingen || "—" : semiMatch.atlet2_kontingen || "—";
+        const loserLogo = loserIsA1 ? semiMatch.atlet1_logo || null : semiMatch.atlet2_logo || null;
+        const loserPriority = !!(loserIsA1 ? semiMatch.atlet1_is_priority : semiMatch.atlet2_is_priority);
+
+        const isPoolA = (baganName || "").toLowerCase().includes("pool a") || (baganName || "").toLowerCase().includes("pool 1");
+        if (isPoolA) {
+          if (j3a.name === "Belum Ditentukan") {
+            j3a = { name: loserName, contingent: loserContingent, logo: loserLogo, is_priority: loserPriority };
+          }
+        } else {
+          if (j3b.name === "Belum Ditentukan") {
+            j3b = { name: loserName, contingent: loserContingent, logo: loserLogo, is_priority: loserPriority };
+          }
+        }
       }
-    }
+    } else {
+      // Single pool or Final bagan:
+      const finalMatch = matches.find((m) => m.round === 4) || elimRounds[elimRounds.length - 1]?.[1]?.[0];
+      const semiMatches = matches
+        .filter((m) => m.round === 3)
+        .sort((a, b) => (a.urutan || 0) - (b.urutan || 0));
+      const semi1 = semiMatches[0];
+      const semi2 = semiMatches[1];
 
-    // Semifinal 1 loser -> Juara 3A
-    if (semi1 && semi1.selesai) {
-      if (semi1.pemenang === "1") {
-        j3a = {
-          name: semi1.atlet2_nama || (semi1.atlet2_id ? `Atlet #${semi1.atlet2_id}` : "BYE"),
-          contingent: semi1.atlet2_kontingen || "—",
-          logo: semi1.atlet2_logo || null,
-          is_priority: !!semi1.atlet2_is_priority,
-        };
-      } else if (semi1.pemenang === "2") {
-        j3a = {
-          name: semi1.atlet1_nama || (semi1.atlet1_id ? `Atlet #${semi1.atlet1_id}` : "BYE"),
-          contingent: semi1.atlet1_kontingen || "—",
-          logo: semi1.atlet1_logo || null,
-          is_priority: !!semi1.atlet1_is_priority,
-        };
+      if (finalMatch && finalMatch.selesai) {
+        if (finalMatch.pemenang === "1") {
+          if (j1.name === "Belum Ditentukan") {
+            j1 = {
+              name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
+              contingent: finalMatch.atlet1_kontingen || "—",
+              logo: finalMatch.atlet1_logo || null,
+              is_priority: !!finalMatch.atlet1_is_priority,
+            };
+          }
+          if (j2.name === "Belum Ditentukan") {
+            j2 = {
+              name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
+              contingent: finalMatch.atlet2_kontingen || "—",
+              logo: finalMatch.atlet2_logo || null,
+              is_priority: !!finalMatch.atlet2_is_priority,
+            };
+          }
+        } else if (finalMatch.pemenang === "2") {
+          if (j1.name === "Belum Ditentukan") {
+            j1 = {
+              name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
+              contingent: finalMatch.atlet2_kontingen || "—",
+              logo: finalMatch.atlet2_logo || null,
+              is_priority: !!finalMatch.atlet2_is_priority,
+            };
+          }
+          if (j2.name === "Belum Ditentukan") {
+            j2 = {
+              name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
+              contingent: finalMatch.atlet1_kontingen || "—",
+              logo: finalMatch.atlet1_logo || null,
+              is_priority: !!finalMatch.atlet1_is_priority,
+            };
+          }
+        }
       }
-    }
 
-    // Semifinal 2 loser -> Juara 3B
-    if (semi2 && semi2.selesai) {
-      if (semi2.pemenang === "1") {
-        j3b = {
-          name: semi2.atlet2_nama || (semi2.atlet2_id ? `Atlet #${semi2.atlet2_id}` : "BYE"),
-          contingent: semi2.atlet2_kontingen || "—",
-          logo: semi2.atlet2_logo || null,
-          is_priority: !!semi2.atlet2_is_priority,
-        };
-      } else if (semi2.pemenang === "2") {
-        j3b = {
-          name: semi2.atlet1_nama || (semi2.atlet1_id ? `Atlet #${semi2.atlet1_id}` : "BYE"),
-          contingent: semi2.atlet1_kontingen || "—",
-          logo: semi2.atlet1_logo || null,
-          is_priority: !!semi2.atlet1_is_priority,
-        };
+      // Semifinal 1 loser -> Juara 3A
+      if (semi1 && semi1.selesai) {
+        if (semi1.pemenang === "1") {
+          if (j3a.name === "Belum Ditentukan") {
+            j3a = {
+              name: semi1.atlet2_nama || (semi1.atlet2_id ? `Atlet #${semi1.atlet2_id}` : "BYE"),
+              contingent: semi1.atlet2_kontingen || "—",
+              logo: semi1.atlet2_logo || null,
+              is_priority: !!semi1.atlet2_is_priority,
+            };
+          }
+        } else if (semi1.pemenang === "2") {
+          if (j3a.name === "Belum Ditentukan") {
+            j3a = {
+              name: semi1.atlet1_nama || (semi1.atlet1_id ? `Atlet #${semi1.atlet1_id}` : "BYE"),
+              contingent: semi1.atlet1_kontingen || "—",
+              logo: semi1.atlet1_logo || null,
+              is_priority: !!semi1.atlet1_is_priority,
+            };
+          }
+        }
+      }
+
+      // Semifinal 2 loser -> Juara 3B
+      if (semi2 && semi2.selesai) {
+        if (semi2.pemenang === "1") {
+          if (j3b.name === "Belum Ditentukan") {
+            j3b = {
+              name: semi2.atlet2_nama || (semi2.atlet2_id ? `Atlet #${semi2.atlet2_id}` : "BYE"),
+              contingent: semi2.atlet2_kontingen || "—",
+              logo: semi2.atlet2_logo || null,
+              is_priority: !!semi2.atlet2_is_priority,
+            };
+          }
+        } else if (semi2.pemenang === "2") {
+          if (j3b.name === "Belum Ditentukan") {
+            j3b = {
+              name: semi2.atlet1_nama || (semi2.atlet1_id ? `Atlet #${semi2.atlet1_id}` : "BYE"),
+              contingent: semi2.atlet1_kontingen || "—",
+              logo: semi2.atlet1_logo || null,
+              is_priority: !!semi2.atlet1_is_priority,
+            };
+          }
+        }
       }
     }
 
@@ -433,11 +597,22 @@
         console.warn("Gagal listen bracket_updated:", err);
       });
 
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== "undefined") {
+      bc = new BroadcastChannel("ambrilindo_live_sync");
+      bc.onmessage = (event) => {
+        if (event.data?.type === "bracket_updated" || event.data?.type === "tatami_live_state") {
+          loadBracketData();
+        }
+      };
+    }
+
     return () => {
       ro?.disconnect();
       window.removeEventListener("resize", handleWindowResize);
       window.removeEventListener("keydown", handleKeyDown);
       if (unlistenBracketUpdated) unlistenBracketUpdated();
+      bc?.close();
     };
   });
 </script>
@@ -622,13 +797,13 @@
               {@const slotHeightClass = getSlotHeightClass(roundNum)}
 
               <div class="round-col round-col-elim w-[242px] shrink-0 flex flex-col relative">
-                <!-- Column Header with Black/Dark Circle Step Badge -->
-                <div class="col-header-line h-8 shrink-0 flex items-center justify-between pb-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-1">
-                  <div class="flex items-center space-x-2">
+                <!-- Column Header with Black/Dark Circle Step Badge (Centered) -->
+                <div class="col-header-line h-8 shrink-0 flex items-center justify-center pb-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-1">
+                  <div class="flex items-center justify-center space-x-2 text-center w-full">
                     <span class="col-header-badge w-5 h-5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/20 text-white' : 'bg-slate-900 text-white'} text-[10px] font-black font-mono flex items-center justify-center shrink-0">
                       {getRoundBadge(roundNum, elimRounds.length)}
                     </span>
-                    <span class="col-header-title text-[12px] font-bold uppercase tracking-tight {isDarkMode ? 'text-white' : 'text-slate-900'}">
+                    <span class="col-header-title text-[12px] font-bold uppercase tracking-tight text-center {isDarkMode ? 'text-white' : 'text-slate-900'}">
                       {getRoundTitle(roundNum, elimRounds.length)}
                     </span>
                   </div>
@@ -653,7 +828,10 @@
                             <span class="flex items-center space-x-1">
                               {#if roundNum === 4}
                                 <span class="final-title {isDarkMode ? 'text-amber-400' : 'text-amber-700'} font-extrabold flex items-center gap-1">
-                                  <span>🏆</span> PARTAI FINAL
+                                  <svg class="w-3 h-3 fill-current shrink-0" viewBox="0 0 24 24">
+                                    <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
+                                  </svg>
+                                  <span>{roundNum === 4 && poolCount === 2 && !isFinalBagan ? "SEMI FINAL" : "PARTAI FINAL"}</span>
                                 </span>
                               {:else if roundNum === 3}
                                 <span>SEMI {match.urutan || slotNum}</span>
@@ -1083,12 +1261,15 @@
     }
     .col-header-title {
       color: #020617 !important;
+      text-align: center !important;
     }
     .col-header-line {
       height: 32px !important;
       padding-bottom: 4px !important;
       margin-bottom: 4px !important;
       border-bottom: 1.5px solid #0f172a !important;
+      justify-content: center !important;
+      text-align: center !important;
     }
 
     /* Print Match Cards */
