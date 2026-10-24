@@ -178,6 +178,9 @@
       }
     } catch (e) {
       console.warn("No default database mounted:", e);
+      if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
+        await selectEvent(1);
+      }
     }
   }
 
@@ -220,7 +223,30 @@
       is_bob: false,
       has_vr: false,
     };
-    return [festivalBagan, ...list.filter((b) => b.id !== 0 && b.kode !== "000")];
+    const result = [festivalBagan, ...list.filter((b) => b.id !== 0 && b.kode !== "000")];
+    if (result.length === 1 && typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
+      result.push({
+        id: 2,
+        event_id: eventId,
+        nama_bagan: "KATA PERORANGAN KADET PUTRA",
+        nomor_tanding_id: 2,
+        tipe_tanding: "1",
+        juara_1_id: null,
+        juara_2_id: null,
+        juara_3a_id: null,
+        juara_3b_id: null,
+        peringkat_5_id: null,
+        peringkat_6_id: null,
+        peringkat_7_id: null,
+        peringkat_8_id: null,
+        round_robin: false,
+        pool: 1,
+        kode: "002",
+        is_bob: false,
+        has_vr: false,
+      });
+    }
+    return result;
   }
 
   async function selectEvent(eventId: number) {
@@ -234,6 +260,10 @@
       bagans = withFestivalBagan(baganList, eventId);
     } catch (err) {
       console.error("Gagal memuat data event:", err);
+      if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
+        tatamis = [];
+        bagans = withFestivalBagan([], eventId);
+      }
     }
   }
 
