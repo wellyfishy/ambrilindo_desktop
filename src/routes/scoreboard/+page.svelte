@@ -386,27 +386,27 @@
       aria-label="Skor 5 Juri Kata"
     >
       <!-- Background Container wrapping the 5 judge scores -->
-      <div class="kata-popup-container pointer-events-auto bg-[#070b14]/96 border-4 border-amber-400/85 rounded-3xl p-6 md:p-8 2xl:p-10 shadow-[0_25px_80px_rgba(0,0,0,0.95),0_0_45px_rgba(245,158,11,0.4)] backdrop-blur-md max-w-6xl w-full flex items-center justify-center gap-4 md:gap-6">
+      <div class="kata-popup-container pointer-events-auto bg-[#070b14]/96 border-4 border-amber-400/85 rounded-3xl p-6 md:p-8 2xl:p-10 shadow-[0_25px_80px_rgba(0,0,0,0.95),0_0_45px_rgba(245,158,11,0.4)] backdrop-blur-md max-w-7xl 2xl:max-w-[88rem] w-full flex items-center justify-center gap-4 md:gap-6 2xl:gap-8">
         {#each [0, 1, 2, 3, 4] as idx}
           {@const decision = judgeDecisions[idx]}
           {@const sAka = akaJudgeScores[idx] || "0.0"}
           {@const sAo = aoJudgeScores[idx] || "0.0"}
           <div
-            class="judge-pop-pod flex-1 bg-[#101524] border-3 {decision === 'aka' ? 'border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.7)]' : decision === 'ao' ? 'border-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.7)]' : 'border-white/10 shadow-[0_12px_30px_rgba(0,0,0,0.8)]'} rounded-2xl p-4 md:p-5 flex flex-col justify-between items-center gap-3"
+            class="judge-pop-pod flex-1 bg-[#101524] border-3 {decision === 'aka' ? 'border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.7)]' : decision === 'ao' ? 'border-blue-500 shadow-[0_0_30px_rgba(59,130,246,0.7)]' : 'border-white/10 shadow-[0_12px_30px_rgba(0,0,0,0.8)]'} rounded-2xl p-4 md:p-5 flex flex-col justify-between items-center gap-3.5"
             style="animation-delay: {idx * 160}ms;"
           >
-            <!-- AKA Judge Score (Top) - High contrast pure WHITE text -->
-            <div class="w-full py-3 md:py-4 rounded-xl font-mono font-black text-4xl md:text-5xl 2xl:text-6xl text-center text-white transition-all drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)] {decision === 'aka' ? 'bg-red-600 border-2 border-red-300 shadow-[0_0_25px_rgba(239,68,68,0.9)] scale-[1.03]' : 'bg-[#181e2e] border border-white/10 opacity-90'}">
+            <!-- AKA Judge Score (Top) - High contrast pure WHITE text (BIGGER SCALE) -->
+            <div class="w-full py-4 md:py-6 2xl:py-7 rounded-2xl font-mono font-black text-6xl md:text-7xl 2xl:text-8xl leading-none tabular-nums text-center text-white transition-all drop-shadow-[0_4px_12px_rgba(0,0,0,0.95)] {decision === 'aka' ? 'bg-red-600 border-2 border-red-300 shadow-[0_0_25px_rgba(239,68,68,0.9)] scale-[1.03]' : 'bg-[#181e2e] border border-white/10 opacity-90'}">
               {sAka}
             </div>
 
             <!-- Judge Label (Middle) -->
-            <div class="font-mono font-black text-lg md:text-xl 2xl:text-2xl text-amber-400 tracking-wider uppercase">
+            <div class="font-mono font-black text-xl md:text-2xl 2xl:text-3xl text-amber-400 tracking-wider uppercase py-1">
               JURI {idx + 1}
             </div>
 
-            <!-- AO Judge Score (Bottom) - High contrast pure WHITE text -->
-            <div class="w-full py-3 md:py-4 rounded-xl font-mono font-black text-4xl md:text-5xl 2xl:text-6xl text-center text-white transition-all drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)] {decision === 'ao' ? 'bg-blue-600 border-2 border-blue-300 shadow-[0_0_25px_rgba(59,130,246,0.9)] scale-[1.03]' : 'bg-[#181e2e] border border-white/10 opacity-90'}">
+            <!-- AO Judge Score (Bottom) - High contrast pure WHITE text (BIGGER SCALE) -->
+            <div class="w-full py-4 md:py-6 2xl:py-7 rounded-2xl font-mono font-black text-6xl md:text-7xl 2xl:text-8xl leading-none tabular-nums text-center text-white transition-all drop-shadow-[0_4px_12px_rgba(0,0,0,0.95)] {decision === 'ao' ? 'bg-blue-600 border-2 border-blue-300 shadow-[0_0_25px_rgba(59,130,246,0.9)] scale-[1.03]' : 'bg-[#181e2e] border border-white/10 opacity-90'}">
               {sAo}
             </div>
           </div>
