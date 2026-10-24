@@ -599,7 +599,7 @@
                                 AKA
                               </span>
                               {#if (match.atlet1_logo && logoMap[match.atlet1_logo]) || match.atlet1_is_priority}
-                                <div class="flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? '-mr-1' : ''}">
+                                <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? 'has-priority mr-[3px]' : ''}">
                                   {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
                                     <img
                                       src={logoMap[match.atlet1_logo]}
@@ -609,7 +609,7 @@
                                   {/if}
                                   {#if match.atlet1_is_priority}
                                     <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
                                         <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                       </svg>
                                     </span>
@@ -658,7 +658,7 @@
                                 AO
                               </span>
                               {#if (match.atlet2_logo && logoMap[match.atlet2_logo]) || match.atlet2_is_priority}
-                                <div class="flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? '-mr-1' : ''}">
+                                <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? 'has-priority mr-[3px]' : ''}">
                                   {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
                                     <img
                                       src={logoMap[match.atlet2_logo]}
@@ -668,7 +668,7 @@
                                   {/if}
                                   {#if match.atlet2_is_priority}
                                     <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
                                         <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                       </svg>
                                     </span>
@@ -750,7 +750,7 @@
                               1
                             </span>
                             {#if (podium.j1.logo && logoMap[podium.j1.logo]) || podium.j1.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j1.is_priority ? '-mr-1' : ''}">
+                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j1.is_priority ? 'has-priority mr-[3px]' : ''}">
                                 {#if podium.j1.logo && logoMap[podium.j1.logo]}
                                   <img
                                     src={logoMap[podium.j1.logo]}
@@ -760,7 +760,7 @@
                                 {/if}
                                 {#if podium.j1.is_priority}
                                   <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
                                       <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
@@ -779,7 +779,7 @@
                               2
                             </span>
                             {#if (podium.j2.logo && logoMap[podium.j2.logo]) || podium.j2.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j2.is_priority ? '-mr-1' : ''}">
+                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j2.is_priority ? 'has-priority mr-[3px]' : ''}">
                                 {#if podium.j2.logo && logoMap[podium.j2.logo]}
                                   <img
                                     src={logoMap[podium.j2.logo]}
@@ -789,7 +789,7 @@
                                 {/if}
                                 {#if podium.j2.is_priority}
                                   <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
                                       <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
@@ -808,7 +808,7 @@
                               3
                             </span>
                             {#if (podium.j3a.logo && logoMap[podium.j3a.logo]) || podium.j3a.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j3a.is_priority ? '-mr-1' : ''}">
+                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j3a.is_priority ? 'has-priority mr-[3px]' : ''}">
                                 {#if podium.j3a.logo && logoMap[podium.j3a.logo]}
                                   <img
                                     src={logoMap[podium.j3a.logo]}
@@ -818,7 +818,7 @@
                                 {/if}
                                 {#if podium.j3a.is_priority}
                                   <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
                                       <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
@@ -837,7 +837,7 @@
                               3
                             </span>
                             {#if (podium.j3b.logo && logoMap[podium.j3b.logo]) || podium.j3b.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j3b.is_priority ? '-mr-1' : ''}">
+                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j3b.is_priority ? 'has-priority mr-[3px]' : ''}">
                                 {#if podium.j3b.logo && logoMap[podium.j3b.logo]}
                                   <img
                                     src={logoMap[podium.j3b.logo]}
@@ -847,7 +847,7 @@
                                 {/if}
                                 {#if podium.j3b.is_priority}
                                   <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
                                       <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
@@ -1208,10 +1208,13 @@
       margin: 0 auto 6px auto !important;
     }
     .seed-star-icon svg {
-      width: 11px !important;
-      height: 11px !important;
+      width: 9.5px !important;
+      height: 9.5px !important;
       fill: #d97706 !important;
       color: #d97706 !important;
+    }
+    .logo-star-wrapper.has-priority {
+      margin-right: 3px !important;
     }
   }
 
