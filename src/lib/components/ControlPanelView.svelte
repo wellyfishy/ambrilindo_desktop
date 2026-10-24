@@ -428,6 +428,7 @@
         senshu: akaSenshu,
         penalties: akaPenalties,
         vr: hasVr1,
+        logo: match.atlet1_logo ? (logoMap[match.atlet1_logo] || match.atlet1_logo) : null,
       },
       ao: {
         name: match.atlet2_nama || "Sudut Biru",
@@ -439,6 +440,7 @@
         senshu: aoSenshu,
         penalties: aoPenalties,
         vr: hasVr2,
+        logo: match.atlet2_logo ? (logoMap[match.atlet2_logo] || match.atlet2_logo) : null,
       },
       winner: matchWinner,
       isFinished: isMatchFinished,
