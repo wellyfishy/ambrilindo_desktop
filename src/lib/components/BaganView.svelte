@@ -1070,10 +1070,6 @@
                               <span class="text-[8px] font-bold text-white bg-red-600 px-1.5 py-0.5 rounded tracking-wide">
                                 LIVE T{match.assigned_tatami_id}
                               </span>
-                            {:else if match.selesai}
-                              <span class="text-[8.5px] font-bold {isDarkMode ? 'text-emerald-400 bg-emerald-500/15 border-emerald-500/30' : 'text-emerald-700 bg-emerald-100 border-emerald-300'} border px-1.5 py-0.2 rounded flex items-center gap-0.5">
-                                ✓ Selesai
-                              </span>
                             {/if}
                           </div>
 
