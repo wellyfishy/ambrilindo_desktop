@@ -7,13 +7,14 @@ pub mod sync;
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use audio::{AudioService, SoundType};
 use db::DatabaseManager;
 use models::{
     AthleteMutationInput, Atlet, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, Tatami, Utusan,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, Tatami, UpdateMatchAthletesInput,
+    Utusan,
 };
 use server::{ArenaMessage, NetworkInfo};
 
@@ -284,6 +285,29 @@ async fn get_bagan_podium(
 ) -> Result<BaganPodium, String> {
     let db = state.db.lock().await;
     db.get_bagan_podium(bagan_id).await
+}
+
+#[tauri::command]
+async fn get_athletes_for_bagan(
+    bagan_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<EnrichedAtlet>, String> {
+    let db = state.db.lock().await;
+    db.get_athletes_for_bagan(bagan_id).await
+}
+
+#[tauri::command]
+async fn update_bagan_details(
+    app: tauri::AppHandle,
+    bagan_id: i64,
+    nama_bagan: Option<String>,
+    matchups: Vec<UpdateMatchAthletesInput>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.update_bagan_details(bagan_id, nama_bagan, matchups).await?;
+    let _ = app.emit("bracket_updated", ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -840,6 +864,8 @@ pub fn run() {
             get_bagans,
             get_bagan_by_id,
             get_bagan_podium,
+            get_athletes_for_bagan,
+            update_bagan_details,
             get_detail_bagan,
             save_match_result,
             open_control_panel_window,

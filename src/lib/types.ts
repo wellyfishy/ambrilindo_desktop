@@ -258,6 +258,12 @@ export interface SaveMatchInput {
   selesai: boolean;
 }
 
+export interface UpdateMatchAthletesInput {
+  match_id: number;
+  atlet1_id: number | null;
+  atlet2_id: number | null;
+}
+
 export interface PodiumAthlete {
   id: number;
   name: string;

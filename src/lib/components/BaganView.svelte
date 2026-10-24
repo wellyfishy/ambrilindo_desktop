@@ -2,7 +2,15 @@
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import type { DetailBaganItem, BaganItem, SaveMatchInput, BaganPodium, PodiumAthlete } from "$lib/types";
+  import type {
+    DetailBaganItem,
+    BaganItem,
+    SaveMatchInput,
+    BaganPodium,
+    PodiumAthlete,
+    EnrichedAtletItem,
+    UpdateMatchAthletesInput,
+  } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
 
   interface Props {
@@ -14,6 +22,7 @@
     eventDate?: string;
     hostUrl?: string;
     onDispatchToTatami?: (tatamiNum: number, matchId: number) => void;
+    onBaganUpdated?: () => void;
   }
 
   let {
@@ -25,6 +34,7 @@
     eventDate = "",
     hostUrl = "",
     onDispatchToTatami,
+    onBaganUpdated,
   }: Props = $props();
 
   let matches = $state<DetailBaganItem[]>([]);
@@ -36,6 +46,15 @@
   $effect(() => {
     currentBaganInfo = baganInfo;
   });
+
+  let displayBaganName = $derived(currentBaganInfo?.nama_bagan || baganName);
+
+  // Edit Mode state
+  let isEditMode = $state(false);
+  let isSavingEdit = $state(false);
+  let editBaganName = $state("");
+  let editedMatchups = $state<Record<number, { atlet1_id: number | null; atlet2_id: number | null }>>({});
+  let categoryAthletes = $state<EnrichedAtletItem[]>([]);
 
   let dbPodium = $state<BaganPodium | null>(null);
 
@@ -80,6 +99,152 @@
       } else {
         activeMatchForControl = match;
       }
+    }
+  }
+
+  async function enterEditMode() {
+    editBaganName = currentBaganInfo?.nama_bagan || baganName;
+    const map: Record<number, { atlet1_id: number | null; atlet2_id: number | null }> = {};
+    for (const m of matches) {
+      map[m.id] = {
+        atlet1_id: m.atlet1_id ?? null,
+        atlet2_id: m.atlet2_id ?? null,
+      };
+    }
+    editedMatchups = map;
+
+    try {
+      categoryAthletes = await invoke<EnrichedAtletItem[]>("get_athletes_for_bagan", { baganId });
+    } catch (e) {
+      console.warn("get_athletes_for_bagan failed (fallback to matches):", e);
+      const fallbackList: EnrichedAtletItem[] = [];
+      const seenIds = new Set<number>();
+      for (const m of matches) {
+        if (m.atlet1_id && !seenIds.has(m.atlet1_id)) {
+          seenIds.add(m.atlet1_id);
+          fallbackList.push({
+            id: m.atlet1_id,
+            event_id: null,
+            nama_atlet: m.atlet1_nama || `Atlet #${m.atlet1_id}`,
+            nik: null,
+            kode_atlet: null,
+            additional_code: null,
+            is_priority: !!m.atlet1_is_priority,
+            perguruan_id: null,
+            perguruan_nama: null,
+            utusan_id: null,
+            utusan_nama: m.atlet1_kontingen || null,
+            utusan_logo: m.atlet1_logo || null,
+            nomor_tanding_id: null,
+            nomor_tanding_nama: null,
+            nomor_tanding_tipe: null,
+            is_bob: null,
+          });
+        }
+        if (m.atlet2_id && !seenIds.has(m.atlet2_id)) {
+          seenIds.add(m.atlet2_id);
+          fallbackList.push({
+            id: m.atlet2_id,
+            event_id: null,
+            nama_atlet: m.atlet2_nama || `Atlet #${m.atlet2_id}`,
+            nik: null,
+            kode_atlet: null,
+            additional_code: null,
+            is_priority: !!m.atlet2_is_priority,
+            perguruan_id: null,
+            perguruan_nama: null,
+            utusan_id: null,
+            utusan_nama: m.atlet2_kontingen || null,
+            utusan_logo: m.atlet2_logo || null,
+            nomor_tanding_id: null,
+            nomor_tanding_nama: null,
+            nomor_tanding_tipe: null,
+            is_bob: null,
+          });
+        }
+      }
+      categoryAthletes = fallbackList;
+    }
+    isEditMode = true;
+  }
+
+  function cancelEditMode() {
+    isEditMode = false;
+    editBaganName = currentBaganInfo?.nama_bagan || baganName;
+    editedMatchups = {};
+  }
+
+  async function saveEditMode() {
+    isSavingEdit = true;
+    try {
+      const matchupsPayload: UpdateMatchAthletesInput[] = Object.entries(editedMatchups).map(
+        ([mIdStr, val]) => {
+          const a1 = val.atlet1_id as any;
+          const a2 = val.atlet2_id as any;
+          return {
+            match_id: Number(mIdStr),
+            atlet1_id:
+              a1 === null || a1 === undefined || a1 === "" || a1 === "null" || Number(a1) === 0 || isNaN(Number(a1))
+                ? null
+                : Number(a1),
+            atlet2_id:
+              a2 === null || a2 === undefined || a2 === "" || a2 === "null" || Number(a2) === 0 || isNaN(Number(a2))
+                ? null
+                : Number(a2),
+          };
+        }
+      );
+
+      await invoke("update_bagan_details", {
+        baganId,
+        namaBagan: editBaganName.trim() || undefined,
+        matchups: matchupsPayload,
+      });
+
+      isEditMode = false;
+      await loadBracketData();
+      if (onBaganUpdated) onBaganUpdated();
+    } catch (err: any) {
+      console.warn("Tauri update_bagan_details failed (fallback in-memory):", err);
+      if (currentBaganInfo) {
+        currentBaganInfo.nama_bagan = editBaganName.trim() || currentBaganInfo.nama_bagan;
+      }
+      for (const [mIdStr, val] of Object.entries(editedMatchups)) {
+        const m = matches.find((x) => x.id === Number(mIdStr));
+        if (m) {
+          const a1Id = val.atlet1_id ? Number(val.atlet1_id) : null;
+          const a2Id = val.atlet2_id ? Number(val.atlet2_id) : null;
+          m.atlet1_id = a1Id;
+          m.atlet2_id = a2Id;
+          const foundA1 = categoryAthletes.find((a) => a.id === a1Id);
+          if (foundA1) {
+            m.atlet1_nama = foundA1.nama_atlet;
+            m.atlet1_kontingen = foundA1.perguruan_nama || foundA1.utusan_nama || null;
+            m.atlet1_logo = foundA1.utusan_logo || null;
+            m.atlet1_is_priority = foundA1.is_priority;
+          } else if (!a1Id) {
+            m.atlet1_nama = null;
+            m.atlet1_kontingen = null;
+            m.atlet1_logo = null;
+            m.atlet1_is_priority = false;
+          }
+          const foundA2 = categoryAthletes.find((a) => a.id === a2Id);
+          if (foundA2) {
+            m.atlet2_nama = foundA2.nama_atlet;
+            m.atlet2_kontingen = foundA2.perguruan_nama || foundA2.utusan_nama || null;
+            m.atlet2_logo = foundA2.utusan_logo || null;
+            m.atlet2_is_priority = foundA2.is_priority;
+          } else if (!a2Id) {
+            m.atlet2_nama = null;
+            m.atlet2_kontingen = null;
+            m.atlet2_logo = null;
+            m.atlet2_is_priority = false;
+          }
+        }
+      }
+      isEditMode = false;
+    } finally {
+      isSavingEdit = false;
     }
   }
 
@@ -244,7 +409,7 @@
   let poolCount = $derived.by(() => {
     const p = currentBaganInfo?.pool ?? (baganInfo?.pool ?? 1);
     if (p === 2 || p === 4) return p;
-    const name = (baganName || "").toLowerCase();
+    const name = (displayBaganName || "").toLowerCase();
     if (
       name.includes("pool a") ||
       name.includes("pool b") ||
@@ -266,7 +431,7 @@
 
   let isFinalBagan = $derived.by(() => {
     if (currentBaganInfo?.pool === 0 || baganInfo?.pool === 0) return true;
-    const name = (baganName || "").toUpperCase().trim();
+    const name = (displayBaganName || "").toUpperCase().trim();
     return name.endsWith("- FINAL") || name.endsWith("FINAL");
   });
 
@@ -708,13 +873,55 @@
         <span>Cetak (A4)</span>
       </button>
 
-      <button
-        type="button"
-        onclick={loadBracketData}
-        class="px-3 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition shadow-xs active:scale-95"
-      >
-        Segarkan
-      </button>
+      {#if !isEditMode}
+        <!-- Edit Mode Button -->
+        <button
+          type="button"
+          onclick={enterEditMode}
+          class="px-3 py-1.5 {isDarkMode ? 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/40' : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+          title="Ubah nama bagan dan susunan atlet"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          <span>Edit Bagan</span>
+        </button>
+      {:else}
+        <!-- Edit Mode Active Actions -->
+        <div class="flex items-center gap-1.5">
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold">
+            <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+            <span>Mode Edit</span>
+          </span>
+          <button
+            type="button"
+            onclick={cancelEditMode}
+            disabled={isSavingEdit}
+            class="px-3 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-300 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1 shadow-xs active:scale-95 disabled:opacity-50"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+            <span>Batal</span>
+          </button>
+          <button
+            type="button"
+            onclick={saveEditMode}
+            disabled={isSavingEdit}
+            class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95 disabled:opacity-50"
+          >
+            {#if isSavingEdit}
+              <div class="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              <span>Menyimpan...</span>
+            {:else}
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              <span>Simpan</span>
+            {/if}
+          </button>
+        </div>
+      {/if}
     </div>
   </div>
 
@@ -722,12 +929,28 @@
   <div class="bracket-banner relative flex items-center justify-center pb-2.5 pt-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-3 shrink-0">
     <!-- Center Category & Tournament Info (True Center) -->
     <div class="banner-title-wrapper text-center w-full px-16">
-      <h1 class="text-base md:text-lg font-black {isDarkMode ? 'text-white' : 'text-slate-950'} tracking-tight uppercase leading-tight truncate">
-        {#if baganInfo?.kode}
-          ({baganInfo.kode})
-        {/if}
-        {baganName}
-      </h1>
+      {#if isEditMode}
+        <div class="flex items-center justify-center gap-2 max-w-xl mx-auto">
+          {#if currentBaganInfo?.kode || baganInfo?.kode}
+            <span class="text-xs font-mono font-bold {isDarkMode ? 'text-amber-400 bg-amber-500/15' : 'text-amber-800 bg-amber-100'} px-2 py-1 rounded border border-amber-500/30 shrink-0">
+              {currentBaganInfo?.kode || baganInfo?.kode}
+            </span>
+          {/if}
+          <input
+            type="text"
+            bind:value={editBaganName}
+            placeholder="Nama Bagan..."
+            class="w-full text-center text-sm md:text-base font-black px-3 py-1 rounded border-2 border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-400 transition {isDarkMode ? 'bg-black/60 text-white' : 'bg-white text-slate-900 shadow-inner'}"
+          />
+        </div>
+      {:else}
+        <h1 class="text-base md:text-lg font-black {isDarkMode ? 'text-white' : 'text-slate-950'} tracking-tight uppercase leading-tight truncate">
+          {#if currentBaganInfo?.kode || baganInfo?.kode}
+            ({currentBaganInfo?.kode || baganInfo?.kode})
+          {/if}
+          {displayBaganName}
+        </h1>
+      {/if}
       <p class="text-[11px] font-semibold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
         <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
         <span>•</span>
@@ -816,12 +1039,12 @@
                     <div data-slot={slotNum} class="{slotHeightClass} flex items-center justify-center">
                       {#if match}
                         <div
-                          class="match-card w-full cursor-pointer hover:ring-2 hover:ring-amber-500/80 transition-all {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
-                          onclick={() => handleOpenMatchControl(match)}
+                          class="match-card w-full {isEditMode ? 'cursor-default ring-1 ring-amber-500/50' : 'cursor-pointer hover:ring-2 hover:ring-amber-500/80'} transition-all {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
+                          onclick={() => { if (!isEditMode) handleOpenMatchControl(match); }}
                           role="button"
                           tabindex="0"
-                          onkeydown={(e) => { if (e.key === 'Enter') handleOpenMatchControl(match); }}
-                          title="Klik untuk membuka Kontrol Pertandingan (Control Panel)"
+                          onkeydown={(e) => { if (e.key === 'Enter' && !isEditMode) handleOpenMatchControl(match); }}
+                          title={isEditMode ? "Mode Edit: Pilih atlet peserta partai" : "Klik untuk membuka Kontrol Pertandingan (Control Panel)"}
                         >
                           <!-- Match Card Header -->
                           <div class="card-header-bar flex items-center justify-between px-2 py-0.5 {isDarkMode ? 'bg-[#131518] border-white/[0.08] text-zinc-300' : 'bg-slate-100 border-slate-300 text-slate-800'} border-b text-[9.5px] font-bold font-mono tracking-wider">
@@ -839,7 +1062,11 @@
                                 <span>MATCH {match.urutan || slotNum}</span>
                               {/if}
                             </span>
-                            {#if match.assigned_tatami_id}
+                            {#if isEditMode}
+                              <span class="text-[8px] font-bold text-amber-300 bg-amber-500/20 border border-amber-500/40 px-1.5 py-0.2 rounded tracking-wide">
+                                EDIT
+                              </span>
+                            {:else if match.assigned_tatami_id}
                               <span class="text-[8px] font-bold text-white bg-red-600 px-1.5 py-0.5 rounded tracking-wide">
                                 LIVE T{match.assigned_tatami_id}
                               </span>
@@ -850,123 +1077,179 @@
                             {/if}
                           </div>
 
-                          <!-- AKA (Red) Row -->
-                          <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative">
-                            <div class="flex items-center space-x-1.5 truncate mr-2 min-w-0">
-                              <span class="side-pill-aka w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
-                                AKA
-                              </span>
-                              {#if (match.atlet1_logo && logoMap[match.atlet1_logo]) || match.atlet1_is_priority}
-                                <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? 'has-priority mr-[3px]' : ''}">
-                                  {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
-                                    <img
-                                      src={logoMap[match.atlet1_logo]}
-                                      alt="Logo"
-                                      class="player-dojo-logo w-4.5 h-4.5 max-w-4.5 max-h-4.5 object-contain shrink-0"
-                                    />
+                          {#if isEditMode && editedMatchups[match.id]}
+                            <!-- Edit Mode AKA Dropdown -->
+                            <div class="player-row flex items-center px-2 py-1.5 min-h-[34px] {isDarkMode ? 'bg-[#14161a]' : 'bg-slate-50'}">
+                              <div class="flex items-center space-x-1.5 w-full min-w-0">
+                                <span class="side-pill-aka w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                                  AKA
+                                </span>
+                                <select
+                                  bind:value={editedMatchups[match.id].atlet1_id}
+                                  onclick={(e) => e.stopPropagation()}
+                                  class="w-full text-[11px] font-semibold py-1 px-1.5 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
+                                >
+                                  <option value={null}>- Kosong / BYE -</option>
+                                  {#if match.atlet1_id && !categoryAthletes.some((a) => a.id === match.atlet1_id)}
+                                    <option value={match.atlet1_id}>
+                                      {match.atlet1_nama || `Atlet #${match.atlet1_id}`} ({match.atlet1_kontingen || '-'}) [Saat ini]
+                                    </option>
                                   {/if}
-                                  {#if match.atlet1_is_priority}
-                                    <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                        <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                      </svg>
-                                    </span>
-                                  {/if}
-                                </div>
-                              {/if}
-                              <div class="truncate min-w-0 leading-tight">
-                                <div class="flex items-center space-x-1 truncate">
-                                  {#if match.pemenang === '1'}
-                                    <span class="text-amber-400 shrink-0" title="Pemenang">
-                                      <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
-                                        <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
-                                      </svg>
-                                    </span>
-                                  {/if}
-                                  <span class="player-name-text truncate block text-[10.5px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
-                                    {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
-                                  </span>
-                                  {#if match.vr1}
-                                    <span class="text-[7.5px] font-mono font-bold px-1 bg-red-600 text-white rounded shrink-0">VR</span>
-                                  {/if}
-                                </div>
-                                <div class="player-sub-text text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">
-                                  {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
-                                </div>
-                                {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
-                                  <div class="mt-0.5">
-                                    <span class="kata-badge-aka text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded inline-block truncate max-w-[150px]">
-                                      {match.kata1}
-                                    </span>
-                                  </div>
-                                {/if}
+                                  {#each categoryAthletes as a (a.id)}
+                                    <option value={a.id}>
+                                      {a.nama_atlet} ({a.perguruan_nama || a.utusan_nama || '-'}{a.is_priority ? ' ★' : ''})
+                                    </option>
+                                  {/each}
+                                </select>
                               </div>
                             </div>
-                            <div class="shrink-0 flex items-center">
-                              <span class="score-box min-w-[22px] h-[20px] px-1 font-mono text-[10px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
-                                {match.score1 ?? '-'}
-                              </span>
+                          {:else}
+                            <!-- Regular AKA (Red) Row -->
+                            <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative">
+                              <div class="flex items-center space-x-1.5 truncate mr-2 min-w-0">
+                                <span class="side-pill-aka w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                                  AKA
+                                </span>
+                                {#if (match.atlet1_logo && logoMap[match.atlet1_logo]) || match.atlet1_is_priority}
+                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? 'has-priority mr-[3px]' : ''}">
+                                    {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
+                                      <img
+                                        src={logoMap[match.atlet1_logo]}
+                                        alt="Logo"
+                                        class="player-dojo-logo w-4.5 h-4.5 max-w-4.5 max-h-4.5 object-contain shrink-0"
+                                      />
+                                    {/if}
+                                    {#if match.atlet1_is_priority}
+                                      <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
+                                          <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+                                        </svg>
+                                      </span>
+                                    {/if}
+                                  </div>
+                                {/if}
+                                <div class="truncate min-w-0 leading-tight">
+                                  <div class="flex items-center space-x-1 truncate">
+                                    {#if match.pemenang === '1'}
+                                      <span class="text-amber-400 shrink-0" title="Pemenang">
+                                        <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+                                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                                        </svg>
+                                      </span>
+                                    {/if}
+                                    <span class="player-name-text truncate block text-[10.5px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
+                                      {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
+                                    </span>
+                                    {#if match.vr1}
+                                      <span class="text-[7.5px] font-mono font-bold px-1 bg-red-600 text-white rounded shrink-0">VR</span>
+                                    {/if}
+                                  </div>
+                                  <div class="player-sub-text text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">
+                                    {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
+                                  </div>
+                                  {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
+                                    <div class="mt-0.5">
+                                      <span class="kata-badge-aka text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded inline-block truncate max-w-[150px]">
+                                        {match.kata1}
+                                      </span>
+                                    </div>
+                                  {/if}
+                                </div>
+                              </div>
+                              <div class="shrink-0 flex items-center">
+                                <span class="score-box min-w-[22px] h-[20px] px-1 font-mono text-[10px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
+                                  {match.score1 ?? '-'}
+                                </span>
+                              </div>
                             </div>
-                          </div>
+                          {/if}
 
-                          <!-- AO (Blue) Row -->
-                          <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
-                            <div class="flex items-center space-x-1.5 truncate mr-2 min-w-0">
-                              <span class="side-pill-ao w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
-                                AO
-                              </span>
-                              {#if (match.atlet2_logo && logoMap[match.atlet2_logo]) || match.atlet2_is_priority}
-                                <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? 'has-priority mr-[3px]' : ''}">
-                                  {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
-                                    <img
-                                      src={logoMap[match.atlet2_logo]}
-                                      alt="Logo"
-                                      class="player-dojo-logo w-4.5 h-4.5 max-w-4.5 max-h-4.5 object-contain shrink-0"
-                                    />
+                          {#if isEditMode && editedMatchups[match.id]}
+                            <!-- Edit Mode AO Dropdown -->
+                            <div class="player-row flex items-center px-2 py-1.5 min-h-[34px] border-t {isDarkMode ? 'border-white/[0.08] bg-[#14161a]' : 'border-slate-200 bg-slate-50'}">
+                              <div class="flex items-center space-x-1.5 w-full min-w-0">
+                                <span class="side-pill-ao w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                                  AO
+                                </span>
+                                <select
+                                  bind:value={editedMatchups[match.id].atlet2_id}
+                                  onclick={(e) => e.stopPropagation()}
+                                  class="w-full text-[11px] font-semibold py-1 px-1.5 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
+                                >
+                                  <option value={null}>- Kosong / BYE -</option>
+                                  {#if match.atlet2_id && !categoryAthletes.some((a) => a.id === match.atlet2_id)}
+                                    <option value={match.atlet2_id}>
+                                      {match.atlet2_nama || `Atlet #${match.atlet2_id}`} ({match.atlet2_kontingen || '-'}) [Saat ini]
+                                    </option>
                                   {/if}
-                                  {#if match.atlet2_is_priority}
-                                    <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                        <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                      </svg>
-                                    </span>
-                                  {/if}
-                                </div>
-                              {/if}
-                              <div class="truncate min-w-0 leading-tight">
-                                <div class="flex items-center space-x-1 truncate">
-                                  {#if match.pemenang === '2'}
-                                    <span class="text-amber-400 shrink-0" title="Pemenang">
-                                      <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
-                                        <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
-                                      </svg>
-                                    </span>
-                                  {/if}
-                                  <span class="player-name-text truncate block text-[10.5px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
-                                    {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
-                                  </span>
-                                  {#if match.vr2}
-                                    <span class="text-[7.5px] font-mono font-bold px-1 bg-blue-600 text-white rounded shrink-0">VR</span>
-                                  {/if}
-                                </div>
-                                <div class="player-sub-text text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">
-                                  {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
-                                </div>
-                                {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
-                                  <div class="mt-0.5">
-                                    <span class="kata-badge-ao text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded inline-block truncate max-w-[150px]">
-                                      {match.kata2}
-                                    </span>
-                                  </div>
-                                {/if}
+                                  {#each categoryAthletes as a (a.id)}
+                                    <option value={a.id}>
+                                      {a.nama_atlet} ({a.perguruan_nama || a.utusan_nama || '-'}{a.is_priority ? ' ★' : ''})
+                                    </option>
+                                  {/each}
+                                </select>
                               </div>
                             </div>
-                            <div class="shrink-0 flex items-center">
-                              <span class="score-box min-w-[22px] h-[20px] px-1 font-mono text-[10px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
-                                {match.score2 ?? '-'}
-                              </span>
+                          {:else}
+                            <!-- Regular AO (Blue) Row -->
+                            <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-1 min-h-[25px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
+                              <div class="flex items-center space-x-1.5 truncate mr-2 min-w-0">
+                                <span class="side-pill-ao w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                                  AO
+                                </span>
+                                {#if (match.atlet2_logo && logoMap[match.atlet2_logo]) || match.atlet2_is_priority}
+                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? 'has-priority mr-[3px]' : ''}">
+                                    {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
+                                      <img
+                                        src={logoMap[match.atlet2_logo]}
+                                        alt="Logo"
+                                        class="player-dojo-logo w-4.5 h-4.5 max-w-4.5 max-h-4.5 object-contain shrink-0"
+                                      />
+                                    {/if}
+                                    {#if match.atlet2_is_priority}
+                                      <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
+                                          <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+                                        </svg>
+                                      </span>
+                                    {/if}
+                                  </div>
+                                {/if}
+                                <div class="truncate min-w-0 leading-tight">
+                                  <div class="flex items-center space-x-1 truncate">
+                                    {#if match.pemenang === '2'}
+                                      <span class="text-amber-400 shrink-0" title="Pemenang">
+                                        <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+                                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                                        </svg>
+                                      </span>
+                                    {/if}
+                                    <span class="player-name-text truncate block text-[10.5px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
+                                      {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
+                                    </span>
+                                    {#if match.vr2}
+                                      <span class="text-[7.5px] font-mono font-bold px-1 bg-blue-600 text-white rounded shrink-0">VR</span>
+                                    {/if}
+                                  </div>
+                                  <div class="player-sub-text text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">
+                                    {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
+                                  </div>
+                                  {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
+                                    <div class="mt-0.5">
+                                      <span class="kata-badge-ao text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded inline-block truncate max-w-[150px]">
+                                        {match.kata2}
+                                      </span>
+                                    </div>
+                                  {/if}
+                                </div>
+                              </div>
+                              <div class="shrink-0 flex items-center">
+                                <span class="score-box min-w-[22px] h-[20px] px-1 font-mono text-[10px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
+                                  {match.score2 ?? '-'}
+                                </span>
+                              </div>
                             </div>
-                          </div>
+                          {/if}
                         </div>
                       {:else}
                         <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-white/[0.08] text-zinc-600 bg-white/[0.01]' : 'border-slate-300 text-slate-400 bg-white/40'} rounded-md h-10 flex items-center justify-center text-[9px] font-mono">

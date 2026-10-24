@@ -9,7 +9,8 @@ use tracing::info;
 use crate::bracket::{build_bracket_in_memory, split_athletes_into_pools, AthleteInput};
 use crate::models::{
     Atlet, AthleteMutationInput, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, Tatami, Utusan,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, Tatami,
+    UpdateMatchAthletesInput, Utusan,
 };
 
 #[derive(Clone)]
@@ -1541,6 +1542,92 @@ impl DatabaseManager {
         }
 
         tx.commit().await.map_err(|e| format!("Gagal melakukan commit transaksi: {}", e))?;
+        Ok(())
+    }
+
+    /// Fetches all enriched athletes belonging to the bagan's category (nomor_tanding).
+    pub async fn get_athletes_for_bagan(&self, bagan_id: i64) -> Result<Vec<EnrichedAtlet>, String> {
+        let pool = self.get_pool()?;
+
+        let nomor_tanding_id: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT nomor_tanding_id FROM backend_bagan WHERE id = ?"
+        )
+        .bind(bagan_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal membaca bagan #{}: {}", bagan_id, e))?;
+
+        let nt_id = match nomor_tanding_id {
+            Some(Some(id)) => id,
+            _ => return Ok(vec![]),
+        };
+
+        sqlx::query_as::<_, EnrichedAtlet>(
+            r#"
+            SELECT 
+                a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
+                a.perguruan_id, p.nama_perguruan as perguruan_nama,
+                a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama,
+                CASE 
+                    WHEN nt.is_bob = 1 THEN 'BOB'
+                    WHEN UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%' THEN 'Festival'
+                    ELSE 'Tournament'
+                END as nomor_tanding_tipe,
+                nt.is_bob
+            FROM backend_atlet a
+            LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+            LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+            LEFT JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+            WHERE a.nomor_tanding_id = ?
+              AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+            ORDER BY a.nama_atlet ASC
+            "#
+        )
+        .bind(nt_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat atlet nomor tanding #{}: {}", nt_id, e))
+    }
+
+    /// Updates bagan name and match participant athletes (atlet1_id & atlet2_id).
+    pub async fn update_bagan_details(
+        &self,
+        bagan_id: i64,
+        nama_bagan: Option<String>,
+        matchups: Vec<UpdateMatchAthletesInput>,
+    ) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Update nama_bagan if provided
+        if let Some(name) = nama_bagan {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                sqlx::query("UPDATE backend_bagan SET nama_bagan = ? WHERE id = ?")
+                    .bind(trimmed)
+                    .bind(bagan_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal memperbarui nama bagan: {}", e))?;
+            }
+        }
+
+        // 2. Update each matchup's atlet1_id and atlet2_id
+        for m in matchups {
+            sqlx::query(
+                "UPDATE backend_detailbagan SET atlet1_id = ?, atlet2_id = ? WHERE id = ? AND bagan_id = ?"
+            )
+            .bind(m.atlet1_id)
+            .bind(m.atlet2_id)
+            .bind(m.match_id)
+            .bind(bagan_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memperbarui atlet partai #{}: {}", m.match_id, e))?;
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan perubahan bagan: {}", e))?;
         Ok(())
     }
 }

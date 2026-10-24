@@ -336,3 +336,10 @@ pub struct BaganPodium {
     pub j3a: Option<PodiumAthlete>,
     pub j3b: Option<PodiumAthlete>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateMatchAthletesInput {
+    pub match_id: i64,
+    pub atlet1_id: Option<i64>,
+    pub atlet2_id: Option<i64>,
+}
