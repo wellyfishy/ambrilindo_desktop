@@ -860,6 +860,26 @@
         </button>
       </div>
 
+      <!-- Theme Toggle Button -->
+      <button
+        type="button"
+        onclick={() => (isDarkMode = !isDarkMode)}
+        class="px-2.5 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+        title={isDarkMode ? "Ganti ke Tema Terang" : "Ganti ke Tema Gelap"}
+      >
+        {#if isDarkMode}
+          <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+          </svg>
+          <span class="text-[11px]">Terang</span>
+        {:else}
+          <svg class="w-3.5 h-3.5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+          </svg>
+          <span class="text-[11px]">Gelap</span>
+        {/if}
+      </button>
+
       <!-- Print Button -->
       <button
         type="button"
@@ -1144,8 +1164,8 @@
                                     {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
                                   </div>
                                   {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
-                                    <div class="mt-0.5">
-                                      <span class="kata-badge-aka text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded inline-block truncate max-w-[150px]">
+                                    <div class="mt-[1px] leading-none">
+                                      <span class="kata-badge-aka text-[9px] font-semibold px-1.5 py-[0.5px] inline-flex items-center leading-none {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded truncate max-w-[155px]">
                                         {match.kata1}
                                       </span>
                                     </div>
@@ -1231,8 +1251,8 @@
                                     {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
                                   </div>
                                   {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
-                                    <div class="mt-0.5">
-                                      <span class="kata-badge-ao text-[7.5px] font-medium px-1 py-0 {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded inline-block truncate max-w-[150px]">
+                                    <div class="mt-[1px] leading-none">
+                                      <span class="kata-badge-ao text-[9px] font-semibold px-1.5 py-[0.5px] inline-flex items-center leading-none {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded truncate max-w-[155px]">
                                         {match.kata2}
                                       </span>
                                     </div>
@@ -1665,18 +1685,20 @@
       background-color: #fee2e2 !important;
       color: #991b1b !important;
       border: 1px solid #f87171 !important;
-      font-size: 7.5px !important;
-      padding: 0px 3px !important;
-      margin-top: 0px !important;
+      font-size: 9px !important;
+      line-height: 1 !important;
+      padding: 0.5px 4px !important;
+      margin-top: 1px !important;
     }
     .kata-badge-ao {
       background: #dbeafe !important;
       background-color: #dbeafe !important;
       color: #1e40af !important;
       border: 1px solid #60a5fa !important;
-      font-size: 7.5px !important;
-      padding: 0px 3px !important;
-      margin-top: 0px !important;
+      font-size: 9px !important;
+      line-height: 1 !important;
+      padding: 0.5px 4px !important;
+      margin-top: 1px !important;
     }
 
     /* Connector SVG Lines in Print */
