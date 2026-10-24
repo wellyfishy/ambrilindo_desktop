@@ -343,3 +343,40 @@ pub struct UpdateMatchAthletesInput {
     pub atlet1_id: Option<i64>,
     pub atlet2_id: Option<i64>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryWinnerAthlete {
+    pub juara: String, // "1", "2", "3a", "3b"
+    pub nama_atlet: String,
+    pub utusan_nama: String,
+    pub perguruan_nama: String,
+    pub bagan_nama: String,
+    pub bagan_kode: Option<String>,
+    pub is_counted: bool,
+    pub keterangan: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandingItem {
+    pub id: i64,
+    pub rank: usize,
+    pub nama: String,
+    pub logo: Option<String>,
+    pub gold: i64,
+    pub silver: i64,
+    pub bronze: i64,
+    pub total: i64,
+    pub uncounted_gold: i64,
+    pub winners: Vec<SummaryWinnerAthlete>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryJuaraResult {
+    pub event_name: String,
+    pub utusan_standings: Vec<StandingItem>,
+    pub perguruan_standings: Vec<StandingItem>,
+    pub total_gold: i64,
+    pub total_silver: i64,
+    pub total_bronze: i64,
+    pub total_uncounted: i64,
+}

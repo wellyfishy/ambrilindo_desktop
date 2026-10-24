@@ -460,6 +460,20 @@
             <span class="text-zinc-500 font-mono">#</span>
             <span>kontingen-utusan</span>
           </button>
+
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "summary_juara",
+                id: "summary-juara",
+                name: "summary-juara",
+                subtitle: "Perhitungan Medali Juara Umum (Kontingen & Perguruan)",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'summary-juara' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>summary-juara</span>
+          </button>
         </div>
       {/if}
     </div>
