@@ -598,19 +598,23 @@
                               <span class="side-pill-aka w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AKA
                               </span>
-                              {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
-                                <img
-                                  src={logoMap[match.atlet1_logo]}
-                                  alt="Logo"
-                                  class="player-dojo-logo w-5 h-5 max-w-5 max-h-5 object-contain shrink-0"
-                                />
-                              {/if}
-                              {#if match.atlet1_is_priority}
-                                <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                  <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
-                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                  </svg>
-                                </span>
+                              {#if (match.atlet1_logo && logoMap[match.atlet1_logo]) || match.atlet1_is_priority}
+                                <div class="flex items-center shrink-0 space-x-0.5">
+                                  {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
+                                    <img
+                                      src={logoMap[match.atlet1_logo]}
+                                      alt="Logo"
+                                      class="player-dojo-logo w-4.5 h-4.5 max-w-4.5 max-h-4.5 object-contain shrink-0"
+                                    />
+                                  {/if}
+                                  {#if match.atlet1_is_priority}
+                                    <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
+                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                      </svg>
+                                    </span>
+                                  {/if}
+                                </div>
                               {/if}
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
@@ -653,19 +657,23 @@
                               <span class="side-pill-ao w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                 AO
                               </span>
-                              {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
-                                <img
-                                  src={logoMap[match.atlet2_logo]}
-                                  alt="Logo"
-                                  class="player-dojo-logo w-5 h-5 max-w-5 max-h-5 object-contain shrink-0"
-                                />
-                              {/if}
-                              {#if match.atlet2_is_priority}
-                                <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                  <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
-                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                  </svg>
-                                </span>
+                              {#if (match.atlet2_logo && logoMap[match.atlet2_logo]) || match.atlet2_is_priority}
+                                <div class="flex items-center shrink-0 space-x-0.5">
+                                  {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
+                                    <img
+                                      src={logoMap[match.atlet2_logo]}
+                                      alt="Logo"
+                                      class="player-dojo-logo w-4.5 h-4.5 max-w-4.5 max-h-4.5 object-contain shrink-0"
+                                    />
+                                  {/if}
+                                  {#if match.atlet2_is_priority}
+                                    <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
+                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                      </svg>
+                                    </span>
+                                  {/if}
+                                </div>
                               {/if}
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
@@ -741,19 +749,23 @@
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               1
                             </span>
-                            {#if podium.j1.logo && logoMap[podium.j1.logo]}
-                              <img
-                                src={logoMap[podium.j1.logo]}
-                                alt="Logo"
-                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
-                              />
-                            {/if}
-                            {#if podium.j1.is_priority}
-                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
-                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                </svg>
-                              </span>
+                            {#if (podium.j1.logo && logoMap[podium.j1.logo]) || podium.j1.is_priority}
+                              <div class="flex items-center shrink-0 space-x-0.5">
+                                {#if podium.j1.logo && logoMap[podium.j1.logo]}
+                                  <img
+                                    src={logoMap[podium.j1.logo]}
+                                    alt="Logo"
+                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
+                                  />
+                                {/if}
+                                {#if podium.j1.is_priority}
+                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
+                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                    </svg>
+                                  </span>
+                                {/if}
+                              </div>
                             {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j1.name}</div>
@@ -766,19 +778,23 @@
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               2
                             </span>
-                            {#if podium.j2.logo && logoMap[podium.j2.logo]}
-                              <img
-                                src={logoMap[podium.j2.logo]}
-                                alt="Logo"
-                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
-                              />
-                            {/if}
-                            {#if podium.j2.is_priority}
-                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
-                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                </svg>
-                              </span>
+                            {#if (podium.j2.logo && logoMap[podium.j2.logo]) || podium.j2.is_priority}
+                              <div class="flex items-center shrink-0 space-x-0.5">
+                                {#if podium.j2.logo && logoMap[podium.j2.logo]}
+                                  <img
+                                    src={logoMap[podium.j2.logo]}
+                                    alt="Logo"
+                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
+                                  />
+                                {/if}
+                                {#if podium.j2.is_priority}
+                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
+                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                    </svg>
+                                  </span>
+                                {/if}
+                              </div>
                             {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j2.name}</div>
@@ -791,19 +807,23 @@
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
-                            {#if podium.j3a.logo && logoMap[podium.j3a.logo]}
-                              <img
-                                src={logoMap[podium.j3a.logo]}
-                                alt="Logo"
-                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
-                              />
-                            {/if}
-                            {#if podium.j3a.is_priority}
-                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
-                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                </svg>
-                              </span>
+                            {#if (podium.j3a.logo && logoMap[podium.j3a.logo]) || podium.j3a.is_priority}
+                              <div class="flex items-center shrink-0 space-x-0.5">
+                                {#if podium.j3a.logo && logoMap[podium.j3a.logo]}
+                                  <img
+                                    src={logoMap[podium.j3a.logo]}
+                                    alt="Logo"
+                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
+                                  />
+                                {/if}
+                                {#if podium.j3a.is_priority}
+                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
+                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                    </svg>
+                                  </span>
+                                {/if}
+                              </div>
                             {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3a.name}</div>
@@ -816,19 +836,23 @@
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
                               3
                             </span>
-                            {#if podium.j3b.logo && logoMap[podium.j3b.logo]}
-                              <img
-                                src={logoMap[podium.j3b.logo]}
-                                alt="Logo"
-                                class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
-                              />
-                            {/if}
-                            {#if podium.j3b.is_priority}
-                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
-                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                                </svg>
-                              </span>
+                            {#if (podium.j3b.logo && logoMap[podium.j3b.logo]) || podium.j3b.is_priority}
+                              <div class="flex items-center shrink-0 space-x-0.5">
+                                {#if podium.j3b.logo && logoMap[podium.j3b.logo]}
+                                  <img
+                                    src={logoMap[podium.j3b.logo]}
+                                    alt="Logo"
+                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
+                                  />
+                                {/if}
+                                {#if podium.j3b.is_priority}
+                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
+                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                    </svg>
+                                  </span>
+                                {/if}
+                              </div>
                             {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3b.name}</div>
