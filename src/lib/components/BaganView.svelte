@@ -909,26 +909,6 @@
         </button>
       </div>
 
-      <!-- Theme Toggle Button -->
-      <button
-        type="button"
-        onclick={() => (isDarkMode = !isDarkMode)}
-        class="px-2.5 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
-        title={isDarkMode ? "Ganti ke Tema Terang" : "Ganti ke Tema Gelap"}
-      >
-        {#if isDarkMode}
-          <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-          </svg>
-          <span class="text-[11px]">Terang</span>
-        {:else}
-          <svg class="w-3.5 h-3.5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-          </svg>
-          <span class="text-[11px]">Gelap</span>
-        {/if}
-      </button>
-
       <!-- Print Button -->
       <button
         type="button"
@@ -1020,7 +1000,7 @@
           {displayBaganName}
         </h1>
       {/if}
-      <p class="text-[11px] font-semibold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
+      <p class="text-[11px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
         <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
         <span>•</span>
         <span>{eventVenue}</span>
@@ -1032,7 +1012,7 @@
     </div>
 
     <!-- Right Match Counter -->
-    <div class="banner-info-wrapper absolute right-0 top-1/2 -translate-y-1/2 flex justify-end items-center text-right text-[10px] {isDarkMode ? 'text-zinc-500' : 'text-slate-400'} font-mono no-print z-10">
+    <div class="banner-info-wrapper absolute right-0 top-1/2 -translate-y-1/2 flex justify-end items-center text-right text-[10px] {isDarkMode ? 'text-zinc-400 font-bold' : 'text-slate-600 font-bold'} font-mono no-print z-10">
       <span>{elimMatchesCount} Partai</span>
     </div>
   </div>
@@ -1075,8 +1055,8 @@
                 x2={line.x2}
                 y2={line.y2}
                 class="connector-line"
-                stroke={isDarkMode ? "rgba(255, 255, 255, 0.42)" : "#475569"}
-                stroke-width="1.5"
+                stroke={isDarkMode ? "rgba(255, 255, 255, 0.75)" : "#0f172a"}
+                stroke-width="1.6"
                 stroke-linecap="round"
               />
             {/each}
@@ -1090,12 +1070,12 @@
 
               <div class="round-col round-col-elim w-[242px] shrink-0 flex flex-col relative">
                 <!-- Column Header with Black/Dark Circle Step Badge (Centered) -->
-                <div class="col-header-line h-8 shrink-0 flex items-center justify-center pb-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-1">
+                <div class="col-header-line h-8 shrink-0 flex items-center justify-center pb-1 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1">
                   <div class="flex items-center justify-center space-x-2 text-center w-full">
-                    <span class="col-header-badge w-5 h-5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/20 text-white' : 'bg-slate-900 text-white'} text-[10px] font-black font-mono flex items-center justify-center shrink-0">
+                    <span class="col-header-badge w-5 h-5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[10px] font-black font-mono flex items-center justify-center shrink-0">
                       {getRoundBadge(roundNum, elimRounds.length)}
                     </span>
-                    <span class="col-header-title text-[12px] font-bold uppercase tracking-tight text-center {isDarkMode ? 'text-white' : 'text-slate-900'}">
+                    <span class="col-header-title text-[12px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-white' : 'text-slate-950'}">
                       {getRoundTitle(roundNum, elimRounds.length)}
                     </span>
                   </div>
@@ -1108,7 +1088,7 @@
                     <div data-slot={slotNum} class="{slotHeightClass} flex items-center justify-center">
                       {#if match}
                         <div
-                          class="match-card w-full {isEditMode ? 'cursor-default ring-1 ring-amber-500/50' : 'cursor-pointer hover:ring-2 hover:ring-amber-500/80'} transition-all {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
+                          class="match-card w-full {isEditMode ? 'cursor-default ring-1 ring-amber-500/50' : 'cursor-pointer hover:ring-2 hover:ring-amber-500/80'} transition-all {isDarkMode ? 'bg-[#181a20] border-zinc-700 hover:border-zinc-500' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
                           onclick={() => { if (!isEditMode) handleOpenMatchControl(match); }}
                           role="button"
                           tabindex="0"
@@ -1116,27 +1096,27 @@
                           title={isEditMode ? "Mode Edit: Pilih atlet peserta partai" : "Klik untuk membuka Kontrol Pertandingan (Control Panel)"}
                         >
                           <!-- Match Card Header -->
-                          <div class="card-header-bar flex items-center justify-between px-2 h-[17px] {isDarkMode ? 'bg-[#131518] border-white/[0.08] text-zinc-300' : 'bg-slate-100 border-slate-300 text-slate-800'} border-b text-[9px] font-bold font-mono tracking-wider">
+                          <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
                             <span class="flex items-center space-x-1">
                               {#if roundNum === 4}
-                                <span class="final-title {isDarkMode ? 'text-amber-400' : 'text-amber-700'} font-extrabold flex items-center gap-1">
-                                  <svg class="w-3 h-3 fill-current shrink-0" viewBox="0 0 24 24">
+                                <span class="final-title {isDarkMode ? 'text-amber-300' : 'text-amber-800'} font-black flex items-center gap-1">
+                                  <svg class="w-2.5 h-2.5 fill-current shrink-0" viewBox="0 0 24 24">
                                     <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
                                   </svg>
                                   <span>{roundNum === 4 && poolCount === 2 && !isFinalBagan ? "SEMI FINAL" : "PARTAI FINAL"}</span>
                                 </span>
                               {:else if roundNum === 3}
-                                <span>SEMI {match.urutan || slotNum}</span>
+                                <span class="font-black">SEMI {match.urutan || slotNum}</span>
                               {:else}
-                                <span>MATCH {match.urutan || slotNum}</span>
+                                <span class="font-black">MATCH {match.urutan || slotNum}</span>
                               {/if}
                             </span>
                             {#if isEditMode}
-                              <span class="text-[8px] font-bold text-amber-300 bg-amber-500/20 border border-amber-500/40 px-1.5 py-0.2 rounded tracking-wide">
+                              <span class="text-[7.5px] font-black text-amber-300 bg-amber-500/20 border border-amber-500/40 px-1 py-0.2 rounded tracking-wide">
                                 EDIT
                               </span>
                             {:else if match.assigned_tatami_id}
-                              <span class="text-[8px] font-bold text-white bg-red-600 px-1.5 py-0.5 rounded tracking-wide">
+                              <span class="text-[7.5px] font-black text-white bg-red-600 px-1 py-0.2 rounded tracking-wide">
                                 LIVE T{match.assigned_tatami_id}
                               </span>
                             {/if}
@@ -1144,15 +1124,15 @@
 
                           {#if isEditMode && editedMatchups[match.id]}
                             <!-- Edit Mode AKA Dropdown -->
-                            <div class="player-row flex items-center px-2 py-1.5 min-h-[34px] {isDarkMode ? 'bg-[#14161a]' : 'bg-slate-50'}">
-                              <div class="flex items-center space-x-1.5 w-full min-w-0">
-                                <span class="side-pill-aka w-[24px] inline-flex items-center justify-center text-[7.5px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                            <div class="player-row flex items-center px-1.5 py-1 min-h-[30px] {isDarkMode ? 'bg-[#14161a]' : 'bg-slate-50'}">
+                              <div class="flex items-center space-x-1 w-full min-w-0">
+                                <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                   AKA
                                 </span>
                                 <select
                                   bind:value={editedMatchups[match.id].atlet1_id}
                                   onclick={(e) => e.stopPropagation()}
-                                  class="w-full text-[11px] font-semibold py-1 px-1.5 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
+                                  class="w-full text-[10px] font-bold py-0.5 px-1 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
                                 >
                                   <option value={null}>- Kosong / BYE -</option>
                                   {#if match.atlet1_id && !categoryAthletes.some((a) => a.id === match.atlet1_id)}
@@ -1170,18 +1150,18 @@
                             </div>
                           {:else}
                             <!-- Regular AKA (Red) Row -->
-                            <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-[1.5px] min-h-[22px] transition relative">
-                              <div class="flex items-center space-x-1.5 mr-1.5 min-w-0 flex-1">
-                                <span class="side-pill-aka w-[24px] inline-flex items-center justify-center text-[7.5px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+                            <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative">
+                              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+                                <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
                                   AKA
                                 </span>
                                 {#if (match.atlet1_logo && logoMap[match.atlet1_logo]) || match.atlet1_is_priority}
-                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? 'has-priority mr-[3px]' : ''}">
+                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? 'has-priority mr-[2px]' : ''}">
                                     {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
                                       <img
                                         src={logoMap[match.atlet1_logo]}
                                         alt="Logo"
-                                        class="player-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
+                                        class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
                                       />
                                     {/if}
                                     {#if match.atlet1_is_priority}
@@ -1197,35 +1177,35 @@
                                   <div class="flex items-center space-x-1 min-w-0">
                                     {#if match.pemenang === '1'}
                                       <span class="text-amber-400 shrink-0" title="Pemenang">
-                                        <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
                                           <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
                                         </svg>
                                       </span>
                                     {/if}
-                                    <span class="player-name-text truncate block text-[10px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
+                                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
                                       {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
                                     </span>
                                     {#if match.vr1}
-                                      <span class="text-[7.5px] font-mono font-bold px-1 bg-red-600 text-white rounded shrink-0">VR</span>
+                                      <span class="text-[7px] font-mono font-black px-0.5 bg-red-600 text-white rounded shrink-0">VR</span>
                                     {/if}
                                   </div>
-                                  <div class="player-sub-text flex items-center justify-between gap-1 text-[8px] leading-tight mt-[0.5px] min-w-0">
-                                    <span class="truncate min-w-0 flex-1 {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
-                                      {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
-                                    </span>
-                                    {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
+                                  <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                                    {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
+                                  </div>
+                                  {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
+                                    <div class="kata-row flex items-center leading-none mt-[0.5px]">
                                       <span
-                                        class="kata-badge-aka text-[7.5px] font-bold px-1 py-[0.5px] shrink-0 inline-flex items-center leading-none {isDarkMode ? 'bg-red-500/15 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'} border rounded max-w-[100px] truncate"
+                                        class="kata-badge-aka text-[6px] font-black px-1 py-0 inline-flex items-center leading-[7.5px] {isDarkMode ? 'bg-red-500/25 text-red-200 border-red-500/50' : 'bg-red-100 text-red-900 border-red-400'} border rounded max-w-[130px] truncate"
                                         title="Kata: {match.kata1}"
                                       >
                                         {match.kata1}
                                       </span>
-                                    {/if}
-                                  </div>
+                                    </div>
+                                  {/if}
                                 </div>
                               </div>
                               <div class="shrink-0 flex items-center">
-                                <span class="score-box min-w-[20px] h-[18px] px-1 font-mono text-[9.5px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
+                                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
                                   {match.score1 ?? '-'}
                                 </span>
                               </div>
@@ -1234,15 +1214,15 @@
 
                           {#if isEditMode && editedMatchups[match.id]}
                             <!-- Edit Mode AO Dropdown -->
-                            <div class="player-row flex items-center px-2 py-1.5 min-h-[34px] border-t {isDarkMode ? 'border-white/[0.08] bg-[#14161a]' : 'border-slate-200 bg-slate-50'}">
-                              <div class="flex items-center space-x-1.5 w-full min-w-0">
-                                <span class="side-pill-ao w-[26px] inline-flex items-center justify-center text-[8px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
+                            <div class="player-row flex items-center px-1.5 py-1 min-h-[30px] border-t {isDarkMode ? 'border-zinc-700/60 bg-[#14161a]' : 'border-slate-200 bg-slate-50'}">
+                              <div class="flex items-center space-x-1 w-full min-w-0">
+                                <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
                                   AO
                                 </span>
                                 <select
                                   bind:value={editedMatchups[match.id].atlet2_id}
                                   onclick={(e) => e.stopPropagation()}
-                                  class="w-full text-[11px] font-semibold py-1 px-1.5 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
+                                  class="w-full text-[10px] font-bold py-0.5 px-1 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
                                 >
                                   <option value={null}>- Kosong / BYE -</option>
                                   {#if match.atlet2_id && !categoryAthletes.some((a) => a.id === match.atlet2_id)}
@@ -1260,18 +1240,18 @@
                             </div>
                           {:else}
                             <!-- Regular AO (Blue) Row -->
-                            <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-200' : 'bg-white text-slate-800')} flex items-center justify-between px-2 py-[1.5px] min-h-[22px] transition relative border-t {isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}">
-                              <div class="flex items-center space-x-1.5 mr-1.5 min-w-0 flex-1">
-                                <span class="side-pill-ao w-[24px] inline-flex items-center justify-center text-[7.5px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+                            <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative border-t {isDarkMode ? 'border-zinc-700/60' : 'border-slate-300'}">
+                              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+                                <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
                                   AO
                                 </span>
                                 {#if (match.atlet2_logo && logoMap[match.atlet2_logo]) || match.atlet2_is_priority}
-                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? 'has-priority mr-[3px]' : ''}">
+                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? 'has-priority mr-[2px]' : ''}">
                                     {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
                                       <img
                                         src={logoMap[match.atlet2_logo]}
                                         alt="Logo"
-                                        class="player-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
+                                        class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
                                       />
                                     {/if}
                                     {#if match.atlet2_is_priority}
@@ -1287,35 +1267,35 @@
                                   <div class="flex items-center space-x-1 min-w-0">
                                     {#if match.pemenang === '2'}
                                       <span class="text-amber-400 shrink-0" title="Pemenang">
-                                        <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
                                           <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
                                         </svg>
                                       </span>
                                     {/if}
-                                    <span class="player-name-text truncate block text-[10px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
+                                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
                                       {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
                                     </span>
                                     {#if match.vr2}
-                                      <span class="text-[7.5px] font-mono font-bold px-1 bg-blue-600 text-white rounded shrink-0">VR</span>
+                                      <span class="text-[7px] font-mono font-black px-0.5 bg-blue-600 text-white rounded shrink-0">VR</span>
                                     {/if}
                                   </div>
-                                  <div class="player-sub-text flex items-center justify-between gap-1 text-[8px] leading-tight mt-[0.5px] min-w-0">
-                                    <span class="truncate min-w-0 flex-1 {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
-                                      {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
-                                    </span>
-                                    {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
+                                  <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                                    {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
+                                  </div>
+                                  {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
+                                    <div class="kata-row flex items-center leading-none mt-[0.5px]">
                                       <span
-                                        class="kata-badge-ao text-[7.5px] font-bold px-1 py-[0.5px] shrink-0 inline-flex items-center leading-none {isDarkMode ? 'bg-blue-500/15 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'} border rounded max-w-[100px] truncate"
+                                        class="kata-badge-ao text-[6px] font-black px-1 py-0 inline-flex items-center leading-[7.5px] {isDarkMode ? 'bg-blue-500/25 text-blue-200 border-blue-500/50' : 'bg-blue-100 text-blue-900 border-blue-400'} border rounded max-w-[130px] truncate"
                                         title="Kata: {match.kata2}"
                                       >
                                         {match.kata2}
                                       </span>
-                                    {/if}
-                                  </div>
+                                    </div>
+                                  {/if}
                                 </div>
                               </div>
                               <div class="shrink-0 flex items-center">
-                                <span class="score-box min-w-[20px] h-[18px] px-1 font-mono text-[9.5px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.04] border-white/10 text-zinc-300 font-bold' : 'bg-slate-50 border-slate-300 text-slate-700 font-bold')}">
+                                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
                                   {match.score2 ?? '-'}
                                 </span>
                               </div>
@@ -1323,7 +1303,7 @@
                           {/if}
                         </div>
                       {:else}
-                        <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-white/[0.08] text-zinc-600 bg-white/[0.01]' : 'border-slate-300 text-slate-400 bg-white/40'} rounded-md h-10 flex items-center justify-center text-[9px] font-mono">
+                        <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-zinc-700 text-zinc-400 bg-white/[0.02]' : 'border-slate-400 text-slate-600 bg-white/40'} rounded-md h-9 flex items-center justify-center text-[9px] font-mono font-bold">
                           Kosong
                         </div>
                       {/if}
@@ -1343,19 +1323,19 @@
                       </div>
 
                       <!-- Hasil Juara Podium Card -->
-                      <div class="podium-card w-full {isDarkMode ? 'bg-[#181a20] border-amber-500/70 shadow-lg' : 'bg-white border-amber-500 shadow-sm'} border rounded-lg overflow-hidden">
-                        <div class="podium-header px-2.5 py-1 {isDarkMode ? 'bg-amber-500/15 border-amber-500/30' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
+                      <div class="podium-card w-full {isDarkMode ? 'bg-[#181a20] border-amber-500/80 shadow-lg' : 'bg-white border-amber-500 shadow-sm'} border-2 rounded-lg overflow-hidden">
+                        <div class="podium-header px-2.5 py-1 {isDarkMode ? 'bg-amber-500/20 border-amber-500/40' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
                           <div class="flex items-center space-x-1.5">
                             <span class="{isDarkMode ? 'text-amber-400' : 'text-amber-700'} flex items-center">
                               <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                                 <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
                               </svg>
                             </span>
-                            <span class="text-[10.5px] font-bold {isDarkMode ? 'text-amber-300' : 'text-amber-900'} tracking-tight">Hasil Juara</span>
+                            <span class="text-[11px] font-black {isDarkMode ? 'text-amber-300' : 'text-amber-950'} tracking-tight">Hasil Juara</span>
                           </div>
                         </div>
 
-                        <div class="divide-y {isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-100'} text-[10px]">
+                        <div class="divide-y {isDarkMode ? 'divide-zinc-700/60' : 'divide-slate-200'} text-[10px]">
                           <!-- Juara 1 (Gold) -->
                           <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
                             <span class="w-4 h-4 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
@@ -1380,8 +1360,8 @@
                               </div>
                             {/if}
                             <div class="min-w-0 truncate">
-                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j1.name}</div>
-                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j1.contingent}</div>
+                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j1.name}</div>
+                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j1.contingent}</div>
                             </div>
                           </div>
 
@@ -1409,8 +1389,8 @@
                               </div>
                             {/if}
                             <div class="min-w-0 truncate">
-                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j2.name}</div>
-                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j2.contingent}</div>
+                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j2.name}</div>
+                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j2.contingent}</div>
                             </div>
                           </div>
 
@@ -1438,8 +1418,8 @@
                               </div>
                             {/if}
                             <div class="min-w-0 truncate">
-                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3a.name}</div>
-                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j3a.contingent}</div>
+                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j3a.name}</div>
+                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j3a.contingent}</div>
                             </div>
                           </div>
 
@@ -1467,8 +1447,8 @@
                               </div>
                             {/if}
                             <div class="min-w-0 truncate">
-                              <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3b.name}</div>
-                              <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j3b.contingent}</div>
+                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j3b.name}</div>
+                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j3b.contingent}</div>
                             </div>
                           </div>
                         </div>
@@ -1608,20 +1588,22 @@
 
     /* Print Column Headers */
     .col-header-badge {
-      background: #0f172a !important;
-      background-color: #0f172a !important;
+      background: #000000 !important;
+      background-color: #000000 !important;
       color: #ffffff !important;
-      border: 1px solid #0f172a !important;
+      border: 1.5px solid #000000 !important;
+      font-weight: 900 !important;
     }
     .col-header-title {
-      color: #020617 !important;
+      color: #000000 !important;
       text-align: center !important;
+      font-weight: 900 !important;
     }
     .col-header-line {
       height: 32px !important;
       padding-bottom: 4px !important;
       margin-bottom: 4px !important;
-      border-bottom: 1.5px solid #0f172a !important;
+      border-bottom: 2px solid #000000 !important;
       justify-content: center !important;
       text-align: center !important;
     }
@@ -1630,102 +1612,122 @@
     .match-card {
       background: #ffffff !important;
       background-color: #ffffff !important;
-      border: 1.5px solid #334155 !important;
+      border: 1.8px solid #000000 !important;
       box-shadow: none !important;
     }
     .card-header-bar {
-      background: #f1f5f9 !important;
-      background-color: #f1f5f9 !important;
-      border-bottom: 1px solid #cbd5e1 !important;
-      color: #020617 !important;
-      padding: 1.5px 6px !important;
-      font-size: 8.5px !important;
+      background: #e2e8f0 !important;
+      background-color: #e2e8f0 !important;
+      border-bottom: 1.5px solid #000000 !important;
+      color: #000000 !important;
+      padding: 0 4px !important;
+      height: 13px !important;
+      min-height: 13px !important;
+      line-height: 13px !important;
+      font-size: 7.5px !important;
+      font-weight: 900 !important;
     }
     .card-header-bar span {
-      color: #020617 !important;
+      color: #000000 !important;
+      font-weight: 900 !important;
     }
     .card-header-bar .final-title {
-      color: #b45309 !important;
+      color: #92400e !important;
+      font-weight: 950 !important;
     }
 
     /* Player Rows */
     .player-row {
       background: #ffffff !important;
       background-color: #ffffff !important;
-      border-color: #e2e8f0 !important;
-      min-height: 22px !important;
-      padding: 1px 5px !important;
+      border-color: #000000 !important;
+      min-height: 17px !important;
+      padding: 0.5px 3px !important;
     }
     .player-name-text {
-      color: #020617 !important;
-      font-size: 9.5px !important;
-      line-height: 1.15 !important;
+      color: #000000 !important;
+      font-weight: 900 !important;
+      font-size: 8.5px !important;
+      line-height: 10px !important;
     }
     .player-sub-text {
-      color: #475569 !important;
-      font-size: 8px !important;
+      color: #0f172a !important;
+      font-weight: 800 !important;
+      font-size: 7px !important;
+      line-height: 8.5px !important;
+      margin-top: 0.5px !important;
+      display: block !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+    }
+    .kata-row {
+      margin-top: 0.5px !important;
       line-height: 1 !important;
-      margin-top: 0px !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: space-between !important;
     }
     .score-box {
       background: #f8fafc !important;
       background-color: #f8fafc !important;
-      border: 1px solid #cbd5e1 !important;
-      color: #020617 !important;
-      min-width: 20px !important;
-      height: 18px !important;
-      font-size: 9.5px !important;
-      padding: 0 2px !important;
+      border: 1.5px solid #000000 !important;
+      color: #000000 !important;
+      font-weight: 900 !important;
+      min-width: 18px !important;
+      height: 15px !important;
+      font-size: 8.5px !important;
+      padding: 0 1px !important;
     }
 
     /* Winner Row Highlighting in Print */
     .player-row-winner {
       background: #fef3c7 !important;
       background-color: #fef3c7 !important;
-      border-left: 4.5px solid #d97706 !important;
+      border-left: 5px solid #000000 !important;
     }
     .player-row-winner .player-name-text {
-      color: #78350f !important;
+      color: #000000 !important;
+      font-weight: 950 !important;
+    }
+    .player-row-winner .player-sub-text {
+      color: #451a03 !important;
       font-weight: 800 !important;
     }
     .player-row-winner .score-box {
       background: #fde047 !important;
       background-color: #fde047 !important;
-      border: 2px solid #d97706 !important;
-      color: #78350f !important;
-      font-weight: 900 !important;
+      border: 2px solid #000000 !important;
+      color: #000000 !important;
+      font-weight: 950 !important;
     }
 
     /* Side Pills in Print */
     .side-pill-aka {
-      background: #dc2626 !important;
-      background-color: #dc2626 !important;
+      background: #b91c1c !important;
+      background-color: #b91c1c !important;
       color: #ffffff !important;
-      font-size: 8px !important;
-      width: 25px !important;
-      min-width: 25px !important;
-      max-width: 25px !important;
+      font-weight: 900 !important;
+      font-size: 7px !important;
+      width: 22px !important;
+      min-width: 22px !important;
+      max-width: 22px !important;
       display: inline-flex !important;
       align-items: center !important;
       justify-content: center !important;
-      padding: 1px 0 !important;
+      padding: 0.5px 0 !important;
       text-align: center !important;
     }
     .side-pill-ao {
-      background: #2563eb !important;
-      background-color: #2563eb !important;
+      background: #1d4ed8 !important;
+      background-color: #1d4ed8 !important;
       color: #ffffff !important;
-      font-size: 8px !important;
-      width: 25px !important;
-      min-width: 25px !important;
-      max-width: 25px !important;
+      font-weight: 900 !important;
+      font-size: 7px !important;
+      width: 22px !important;
+      min-width: 22px !important;
+      max-width: 22px !important;
       display: inline-flex !important;
       align-items: center !important;
       justify-content: center !important;
-      padding: 1px 0 !important;
+      padding: 0.5px 0 !important;
       text-align: center !important;
     }
 
@@ -1733,86 +1735,93 @@
     .empty-slot {
       background: #ffffff !important;
       background-color: #ffffff !important;
-      border: 1px dashed #cbd5e1 !important;
-      color: #94a3b8 !important;
+      border: 1.5px dashed #64748b !important;
+      color: #334155 !important;
+      font-weight: 800 !important;
     }
 
     /* Kata Badges in Print */
     .kata-badge-aka {
       background: #fee2e2 !important;
       background-color: #fee2e2 !important;
-      color: #991b1b !important;
-      border: 1px solid #f87171 !important;
-      font-size: 7.5px !important;
-      line-height: 1 !important;
-      padding: 0.5px 3px !important;
+      color: #7f1d1d !important;
+      border: 1px solid #991b1b !important;
+      font-size: 6px !important;
+      font-weight: 900 !important;
+      line-height: 7.5px !important;
+      padding: 0.5px 2px !important;
       margin-top: 0px !important;
       display: inline-flex !important;
       align-items: center !important;
       flex-shrink: 0 !important;
-      max-width: 90px !important;
+      max-width: 125px !important;
     }
     .kata-badge-ao {
       background: #dbeafe !important;
       background-color: #dbeafe !important;
-      color: #1e40af !important;
-      border: 1px solid #60a5fa !important;
-      font-size: 7.5px !important;
-      line-height: 1 !important;
-      padding: 0.5px 3px !important;
+      color: #1e3a8a !important;
+      border: 1px solid #1e40af !important;
+      font-size: 6px !important;
+      font-weight: 900 !important;
+      line-height: 7.5px !important;
+      padding: 0.5px 2px !important;
       margin-top: 0px !important;
       display: inline-flex !important;
       align-items: center !important;
       flex-shrink: 0 !important;
-      max-width: 90px !important;
+      max-width: 125px !important;
     }
 
     /* Connector SVG Lines in Print */
     :global(svg line.connector-line) {
-      stroke: #0f172a !important;
-      stroke-width: 1.2px !important;
+      stroke: #000000 !important;
+      stroke-width: 1.6px !important;
     }
 
     /* Hasil Juara Card in Print */
     .podium-card {
       background: #ffffff !important;
       background-color: #ffffff !important;
-      border: 1.5px solid #d97706 !important;
+      border: 2px solid #000000 !important;
       box-shadow: none !important;
     }
     .podium-header {
       background: #fef3c7 !important;
       background-color: #fef3c7 !important;
-      border-bottom: 1px solid #fde68a !important;
-      color: #78350f !important;
+      border-bottom: 1.5px solid #000000 !important;
+      color: #000000 !important;
+      font-weight: 900 !important;
       padding: 2px 6px !important;
     }
     .podium-header span {
-      color: #78350f !important;
+      color: #000000 !important;
+      font-weight: 900 !important;
     }
     .podium-row {
       background: #ffffff !important;
       background-color: #ffffff !important;
-      border-bottom: 1px solid #f1f5f9 !important;
+      border-bottom: 1.2px solid #000000 !important;
       padding: 1.5px 6px !important;
     }
     .podium-name {
-      color: #020617 !important;
-      font-size: 9.5px !important;
+      color: #000000 !important;
+      font-weight: 900 !important;
+      font-size: 10px !important;
       line-height: 1.15 !important;
     }
     .podium-sub {
-      color: #475569 !important;
+      color: #0f172a !important;
+      font-weight: 800 !important;
       font-size: 8px !important;
       line-height: 1 !important;
     }
 
     /* Contingent Dojo Logos in Print */
     .player-dojo-logo {
-      width: 18px !important;
-      height: 18px !important;
-      max-width: 18px !important;
-      max-height: 18px !important;
+      width: 12px !important;
+      height: 12px !important;
+      max-width: 12px !important;
+      max-height: 12px !important;
       object-fit: contain !important;
       flex-shrink: 0 !important;
       display: inline-block !important;
@@ -1847,9 +1856,18 @@
     }
   }
 
+  .kata-row {
+    display: flex;
+    align-items: center;
+    line-height: 1;
+    margin-top: 0.5px;
+  }
+
   .player-dojo-logo {
-    width: 20px;
-    height: 20px;
+    width: 12px;
+    height: 12px;
+    max-width: 12px;
+    max-height: 12px;
     object-fit: contain;
     flex-shrink: 0;
   }
