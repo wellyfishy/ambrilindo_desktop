@@ -302,3 +302,20 @@ pub struct DrawingSummary {
     pub total_matches: usize,
     pub total_collisions: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveMatchInput {
+    pub match_id: i64,
+    pub bagan_id: i64,
+    pub score1: Option<String>,
+    pub score2: Option<String>,
+    pub scorekecil1: Option<String>,
+    pub scorekecil2: Option<String>,
+    pub pemenang: Option<String>,
+    pub kata1: Option<String>,
+    pub kata2: Option<String>,
+    pub vr1: bool,
+    pub vr2: bool,
+    pub hantei: bool,
+    pub selesai: bool,
+}

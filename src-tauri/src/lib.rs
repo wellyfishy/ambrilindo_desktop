@@ -13,7 +13,7 @@ use audio::{AudioService, SoundType};
 use db::DatabaseManager;
 use models::{
     AthleteMutationInput, Atlet, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, Tatami, Utusan,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, Tatami, Utusan,
 };
 use server::{ArenaMessage, NetworkInfo};
 
@@ -266,6 +266,15 @@ async fn get_detail_bagan(
 ) -> Result<Vec<EnrichedDetailBagan>, String> {
     let db = state.db.lock().await;
     db.get_detail_bagan(bagan_id).await
+}
+
+#[tauri::command]
+async fn save_match_result(
+    input: SaveMatchInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.save_match_result(input).await
 }
 
 #[tauri::command]
@@ -717,6 +726,7 @@ pub fn run() {
             delete_all_athletes,
             get_bagans,
             get_detail_bagan,
+            save_match_result,
             get_media_data_url,
             get_athletes,
             get_enriched_athletes,

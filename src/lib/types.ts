@@ -242,3 +242,19 @@ export interface DrawingSummary {
   total_collisions: number;
 }
 
+export interface SaveMatchInput {
+  match_id: number;
+  bagan_id: number;
+  score1: string | null;
+  score2: string | null;
+  scorekecil1?: string | null;
+  scorekecil2?: string | null;
+  pemenang: string | null;
+  kata1?: string | null;
+  kata2?: string | null;
+  vr1: boolean;
+  vr2: boolean;
+  hantei: boolean;
+  selesai: boolean;
+}
+

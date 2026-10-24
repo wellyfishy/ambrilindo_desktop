@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import type { DetailBaganItem, BaganItem } from "$lib/types";
+  import type { DetailBaganItem, BaganItem, SaveMatchInput } from "$lib/types";
+  import ControlPanelView from "$lib/components/ControlPanelView.svelte";
 
   interface Props {
     baganId: number;
@@ -28,6 +29,31 @@
   let matches = $state<DetailBaganItem[]>([]);
   let isLoading = $state(true);
   let logoMap = $state<Record<string, string>>({});
+  let activeMatchForControl = $state<DetailBaganItem | null>(null);
+
+  async function handleSaveMatchResult(input: SaveMatchInput) {
+    try {
+      await invoke("save_match_result", { input });
+      activeMatchForControl = null;
+      await loadBracketData();
+    } catch (err: any) {
+      console.error("Gagal menyimpan hasil partai:", err);
+      // Fallback for browser mode / test harness
+      const m = matches.find((x) => x.id === input.match_id);
+      if (m) {
+        m.score1 = input.score1;
+        m.score2 = input.score2;
+        m.pemenang = input.pemenang;
+        m.selesai = input.selesai;
+        m.kata1 = input.kata1 || null;
+        m.kata2 = input.kata2 || null;
+        m.vr1 = input.vr1;
+        m.vr2 = input.vr2;
+        m.hantei = input.hantei;
+      }
+      activeMatchForControl = null;
+    }
+  }
 
   async function resolveLogos(items: DetailBaganItem[]) {
     const needed = new Set<string>();
@@ -382,6 +408,19 @@
   });
 </script>
 
+{#if activeMatchForControl}
+  <ControlPanelView
+    match={activeMatchForControl}
+    baganInfo={baganInfo}
+    baganName={baganName}
+    eventName={eventName}
+    tatamiNumber={activeMatchForControl.assigned_tatami_id || 1}
+    hostUrl={hostUrl}
+    logoMap={logoMap}
+    onBack={() => { activeMatchForControl = null; }}
+    onSave={handleSaveMatchResult}
+  />
+{:else}
 <div class="h-full flex flex-col p-4 select-none {isDarkMode ? 'bg-[#14161b] text-zinc-200' : 'bg-slate-100 text-slate-800'} overflow-hidden font-sans print-sheet">
   <!-- Top Control Bar (Hidden on Print) -->
   <div class="no-print flex items-center justify-between pb-2.5 mb-2 border-b {isDarkMode ? 'border-white/[0.08]' : 'border-slate-300'} shrink-0">
@@ -567,7 +606,14 @@
                     {@const match = getMatchForSlot(roundMatches, slotNum)}
                     <div data-slot={slotNum} class="{slotHeightClass} flex items-center justify-center">
                       {#if match}
-                        <div class="match-card w-full {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs transition relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}">
+                        <div
+                          class="match-card w-full cursor-pointer hover:ring-2 hover:ring-amber-500/80 transition-all {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
+                          onclick={() => { activeMatchForControl = match; }}
+                          role="button"
+                          tabindex="0"
+                          onkeydown={(e) => { if (e.key === 'Enter') activeMatchForControl = match; }}
+                          title="Klik untuk membuka Kontrol Pertandingan (Control Panel)"
+                        >
                           <!-- Match Card Header -->
                           <div class="card-header-bar flex items-center justify-between px-2 py-0.5 {isDarkMode ? 'bg-[#131518] border-white/[0.08] text-zinc-300' : 'bg-slate-100 border-slate-300 text-slate-800'} border-b text-[9.5px] font-bold font-mono tracking-wider">
                             <span class="flex items-center space-x-1">
@@ -872,6 +918,7 @@
     {/if}
   </div>
 </div>
+{/if}
 
 <style>
   @media print {

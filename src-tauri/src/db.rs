@@ -9,7 +9,7 @@ use tracing::info;
 use crate::bracket::{build_bracket_in_memory, split_athletes_into_pools, AthleteInput};
 use crate::models::{
     Atlet, AthleteMutationInput, Bagan, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, Tatami, Utusan,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, Tatami, Utusan,
 };
 
 #[derive(Clone)]
@@ -1063,5 +1063,161 @@ impl DatabaseManager {
             total_matches,
             total_collisions,
         })
+    }
+
+    /// Saves a match result in detail_bagan and advances the winner in tournament brackets
+    pub async fn save_match_result(&self, input: SaveMatchInput) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Fetch the match being updated
+        let current_match: (i64, i64, i64, i64, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT id, bagan_id, round, urutan, atlet1_id, atlet2_id FROM backend_detailbagan WHERE id = ?"
+        )
+        .bind(input.match_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("Partai dengan ID {} tidak ditemukan: {}", input.match_id, e))?;
+
+        let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id) = current_match;
+
+        // 2. Update current match in backend_detailbagan
+        sqlx::query(
+            r#"
+            UPDATE backend_detailbagan
+            SET score1 = ?, score2 = ?, scorekecil1 = ?, scorekecil2 = ?,
+                pemenang = ?, kata1 = ?, kata2 = ?,
+                vr1 = ?, vr2 = ?, hantei = ?, selesai = ?
+            WHERE id = ?
+            "#
+        )
+        .bind(&input.score1)
+        .bind(&input.score2)
+        .bind(&input.scorekecil1)
+        .bind(&input.scorekecil2)
+        .bind(&input.pemenang)
+        .bind(&input.kata1)
+        .bind(&input.kata2)
+        .bind(input.vr1)
+        .bind(input.vr2)
+        .bind(input.hantei)
+        .bind(input.selesai)
+        .bind(input.match_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal menyimpan partai: {}", e))?;
+
+        // 3. Handle bracket advancement or reopening
+        if input.selesai && input.pemenang.is_some() {
+            let pemenang_str = input.pemenang.as_deref().unwrap_or("");
+            let winner_id = match pemenang_str {
+                "1" => a1_id,
+                "2" => a2_id,
+                _ => None,
+            };
+            let loser_id = match pemenang_str {
+                "1" => a2_id,
+                "2" => a1_id,
+                _ => None,
+            };
+
+            if let Some(w_id) = winner_id {
+                // If round < 4, advance winner to the next round match
+                if round_num < 4 {
+                    let next_round = round_num + 1;
+                    let next_urutan = (urutan_num + 1) / 2;
+
+                    if urutan_num % 2 == 1 {
+                        sqlx::query(
+                            "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                        )
+                        .bind(w_id)
+                        .bind(bagan_id)
+                        .bind(next_round)
+                        .bind(next_urutan)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| format!("Gagal memajukan pemenang ke ronde berikutnya: {}", e))?;
+                    } else {
+                        sqlx::query(
+                            "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                        )
+                        .bind(w_id)
+                        .bind(bagan_id)
+                        .bind(next_round)
+                        .bind(next_urutan)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| format!("Gagal memajukan pemenang ke ronde berikutnya: {}", e))?;
+                    }
+                } else if round_num == 4 {
+                    // Final: Winner is Juara 1, Loser is Juara 2
+                    sqlx::query(
+                        "UPDATE backend_bagan SET juara_1_id = ?, juara_2_id = ? WHERE id = ?"
+                    )
+                    .bind(w_id)
+                    .bind(loser_id)
+                    .bind(bagan_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal memperbarui juara 1 & 2: {}", e))?;
+                }
+
+                // If round == 3 (Semifinal), loser becomes Juara 3A (semi 1) or Juara 3B (semi 2)
+                if round_num == 3 {
+                    if urutan_num == 1 {
+                        sqlx::query("UPDATE backend_bagan SET juara_3a_id = ? WHERE id = ?")
+                            .bind(loser_id)
+                            .bind(bagan_id)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| format!("Gagal memperbarui juara 3A: {}", e))?;
+                    } else if urutan_num == 2 {
+                        sqlx::query("UPDATE backend_bagan SET juara_3b_id = ? WHERE id = ?")
+                            .bind(loser_id)
+                            .bind(bagan_id)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| format!("Gagal memperbarui juara 3B: {}", e))?;
+                    }
+                }
+            }
+        } else if !input.selesai {
+            // Match is re-opened or reset: if next match hasn't started, clear winner from next round
+            if round_num < 4 {
+                let next_round = round_num + 1;
+                let next_urutan = (urutan_num + 1) / 2;
+
+                if urutan_num % 2 == 1 {
+                    let _ = sqlx::query(
+                        "UPDATE backend_detailbagan SET atlet1_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
+                    )
+                    .bind(bagan_id)
+                    .bind(next_round)
+                    .bind(next_urutan)
+                    .execute(&mut *tx)
+                    .await;
+                } else {
+                    let _ = sqlx::query(
+                        "UPDATE backend_detailbagan SET atlet2_id = NULL WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 0"
+                    )
+                    .bind(bagan_id)
+                    .bind(next_round)
+                    .bind(next_urutan)
+                    .execute(&mut *tx)
+                    .await;
+                }
+            } else if round_num == 4 {
+                let _ = sqlx::query(
+                    "UPDATE backend_bagan SET juara_1_id = NULL, juara_2_id = NULL WHERE id = ?"
+                )
+                .bind(bagan_id)
+                .execute(&mut *tx)
+                .await;
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal melakukan commit transaksi: {}", e))?;
+        Ok(())
     }
 }
