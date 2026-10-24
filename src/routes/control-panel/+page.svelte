@@ -37,16 +37,23 @@
       currentMatch = found;
       tatamiNumber = found.assigned_tatami_id || 1;
 
-      // 2. Fetch bagan info for tournament metadata
+      // 2. Fetch bagan info directly by baganId
       try {
-        const bagans: BaganItem[] = await invoke("get_bagans", { eventId: 1 });
-        const b = bagans.find((x) => x.id === baganId);
+        const b: BaganItem | null = await invoke("get_bagan_by_id", { baganId });
         if (b) {
           baganInfo = b;
           baganName = b.nama_bagan || "";
         }
       } catch (e) {
-        console.warn("Gagal memuat info bagan:", e);
+        console.warn("Gagal memuat info bagan by ID, fallback get_bagans:", e);
+        try {
+          const bagans: BaganItem[] = await invoke("get_bagans", { eventId: 1 });
+          const b = bagans.find((x) => x.id === baganId);
+          if (b) {
+            baganInfo = b;
+            baganName = b.nama_bagan || "";
+          }
+        } catch (_) {}
       }
 
       // 3. Resolve logos if present
@@ -73,6 +80,9 @@
   }
 
   async function handleCloseWindow() {
+    try {
+      await invoke("close_control_panel_window", { matchId });
+    } catch (_) {}
     try {
       const appWindow = getCurrentWebviewWindow();
       await appWindow.close();

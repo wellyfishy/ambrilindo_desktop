@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import type { ActiveChannel, AppMode, BaganItem, EventItem, TatamiItem } from "$lib/types";
 
   interface MonitorOption {
@@ -49,21 +50,55 @@
   let searchBagan = $state("");
   let isRoleDropdownOpen = $state(false);
 
-  // Scoreboard monitor & flyout state
+  // Scoreboard monitor, flyout state & running scoreboards
   let monitors = $state<MonitorOption[]>([]);
+  let runningScoreboards = $state<number[]>([]);
   let isScoreboardMenuOpen = $state(false);
   let hoveredTatami = $state<number | null>(null);
   let scoreboardBtnEl = $state<HTMLElement | null>(null);
   let scoreboardFlyoutPos = $state<{ top: number; left: number }>({ top: 0, left: 330 });
+  let closeMenuTimer: any = null;
+
+  function scheduleCloseMenu() {
+    if (closeMenuTimer) clearTimeout(closeMenuTimer);
+    closeMenuTimer = setTimeout(() => {
+      isScoreboardMenuOpen = false;
+      hoveredTatami = null;
+    }, 300);
+  }
+
+  function cancelCloseMenu() {
+    if (closeMenuTimer) {
+      clearTimeout(closeMenuTimer);
+      closeMenuTimer = null;
+    }
+  }
 
   function openScoreboardMenu(el: HTMLElement) {
+    cancelCloseMenu();
     const rect = el.getBoundingClientRect();
     scoreboardFlyoutPos = {
       top: Math.max(10, rect.top),
-      left: rect.right + 6,
+      left: rect.right + 4,
     };
     loadMonitors();
+    refreshRunningScoreboards();
     isScoreboardMenuOpen = true;
+  }
+
+  async function refreshRunningScoreboards() {
+    try {
+      runningScoreboards = await invoke<number[]>("get_running_scoreboards");
+    } catch (_) {}
+  }
+
+  async function handleStopScoreboard(tatamiNum: number) {
+    try {
+      await invoke("close_scoreboard", { tatamiNumber: tatamiNum });
+      await refreshRunningScoreboards();
+    } catch (err) {
+      console.warn("Failed to close scoreboard:", err);
+    }
   }
 
   async function loadMonitors() {
@@ -78,6 +113,7 @@
   async function handleLaunchScoreboard(tatamiNum: number, monitorId: number) {
     try {
       await invoke("project_scoreboard", { monitorId, tatamiNumber: tatamiNum });
+      await refreshRunningScoreboards();
     } catch (err) {
       console.warn("Tauri project_scoreboard failed, fallback to window.open:", err);
       window.open(`/scoreboard?tatami=${tatamiNum}`, `scoreboard_tatami_${tatamiNum}`);
@@ -86,6 +122,19 @@
       hoveredTatami = null;
     }
   }
+
+  onMount(() => {
+    refreshRunningScoreboards();
+    let unlisten: any;
+    listen("scoreboard_status_changed", () => {
+      refreshRunningScoreboards();
+    }).then((u) => (unlisten = u));
+
+    return () => {
+      if (unlisten) unlisten();
+      if (closeMenuTimer) clearTimeout(closeMenuTimer);
+    };
+  });
 
   // Horizontal resizer state (resizable channel bar)
   let sidebarWidth = $state(260);
@@ -235,10 +284,7 @@
             onmouseenter={() => {
               if (scoreboardBtnEl) openScoreboardMenu(scoreboardBtnEl);
             }}
-            onmouseleave={() => {
-              isScoreboardMenuOpen = false;
-              hoveredTatami = null;
-            }}
+            onmouseleave={scheduleCloseMenu}
           >
             <button
               type="button"
@@ -259,43 +305,76 @@
                 <span class="text-amber-500 font-mono">#</span>
                 <span class="truncate">buka-scoring-board</span>
               </div>
-              <span class="text-[9px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1 py-0.2 rounded font-bold">
-                ARENA
-              </span>
+              {#if runningScoreboards.length > 0}
+                <span class="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-[9px] font-mono font-bold text-red-400 shadow-sm">
+                  <span class="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
+                  <span>{runningScoreboards.length} AKTIF</span>
+                </span>
+              {/if}
             </button>
 
-            <!-- Flyout Menu Popover (Fixed to viewport so it never causes scroll or gets clipped) -->
+            <!-- Flyout Menu Popover (Fixed to viewport with anti-flicker bridge) -->
             {#if isScoreboardMenuOpen}
               <div
+                role="region"
+                aria-label="Menu Pilihan Tatami dan Monitor"
                 style="top: {scoreboardFlyoutPos.top}px; left: {scoreboardFlyoutPos.left}px;"
-                class="fixed z-50 bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-56 text-xs animate-in fade-in zoom-in-95 duration-100"
+                onmouseenter={cancelCloseMenu}
+                onmouseleave={scheduleCloseMenu}
+                class="fixed z-50 bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-64 text-xs animate-in fade-in zoom-in-95 duration-100 before:content-[''] before:absolute before:-left-3 before:top-0 before:w-4 before:h-full"
               >
                 {#if activeRole === "admin_utama"}
-                  <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500 border-b border-[#2b2d31] mb-1">
-                    Pilih Tatami:
+                  <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500 border-b border-[#2b2d31] mb-1 flex items-center justify-between">
+                    <span>PILIH TATAMI</span>
+                    {#if runningScoreboards.length > 0}
+                      <span class="text-[9px] text-red-400 font-bold">{runningScoreboards.length} Berjalan</span>
+                    {/if}
                   </div>
                   <div class="space-y-0.5">
                     {#each (tatamis.length > 0 ? tatamis : [{ id: 1, tatami_number: 1 }]) as tItem}
                       {@const tNum = tItem.tatami_number || 1}
+                      {@const isRunning = runningScoreboards.includes(tNum)}
                       <div
                         class="relative"
                         role="menuitem"
                         tabindex="-1"
                         onmouseenter={() => (hoveredTatami = tNum)}
                       >
-                        <button
-                          type="button"
-                          class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg font-bold transition {hoveredTatami === tNum ? 'bg-[#5865f2] text-white shadow' : 'text-zinc-300 hover:bg-white/[0.05]'}"
-                        >
-                          <span>Tatami {tNum}</span>
-                          <span class="text-[10px] font-mono">›</span>
-                        </button>
+                        <div class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg font-bold transition {hoveredTatami === tNum ? 'bg-[#5865f2] text-white shadow' : 'text-zinc-300 hover:bg-white/[0.05]'}">
+                          <button
+                            type="button"
+                            class="flex-1 text-left flex items-center space-x-1.5 min-w-0"
+                            onclick={() => (hoveredTatami = tNum)}
+                          >
+                            <span>Tatami {tNum}</span>
+                            <span class="text-[10px] font-mono">›</span>
+                          </button>
+
+                          <!-- Red Stop Logo & Badge if running -->
+                          {#if isRunning}
+                            <button
+                              type="button"
+                              onclick={(e) => {
+                                e.stopPropagation();
+                                handleStopScoreboard(tNum);
+                              }}
+                              class="px-2 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white font-mono text-[9px] font-black tracking-wider flex items-center space-x-1 shadow transition active:scale-95 shrink-0 ml-1.5"
+                              title="Hentikan & Tutup Scoreboard Tatami {tNum}"
+                            >
+                              <span class="w-1.5 h-1.5 bg-white rounded-xs"></span>
+                              <span>STOP</span>
+                            </button>
+                          {/if}
+                        </div>
 
                         <!-- Nested Monitors Menu -->
                         {#if hoveredTatami === tNum}
-                          <div class="absolute left-full top-0 ml-1 z-50 bg-[#14161b] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-56 text-xs">
-                            <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400 border-b border-[#2b2d31] mb-1">
-                              Tatami {tNum} - Pilih Monitor:
+                          <div class="absolute left-full top-0 ml-1 z-50 bg-[#14161b] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-56 text-xs before:content-[''] before:absolute before:-left-3 before:top-0 before:w-4 before:h-full">
+                            <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400 border-b border-[#2b2d31] mb-1 flex items-center justify-between">
+                              <span>Tatami {tNum} - Pilih Monitor:</span>
+                              {#if isRunning}
+                                <span class="text-[9px] text-red-400 font-bold">AKTIF</span>
+                              {/if}
                             </div>
                             {#if monitors.length === 0}
                               <div class="px-2 py-2 text-zinc-500 text-[11px]">Memuat monitor...</div>
@@ -319,8 +398,20 @@
                 {:else}
                   <!-- Admin Tatami X: Tatami automatically locked, only select monitor -->
                   {@const assignedTatamiNum = parseInt(activeRole.replace("admin_tatami_", "")) || 1}
-                  <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400 border-b border-[#2b2d31] mb-1">
-                    Tatami {assignedTatamiNum} - Pilih Monitor:
+                  {@const isRunning = runningScoreboards.includes(assignedTatamiNum)}
+                  <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400 border-b border-[#2b2d31] mb-1 flex items-center justify-between">
+                    <span>Tatami {assignedTatamiNum} - Monitor</span>
+                    {#if isRunning}
+                      <button
+                        type="button"
+                        onclick={() => handleStopScoreboard(assignedTatamiNum)}
+                        class="px-2 py-0.5 rounded bg-red-600 hover:bg-red-500 text-white font-mono text-[9px] font-black tracking-wider flex items-center space-x-1 shadow transition active:scale-95"
+                        title="Hentikan & Tutup Scoreboard Tatami {assignedTatamiNum}"
+                      >
+                        <span class="w-1.5 h-1.5 bg-white rounded-xs"></span>
+                        <span>STOP</span>
+                      </button>
+                    {/if}
                   </div>
                   {#if monitors.length === 0}
                     <div class="px-2 py-2 text-zinc-500 text-[11px]">Memuat monitor...</div>

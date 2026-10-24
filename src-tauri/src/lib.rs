@@ -269,6 +269,28 @@ async fn get_detail_bagan(
 }
 
 #[tauri::command]
+async fn get_bagan_by_id(
+    bagan_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<Bagan>, String> {
+    let db = state.db.lock().await;
+    db.get_bagan_by_id(bagan_id).await
+}
+
+#[tauri::command]
+async fn close_control_panel_window(
+    app: tauri::AppHandle,
+    match_id: i64,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let win_label = format!("control-panel-{}", match_id);
+    if let Some(win) = app.get_webview_window(&win_label) {
+        let _ = win.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn save_match_result(
     input: SaveMatchInput,
     state: tauri::State<'_, DesktopState>,
@@ -506,7 +528,7 @@ async fn project_scoreboard(
     monitor_id: usize,
     tatami_number: u32,
 ) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
 
     let monitors = app.available_monitors().map_err(|e| e.to_string())?;
     let monitor = monitors.get(monitor_id).ok_or_else(|| "Monitor tidak ditemukan".to_string())?;
@@ -518,6 +540,7 @@ async fn project_scoreboard(
         let _ = win.set_position(tauri::Position::Physical(*monitor.position()));
         let _ = win.set_fullscreen(true);
         let _ = win.set_focus();
+        let _ = app.emit("scoreboard_status_changed", ());
         return Ok(());
     }
 
@@ -530,7 +553,39 @@ async fn project_scoreboard(
         .build()
         .map_err(|e| format!("Gagal membuka jendela scoreboard: {}", e))?;
 
+    let _ = app.emit("scoreboard_status_changed", ());
     Ok(())
+}
+
+#[tauri::command]
+async fn close_scoreboard(
+    app: tauri::AppHandle,
+    tatami_number: u32,
+) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let win_label = format!("scoreboard-tatami-{}", tatami_number);
+    if let Some(win) = app.get_webview_window(&win_label) {
+        let _ = win.close();
+    }
+    let _ = app.emit("scoreboard_status_changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_running_scoreboards(
+    app: tauri::AppHandle,
+) -> Result<Vec<u32>, String> {
+    use tauri::Manager;
+    let mut running = Vec::new();
+    for i in 1..=10 {
+        let win_label = format!("scoreboard-tatami-{}", i);
+        if let Some(win) = app.get_webview_window(&win_label) {
+            if win.is_visible().unwrap_or(false) {
+                running.push(i);
+            }
+        }
+    }
+    Ok(running)
 }
 
 #[tauri::command]
@@ -754,9 +809,11 @@ pub fn run() {
             delete_category_bagans,
             delete_all_athletes,
             get_bagans,
+            get_bagan_by_id,
             get_detail_bagan,
             save_match_result,
             open_control_panel_window,
+            close_control_panel_window,
             get_media_data_url,
             get_athletes,
             get_enriched_athletes,
@@ -770,6 +827,8 @@ pub fn run() {
             play_buzzer,
             get_available_monitors,
             project_scoreboard,
+            close_scoreboard,
+            get_running_scoreboards,
             get_sync_config,
             set_sync_config,
             test_sync_connection,

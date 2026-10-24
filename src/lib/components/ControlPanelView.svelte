@@ -12,7 +12,7 @@
     tatamiNumber?: number;
     hostUrl?: string;
     logoMap?: Record<string, string>;
-    onBack: () => void;
+    onBack?: () => void;
     onSave: (input: SaveMatchInput) => Promise<void> | void;
   }
 
@@ -24,15 +24,27 @@
     tatamiNumber = 1,
     hostUrl = "",
     logoMap = {},
-    onBack,
+    onBack = () => {},
     onSave,
   }: Props = $props();
 
   // Automatic Discipline Detection (No manual switching required)
-  let isKata = $derived(
-    (baganInfo?.tipe_tanding?.toLowerCase() || "").includes("kata") ||
-    baganName.toLowerCase().includes("kata")
-  );
+  let isKata = $derived.by(() => {
+    // 1. Check tipe_tanding (Ambrilindo standard: '1' is Kata, '2' is Kumite)
+    const tt = String(baganInfo?.tipe_tanding || "").trim().toLowerCase();
+    if (tt === "1" || tt === "kata") return true;
+    if (tt === "2" || tt === "kumite") return false;
+
+    // 2. Check bagan name or category name text
+    const name = (baganName || baganInfo?.nama_bagan || "").toLowerCase();
+    if (name.includes("kata")) return true;
+    if (name.includes("kumite")) return false;
+
+    // 3. Check match round/kata entries if present
+    if (match.kata1 || match.kata2) return true;
+
+    return false;
+  });
 
   // Common Match State
   let matchWinner = $state<string>("");
@@ -500,18 +512,6 @@
   <!-- Top Cockpit Header Bar (Discord Card #181a20, Border #2b2d31) -->
   <div class="cockpit-page-header flex items-center justify-between flex-wrap gap-3 p-3 bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-lg mb-3 shrink-0">
     <div class="flex items-center space-x-3">
-      <!-- Back Button -->
-      <button
-        type="button"
-        onclick={onBack}
-        class="px-3.5 py-1.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-zinc-200 text-xs font-semibold rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95"
-      >
-        <svg class="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-        </svg>
-        <span>Kembali ke Bagan</span>
-      </button>
-
       <!-- Save & Exit Button -->
       <button
         type="button"

@@ -233,6 +233,18 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal memuat daftar bagan: {}", e))
     }
 
+    /// Fetches a single bracket (Bagan) by its ID
+    pub async fn get_bagan_by_id(&self, bagan_id: i64) -> Result<Option<Bagan>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, Bagan>(
+            "SELECT id, event_id, nama_bagan, nomor_tanding_id, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id, peringkat_5_id, peringkat_6_id, peringkat_7_id, peringkat_8_id, round_robin, pool, kode, is_bob, has_vr FROM backend_bagan WHERE id = ?"
+        )
+        .bind(bagan_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat bagan #{}: {}", bagan_id, e))
+    }
+
     /// Fetches matches (DetailBagan) for a bracket enriched with athlete names and clubs
     pub async fn get_detail_bagan(&self, bagan_id: i64) -> Result<Vec<EnrichedDetailBagan>, String> {
         let pool = self.get_pool()?;

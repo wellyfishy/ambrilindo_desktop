@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import type { TatamiItem } from "$lib/types";
 
   interface Props {
@@ -30,6 +31,22 @@
   // Stats calculation
   let totalTatamis = $derived(tatamis.length);
   let activeMatchesCount = $derived(tatamis.filter((t) => t.detail_bagan_id !== null).length);
+  let runningScoreboards = $state<number[]>([]);
+
+  async function refreshRunningScoreboards() {
+    try {
+      runningScoreboards = await invoke<number[]>("get_running_scoreboards");
+    } catch (_) {}
+  }
+
+  async function handleStopScoreboard(tatamiNum: number) {
+    try {
+      await invoke("close_scoreboard", { tatamiNumber: tatamiNum });
+      await refreshRunningScoreboards();
+    } catch (err) {
+      console.warn("Failed to close scoreboard:", err);
+    }
+  }
 
   async function handleAddTatami() {
     if (!eventId || newTatamiNumber < 1) return;
@@ -76,6 +93,16 @@
       const maxNum = Math.max(...tatamis.map((t) => t.tatami_number || 0));
       newTatamiNumber = maxNum + 1;
     }
+
+    refreshRunningScoreboards();
+    let unlisten: any;
+    listen("scoreboard_status_changed", () => {
+      refreshRunningScoreboards();
+    }).then((u) => (unlisten = u));
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   });
 </script>
 
@@ -214,18 +241,30 @@
               <!-- Quick Launchers (Scoreboard Projector & Referee Panel) -->
               <td class="px-5 py-3.5">
                 <div class="flex items-center space-x-2">
-                  <button
-                    onclick={() => onOpenMonitorPicker(tNum)}
-                    class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 text-[11px] font-semibold transition flex items-center space-x-1.5"
-                    title="Buka proyeksi monitor fullscreen untuk Tatami {tNum}"
-                  >
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                      <line x1="8" y1="21" x2="16" y2="21"/>
-                      <line x1="12" y1="17" x2="12" y2="21"/>
-                    </svg>
-                    <span>Scoreboard</span>
-                  </button>
+                  {#if runningScoreboards.includes(tNum)}
+                    <button
+                      type="button"
+                      onclick={() => handleStopScoreboard(tNum)}
+                      class="px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white border border-red-500/40 text-[11px] font-bold transition flex items-center space-x-1.5 shadow active:scale-95"
+                      title="Hentikan & Tutup Scoreboard Tatami {tNum}"
+                    >
+                      <span class="w-2 h-2 bg-white rounded-xs"></span>
+                      <span>Stop Scoreboard</span>
+                    </button>
+                  {:else}
+                    <button
+                      onclick={() => onOpenMonitorPicker(tNum)}
+                      class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20 text-[11px] font-semibold transition flex items-center space-x-1.5"
+                      title="Buka proyeksi monitor fullscreen untuk Tatami {tNum}"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                        <line x1="8" y1="21" x2="16" y2="21"/>
+                        <line x1="12" y1="17" x2="12" y2="21"/>
+                      </svg>
+                      <span>Scoreboard</span>
+                    </button>
+                  {/if}
 
                   <a
                     href="{hostAddress}/tatami-{tNum}/"

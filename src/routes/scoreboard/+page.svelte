@@ -163,56 +163,74 @@
     </div>
   </header>
 
-  {#if isKata}
-    <!-- ==================== KATA ARENA SCORING BOARD (AKA DI ATAS, AO DI BAWAH) ==================== -->
-    <main class="flex-1 flex flex-col justify-between p-3 gap-2 relative min-h-0">
-      <!-- TOP CARD: AKA (RED) -->
-      <section class="flex-1 bg-gradient-to-r from-red-950/80 via-[#181116] to-[#0c0e14] border-2 border-red-500/40 rounded-2xl p-5 flex items-center justify-between shadow-2xl relative overflow-hidden">
-        <!-- Red top accent line -->
-        <div class="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-red-500 via-red-600 to-transparent"></div>
+  <!-- ==================== UNIFIED ARENA SCORING BOARD (AKA DI ATAS, AO DI BAWAH) ==================== -->
+  <main class="flex-1 flex flex-col justify-between p-3 gap-2 relative min-h-0">
+    <!-- TOP CARD: AKA (RED) -->
+    <section class="flex-1 bg-gradient-to-r from-red-950/80 via-[#181116] to-[#0c0e14] border-2 border-red-500/40 rounded-2xl p-5 flex items-center justify-between shadow-2xl relative overflow-hidden">
+      <!-- Red top accent line -->
+      <div class="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-red-500 via-red-600 to-transparent"></div>
 
-        <div class="flex-1 min-w-0 pr-4">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="bg-red-600 text-white text-[11px] font-black tracking-widest px-2.5 py-0.5 rounded font-mono uppercase shadow">
-              AKA • MERAH
+      <div class="flex-1 min-w-0 pr-4">
+        <div class="flex items-center gap-2 mb-1 flex-wrap">
+          <span class="bg-red-600 text-white text-[11px] font-black tracking-widest px-2.5 py-0.5 rounded font-mono uppercase shadow">
+            AKA • MERAH
+          </span>
+          {#if matchWinner === "1"}
+            <span class="bg-gradient-to-r from-amber-400 to-amber-500 text-black text-xs font-black px-3 py-0.5 rounded-md shadow flex items-center gap-1 animate-pulse">
+              <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
+              <span>PEMENANG</span>
             </span>
-            {#if matchWinner === "1"}
-              <span class="bg-gradient-to-r from-amber-400 to-amber-500 text-black text-xs font-black px-3 py-0.5 rounded-md shadow flex items-center gap-1 animate-pulse">
-                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
-                <span>PEMENANG</span>
-              </span>
-            {/if}
-          </div>
+          {/if}
+          {#if !isKata && akaSenshu}
+            <span class="bg-amber-400 text-slate-950 text-xs font-black px-2.5 py-0.5 rounded shadow uppercase tracking-wider animate-bounce">
+              SENSHU ★
+            </span>
+          {/if}
+        </div>
 
-          <!-- Athlete Name (Athletic broadcast scale) -->
-          <h2 class="text-4xl 2xl:text-5xl font-black tracking-tight text-white uppercase leading-none drop-shadow-md">
-            {akaName}
-          </h2>
+        <!-- Athlete Name (Athletic broadcast scale) -->
+        <h2 class="text-4xl 2xl:text-5xl font-black tracking-tight text-white uppercase leading-none drop-shadow-md">
+          {akaName}
+        </h2>
 
-          <!-- NO ELLIPSIS: FULL PERGURUAN & KONTINGEN -->
-          <p class="text-base 2xl:text-lg font-bold text-red-200 mt-2 whitespace-normal break-words leading-snug">
-            {akaClub}
-          </p>
+        <!-- NO ELLIPSIS: FULL PERGURUAN & KONTINGEN -->
+        <p class="text-base 2xl:text-lg font-bold text-red-200 mt-2 whitespace-normal break-words leading-snug">
+          {akaClub}
+        </p>
 
-          <!-- Selected Kata Name Display -->
+        <!-- Discipline Specific: Kata name or Kumite penalties -->
+        {#if isKata}
           {#if akaKataName}
             <div class="inline-flex items-center gap-1.5 mt-2.5 px-3 py-1 bg-black/50 border border-amber-500/40 rounded-lg text-amber-300 font-mono font-bold text-sm tracking-wide">
               <span class="text-zinc-400 text-xs font-normal">KATA:</span>
               <span>{akaKataName}</span>
             </div>
           {/if}
-        </div>
-
-        <!-- Total Points Box (AKA) -->
-        <div class="shrink-0 flex flex-col items-center justify-center pl-4 border-l border-white/10">
-          <span class="text-[10px] font-mono font-bold text-red-300 uppercase tracking-widest mb-1">TOTAL BENDERA</span>
-          <div class="w-32 h-32 2xl:w-36 2xl:h-36 bg-[#111216] border-4 {akaTotalPoints > aoTotalPoints ? 'border-red-500 text-red-400 shadow-[0_0_35px_rgba(239,68,68,0.4)]' : 'border-[#2b2d31] text-zinc-300'} font-mono font-black text-8xl flex items-center justify-center rounded-2xl shadow-inner">
-            {akaTotalPoints}
+        {:else}
+          <div class="flex items-center gap-1.5 mt-2.5">
+            <span class="text-[10px] font-mono font-bold text-red-300 uppercase tracking-wider mr-1">PELANGGARAN:</span>
+            {#each ['c1', 'c2', 'c3', 'hc', 'h'] as penalty}
+              <span class="px-2 py-0.5 rounded font-mono font-black text-xs uppercase border transition-all {akaPenalties[penalty as keyof typeof akaPenalties] ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md font-bold' : 'bg-black/40 text-zinc-500 border-white/10'}">
+                {penalty.toUpperCase()}
+              </span>
+            {/each}
           </div>
-        </div>
-      </section>
+        {/if}
+      </div>
 
-      <!-- CENTER: 5-JUDGE COMPARATIVE SCORING STRIP -->
+      <!-- Score Box (AKA) -->
+      <div class="shrink-0 flex flex-col items-center justify-center pl-4 border-l border-white/10">
+        <span class="text-[10px] font-mono font-bold text-red-300 uppercase tracking-widest mb-1">
+          {isKata ? "TOTAL BENDERA" : "POIN KUMITE"}
+        </span>
+        <div class="w-32 h-32 2xl:w-36 2xl:h-36 bg-[#111216] border-4 {isKata ? (akaTotalPoints > aoTotalPoints ? 'border-red-500 text-red-400 shadow-[0_0_35px_rgba(239,68,68,0.4)]' : 'border-[#2b2d31] text-zinc-300') : (akaScore > aoScore ? 'border-red-500 text-red-400 shadow-[0_0_35px_rgba(239,68,68,0.4)]' : 'border-[#2b2d31] text-zinc-300')} font-mono font-black text-8xl flex items-center justify-center rounded-2xl shadow-inner">
+          {isKata ? akaTotalPoints : akaScore}
+        </div>
+      </div>
+    </section>
+
+    <!-- CENTER STRIP: 5-JUDGE COMPARATIVE (KATA) OR MATCHUP STATUS (KUMITE) -->
+    {#if isKata}
       <section class="bg-[#10141f] border-2 border-white/15 rounded-2xl py-2.5 px-6 shadow-2xl shrink-0">
         <div class="flex items-center justify-between mb-2">
           <span class="text-xs font-mono font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
@@ -253,161 +271,95 @@
           {/each}
         </div>
       </section>
+    {:else}
+      <!-- KUMITE STATUS & COMPARISON STRIP -->
+      <section class="bg-[#10141f] border-2 border-white/15 rounded-2xl py-3 px-8 shadow-2xl shrink-0 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+          <span class="w-3 h-3 rounded-full {akaSenshu ? 'bg-amber-400 animate-pulse' : 'bg-red-500'}"></span>
+          <span class="text-xs font-mono font-bold text-red-300 uppercase">
+            AKA: {akaScore} Poin {akaSenshu ? '(Senshu)' : ''}
+          </span>
+        </div>
 
-      <!-- BOTTOM CARD: AO (BLUE) -->
-      <section class="flex-1 bg-gradient-to-r from-blue-950/80 via-[#10141e] to-[#0c0e14] border-2 border-blue-500/40 rounded-2xl p-5 flex items-center justify-between shadow-2xl relative overflow-hidden">
-        <!-- Blue bottom accent line -->
-        <div class="absolute bottom-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-500 via-blue-600 to-transparent"></div>
+        <div class="flex items-center space-x-4">
+          <span class="text-xs font-mono font-black uppercase tracking-widest text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1 rounded-lg">
+            KUMITE ARENA MATCH
+          </span>
+        </div>
 
-        <div class="flex-1 min-w-0 pr-4">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="bg-blue-600 text-white text-[11px] font-black tracking-widest px-2.5 py-0.5 rounded font-mono uppercase shadow">
-              AO • BIRU
+        <div class="flex items-center space-x-3">
+          <span class="text-xs font-mono font-bold text-blue-300 uppercase">
+            AO: {aoScore} Poin {aoSenshu ? '(Senshu)' : ''}
+          </span>
+          <span class="w-3 h-3 rounded-full {aoSenshu ? 'bg-amber-400 animate-pulse' : 'bg-blue-500'}"></span>
+        </div>
+      </section>
+    {/if}
+
+    <!-- BOTTOM CARD: AO (BLUE) -->
+    <section class="flex-1 bg-gradient-to-r from-blue-950/80 via-[#10141e] to-[#0c0e14] border-2 border-blue-500/40 rounded-2xl p-5 flex items-center justify-between shadow-2xl relative overflow-hidden">
+      <!-- Blue bottom accent line -->
+      <div class="absolute bottom-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-500 via-blue-600 to-transparent"></div>
+
+      <div class="flex-1 min-w-0 pr-4">
+        <div class="flex items-center gap-2 mb-1 flex-wrap">
+          <span class="bg-blue-600 text-white text-[11px] font-black tracking-widest px-2.5 py-0.5 rounded font-mono uppercase shadow">
+            AO • BIRU
+          </span>
+          {#if matchWinner === "2"}
+            <span class="bg-gradient-to-r from-amber-400 to-amber-500 text-black text-xs font-black px-3 py-0.5 rounded-md shadow flex items-center gap-1 animate-pulse">
+              <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
+              <span>PEMENANG</span>
             </span>
-            {#if matchWinner === "2"}
-              <span class="bg-gradient-to-r from-amber-400 to-amber-500 text-black text-xs font-black px-3 py-0.5 rounded-md shadow flex items-center gap-1 animate-pulse">
-                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
-                <span>PEMENANG</span>
-              </span>
-            {/if}
-          </div>
+          {/if}
+          {#if !isKata && aoSenshu}
+            <span class="bg-amber-400 text-slate-950 text-xs font-black px-2.5 py-0.5 rounded shadow uppercase tracking-wider animate-bounce">
+              SENSHU ★
+            </span>
+          {/if}
+        </div>
 
-          <!-- Athlete Name (Athletic broadcast scale) -->
-          <h2 class="text-4xl 2xl:text-5xl font-black tracking-tight text-white uppercase leading-none drop-shadow-md">
-            {aoName}
-          </h2>
+        <!-- Athlete Name (Athletic broadcast scale) -->
+        <h2 class="text-4xl 2xl:text-5xl font-black tracking-tight text-white uppercase leading-none drop-shadow-md">
+          {aoName}
+        </h2>
 
-          <!-- NO ELLIPSIS: FULL PERGURUAN & KONTINGEN -->
-          <p class="text-base 2xl:text-lg font-bold text-blue-200 mt-2 whitespace-normal break-words leading-snug">
-            {aoClub}
-          </p>
+        <!-- NO ELLIPSIS: FULL PERGURUAN & KONTINGEN -->
+        <p class="text-base 2xl:text-lg font-bold text-blue-200 mt-2 whitespace-normal break-words leading-snug">
+          {aoClub}
+        </p>
 
-          <!-- Selected Kata Name Display -->
+        <!-- Discipline Specific: Kata name or Kumite penalties -->
+        {#if isKata}
           {#if aoKataName}
             <div class="inline-flex items-center gap-1.5 mt-2.5 px-3 py-1 bg-black/50 border border-amber-500/40 rounded-lg text-amber-300 font-mono font-bold text-sm tracking-wide">
               <span class="text-zinc-400 text-xs font-normal">KATA:</span>
               <span>{aoKataName}</span>
             </div>
           {/if}
-        </div>
-
-        <!-- Total Points Box (AO) -->
-        <div class="shrink-0 flex flex-col items-center justify-center pl-4 border-l border-white/10">
-          <span class="text-[10px] font-mono font-bold text-blue-300 uppercase tracking-widest mb-1">TOTAL BENDERA</span>
-          <div class="w-32 h-32 2xl:w-36 2xl:h-36 bg-[#111216] border-4 {aoTotalPoints > akaTotalPoints ? 'border-blue-500 text-blue-400 shadow-[0_0_35px_rgba(59,130,246,0.4)]' : 'border-[#2b2d31] text-zinc-300'} font-mono font-black text-8xl flex items-center justify-center rounded-2xl shadow-inner">
-            {aoTotalPoints}
-          </div>
-        </div>
-      </section>
-    </main>
-
-  {:else}
-    <!-- ==================== KUMITE SCORING BOARD ==================== -->
-    <main class="flex-1 grid grid-cols-12 gap-0 relative min-h-0">
-      <!-- AKA Side -->
-      <section class="col-span-5 bg-gradient-to-br from-red-700 via-red-800 to-red-950 p-6 flex flex-col justify-between border-r-4 border-slate-950 shadow-inner">
-        <div>
-          <div class="flex items-center justify-between mb-2">
-            <span class="bg-red-950/80 text-red-200 border border-red-500/40 text-xs font-black tracking-widest px-3 py-1 rounded uppercase">
-              AKA (MERAH)
-            </span>
-            {#if akaSenshu}
-              <span class="bg-amber-400 text-slate-950 text-xs font-black px-3 py-1 rounded shadow-lg uppercase tracking-wider animate-bounce">
-                SENSHU ★
-              </span>
-            {/if}
-          </div>
-          <h2 class="text-4xl 2xl:text-5xl font-black tracking-tight text-white leading-tight uppercase truncate drop-shadow-md">
-            {akaName}
-          </h2>
-          <p class="text-xl 2xl:text-2xl font-bold text-red-200 uppercase truncate mt-1 tracking-wide">
-            {akaClub}
-          </p>
-        </div>
-
-        <div class="my-auto flex justify-center items-center py-4">
-          <span class="text-[14rem] 2xl:text-[18rem] leading-none font-black text-white tabular-nums drop-shadow-[0_10px_20px_rgba(0,0,0,0.8)]">
-            {akaScore}
-          </span>
-        </div>
-
-        <div class="bg-red-950/60 rounded-xl p-4 border border-red-500/30">
-          <span class="text-xs uppercase font-extrabold tracking-widest text-red-300 block mb-2">PELANGGARAN (PENALTIES)</span>
-          <div class="grid grid-cols-5 gap-2">
+        {:else}
+          <div class="flex items-center gap-1.5 mt-2.5">
+            <span class="text-[10px] font-mono font-bold text-blue-300 uppercase tracking-wider mr-1">PELANGGARAN:</span>
             {#each ['c1', 'c2', 'c3', 'hc', 'h'] as penalty}
-              <div class="py-2 text-center rounded font-black text-sm tracking-wider uppercase border transition-all {akaPenalties[penalty as keyof typeof akaPenalties] ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md scale-105' : 'bg-slate-900/60 text-slate-500 border-slate-700'}">
+              <span class="px-2 py-0.5 rounded font-mono font-black text-xs uppercase border transition-all {aoPenalties[penalty as keyof typeof aoPenalties] ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md font-bold' : 'bg-black/40 text-zinc-500 border-white/10'}">
                 {penalty.toUpperCase()}
-              </div>
+              </span>
             {/each}
           </div>
-        </div>
-      </section>
+        {/if}
+      </div>
 
-      <!-- Center Timer -->
-      <section class="col-span-2 bg-slate-950 flex flex-col justify-between items-center py-6 px-3 border-x-4 border-slate-800 z-10 shadow-2xl">
-        <div class="w-full text-center">
-          <span class="text-xs font-black uppercase tracking-widest text-slate-400 block mb-1">STATUS PERTANDINGAN</span>
-          <div class="py-1 px-3 rounded-lg text-xs font-black tracking-wider uppercase border {isTimerRunning ? 'bg-emerald-950 text-emerald-400 border-emerald-600' : 'bg-slate-900 text-slate-400 border-slate-700'}">
-            {isTimerRunning ? 'BERLANGSUNG' : 'BERHENTI (YAME)'}
-          </div>
+      <!-- Score Box (AO) -->
+      <div class="shrink-0 flex flex-col items-center justify-center pl-4 border-l border-white/10">
+        <span class="text-[10px] font-mono font-bold text-blue-300 uppercase tracking-widest mb-1">
+          {isKata ? "TOTAL BENDERA" : "POIN KUMITE"}
+        </span>
+        <div class="w-32 h-32 2xl:w-36 2xl:h-36 bg-[#111216] border-4 {isKata ? (aoTotalPoints > akaTotalPoints ? 'border-blue-500 text-blue-400 shadow-[0_0_35px_rgba(59,130,246,0.4)]' : 'border-[#2b2d31] text-zinc-300') : (aoScore > akaScore ? 'border-blue-500 text-blue-400 shadow-[0_0_35px_rgba(59,130,246,0.4)]' : 'border-[#2b2d31] text-zinc-300')} font-mono font-black text-8xl flex items-center justify-center rounded-2xl shadow-inner">
+          {isKata ? aoTotalPoints : aoScore}
         </div>
-
-        <div class="my-auto w-full text-center">
-          <div class="bg-black/90 border-4 {timerSeconds <= 15 && timerSeconds > 0 ? 'border-amber-400 shadow-[0_0_40px_rgba(251,191,36,0.6)] animate-pulse' : 'border-slate-700'} rounded-2xl py-6 px-2">
-            <span class="text-xs uppercase font-black tracking-widest text-slate-400 block mb-2">
-              WAKTU PERTANDINGAN
-            </span>
-            <div class="text-6xl 2xl:text-7xl font-mono font-black tabular-nums tracking-tighter text-amber-300">
-              {formattedTime}
-            </div>
-          </div>
-        </div>
-
-        <div class="text-center">
-          <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">AMBRILINDO LOCAL v3.0</span>
-        </div>
-      </section>
-
-      <!-- AO Side -->
-      <section class="col-span-5 bg-gradient-to-bl from-blue-700 via-blue-800 to-blue-950 p-6 flex flex-col justify-between border-l-4 border-slate-950 shadow-inner">
-        <div>
-          <div class="flex items-center justify-between mb-2">
-            <span class="bg-blue-950/80 text-blue-200 border border-blue-500/40 text-xs font-black tracking-widest px-3 py-1 rounded uppercase">
-              AO (BIRU)
-            </span>
-            {#if aoSenshu}
-              <span class="bg-amber-400 text-slate-950 text-xs font-black px-3 py-1 rounded shadow-lg uppercase tracking-wider animate-bounce">
-                SENSHU ★
-              </span>
-            {/if}
-          </div>
-          <h2 class="text-4xl 2xl:text-5xl font-black tracking-tight text-white leading-tight uppercase truncate drop-shadow-md">
-            {aoName}
-          </h2>
-          <p class="text-xl 2xl:text-2xl font-bold text-blue-200 uppercase truncate mt-1 tracking-wide">
-            {aoClub}
-          </p>
-        </div>
-
-        <div class="my-auto flex justify-center items-center py-4">
-          <span class="text-[14rem] 2xl:text-[18rem] leading-none font-black text-white tabular-nums drop-shadow-[0_10px_20px_rgba(0,0,0,0.8)]">
-            {aoScore}
-          </span>
-        </div>
-
-        <div class="bg-blue-950/60 rounded-xl p-4 border border-blue-500/30">
-          <span class="text-xs uppercase font-extrabold tracking-widest text-blue-300 block mb-2">PELANGGARAN (PENALTIES)</span>
-          <div class="grid grid-cols-5 gap-2">
-            {#each ['c1', 'c2', 'c3', 'hc', 'h'] as penalty}
-              <div class="py-2 text-center rounded font-black text-sm tracking-wider uppercase border transition-all {aoPenalties[penalty as keyof typeof aoPenalties] ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md scale-105' : 'bg-slate-900/60 text-slate-500 border-slate-700'}">
-                {penalty.toUpperCase()}
-              </div>
-            {/each}
-          </div>
-        </div>
-      </section>
-    </main>
-  {/if}
+      </div>
+    </section>
+  </main>
 
   <!-- Bottom Match Timer & Arena Status Footer Bar (Broadcast scale) -->
   <footer class="bg-[#0b0e14] border-t-2 border-white/10 px-8 py-2.5 flex items-center justify-between shadow-2xl shrink-0">
