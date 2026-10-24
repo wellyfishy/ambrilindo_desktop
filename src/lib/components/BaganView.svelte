@@ -721,8 +721,8 @@
                   <!-- Column 4 Bottom Section: Ambrilindo Logo + Hasil Juara Podium Card -->
                   {#if roundNum === 4}
                     <div class="absolute bottom-0 right-0 w-full flex flex-col items-end z-20">
-                      <!-- Ambrilindo Brand Logo (Enlarged) -->
-                      <div class="mb-2.5 flex items-center justify-center w-full">
+                      <!-- Ambrilindo Brand Logo (Enlarged, Right-Aligned) -->
+                      <div class="mb-2.5 flex items-center justify-end w-full pr-1">
                         <img
                           src="/img/ambrilindo-logo.webp"
                           alt="Ambrilindo"
@@ -1205,7 +1205,7 @@
       max-width: 180px !important;
       object-fit: contain !important;
       display: block !important;
-      margin: 0 auto 6px auto !important;
+      margin: 0 0 6px auto !important;
     }
     .seed-star-icon svg {
       width: 9.5px !important;
