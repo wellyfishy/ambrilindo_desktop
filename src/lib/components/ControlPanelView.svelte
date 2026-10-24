@@ -102,8 +102,15 @@
       matchWinner = "1";
     } else if (aoFlags > akaFlags) {
       matchWinner = "2";
+    } else {
+      matchWinner = "";
     }
+    // Automatically output score to arena scoreboard when using manual bendera!
+    publishScoresToBoard();
   }
+
+  // Mini Scoreboard Live Arena Preview State
+  let isMiniMonitorExpanded = $state<boolean>(true);
 
   // Board Published Score State (Do NOT output scores to scoreboard while inputting!)
   let boardAkaScore = $state<number>(0);
@@ -233,11 +240,10 @@
     };
   });
 
+  // Consistent digital timer format (m:ss e.g. 0:30, 1:00, 1:30, 2:00, 3:00, 5:00)
   function formatPresetLabel(preset: number): string {
-    if (preset < 60) return `${preset}s`;
     const m = Math.floor(preset / 60);
     const s = preset % 60;
-    if (s === 0) return `${m}m`;
     return `${m}:${s < 10 ? "0" + s : s}`;
   }
 
@@ -303,6 +309,43 @@
 
   function adjustTimer(deltaMs: number) {
     timerMs = Math.max(0, timerMs + deltaMs);
+    broadcastLiveState();
+  }
+
+  // ==================== RESET ALL MATCH DATA (KATA & KUMITE) ====================
+  function resetAllMatchData() {
+    // 1. Reset timer to current selected preset
+    if (isTimerRunning) {
+      if (animFrameId) cancelAnimationFrame(animFrameId);
+      isTimerRunning = false;
+    }
+    timerMs = selectedPresetSeconds * 1000;
+
+    // 2. Reset Kumite scores & penalties
+    akaScore = 0;
+    aoScore = 0;
+    akaSenshu = false;
+    aoSenshu = false;
+    akaPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
+    aoPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
+
+    // 3. Reset Kata judge scores & bendera
+    akaJudgeScores = ["", "", "", "", ""];
+    aoJudgeScores = ["", "", "", "", ""];
+    akaBendera = "-";
+    boardAkaScore = 0;
+    boardAoScore = 0;
+    isScorePublished = false;
+    showKataScoreOnBoard = false;
+
+    // 4. Reset match decision flags
+    matchWinner = "";
+    isMatchFinished = false;
+    hasVr1 = false;
+    hasVr2 = false;
+    isHantei = false;
+
+    // 5. Broadcast reset state to arena scoreboard immediately
     broadcastLiveState();
   }
 
@@ -646,7 +689,7 @@
 <div class="h-full flex flex-col bg-[#0d0f12] text-zinc-100 overflow-hidden font-sans select-none p-3">
   <!-- Top Cockpit Header Bar (Discord Card #181a20, Border #2b2d31) -->
   <div class="cockpit-page-header flex items-center justify-between flex-wrap gap-3 p-3 bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-lg mb-3 shrink-0">
-    <div class="flex items-center space-x-3">
+    <div class="flex items-center space-x-2">
       <!-- Save & Exit Button -->
       <button
         type="button"
@@ -658,6 +701,19 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
         </svg>
         <span>{isSaving ? "Menyimpan..." : "Simpan & Keluar"}</span>
+      </button>
+
+      <!-- Reset Option Button -->
+      <button
+        type="button"
+        onclick={resetAllMatchData}
+        class="px-3.5 py-1.5 bg-[#2b2d31] hover:bg-rose-600/80 border border-white/10 hover:border-rose-500/50 text-zinc-300 hover:text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95"
+        title="Reset semua skor, bendera, timer, dan status kembali ke 0"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        <span>Reset</span>
       </button>
     </div>
 
@@ -1047,47 +1103,6 @@
           </div>
         </div>
 
-        <!-- Comparative Summary Footer -->
-        <div class="mt-4 pt-3 border-t border-[#2b2d31] flex items-center justify-between text-xs text-zinc-400">
-          <div class="flex items-center space-x-2">
-            <span class="font-semibold text-zinc-300">Hasil Komparasi:</span>
-            <span class="px-2 py-0.5 rounded font-mono font-black {effectiveAkaPoints > effectiveAoPoints ? 'bg-red-500/20 text-red-400 border border-red-500/40' : effectiveAoPoints > effectiveAkaPoints ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40' : 'bg-zinc-800 text-zinc-400'}">
-              AKA ({effectiveAkaPoints}) - AO ({effectiveAoPoints})
-            </span>
-            {#if isScorePublished}
-              <span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
-                BOARD AKTIF: {boardAkaScore} - {boardAoScore}
-              </span>
-            {:else}
-              <span class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
-                BELUM DIKIRIM KE BOARD
-              </span>
-            {/if}
-          </div>
-          <div class="flex items-center space-x-3">
-            <button
-              type="button"
-              onclick={publishScoresToBoard}
-              class="px-3 py-1 rounded text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow active:scale-95 {publishFeedbackActive ? 'bg-emerald-600 text-white shadow-emerald-600/40' : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow'}"
-              title="Kirim skor poin ke scoring board (tanpa pop up)"
-            >
-              <span>{publishFeedbackActive ? "Skor Terkirim!" : "Tampilkan Skor di Board"}</span>
-            </button>
-            <button
-              type="button"
-              onclick={toggleKataScorePopup}
-              class="px-3 py-1 rounded text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 {showKataScoreOnBoard ? 'bg-amber-500 text-black' : 'bg-[#1e2029] hover:bg-[#2b2d31] text-zinc-300 border border-white/10'}"
-              title="Buka / tutup overlay pop up skor 5 juri di scoring board"
-            >
-              <span>{showKataScoreOnBoard ? "Tutup Pop Up 5 Juri" : "Pop Up Skor 5 Juri"}</span>
-            </button>
-            <label class="flex items-center space-x-2 cursor-pointer text-xs text-zinc-300">
-              <input type="checkbox" bind:checked={isMatchFinished} class="rounded text-emerald-600 focus:ring-emerald-500" />
-              <span>Tandai Partai Ini Selesai</span>
-            </label>
-          </div>
-        </div>
-
         <!-- QUICK SCORE PICKER POPOVER (SIMPEL, AKA ATAS, AO BAWAH, HORIZONTAL SCROLL) -->
         {#if activeJudgePicker !== null}
           <div
@@ -1474,6 +1489,123 @@
       </div>
     </div>
   {/if}
+
+  <!-- ==================== LIVE ARENA SCOREBOARD PREVIEW (BOTTOM-RIGHT) ==================== -->
+  <aside
+    class="fixed bottom-3 right-3 z-40 bg-[#06090e]/95 border-2 {isTimerRunning ? 'border-amber-500/80 shadow-[0_12px_45px_rgba(245,158,11,0.3)]' : 'border-zinc-700/80 shadow-[0_12px_45px_rgba(0,0,0,0.95)]'} rounded-2xl p-2.5 {isMiniMonitorExpanded ? 'w-[350px]' : 'w-auto'} backdrop-blur-md transition-all select-none font-sans"
+    aria-label="Live Arena Scoreboard Preview"
+  >
+    <!-- Header Bar -->
+    <div class="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-white/10">
+      <div class="flex items-center space-x-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span class="text-[10px] font-mono font-black text-amber-400 tracking-wider uppercase">
+          LIVE ARENA MONITOR
+        </span>
+      </div>
+      <div class="flex items-center space-x-1.5">
+        <span class="px-1.5 py-0.2 rounded bg-amber-500/20 border border-amber-500/40 font-mono font-black text-[9px] text-amber-300">
+          TATAMI {tatamiNumber}
+        </span>
+        <button
+          type="button"
+          onclick={() => (isMiniMonitorExpanded = !isMiniMonitorExpanded)}
+          class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 rounded transition"
+          title={isMiniMonitorExpanded ? "Kecilkan Monitor" : "Perbesar Monitor"}
+        >
+          <svg class="w-3.5 h-3.5 transition-transform {isMiniMonitorExpanded ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    {#if isMiniMonitorExpanded}
+      <div class="space-y-1.5">
+        <!-- AKA Card (Red) -->
+        <div class="bg-gradient-to-r from-red-950/90 via-[#180f12] to-[#0c0e14] border border-red-500/40 rounded-xl p-2 flex items-center justify-between shadow-inner relative overflow-hidden">
+          <div class="flex-1 min-w-0 pr-2">
+            <div class="flex items-center space-x-1.5">
+              <span class="px-1 py-0.2 bg-red-600 text-white font-mono font-black text-[8px] rounded">AKA</span>
+              <span class="font-black text-xs text-white truncate">{match.atlet1_nama || "Sudut Merah"}</span>
+            </div>
+            <div class="text-[9px] text-red-200/80 font-medium truncate mt-0.5">{match.atlet1_kontingen || "-"}</div>
+            {#if isKata && kataAkaName}
+              <div class="text-[9px] font-black text-amber-400 uppercase tracking-wide truncate mt-0.5">{kataAkaName}</div>
+            {/if}
+            {#if matchWinner === "1"}
+              <div class="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.2 bg-gradient-to-r from-amber-400 to-amber-500 text-black font-mono font-black text-[8px] rounded uppercase shadow-sm">
+                PEMENANG
+              </div>
+            {/if}
+          </div>
+          <!-- AKA Board Score -->
+          <div class="shrink-0 w-11 h-10 bg-black/80 border-2 {boardAkaScore > boardAoScore ? 'border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.6)]' : 'border-[#2b2d31]'} rounded-lg flex items-center justify-center font-mono font-black text-xl text-white shadow-inner">
+            {isKata ? boardAkaScore : akaScore}
+          </div>
+        </div>
+
+        <!-- AO Card (Blue) -->
+        <div class="bg-gradient-to-r from-blue-950/90 via-[#0e1422] to-[#0c0e14] border border-blue-500/40 rounded-xl p-2 flex items-center justify-between shadow-inner relative overflow-hidden">
+          <div class="flex-1 min-w-0 pr-2">
+            <div class="flex items-center space-x-1.5">
+              <span class="px-1 py-0.2 bg-blue-600 text-white font-mono font-black text-[8px] rounded">AO</span>
+              <span class="font-black text-xs text-white truncate">{match.atlet2_nama || "Sudut Biru"}</span>
+            </div>
+            <div class="text-[9px] text-blue-200/80 font-medium truncate mt-0.5">{match.atlet2_kontingen || "-"}</div>
+            {#if isKata && kataAoName}
+              <div class="text-[9px] font-black text-amber-400 uppercase tracking-wide truncate mt-0.5">{kataAoName}</div>
+            {/if}
+            {#if matchWinner === "2"}
+              <div class="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.2 bg-gradient-to-r from-amber-400 to-amber-500 text-black font-mono font-black text-[8px] rounded uppercase shadow-sm">
+                PEMENANG
+              </div>
+            {/if}
+          </div>
+          <!-- AO Board Score -->
+          <div class="shrink-0 w-11 h-10 bg-black/80 border-2 {boardAoScore > boardAkaScore ? 'border-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)]' : 'border-[#2b2d31]'} rounded-lg flex items-center justify-center font-mono font-black text-xl text-white shadow-inner">
+            {isKata ? boardAoScore : aoScore}
+          </div>
+        </div>
+
+        <!-- Digital Timer Bar -->
+        <div class="bg-[#111216] border border-white/10 rounded-xl px-2.5 py-1 flex items-center justify-between font-mono">
+          <div class="flex items-center space-x-1.5">
+            <span class="text-[9px] text-zinc-400 uppercase font-bold">TIMER:</span>
+            <span class="text-xs font-black {isTimerRunning ? 'text-amber-300 drop-shadow-[0_0_8px_rgba(251,191,36,0.85)]' : 'text-white'}">
+              {timerFormatted.full}
+            </span>
+          </div>
+          <div class="flex items-center space-x-1">
+            {#if isKata}
+              {#if showKataScoreOnBoard}
+                <span class="px-1.5 py-0.2 rounded bg-amber-400 text-black font-mono font-black text-[8px] uppercase animate-pulse">
+                  POPUP AKTIF
+                </span>
+              {:else if isScorePublished}
+                <span class="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-mono font-bold text-[8px] uppercase">
+                  SKOR TAMPIL
+                </span>
+              {:else}
+                <span class="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 font-mono font-bold text-[8px] uppercase">
+                  STANDBY (0-0)
+                </span>
+              {/if}
+            {/if}
+          </div>
+        </div>
+      </div>
+    {:else}
+      <!-- Collapsed Quick Status Bar -->
+      <div class="flex items-center space-x-2 text-xs font-mono py-0.5">
+        <span class="font-black text-red-400">AKA {isKata ? boardAkaScore : akaScore}</span>
+        <span class="text-zinc-500">-</span>
+        <span class="font-black text-blue-400">AO {isKata ? boardAoScore : aoScore}</span>
+        <span class="text-zinc-500">•</span>
+        <span class="font-bold {isTimerRunning ? 'text-amber-300' : 'text-zinc-300'}">{timerFormatted.mmss}</span>
+      </div>
+    {/if}
+  </aside>
 </div>
 
 <!-- ==================== DISCORD-STYLED KATA SELECT MODAL ==================== -->
