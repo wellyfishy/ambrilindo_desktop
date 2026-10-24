@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import type { DetailBaganItem, BaganItem, SaveMatchInput } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
 
@@ -52,6 +53,26 @@
         m.hantei = input.hantei;
       }
       activeMatchForControl = null;
+    }
+  }
+
+  async function handleOpenMatchControl(match: DetailBaganItem) {
+    try {
+      await invoke("open_control_panel_window", {
+        matchId: match.id,
+        baganId: match.bagan_id || baganId,
+      });
+    } catch (err) {
+      console.warn("Tauri open_control_panel_window failed, fallback to window.open or in-page:", err);
+      if (typeof window !== "undefined" && window.open) {
+        window.open(
+          `/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}`,
+          `control_panel_${match.id}`,
+          "width=1366,height=820"
+        );
+      } else {
+        activeMatchForControl = match;
+      }
     }
   }
 
@@ -400,10 +421,23 @@
       });
     }
 
+    let unlistenBracketUpdated: (() => void) | undefined;
+    listen("bracket_updated", (event) => {
+      console.log("Bracket updated event received from control panel:", event);
+      loadBracketData();
+    })
+      .then((unsub) => {
+        unlistenBracketUpdated = unsub;
+      })
+      .catch((err) => {
+        console.warn("Gagal listen bracket_updated:", err);
+      });
+
     return () => {
       ro?.disconnect();
       window.removeEventListener("resize", handleWindowResize);
       window.removeEventListener("keydown", handleKeyDown);
+      if (unlistenBracketUpdated) unlistenBracketUpdated();
     };
   });
 </script>
@@ -608,10 +642,10 @@
                       {#if match}
                         <div
                           class="match-card w-full cursor-pointer hover:ring-2 hover:ring-amber-500/80 transition-all {isDarkMode ? 'bg-[#181a20] border-white/[0.12] hover:border-white/30' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
-                          onclick={() => { activeMatchForControl = match; }}
+                          onclick={() => handleOpenMatchControl(match)}
                           role="button"
                           tabindex="0"
-                          onkeydown={(e) => { if (e.key === 'Enter') activeMatchForControl = match; }}
+                          onkeydown={(e) => { if (e.key === 'Enter') handleOpenMatchControl(match); }}
                           title="Klik untuk membuka Kontrol Pertandingan (Control Panel)"
                         >
                           <!-- Match Card Header -->

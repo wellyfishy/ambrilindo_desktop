@@ -278,6 +278,35 @@ async fn save_match_result(
 }
 
 #[tauri::command]
+async fn open_control_panel_window(
+    app: tauri::AppHandle,
+    match_id: i64,
+    bagan_id: i64,
+) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    let win_label = format!("control-panel-{}", match_id);
+
+    // If window already exists, bring it forward and set focus
+    if let Some(win) = app.get_webview_window(&win_label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    let url = format!("/control-panel?matchId={}&baganId={}", match_id, bagan_id);
+    let _win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
+        .title(format!("Ambrilindo - Control Panel Partai #{}", match_id))
+        .inner_size(1366.0, 820.0)
+        .min_inner_size(1024.0, 700.0)
+        .center()
+        .build()
+        .map_err(|e| format!("Gagal membuka window control panel: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn get_media_data_url(
     relative_path: String,
     state: tauri::State<'_, DesktopState>,
@@ -727,6 +756,7 @@ pub fn run() {
             get_bagans,
             get_detail_bagan,
             save_match_result,
+            open_control_panel_window,
             get_media_data_url,
             get_athletes,
             get_enriched_athletes,
