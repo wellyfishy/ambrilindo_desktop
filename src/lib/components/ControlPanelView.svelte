@@ -67,6 +67,12 @@
   let kataAoName = $state<string>("");
   let akaJudgeScores = $state<string[]>(["", "", "", "", ""]);
   let aoJudgeScores = $state<string[]>(["", "", "", "", ""]);
+  let showKataScoreOnBoard = $state<boolean>(false);
+
+  function toggleKataScoreOverlay() {
+    showKataScoreOnBoard = !showKataScoreOnBoard;
+    broadcastLiveState();
+  }
 
   // Quick Score Picker Popover State (Clean, AKA atas, AO bawah, Horizontal scroll)
   let activeJudgePicker = $state<number | null>(null);
@@ -436,6 +442,7 @@
       },
       winner: matchWinner,
       isFinished: isMatchFinished,
+      showKataScoreOverlay: showKataScoreOnBoard,
     };
 
     emit("tatami_live_state", $state.snapshot(payload)).catch((err) => {
@@ -679,8 +686,23 @@
               </h2>
             </div>
 
-            <!-- Kiken Buttons -->
+            <!-- Actions: Overlay Board Toggle & Kiken -->
             <div class="flex items-center space-x-2">
+              <button
+                type="button"
+                onclick={toggleKataScoreOverlay}
+                class="px-3 py-1.5 rounded-lg text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow active:scale-95 {showKataScoreOnBoard ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-500/20' : 'bg-[#111216] hover:bg-[#1e2029] text-zinc-300 border border-white/10'}"
+                title="Buka / tutup overlay tabel detail skor 5 juri di scoring board"
+              >
+                {#if showKataScoreOnBoard}
+                  <svg class="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>
+                  <span>Sembunyikan Skor di Board</span>
+                {:else}
+                  <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                  <span>Tampilkan Skor di Board</span>
+                {/if}
+              </button>
+
               <button
                 type="button"
                 onclick={() => applyKiken("aka")}
@@ -891,7 +913,14 @@
               AKA ({judgeComparisons.akaPoints}) - AO ({judgeComparisons.aoPoints})
             </span>
           </div>
-          <div class="flex items-center space-x-2">
+          <div class="flex items-center space-x-3">
+            <button
+              type="button"
+              onclick={toggleKataScoreOverlay}
+              class="px-3 py-1 rounded text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 {showKataScoreOnBoard ? 'bg-amber-500 text-black' : 'bg-[#1e2029] hover:bg-[#2b2d31] text-zinc-300 border border-white/10'}"
+            >
+              <span>{showKataScoreOnBoard ? "Tutup Skor di Board" : "Buka Skor di Board"}</span>
+            </button>
             <label class="flex items-center space-x-2 cursor-pointer text-xs text-zinc-300">
               <input type="checkbox" bind:checked={isMatchFinished} class="rounded text-emerald-600 focus:ring-emerald-500" />
               <span>Tandai Partai Ini Selesai</span>
