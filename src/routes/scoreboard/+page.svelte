@@ -239,11 +239,11 @@
       <div class="flex items-center justify-between flex-1 min-h-0">
         <div class="flex items-center flex-1 min-w-0 pr-6">
           <!-- Flag / Delegation Logo Box (Indonesian flag as placeholder if no logo) -->
-          <div class="w-28 h-28 md:w-36 md:h-36 2xl:w-44 2xl:h-44 bg-black/60 border-2 border-red-500/40 rounded-2xl flex items-center justify-center p-2.5 shrink-0 mr-6 shadow-inner overflow-hidden">
+          <div class="w-36 h-36 md:w-44 md:h-44 2xl:w-52 2xl:h-52 bg-black/60 border-2 border-red-500/40 rounded-2xl flex items-center justify-center p-3 shrink-0 mr-6 shadow-inner overflow-hidden">
             <img
               src={akaLogo || "/img/idn-flag.png"}
               alt="Logo Kontingen / Bendera IDN"
-              class="max-w-full max-h-full object-contain rounded-lg drop-shadow-[0_4px_12px_rgba(0,0,0,0.7)]"
+              class="max-w-full max-h-full object-contain rounded-xl drop-shadow-[0_4px_16px_rgba(0,0,0,0.8)]"
               onerror={(e) => { (e.currentTarget as HTMLImageElement).src = "/img/idn-flag.png"; }}
             />
           </div>
@@ -258,26 +258,25 @@
             {/if}
 
             <!-- Athlete Name (Big enough to read from 20 meters on 27" TV) -->
-            <h2 class="text-5xl md:text-6xl 2xl:text-7xl 3xl:text-8xl font-black uppercase text-white tracking-tight leading-none drop-shadow-[0_4px_18px_rgba(0,0,0,0.95)] break-words">
+            <h2 class="text-6xl md:text-7xl 2xl:text-8xl 3xl:text-9xl font-black uppercase text-white tracking-tight leading-none drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] break-words">
               {akaName}
             </h2>
 
             <!-- Perguruan & Kontingen (Full, No Ellipsis) -->
-            <p class="text-2xl md:text-3xl 2xl:text-4xl font-bold text-red-100 mt-2.5 uppercase tracking-wide leading-snug break-words drop-shadow-md">
+            <p class="text-3xl md:text-4xl 2xl:text-5xl font-extrabold text-red-100 mt-3 uppercase tracking-wide leading-tight break-words drop-shadow-md">
               {akaClub}
             </p>
 
-            <!-- Kata text: BIG and ALWAYS visible in Kata matches -->
-            {#if isKata}
-              <div class="flex items-center gap-3 mt-2.5 text-2xl md:text-3xl 2xl:text-4xl font-black text-amber-400 uppercase tracking-wider drop-shadow-[0_0_16px_rgba(251,191,36,0.65)]">
-                <span class="text-amber-500/80 font-bold text-xl 2xl:text-2xl">KATA:</span>
-                <span>{akaKataName || "-"}</span>
+            <!-- Kata text: ONLY the kata itself, NO "KATA:" label, NO glowing blur, High contrast, BIGGER -->
+            {#if isKata && akaKataName}
+              <div class="mt-3 text-4xl md:text-5xl 2xl:text-6xl font-black text-amber-400 uppercase tracking-wide drop-shadow-[0_3px_8px_rgba(0,0,0,0.95)]">
+                {akaKataName}
               </div>
             {/if}
           </div>
         </div>
 
-        <!-- Score Pod (Right) - NO TOTAL BENDERA text -->
+        <!-- Score Pod (Right) -->
         <div class="shrink-0 flex flex-col items-center justify-center pl-6 border-l border-white/10 relative">
           {#if !isKata && akaSenshu}
             <span class="absolute -top-3.5 -right-2 bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-mono font-black text-xs 2xl:text-sm px-3 py-1 rounded-lg shadow-[0_0_20px_rgba(245,158,11,0.9)] uppercase tracking-wider -rotate-2 border-2 border-white animate-bounce z-20">
@@ -292,7 +291,7 @@
         </div>
       </div>
 
-      <!-- Kumite Criteria Penalties: WAY BIGGER, spanning bottom, NO pelanggaran text -->
+      <!-- Kumite Criteria Penalties -->
       {#if !isKata}
         <div class="w-full flex items-center justify-around gap-3 pt-3 mt-2 border-t-2 border-white/10 shrink-0">
           {#each ['c1', 'c2', 'c3', 'hc', 'h'] as penalty}
@@ -313,11 +312,11 @@
       <div class="flex items-center justify-between flex-1 min-h-0">
         <div class="flex items-center flex-1 min-w-0 pr-6">
           <!-- Flag / Delegation Logo Box (Indonesian flag as placeholder if no logo) -->
-          <div class="w-28 h-28 md:w-36 md:h-36 2xl:w-44 2xl:h-44 bg-black/60 border-2 border-blue-500/40 rounded-2xl flex items-center justify-center p-2.5 shrink-0 mr-6 shadow-inner overflow-hidden">
+          <div class="w-36 h-36 md:w-44 md:h-44 2xl:w-52 2xl:h-52 bg-black/60 border-2 border-blue-500/40 rounded-2xl flex items-center justify-center p-3 shrink-0 mr-6 shadow-inner overflow-hidden">
             <img
               src={aoLogo || "/img/idn-flag.png"}
               alt="Logo Kontingen / Bendera IDN"
-              class="max-w-full max-h-full object-contain rounded-lg drop-shadow-[0_4px_12px_rgba(0,0,0,0.7)]"
+              class="max-w-full max-h-full object-contain rounded-xl drop-shadow-[0_4px_16px_rgba(0,0,0,0.8)]"
               onerror={(e) => { (e.currentTarget as HTMLImageElement).src = "/img/idn-flag.png"; }}
             />
           </div>
@@ -332,26 +331,25 @@
             {/if}
 
             <!-- Athlete Name (Big enough to read from 20 meters on 27" TV) -->
-            <h2 class="text-5xl md:text-6xl 2xl:text-7xl 3xl:text-8xl font-black uppercase text-white tracking-tight leading-none drop-shadow-[0_4px_18px_rgba(0,0,0,0.95)] break-words">
+            <h2 class="text-6xl md:text-7xl 2xl:text-8xl 3xl:text-9xl font-black uppercase text-white tracking-tight leading-none drop-shadow-[0_4px_24px_rgba(0,0,0,0.95)] break-words">
               {aoName}
             </h2>
 
             <!-- Perguruan & Kontingen (Full, No Ellipsis) -->
-            <p class="text-2xl md:text-3xl 2xl:text-4xl font-bold text-blue-100 mt-2.5 uppercase tracking-wide leading-snug break-words drop-shadow-md">
+            <p class="text-3xl md:text-4xl 2xl:text-5xl font-extrabold text-blue-100 mt-3 uppercase tracking-wide leading-tight break-words drop-shadow-md">
               {aoClub}
             </p>
 
-            <!-- Kata text: BIG and ALWAYS visible in Kata matches -->
-            {#if isKata}
-              <div class="flex items-center gap-3 mt-2.5 text-2xl md:text-3xl 2xl:text-4xl font-black text-amber-400 uppercase tracking-wider drop-shadow-[0_0_16px_rgba(251,191,36,0.65)]">
-                <span class="text-amber-500/80 font-bold text-xl 2xl:text-2xl">KATA:</span>
-                <span>{aoKataName || "-"}</span>
+            <!-- Kata text: ONLY the kata itself, NO "KATA:" label, NO glowing blur, High contrast, BIGGER -->
+            {#if isKata && aoKataName}
+              <div class="mt-3 text-4xl md:text-5xl 2xl:text-6xl font-black text-amber-400 uppercase tracking-wide drop-shadow-[0_3px_8px_rgba(0,0,0,0.95)]">
+                {aoKataName}
               </div>
             {/if}
           </div>
         </div>
 
-        <!-- Score Pod (Right) - NO TOTAL BENDERA text -->
+        <!-- Score Pod (Right) -->
         <div class="shrink-0 flex flex-col items-center justify-center pl-6 border-l border-white/10 relative">
           {#if !isKata && aoSenshu}
             <span class="absolute -top-3.5 -right-2 bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-mono font-black text-xs 2xl:text-sm px-3 py-1 rounded-lg shadow-[0_0_20px_rgba(245,158,11,0.9)] uppercase tracking-wider -rotate-2 border-2 border-white animate-bounce z-20">
@@ -366,7 +364,7 @@
         </div>
       </div>
 
-      <!-- Kumite Criteria Penalties: WAY BIGGER, spanning bottom, NO pelanggaran text -->
+      <!-- Kumite Criteria Penalties -->
       {#if !isKata}
         <div class="w-full flex items-center justify-around gap-3 pt-3 mt-2 border-t-2 border-white/10 shrink-0">
           {#each ['c1', 'c2', 'c3', 'hc', 'h'] as penalty}
@@ -380,83 +378,58 @@
     </section>
   </main>
 
-  <!-- ==================== KATA 5-JUDGE SCOREBOARD TABLE OVERLAY (TOGGLEABLE DARI CONTROL PANEL) ==================== -->
+  <!-- ==================== KATA 5-JUDGE SCORE POPUP (NO BACKGROUND DIMMING, ONLY SCORE OUTPUTTED, POP ANIMATION STARTING FROM JURI 1, WHITE TEXT CONTRAST) ==================== -->
   {#if isKata && showKataScoreOverlay}
     <div
-      class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in zoom-in-95 duration-200"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Tabel Penilaian 5 Juri Kata"
+      class="fixed inset-0 z-50 pointer-events-none flex items-center justify-center p-6"
+      role="region"
+      aria-label="Skor 5 Juri Kata"
     >
-      <div class="bg-[#0f141f] border-4 border-amber-500/70 rounded-3xl p-8 shadow-2xl max-w-5xl w-full text-center relative overflow-hidden">
-        <!-- Header -->
-        <div class="flex items-center justify-between pb-4 mb-6 border-b border-white/10">
-          <div class="flex items-center gap-3">
-            <span class="w-3 h-3 rounded-full bg-amber-400 animate-pulse"></span>
-            <h3 class="font-mono font-black text-2xl 2xl:text-3xl text-amber-300 uppercase tracking-wider">
-              PENILAIAN JURI KATA (5 JURI)
-            </h3>
-          </div>
-          <span class="text-xs font-mono font-bold text-zinc-400 tracking-wider uppercase bg-[#181a20] px-4 py-1.5 rounded-full border border-white/10">
-            5 JUDGES COMPARISON
-          </span>
-        </div>
-
-        <!-- 5 Judge Columns -->
-        <div class="grid grid-cols-5 gap-4 mb-6">
-          {#each [0, 1, 2, 3, 4] as idx}
-            {@const decision = judgeDecisions[idx]}
-            {@const sAka = akaJudgeScores[idx] || "0.0"}
-            {@const sAo = aoJudgeScores[idx] || "0.0"}
-            <div class="bg-[#181a20] border-2 {decision === 'aka' ? 'border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.4)]' : decision === 'ao' ? 'border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.4)]' : 'border-[#2b2d31]'} rounded-2xl p-3 flex flex-col justify-between transition-all">
-              <!-- AKA Judge Score -->
-              <div class="py-2.5 rounded-xl font-mono font-black text-3xl 2xl:text-4xl transition-all {decision === 'aka' ? 'bg-red-600 text-white shadow-md border-2 border-red-300' : 'bg-[#111216] text-red-300/60 border border-red-500/20'}">
-                {sAka}
-              </div>
-
-              <!-- Judge Label Badge -->
-              <div class="my-2.5 flex items-center justify-center gap-1 font-mono font-bold text-sm 2xl:text-base {decision === 'aka' ? 'text-red-400' : decision === 'ao' ? 'text-blue-400' : 'text-zinc-500'}">
-                <span>JURI {idx + 1}</span>
-                {#if decision === "aka"}
-                  <span class="text-xs font-black">▲ AKA</span>
-                {:else if decision === "ao"}
-                  <span class="text-xs font-black">▼ AO</span>
-                {/if}
-              </div>
-
-              <!-- AO Judge Score -->
-              <div class="py-2.5 rounded-xl font-mono font-black text-3xl 2xl:text-4xl transition-all {decision === 'ao' ? 'bg-blue-600 text-white shadow-md border-2 border-blue-300' : 'bg-[#111216] text-blue-300/60 border border-blue-500/20'}">
-                {sAo}
-              </div>
+      <!-- 5 Judge Columns floating directly in center with NO dimming backdrop -->
+      <div class="pointer-events-auto flex items-center justify-center gap-4 md:gap-6 max-w-6xl w-full">
+        {#each [0, 1, 2, 3, 4] as idx}
+          {@const decision = judgeDecisions[idx]}
+          {@const sAka = akaJudgeScores[idx] || "0.0"}
+          {@const sAo = aoJudgeScores[idx] || "0.0"}
+          <div
+            class="judge-pop-pod flex-1 bg-[#090d16]/95 border-3 {decision === 'aka' ? 'border-red-500 shadow-[0_0_35px_rgba(239,68,68,0.7)]' : decision === 'ao' ? 'border-blue-500 shadow-[0_0_35px_rgba(59,130,246,0.7)]' : 'border-amber-400/60 shadow-[0_20px_50px_rgba(0,0,0,0.95)]'} rounded-3xl p-4 md:p-5 flex flex-col justify-between items-center gap-3 backdrop-blur-sm"
+            style="animation-delay: {idx * 160}ms;"
+          >
+            <!-- AKA Judge Score (Top) - High contrast pure WHITE text -->
+            <div class="w-full py-3 md:py-4 rounded-2xl font-mono font-black text-4xl md:text-5xl 2xl:text-6xl text-center text-white transition-all drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)] {decision === 'aka' ? 'bg-red-600 border-2 border-red-300 shadow-[0_0_25px_rgba(239,68,68,0.9)] scale-[1.03]' : 'bg-[#181a20] border border-white/10 opacity-90'}">
+              {sAka}
             </div>
-          {/each}
-        </div>
 
-        <!-- Total Flags Comparison Summary -->
-        <div class="flex items-center justify-around pt-5 border-t border-white/10 font-mono text-2xl 2xl:text-3xl font-black">
-          <span class="text-red-400 drop-shadow-[0_0_15px_rgba(239,68,68,0.6)]">AKA: {akaTotalPoints} BENDERA</span>
-          <span class="text-zinc-500">•</span>
-          <span class="text-blue-400 drop-shadow-[0_0_15px_rgba(59,130,246,0.6)]">AO: {aoTotalPoints} BENDERA</span>
-        </div>
+            <!-- Judge Label (Middle) -->
+            <div class="font-mono font-black text-lg md:text-xl 2xl:text-2xl text-amber-400 tracking-wider uppercase">
+              JURI {idx + 1}
+            </div>
+
+            <!-- AO Judge Score (Bottom) - High contrast pure WHITE text -->
+            <div class="w-full py-3 md:py-4 rounded-2xl font-mono font-black text-4xl md:text-5xl 2xl:text-6xl text-center text-white transition-all drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)] {decision === 'ao' ? 'bg-blue-600 border-2 border-blue-300 shadow-[0_0_25px_rgba(59,130,246,0.9)] scale-[1.03]' : 'bg-[#181a20] border border-white/10 opacity-90'}">
+              {sAo}
+            </div>
+          </div>
+        {/each}
       </div>
     </div>
   {/if}
 
   <!-- ==================== BOTTOM MATCH TIMER & ARENA STATUS FOOTER BAR (BROADCAST GIANT SCALE) ==================== -->
-  <footer class="bg-[#0b0e14] border-t-2 border-white/10 px-8 py-3.5 grid grid-cols-3 items-center shadow-2xl shrink-0">
-    <!-- Left: Ambrilindo Sponsor Logo from Ambrilindo Local -->
+  <footer class="bg-[#0b0e14] border-t-2 border-white/10 px-8 py-3 2xl:py-4 grid grid-cols-3 items-center shadow-2xl shrink-0">
+    <!-- Left: Ambrilindo Sponsor Logo from Ambrilindo Local (BIGGER) -->
     <div class="flex items-center justify-start">
       <img
         src="/img/ambrilindo-logo-dark.png"
         alt="Ambrilindo Logo"
-        class="h-12 md:h-16 2xl:h-20 max-w-[280px] object-contain drop-shadow-[0_0_18px_rgba(255,255,255,0.7)]"
+        class="h-20 md:h-24 2xl:h-32 max-w-[380px] object-contain drop-shadow-[0_0_24px_rgba(255,255,255,0.75)]"
       />
     </div>
 
-    <!-- Center: Giant Digital Timer Display (Milliseconds SAME SIZE as other time format) -->
+    <!-- Center: Giant Digital Timer Display (BIGGER) -->
     <div class="flex items-center justify-center">
-      <div class="bg-[#111216] border-2 border-amber-500/70 px-8 py-2 rounded-2xl flex items-center justify-center shadow-[inset_0_0_30px_rgba(0,0,0,0.85)]">
-        <span class="font-mono font-black text-6xl md:text-7xl 2xl:text-8xl 3xl:text-9xl {isTimerRunning ? 'text-amber-300 drop-shadow-[0_0_30px_rgba(251,191,36,0.7)]' : 'text-white drop-shadow-md'} tracking-wider tabular-nums leading-none">
+      <div class="bg-[#111216] border-4 border-amber-500/80 px-10 py-2.5 rounded-3xl flex items-center justify-center shadow-[inset_0_0_40px_rgba(0,0,0,0.9)]">
+        <span class="font-mono font-black text-7xl md:text-8xl 2xl:text-[9.5rem] 3xl:text-[11.5rem] {isTimerRunning ? 'text-amber-300 drop-shadow-[0_0_35px_rgba(251,191,36,0.85)]' : 'text-white drop-shadow-md'} tracking-wider tabular-nums leading-none">
           {timerFormatted.full}
         </span>
       </div>
@@ -466,3 +439,24 @@
     <div class="flex items-center justify-end"></div>
   </footer>
 </div>
+
+<style>
+  @keyframes judgePopAnim {
+    0% {
+      opacity: 0;
+      transform: scale(0.35) translateY(40px);
+    }
+    65% {
+      opacity: 1;
+      transform: scale(1.08) translateY(-6px);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  .judge-pop-pod {
+    animation: judgePopAnim 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+  }
+</style>
