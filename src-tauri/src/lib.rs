@@ -287,6 +287,12 @@ async fn close_control_panel_window(
     if let Some(win) = app.get_webview_window(&win_label) {
         let _ = win.close();
     }
+    // Defensively close any remaining control-panel windows
+    for (label, win) in app.webview_windows() {
+        if label.starts_with("control-panel") {
+            let _ = win.close();
+        }
+    }
     Ok(())
 }
 
@@ -309,11 +315,25 @@ async fn open_control_panel_window(
 
     let win_label = format!("control-panel-{}", match_id);
 
-    // If window already exists, bring it forward and set focus
+    // If window for the exact same match already exists:
+    // Close any other control panels, bring this one forward, reload, and focus
     if let Some(win) = app.get_webview_window(&win_label) {
+        for (label, other_win) in app.webview_windows() {
+            if label.starts_with("control-panel") && label != win_label {
+                let _ = other_win.close();
+            }
+        }
         let _ = win.show();
         let _ = win.set_focus();
+        let _ = win.eval("window.location.reload()");
         return Ok(());
+    }
+
+    // Close any previously opened control panel windows so only the latest one stays active
+    for (label, existing_win) in app.webview_windows() {
+        if label.starts_with("control-panel") {
+            let _ = existing_win.close();
+        }
     }
 
     let url = format!("/control-panel?matchId={}&baganId={}", match_id, bagan_id);
@@ -848,6 +868,23 @@ pub fn run() {
             clear_synced_items,
             clear_all_sync_queue
         ])
+        .on_window_event(|window, event| {
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                    if window.label() == "main" {
+                        use tauri::Manager;
+                        let app = window.app_handle();
+                        for (label, win) in app.webview_windows() {
+                            if label != "main" {
+                                let _ = win.close();
+                            }
+                        }
+                        app.exit(0);
+                    }
+                }
+                _ => {}
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

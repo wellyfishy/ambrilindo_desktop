@@ -67,7 +67,7 @@
       if (typeof window !== "undefined" && window.open) {
         window.open(
           `/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}`,
-          `control_panel_${match.id}`,
+          "control_panel",
           "width=1366,height=820"
         );
       } else {
