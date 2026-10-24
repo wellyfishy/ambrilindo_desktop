@@ -473,18 +473,19 @@
 
       {#if !collapseRekapan}
         <div class="mt-1 space-y-0.5">
+          <!-- Summary Bagan (Daftar Juara Seluruh Bagan) -->
           <button
             onclick={() =>
               onSelectChannel({
-                type: "contingent",
-                id: "contingents",
-                name: "kontingen-utusan",
-                subtitle: "Daftar Kontingen & Perguruan Peserta",
+                type: "summary_bagan",
+                id: "summary-bagan",
+                name: "summary-bagan",
+                subtitle: "Daftar Juara Seluruh Bagan Pertandingan",
               })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'kontingen-utusan' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'summary-bagan' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
           >
             <span class="text-zinc-500 font-mono">#</span>
-            <span>kontingen-utusan</span>
+            <span>summary-bagan</span>
           </button>
 
           <button

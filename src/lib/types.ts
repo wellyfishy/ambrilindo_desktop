@@ -1,7 +1,7 @@
 export type AppMode = 'landing' | 'solo' | 'host' | 'client';
 
 export interface ActiveChannel {
-  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'sync' | 'overview' | 'master' | 'summary_juara';
+  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan';
   id: number | string;
   name: string;
   subtitle?: string;
@@ -311,5 +311,34 @@ export interface SummaryJuaraResult {
   total_silver: number;
   total_bronze: number;
   total_uncounted: number;
+}
+
+export interface SummaryBaganWinner {
+  juara: string; // "1", "2", "3a", "3b"
+  athlete_id: number;
+  nama_atlet: string;
+  perguruan_nama: string;
+  utusan_nama: string;
+  logo: string | null;
+  is_uncounted: boolean;
+}
+
+export interface SummaryBaganItem {
+  id: number;
+  kode: string;
+  nama_bagan: string;
+  tipe_tanding: string; // "1" = Kata, "2" = Kumite
+  is_selesai: boolean;
+  winners: SummaryBaganWinner[];
+}
+
+export interface SummaryBaganResult {
+  event_name: string;
+  total_bagans: number;
+  completed_bagans: number;
+  total_gold: number;
+  total_silver: number;
+  total_bronze: number;
+  bagans: SummaryBaganItem[];
 }
 

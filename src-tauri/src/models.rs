@@ -380,3 +380,36 @@ pub struct SummaryJuaraResult {
     pub total_bronze: i64,
     pub total_uncounted: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryBaganWinner {
+    pub juara: String, // "1", "2", "3a", "3b"
+    pub athlete_id: i64,
+    pub nama_atlet: String,
+    pub perguruan_nama: String,
+    pub utusan_nama: String,
+    pub logo: Option<String>,
+    pub is_uncounted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryBaganItem {
+    pub id: i64,
+    pub kode: String,
+    pub nama_bagan: String,
+    pub tipe_tanding: String, // "1" = Kata, "2" = Kumite
+    pub is_selesai: bool,
+    pub winners: Vec<SummaryBaganWinner>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryBaganResult {
+    pub event_name: String,
+    pub total_bagans: usize,
+    pub completed_bagans: usize,
+    pub total_gold: usize,
+    pub total_silver: usize,
+    pub total_bronze: usize,
+    pub bagans: Vec<SummaryBaganItem>,
+}
+

@@ -10,6 +10,7 @@ use crate::bracket::{build_bracket_in_memory, split_athletes_into_pools, Athlete
 use crate::models::{
     Atlet, AthleteMutationInput, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
     EnrichedDetailBagan, Event, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, StandingItem,
+    SummaryBaganItem, SummaryBaganResult, SummaryBaganWinner,
     SummaryJuaraResult, SummaryWinnerAthlete, Tatami, UpdateMatchAthletesInput, Utusan,
 };
 
@@ -2060,6 +2061,254 @@ impl DatabaseManager {
             total_silver,
             total_bronze,
             total_uncounted,
+        })
+    }
+
+    /// Fetches all bagans with their respective winners (Juara 1, 2, 3a, 3b)
+    /// formatted for the "summary-bagan" view, including single-participant resolution.
+    pub async fn get_summary_bagan(&self, event_id: i64) -> Result<SummaryBaganResult, String> {
+        let pool = self.get_pool()?;
+
+        // 1. Event Name
+        let event_name: String = sqlx::query_scalar(
+            "SELECT COALESCE(nama_event, 'Turnamen Karate') FROM backend_event WHERE id = ?"
+        )
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| "Turnamen Karate".to_string());
+
+        // 2. Map unique athletes in each bagan to detect single participant
+        #[derive(sqlx::FromRow)]
+        struct MatchParticipantRow {
+            bagan_id: i64,
+            atlet1_id: Option<i64>,
+            atlet2_id: Option<i64>,
+        }
+        let match_athletes = sqlx::query_as::<_, MatchParticipantRow>(
+            r#"
+            SELECT d.bagan_id, d.atlet1_id, d.atlet2_id
+            FROM backend_detailbagan d
+            JOIN backend_bagan b ON d.bagan_id = b.id
+            WHERE b.event_id = ?
+            "#
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut bagan_athlete_counts: HashMap<i64, HashSet<i64>> = HashMap::new();
+        for m in match_athletes {
+            let set = bagan_athlete_counts.entry(m.bagan_id).or_default();
+            if let Some(a1) = m.atlet1_id { set.insert(a1); }
+            if let Some(a2) = m.atlet2_id { set.insert(a2); }
+        }
+
+        // 3. Fetch all bagans for this event
+        #[derive(sqlx::FromRow)]
+        struct BaganSummaryRow {
+            id: i64,
+            nama_bagan: Option<String>,
+            kode: Option<String>,
+            tipe_tanding: Option<String>,
+            juara_1_id: Option<i64>,
+            juara_2_id: Option<i64>,
+            juara_3a_id: Option<i64>,
+            juara_3b_id: Option<i64>,
+        }
+        let bagan_rows = sqlx::query_as::<_, BaganSummaryRow>(
+            r#"
+            SELECT b.id, b.nama_bagan, b.kode, b.tipe_tanding,
+                   b.juara_1_id, b.juara_2_id, b.juara_3a_id, b.juara_3b_id
+            FROM backend_bagan b
+            LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
+            WHERE b.event_id = ?
+              AND b.is_bob = 0
+              AND (nt.is_bob IS NULL OR nt.is_bob = 0)
+              AND (nt.nama_nomor_tanding IS NULL OR LOWER(nt.nama_nomor_tanding) NOT LIKE '%festival%')
+            ORDER BY CAST(COALESCE(b.kode, '9999') AS INTEGER) ASC, b.id ASC
+            "#
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat bagan untuk summary: {}", e))?;
+
+        // 4. Collect athlete IDs needed for affiliations
+        let mut needed_athlete_ids: HashSet<i64> = HashSet::new();
+        for b in &bagan_rows {
+            let athletes_in_b = bagan_athlete_counts.get(&b.id);
+            let effective_j1 = b.juara_1_id.or_else(|| {
+                if let Some(set) = athletes_in_b {
+                    if set.len() == 1 && b.juara_2_id.is_none() && b.juara_3a_id.is_none() && b.juara_3b_id.is_none() {
+                        return set.iter().next().copied();
+                    }
+                }
+                None
+            });
+            if let Some(id) = effective_j1 { needed_athlete_ids.insert(id); }
+            if let Some(id) = b.juara_2_id { needed_athlete_ids.insert(id); }
+            if let Some(id) = b.juara_3a_id { needed_athlete_ids.insert(id); }
+            if let Some(id) = b.juara_3b_id { needed_athlete_ids.insert(id); }
+        }
+
+        #[derive(Clone, sqlx::FromRow)]
+        struct AthleteAffiliation {
+            id: i64,
+            nama_atlet: Option<String>,
+            _utusan_id: Option<i64>,
+            nama_utusan: Option<String>,
+            logo: Option<String>,
+            _perguruan_id: Option<i64>,
+            nama_perguruan: Option<String>,
+        }
+
+        let mut athlete_map: HashMap<i64, AthleteAffiliation> = HashMap::new();
+        if !needed_athlete_ids.is_empty() {
+            let id_list: Vec<String> = needed_athlete_ids.iter().map(|id| id.to_string()).collect();
+            let sql = format!(
+                r#"
+                SELECT a.id, a.nama_atlet, a.utusan_id AS _utusan_id, u.nama_utusan, u.logo, a.perguruan_id AS _perguruan_id, p.nama_perguruan
+                FROM backend_atlet a
+                LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                WHERE a.id IN ({})
+                "#,
+                id_list.join(",")
+            );
+            let athletes = sqlx::query_as::<_, AthleteAffiliation>(&sql)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+            for a in athletes {
+                athlete_map.insert(a.id, a);
+            }
+        }
+
+        let mut total_gold = 0usize;
+        let mut total_silver = 0usize;
+        let mut total_bronze = 0usize;
+        let mut completed_bagans = 0usize;
+        let mut result_bagans: Vec<SummaryBaganItem> = Vec::new();
+
+        for b in bagan_rows {
+            let athletes_in_b = bagan_athlete_counts.get(&b.id);
+            let is_single = athletes_in_b.map(|s| s.len() == 1).unwrap_or(false)
+                && b.juara_2_id.is_none()
+                && b.juara_3a_id.is_none()
+                && b.juara_3b_id.is_none();
+
+            let effective_j1 = b.juara_1_id.or_else(|| {
+                if is_single {
+                    athletes_in_b.and_then(|s| s.iter().next().copied())
+                } else {
+                    None
+                }
+            });
+
+            let mut winners: Vec<SummaryBaganWinner> = Vec::new();
+
+            // Juara 1 (Emas)
+            if let Some(aid) = effective_j1 {
+                if let Some(atlet) = athlete_map.get(&aid) {
+                    total_gold += 1;
+                    winners.push(SummaryBaganWinner {
+                        juara: "1".to_string(),
+                        athlete_id: aid,
+                        nama_atlet: atlet.nama_atlet.clone().unwrap_or_else(|| format!("Atlet #{}", aid)),
+                        perguruan_nama: atlet.nama_perguruan.clone().unwrap_or_else(|| "-".to_string()),
+                        utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
+                        logo: atlet.logo.clone(),
+                        is_uncounted: is_single,
+                    });
+                }
+            }
+
+            // Juara 2 (Perak)
+            if let Some(aid) = b.juara_2_id {
+                if let Some(atlet) = athlete_map.get(&aid) {
+                    total_silver += 1;
+                    winners.push(SummaryBaganWinner {
+                        juara: "2".to_string(),
+                        athlete_id: aid,
+                        nama_atlet: atlet.nama_atlet.clone().unwrap_or_else(|| format!("Atlet #{}", aid)),
+                        perguruan_nama: atlet.nama_perguruan.clone().unwrap_or_else(|| "-".to_string()),
+                        utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
+                        logo: atlet.logo.clone(),
+                        is_uncounted: false,
+                    });
+                }
+            }
+
+            // Juara 3A (Perunggu)
+            if let Some(aid) = b.juara_3a_id {
+                if let Some(atlet) = athlete_map.get(&aid) {
+                    total_bronze += 1;
+                    winners.push(SummaryBaganWinner {
+                        juara: "3a".to_string(),
+                        athlete_id: aid,
+                        nama_atlet: atlet.nama_atlet.clone().unwrap_or_else(|| format!("Atlet #{}", aid)),
+                        perguruan_nama: atlet.nama_perguruan.clone().unwrap_or_else(|| "-".to_string()),
+                        utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
+                        logo: atlet.logo.clone(),
+                        is_uncounted: false,
+                    });
+                }
+            }
+
+            // Juara 3B (Perunggu)
+            if let Some(aid) = b.juara_3b_id {
+                if let Some(atlet) = athlete_map.get(&aid) {
+                    total_bronze += 1;
+                    winners.push(SummaryBaganWinner {
+                        juara: "3b".to_string(),
+                        athlete_id: aid,
+                        nama_atlet: atlet.nama_atlet.clone().unwrap_or_else(|| format!("Atlet #{}", aid)),
+                        perguruan_nama: atlet.nama_perguruan.clone().unwrap_or_else(|| "-".to_string()),
+                        utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
+                        logo: atlet.logo.clone(),
+                        is_uncounted: false,
+                    });
+                }
+            }
+
+            let is_selesai = !winners.is_empty();
+            if is_selesai {
+                completed_bagans += 1;
+            }
+
+            let kode_str = b.kode.unwrap_or_else(|| format!("{:03}", b.id));
+            let nama_str = b.nama_bagan.unwrap_or_else(|| format!("Bagan {}", kode_str));
+            let tipe_str = b.tipe_tanding.unwrap_or_else(|| {
+                if nama_str.to_uppercase().contains("KATA") {
+                    "1".to_string()
+                } else {
+                    "2".to_string()
+                }
+            });
+
+            result_bagans.push(SummaryBaganItem {
+                id: b.id,
+                kode: kode_str,
+                nama_bagan: nama_str,
+                tipe_tanding: tipe_str,
+                is_selesai,
+                winners,
+            });
+        }
+
+        let total_bagans = result_bagans.len();
+
+        Ok(SummaryBaganResult {
+            event_name,
+            total_bagans,
+            completed_bagans,
+            total_gold,
+            total_silver,
+            total_bronze,
+            bagans: result_bagans,
         })
     }
 }

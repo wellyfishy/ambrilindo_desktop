@@ -23,6 +23,7 @@
   import SyncMonitorView from "$lib/components/SyncMonitorView.svelte";
   import DataMasterView from "$lib/components/DataMasterView.svelte";
   import SummaryJuaraView from "$lib/components/SummaryJuaraView.svelte";
+  import SummaryBaganView from "$lib/components/SummaryBaganView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
@@ -495,6 +496,13 @@
         {:else if activeChannel.type === "summary_juara"}
           <!-- Summary Juara Standings & Medalist View -->
           <SummaryJuaraView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            hostAddress={hostUrl}
+          />
+        {:else if activeChannel.type === "summary_bagan"}
+          <!-- Summary Bagan (Daftar Juara Seluruh Bagan) -->
+          <SummaryBaganView
             eventId={selectedEventId || 1}
             eventName={activeEvent?.nama_event || ""}
             hostAddress={hostUrl}

@@ -364,38 +364,38 @@
         </div>
       </button>
 
-      <!-- Nav Card 3: Kontingen & Utusan -->
+      <!-- Nav Card 3: Summary Juara Bagan -->
       <button
         type="button"
         onclick={() =>
           onNavigate({
-            type: "contingent",
-            id: "contingents",
-            name: "kontingen-utusan",
-            subtitle: "Daftar Kontingen Peserta",
+            type: "summary_bagan",
+            id: "summary-bagan",
+            name: "summary-bagan",
+            subtitle: "Daftar Juara Seluruh Bagan Pertandingan",
           })}
         class="bg-[#181a20] border border-white/[0.08] hover:border-white/[0.2] p-4 rounded-xl text-left transition group active:scale-[0.99] flex flex-col justify-between"
       >
         <div>
           <div class="flex items-center justify-between mb-2">
-            <div class="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center">
+            <div class="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 013 3h-15a3 3 0 013-3m9 0v-3.375c0-.621-.504-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.504-1.125 1.125-1.125h.872m5.003 0V7.875A3.375 3.375 0 0011.25 4.5h-2.25A3.375 3.375 0 005.625 7.875v6.375" />
               </svg>
             </div>
-            <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
-              {totalContingents} Utusan
+            <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              {totalBagans} Bagan
             </span>
           </div>
-          <h3 class="text-xs font-bold text-white group-hover:text-purple-300 transition">
-            Kontingen & Utusan
+          <h3 class="text-xs font-bold text-white group-hover:text-amber-300 transition">
+            Daftar Juara Bagan
           </h3>
           <p class="text-[11px] text-zinc-400 mt-1 leading-relaxed">
-            Daftar perwakilan kontingen, perguruan, dojo cabang, dan rekap partisipasi.
+            Rekapitulasi peraih medali juara 1, 2, 3 untuk seluruh bagan pertandingan.
           </p>
         </div>
-        <div class="mt-3 pt-3 border-t border-white/[0.06] flex items-center text-[11px] font-medium text-purple-400 group-hover:text-purple-300 space-x-1">
-          <span>Buka Kontingen</span>
+        <div class="mt-3 pt-3 border-t border-white/[0.06] flex items-center text-[11px] font-medium text-amber-400 group-hover:text-amber-300 space-x-1">
+          <span>Buka Summary Bagan</span>
           <svg class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
           </svg>

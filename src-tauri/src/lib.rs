@@ -13,7 +13,7 @@ use audio::{AudioService, SoundType};
 use db::DatabaseManager;
 use models::{
     AthleteMutationInput, Atlet, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, SummaryJuaraResult, Tatami,
+    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, SummaryBaganResult, SummaryJuaraResult, Tatami,
     UpdateMatchAthletesInput, Utusan,
 };
 use server::{ArenaMessage, NetworkInfo};
@@ -317,6 +317,15 @@ async fn get_summary_juara(
 ) -> Result<SummaryJuaraResult, String> {
     let db = state.db.lock().await;
     db.get_summary_juara(event_id).await
+}
+
+#[tauri::command]
+async fn get_summary_bagan(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<SummaryBaganResult, String> {
+    let db = state.db.lock().await;
+    db.get_summary_bagan(event_id).await
 }
 
 #[tauri::command]
@@ -890,6 +899,7 @@ pub fn run() {
             update_bagan_details,
             get_detail_bagan,
             get_summary_juara,
+            get_summary_bagan,
             save_match_result,
             open_control_panel_window,
             close_control_panel_window,
