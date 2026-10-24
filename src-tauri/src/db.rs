@@ -250,13 +250,15 @@ impl DatabaseManager {
                     ELSE COALESCE(u1.nama_utusan, p1.nama_perguruan)
                 END as atlet1_kontingen,
                 u1.logo as atlet1_logo,
+                a1.is_priority as atlet1_is_priority,
                 a2.nama_atlet as atlet2_nama,
                 CASE 
                     WHEN p2.nama_perguruan IS NOT NULL AND u2.nama_utusan IS NOT NULL AND p2.nama_perguruan != u2.nama_utusan 
                         THEN p2.nama_perguruan || ' • ' || u2.nama_utusan
                     ELSE COALESCE(u2.nama_utusan, p2.nama_perguruan)
                 END as atlet2_kontingen,
-                u2.logo as atlet2_logo
+                u2.logo as atlet2_logo,
+                a2.is_priority as atlet2_is_priority
             FROM backend_detailbagan d
             LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
             LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id

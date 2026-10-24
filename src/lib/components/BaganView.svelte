@@ -205,10 +205,10 @@
     const semi1 = semiMatches[0];
     const semi2 = semiMatches[1];
 
-    let j1 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
-    let j2 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
-    let j3a = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
-    let j3b = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null };
+    let j1 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
+    let j2 = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
+    let j3a = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
+    let j3b = { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
 
     if (finalMatch && finalMatch.selesai) {
       if (finalMatch.pemenang === "1") {
@@ -216,22 +216,26 @@
           name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
           contingent: finalMatch.atlet1_kontingen || "—",
           logo: finalMatch.atlet1_logo || null,
+          is_priority: !!finalMatch.atlet1_is_priority,
         };
         j2 = {
           name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
           contingent: finalMatch.atlet2_kontingen || "—",
           logo: finalMatch.atlet2_logo || null,
+          is_priority: !!finalMatch.atlet2_is_priority,
         };
       } else if (finalMatch.pemenang === "2") {
         j1 = {
           name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
           contingent: finalMatch.atlet2_kontingen || "—",
           logo: finalMatch.atlet2_logo || null,
+          is_priority: !!finalMatch.atlet2_is_priority,
         };
         j2 = {
           name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
           contingent: finalMatch.atlet1_kontingen || "—",
           logo: finalMatch.atlet1_logo || null,
+          is_priority: !!finalMatch.atlet1_is_priority,
         };
       }
     }
@@ -243,12 +247,14 @@
           name: semi1.atlet2_nama || (semi1.atlet2_id ? `Atlet #${semi1.atlet2_id}` : "BYE"),
           contingent: semi1.atlet2_kontingen || "—",
           logo: semi1.atlet2_logo || null,
+          is_priority: !!semi1.atlet2_is_priority,
         };
       } else if (semi1.pemenang === "2") {
         j3a = {
           name: semi1.atlet1_nama || (semi1.atlet1_id ? `Atlet #${semi1.atlet1_id}` : "BYE"),
           contingent: semi1.atlet1_kontingen || "—",
           logo: semi1.atlet1_logo || null,
+          is_priority: !!semi1.atlet1_is_priority,
         };
       }
     }
@@ -260,12 +266,14 @@
           name: semi2.atlet2_nama || (semi2.atlet2_id ? `Atlet #${semi2.atlet2_id}` : "BYE"),
           contingent: semi2.atlet2_kontingen || "—",
           logo: semi2.atlet2_logo || null,
+          is_priority: !!semi2.atlet2_is_priority,
         };
       } else if (semi2.pemenang === "2") {
         j3b = {
           name: semi2.atlet1_nama || (semi2.atlet1_id ? `Atlet #${semi2.atlet1_id}` : "BYE"),
           contingent: semi2.atlet1_kontingen || "—",
           logo: semi2.atlet1_logo || null,
+          is_priority: !!semi2.atlet1_is_priority,
         };
       }
     }
@@ -389,24 +397,6 @@
 
     <!-- Zoom & Action Toolbar -->
     <div class="flex items-center space-x-2">
-      <!-- Dark/Light Mode Toggle -->
-      <button
-        type="button"
-        onclick={() => {
-          isDarkMode = !isDarkMode;
-        }}
-        class="px-2.5 h-7 flex items-center space-x-1.5 font-medium {isDarkMode ? 'text-zinc-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.1]' : 'text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border-slate-300'} rounded-lg transition text-xs shadow-xs active:scale-95 border"
-        title={isDarkMode ? "Ganti ke mode terang (preview cetak)" : "Ganti ke mode gelap"}
-      >
-        {#if isDarkMode}
-          <span class="text-amber-400">☀️</span>
-          <span class="text-[11px] font-sans">Terang</span>
-        {:else}
-          <span class="text-indigo-400">🌙</span>
-          <span class="text-[11px] font-sans">Gelap</span>
-        {/if}
-      </button>
-
       <!-- Zoom Toolbar -->
       <div class="flex items-center {isDarkMode ? 'bg-[#181a20] border-white/[0.08]' : 'bg-white border-slate-300'} border rounded-lg p-0.5 text-xs font-mono shadow-xs">
         <button
@@ -482,17 +472,8 @@
 
   <!-- Tournament Header Banner -->
   <div class="bracket-banner relative flex items-center justify-center pb-2.5 pt-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-3 shrink-0">
-    <!-- Left Logo / Dojo Emblem -->
-    <div class="banner-logo-wrapper absolute left-0 top-1/2 -translate-y-1/2 flex items-center z-10">
-      <img
-        src="/img/ambrilindo-logo.webp"
-        alt="Ambrilindo Logo"
-        class="h-9 max-h-9 w-auto object-contain"
-      />
-    </div>
-
     <!-- Center Category & Tournament Info (True Center) -->
-    <div class="banner-title-wrapper text-center w-full px-28">
+    <div class="banner-title-wrapper text-center w-full px-16">
       <h1 class="text-base md:text-lg font-black {isDarkMode ? 'text-white' : 'text-slate-950'} tracking-tight uppercase leading-tight truncate">
         {#if baganInfo?.kode}
           ({baganInfo.kode})
@@ -500,7 +481,6 @@
         {baganName}
       </h1>
       <p class="text-[11px] font-semibold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
-        <span>🏆</span>
         <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
         <span>•</span>
         <span>{eventVenue}</span>
@@ -511,7 +491,7 @@
       </p>
     </div>
 
-    <!-- Right Spacer to preserve exact center alignment -->
+    <!-- Right Match Counter -->
     <div class="banner-info-wrapper absolute right-0 top-1/2 -translate-y-1/2 flex justify-end items-center text-right text-[10px] {isDarkMode ? 'text-zinc-500' : 'text-slate-400'} font-mono no-print z-10">
       <span>{elimMatchesCount} Partai</span>
     </div>
@@ -625,10 +605,21 @@
                                   class="player-dojo-logo w-5 h-5 max-w-5 max-h-5 object-contain shrink-0"
                                 />
                               {/if}
+                              {#if match.atlet1_is_priority}
+                                <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                  <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
+                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                  </svg>
+                                </span>
+                              {/if}
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '1'}
-                                    <span class="text-amber-400 text-[10px]" title="Pemenang">👑</span>
+                                    <span class="text-amber-400 shrink-0" title="Pemenang">
+                                      <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+                                        <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                                      </svg>
+                                    </span>
                                   {/if}
                                   <span class="player-name-text truncate block text-[10.5px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
                                     {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
@@ -669,10 +660,21 @@
                                   class="player-dojo-logo w-5 h-5 max-w-5 max-h-5 object-contain shrink-0"
                                 />
                               {/if}
+                              {#if match.atlet2_is_priority}
+                                <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                  <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
+                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                  </svg>
+                                </span>
+                              {/if}
                               <div class="truncate min-w-0 leading-tight">
                                 <div class="flex items-center space-x-1 truncate">
                                   {#if match.pemenang === '2'}
-                                    <span class="text-amber-400 text-[10px]" title="Pemenang">👑</span>
+                                    <span class="text-amber-400 shrink-0" title="Pemenang">
+                                      <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+                                        <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                                      </svg>
+                                    </span>
                                   {/if}
                                   <span class="player-name-text truncate block text-[10.5px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-bold text-amber-200' : 'font-bold text-white') : 'font-bold text-slate-900') : (isDarkMode ? 'italic text-zinc-500 font-medium' : 'italic text-slate-400 font-medium')} leading-tight">
                                     {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
@@ -711,12 +713,12 @@
                   <!-- Column 4 Bottom Section: Ambrilindo Logo + Hasil Juara Podium Card -->
                   {#if roundNum === 4}
                     <div class="absolute bottom-0 right-0 w-full flex flex-col items-end z-20">
-                      <!-- Ambrilindo Brand Logo -->
-                      <div class="mb-2 flex items-center justify-end w-full pr-1">
+                      <!-- Ambrilindo Brand Logo (Enlarged) -->
+                      <div class="mb-2.5 flex items-center justify-center w-full">
                         <img
                           src="/img/ambrilindo-logo.webp"
                           alt="Ambrilindo"
-                          class="h-7 max-w-[130px] object-contain"
+                          class="podium-brand-logo h-11 max-w-[180px] object-contain"
                         />
                       </div>
 
@@ -724,7 +726,11 @@
                       <div class="podium-card w-full {isDarkMode ? 'bg-[#181a20] border-amber-500/70 shadow-lg' : 'bg-white border-amber-500 shadow-sm'} border rounded-lg overflow-hidden">
                         <div class="podium-header px-2.5 py-1 {isDarkMode ? 'bg-amber-500/15 border-amber-500/30' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
                           <div class="flex items-center space-x-1.5">
-                            <span class="{isDarkMode ? 'text-amber-400' : 'text-amber-700'} text-xs">🏆</span>
+                            <span class="{isDarkMode ? 'text-amber-400' : 'text-amber-700'} flex items-center">
+                              <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                                <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
+                              </svg>
+                            </span>
                             <span class="text-[10.5px] font-bold {isDarkMode ? 'text-amber-300' : 'text-amber-900'} tracking-tight">Hasil Juara</span>
                           </div>
                         </div>
@@ -741,6 +747,13 @@
                                 alt="Logo"
                                 class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
                               />
+                            {/if}
+                            {#if podium.j1.is_priority}
+                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
+                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                </svg>
+                              </span>
                             {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j1.name}</div>
@@ -760,6 +773,13 @@
                                 class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
                               />
                             {/if}
+                            {#if podium.j2.is_priority}
+                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
+                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                </svg>
+                              </span>
+                            {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j2.name}</div>
                               <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j2.contingent}</div>
@@ -778,6 +798,13 @@
                                 class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
                               />
                             {/if}
+                            {#if podium.j3a.is_priority}
+                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
+                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                </svg>
+                              </span>
+                            {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3a.name}</div>
                               <div class="podium-sub text-[8.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate leading-tight">{podium.j3a.contingent}</div>
@@ -795,6 +822,13 @@
                                 alt="Logo"
                                 class="podium-dojo-logo w-4 h-4 max-w-4 max-h-4 object-contain shrink-0"
                               />
+                            {/if}
+                            {#if podium.j3b.is_priority}
+                              <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
+                                <svg class="w-3 h-3 fill-current" viewBox="0 0 20 20">
+                                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                </svg>
+                              </span>
                             {/if}
                             <div class="min-w-0 truncate">
                               <div class="podium-name font-bold {isDarkMode ? 'text-white' : 'text-slate-900'} truncate leading-tight">{podium.j3b.name}</div>
@@ -867,24 +901,11 @@
       justify-content: center !important;
       width: 1064px !important;
     }
-    .banner-logo-wrapper {
-      position: absolute !important;
-      left: 0 !important;
-      top: 50% !important;
-      transform: translateY(-50%) !important;
-      display: flex !important;
-      align-items: center !important;
-    }
     .banner-title-wrapper {
       width: 100% !important;
       text-align: center !important;
-      padding-left: 100px !important;
-      padding-right: 100px !important;
-    }
-    .bracket-banner img {
-      height: 26px !important;
-      max-height: 26px !important;
-      width: auto !important;
+      padding-left: 16px !important;
+      padding-right: 16px !important;
     }
     .bracket-banner h1 {
       font-size: 13px !important;
@@ -1153,6 +1174,20 @@
       flex-shrink: 0 !important;
       display: inline-block !important;
       border: none !important;
+    }
+    .podium-brand-logo {
+      height: 38px !important;
+      max-height: 42px !important;
+      max-width: 180px !important;
+      object-fit: contain !important;
+      display: block !important;
+      margin: 0 auto 6px auto !important;
+    }
+    .seed-star-icon svg {
+      width: 11px !important;
+      height: 11px !important;
+      fill: #d97706 !important;
+      color: #d97706 !important;
     }
   }
 

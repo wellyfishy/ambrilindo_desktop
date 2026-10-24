@@ -88,9 +88,11 @@ export interface DetailBaganItem {
   atlet1_nama?: string | null;
   atlet1_kontingen?: string | null;
   atlet1_logo?: string | null;
+  atlet1_is_priority?: boolean;
   atlet2_nama?: string | null;
   atlet2_kontingen?: string | null;
   atlet2_logo?: string | null;
+  atlet2_is_priority?: boolean;
 }
 
 export interface AtletItem {
