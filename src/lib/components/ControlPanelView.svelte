@@ -69,8 +69,69 @@
   let aoJudgeScores = $state<string[]>(["", "", "", "", ""]);
   let showKataScoreOnBoard = $state<boolean>(false);
 
-  function toggleKataScoreOverlay() {
+  // Kata Bendera (Flag) Scoring State — Ambrilindo Local Standard
+  let akaBendera = $state<string>("-"); // "-", "0", "1", "2", "3", "4", "5"
+  let aoBendera = $derived.by(() => {
+    if (akaBendera === "-") return "-";
+    const num = parseInt(akaBendera, 10);
+    if (isNaN(num)) return "-";
+    return String(Math.max(0, 5 - num));
+  });
+
+  // Effective points: uses manual Bendera if selected, otherwise uses 5-judge comparison
+  let effectiveAkaPoints = $derived.by(() => {
+    if (akaBendera !== "-") {
+      return parseInt(akaBendera, 10) || 0;
+    }
+    return judgeComparisons.akaPoints;
+  });
+
+  let effectiveAoPoints = $derived.by(() => {
+    if (akaBendera !== "-") {
+      return parseInt(aoBendera, 10) || 0;
+    }
+    return judgeComparisons.aoPoints;
+  });
+
+  function handleAkaBenderaChange(val: string) {
+    akaBendera = val;
+    if (val === "-") return;
+    const akaFlags = parseInt(val, 10) || 0;
+    const aoFlags = Math.max(0, 5 - akaFlags);
+    if (akaFlags > aoFlags) {
+      matchWinner = "1";
+    } else if (aoFlags > akaFlags) {
+      matchWinner = "2";
+    }
+  }
+
+  // Board Published Score State (Do NOT output scores to scoreboard while inputting!)
+  let boardAkaScore = $state<number>(0);
+  let boardAoScore = $state<number>(0);
+  let isScorePublished = $state<boolean>(false);
+  let publishFeedbackActive = $state<boolean>(false);
+
+  // Button 1: Tampilkan Skor di Board (Versi tanpa pop up)
+  function publishScoresToBoard() {
+    boardAkaScore = effectiveAkaPoints;
+    boardAoScore = effectiveAoPoints;
+    isScorePublished = true;
+    publishFeedbackActive = true;
+    broadcastLiveState();
+    setTimeout(() => {
+      publishFeedbackActive = false;
+    }, 1500);
+  }
+
+  // Button 2: Tampilkan Skor 5 Juri (Versi dengan pop up 5 juri)
+  function toggleKataScorePopup() {
     showKataScoreOnBoard = !showKataScoreOnBoard;
+    // When opening pop up, also ensure current calculated scores are published
+    if (showKataScoreOnBoard) {
+      boardAkaScore = effectiveAkaPoints;
+      boardAoScore = effectiveAoPoints;
+      isScorePublished = true;
+    }
     broadcastLiveState();
   }
 
@@ -152,6 +213,7 @@
   let animFrameId: number | null = null;
   let lastTickTimestamp: number = 0;
   let lastBroadcastTimestamp: number = 0;
+  let liveBroadcastChannel: BroadcastChannel | null = null;
 
   let timerFormatted = $derived.by(() => {
     const safeMs = Math.max(0, Math.floor(timerMs));
@@ -291,13 +353,12 @@
     return { akaPoints, aoPoints, decisions };
   });
 
-  // Reactive auto winner for Kata
+  // Reactive auto winner for Kata (Uses effective points from Bendera or Judge comparisons)
   $effect(() => {
     if (isKata) {
-      const { akaPoints, aoPoints } = judgeComparisons;
-      if (akaPoints > aoPoints) {
+      if (effectiveAkaPoints > effectiveAoPoints) {
         matchWinner = "1";
-      } else if (aoPoints > akaPoints) {
+      } else if (effectiveAoPoints > effectiveAkaPoints) {
         matchWinner = "2";
       }
     }
@@ -325,7 +386,12 @@
       aoJudgeScores[judgeIdx] = val;
       aoJudgeScores = [...aoJudgeScores];
     }
-    broadcastLiveState();
+    // Automatically sync bendera when numerical scores are entered
+    const { akaPoints, aoPoints } = judgeComparisons;
+    if (akaJudgeScores.some((s) => s.trim() !== "") || aoJudgeScores.some((s) => s.trim() !== "")) {
+      akaBendera = String(akaPoints);
+    }
+    // Notice: Do NOT output to scoreboard while operator is inputting scores!
   }
 
   function handleScoreInputBlur(side: "aka" | "ao", judgeIdx: number, val: string) {
@@ -333,18 +399,20 @@
     updateJudgeScore(side, judgeIdx, cleaned);
   }
 
-  // Kiken Handlers
+  // Kiken Handlers (Chief Referee Override)
   function applyKiken(side: "aka" | "ao") {
     if (side === "aka") {
       akaJudgeScores = ["0.0", "0.0", "0.0", "0.0", "0.0"];
       aoJudgeScores = aoJudgeScores.map((s) => (s && s !== "0.0" ? s : "8.0"));
+      akaBendera = "0";
       matchWinner = "2";
     } else {
       aoJudgeScores = ["0.0", "0.0", "0.0", "0.0", "0.0"];
       akaJudgeScores = akaJudgeScores.map((s) => (s && s !== "0.0" ? s : "8.0"));
+      akaBendera = "5";
       matchWinner = "1";
     }
-    broadcastLiveState();
+    publishScoresToBoard();
   }
 
   // ==================== KUMITE SCORING ====================
@@ -422,7 +490,7 @@
         name: match.atlet1_nama || "Sudut Merah",
         contingent: match.atlet1_kontingen || "-",
         kataName: kataAkaName,
-        totalPoints: judgeComparisons.akaPoints,
+        totalPoints: isKata ? boardAkaScore : akaScore,
         judgeScores: akaJudgeScores,
         score: akaScore,
         senshu: akaSenshu,
@@ -434,7 +502,7 @@
         name: match.atlet2_nama || "Sudut Biru",
         contingent: match.atlet2_kontingen || "-",
         kataName: kataAoName,
-        totalPoints: judgeComparisons.aoPoints,
+        totalPoints: isKata ? boardAoScore : aoScore,
         judgeScores: aoJudgeScores,
         score: aoScore,
         senshu: aoSenshu,
@@ -442,7 +510,7 @@
         vr: hasVr2,
         logo: match.atlet2_logo ? (logoMap[match.atlet2_logo] || match.atlet2_logo) : null,
       },
-      winner: matchWinner,
+      winner: isKata ? (isScorePublished ? matchWinner : "") : matchWinner,
       isFinished: isMatchFinished,
       showKataScoreOverlay: showKataScoreOnBoard,
     };
@@ -450,6 +518,16 @@
     emit("tatami_live_state", $state.snapshot(payload)).catch((err) => {
       console.warn("Local IPC emit tatami_live_state failed:", err);
     });
+
+    // BroadcastChannel fallback for multi-window web / dev mode
+    try {
+      if (typeof window !== "undefined" && window.BroadcastChannel) {
+        if (!liveBroadcastChannel) {
+          liveBroadcastChannel = new BroadcastChannel("ambrilindo_live_sync");
+        }
+        liveBroadcastChannel.postMessage($state.snapshot(payload));
+      }
+    } catch (_) {}
   }
 
   // ==================== SAVING & EXIT ====================
@@ -458,8 +536,8 @@
     isSaving = true;
 
     try {
-      const finalScore1 = isKata ? String(judgeComparisons.akaPoints) : String(akaScore);
-      const finalScore2 = isKata ? String(judgeComparisons.aoPoints) : String(aoScore);
+      const finalScore1 = isKata ? String(effectiveAkaPoints) : String(akaScore);
+      const finalScore2 = isKata ? String(effectiveAoPoints) : String(aoScore);
 
       const input: SaveMatchInput = {
         match_id: match.id,
@@ -498,6 +576,21 @@
 
     kataAkaName = match.kata1 || "";
     kataAoName = match.kata2 || "";
+
+    // If match was already completed or has saved scores, restore published state
+    if (match.score1 || match.score2 || match.pemenang || match.selesai) {
+      boardAkaScore = parseInt(match.score1 || "0", 10) || 0;
+      boardAoScore = parseInt(match.score2 || "0", 10) || 0;
+      isScorePublished = true;
+      if (isKata) {
+        akaBendera = String(boardAkaScore);
+      }
+    } else {
+      boardAkaScore = 0;
+      boardAoScore = 0;
+      isScorePublished = false;
+      akaBendera = "-";
+    }
 
     // Broadcast initial state immediately
     setTimeout(() => {
@@ -542,6 +635,7 @@
       window.removeEventListener("keydown", handleKeyDown);
       if (animFrameId) cancelAnimationFrame(animFrameId);
       if (unlistenRequest) unlistenRequest();
+      if (liveBroadcastChannel) liveBroadcastChannel.close();
     };
   });
 </script>
@@ -688,20 +782,37 @@
               </h2>
             </div>
 
-            <!-- Actions: Overlay Board Toggle & Kiken -->
+            <!-- Actions: Tampilkan Skor di Board, Pop Up Skor 5 Juri, & Kiken -->
             <div class="flex items-center space-x-2">
+              <!-- Button 1: Tampilkan Skor di Board (Versi tanpa pop up 5 juri) -->
               <button
                 type="button"
-                onclick={toggleKataScoreOverlay}
+                onclick={publishScoresToBoard}
+                class="px-3.5 py-1.5 rounded-lg text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow active:scale-95 {publishFeedbackActive ? 'bg-emerald-600 text-white shadow-emerald-600/40' : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-600/30'}"
+                title="Kirim skor poin ke scoring board (tanpa pop up)"
+              >
+                {#if publishFeedbackActive}
+                  <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+                  <span>Skor Terkirim!</span>
+                {:else}
+                  <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                  <span>Tampilkan Skor di Board</span>
+                {/if}
+              </button>
+
+              <!-- Button 2: Pop Up Skor 5 Juri (Versi dengan pop up overlay) -->
+              <button
+                type="button"
+                onclick={toggleKataScorePopup}
                 class="px-3 py-1.5 rounded-lg text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow active:scale-95 {showKataScoreOnBoard ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-500/20' : 'bg-[#111216] hover:bg-[#1e2029] text-zinc-300 border border-white/10'}"
-                title="Buka / tutup overlay tabel detail skor 5 juri di scoring board"
+                title="Buka / tutup overlay pop up skor 5 juri di scoring board"
               >
                 {#if showKataScoreOnBoard}
                   <svg class="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>
-                  <span>Sembunyikan Skor di Board</span>
+                  <span>Tutup Pop Up 5 Juri</span>
                 {:else}
                   <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                  <span>Tampilkan Skor di Board</span>
+                  <span>Pop Up Skor 5 Juri</span>
                 {/if}
               </button>
 
@@ -729,10 +840,10 @@
             <table class="w-full text-center border-collapse">
               <thead>
                 <tr class="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400 border-b border-[#2b2d31]">
-                  <th class="py-2.5 px-3 text-left w-[280px]">Sudut & Atlet</th>
+                  <th class="py-2.5 px-3 text-left w-[240px]">Sudut & Atlet</th>
                   {#each [1, 2, 3, 4, 5] as jNum, idx}
                     {@const decision = judgeComparisons.decisions[idx]}
-                    <th class="py-2.5 px-2 w-[110px] transition-colors rounded-t-lg {decision?.winner === 'aka' ? 'bg-red-500/20 text-red-300 border-t-2 border-red-500' : decision?.winner === 'ao' ? 'bg-blue-500/20 text-blue-300 border-t-2 border-blue-500' : 'bg-transparent text-zinc-400'}">
+                    <th class="py-2.5 px-1.5 w-[90px] transition-colors rounded-t-lg {decision?.winner === 'aka' ? 'bg-red-500/20 text-red-300 border-t-2 border-red-500' : decision?.winner === 'ao' ? 'bg-blue-500/20 text-blue-300 border-t-2 border-blue-500' : 'bg-transparent text-zinc-400'}">
                       <div>JURI {jNum}</div>
                       {#if decision?.winner === "aka"}
                         <div class="text-[9px] font-black text-red-400 mt-0.5">AKA (+1)</div>
@@ -745,9 +856,10 @@
                       {/if}
                     </th>
                   {/each}
-                  <th class="py-2.5 px-3 text-left w-[200px]">Pilihan Kata</th>
-                  <th class="py-2.5 px-3 w-[120px] text-center">Total Poin</th>
-                  <th class="py-2.5 px-3 w-[140px] text-center">Status</th>
+                  <th class="py-2.5 px-2 text-left w-[170px]">Pilihan Kata</th>
+                  <th class="py-2.5 px-2 w-[85px] text-center" title="Sistem Bendera (Ambrilindo Local)">Bendera</th>
+                  <th class="py-2.5 px-2 w-[95px] text-center">Total Poin</th>
+                  <th class="py-2.5 px-2.5 w-[125px] text-center">Status</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-[#2b2d31]">
@@ -789,11 +901,11 @@
                   {/each}
 
                   <!-- Kata Selection (Searchable Discord Style) -->
-                  <td class="py-2.5 px-3 text-left">
+                  <td class="py-2.5 px-2 text-left">
                     <button
                       type="button"
                       onclick={() => openKataModal("aka")}
-                      class="w-full h-11 px-3 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between text-xs font-semibold text-zinc-200 transition"
+                      class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between text-xs font-semibold text-zinc-200 transition"
                       title="Klik untuk memilih Kata"
                     >
                       <span class="truncate">{kataAkaName || "Pilih Kata..."}</span>
@@ -803,15 +915,33 @@
                     </button>
                   </td>
 
-                  <!-- Total Flags / Points for AKA -->
-                  <td class="py-2.5 px-3">
-                    <div class="h-11 bg-[#111216] border-2 {judgeComparisons.akaPoints > judgeComparisons.aoPoints ? 'border-red-500 text-red-400 bg-red-500/10' : 'border-[#2b2d31] text-zinc-300'} font-mono font-black text-2xl flex items-center justify-center rounded-lg shadow-inner">
-                      {judgeComparisons.akaPoints}
+                  <!-- Bendera Selection for AKA (Ambrilindo Local standard) -->
+                  <td class="py-2.5 px-2 text-center">
+                    <select
+                      value={akaBendera}
+                      onchange={(e) => handleAkaBenderaChange(e.currentTarget.value)}
+                      class="w-16 h-11 bg-[#111216] border-2 border-red-500/70 text-red-200 font-mono font-black text-xl text-center rounded-lg outline-none cursor-pointer focus:border-red-400 focus:ring-2 focus:ring-red-500/30 transition mx-auto block shadow-inner"
+                      title="Pilih jumlah bendera Sudut Merah (AKA)"
+                    >
+                      <option value="-" class="bg-[#181a20] text-zinc-400">-</option>
+                      <option value="0" class="bg-[#181a20] text-white">0</option>
+                      <option value="1" class="bg-[#181a20] text-white">1</option>
+                      <option value="2" class="bg-[#181a20] text-white">2</option>
+                      <option value="3" class="bg-[#181a20] text-white">3</option>
+                      <option value="4" class="bg-[#181a20] text-white">4</option>
+                      <option value="5" class="bg-[#181a20] text-white">5</option>
+                    </select>
+                  </td>
+
+                  <!-- Total Points for AKA -->
+                  <td class="py-2.5 px-2">
+                    <div class="h-11 bg-[#111216] border-2 {effectiveAkaPoints > effectiveAoPoints ? 'border-red-500 text-red-400 bg-red-500/10' : 'border-[#2b2d31] text-zinc-300'} font-mono font-black text-2xl flex items-center justify-center rounded-lg shadow-inner">
+                      {effectiveAkaPoints}
                     </div>
                   </td>
 
                   <!-- Winner Status Button for AKA -->
-                  <td class="py-2.5 px-3">
+                  <td class="py-2.5 px-2.5">
                     <button
                       type="button"
                       onclick={() => selectWinner("1")}
@@ -865,11 +995,11 @@
                   {/each}
 
                   <!-- Kata Selection (Searchable Discord Style) -->
-                  <td class="py-2.5 px-3 text-left">
+                  <td class="py-2.5 px-2 text-left">
                     <button
                       type="button"
                       onclick={() => openKataModal("ao")}
-                      class="w-full h-11 px-3 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between text-xs font-semibold text-zinc-200 transition"
+                      class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between text-xs font-semibold text-zinc-200 transition"
                       title="Klik untuk memilih Kata"
                     >
                       <span class="truncate">{kataAoName || "Pilih Kata..."}</span>
@@ -879,15 +1009,25 @@
                     </button>
                   </td>
 
-                  <!-- Total Flags / Points for AO -->
-                  <td class="py-2.5 px-3">
-                    <div class="h-11 bg-[#111216] border-2 {judgeComparisons.aoPoints > judgeComparisons.akaPoints ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-[#2b2d31] text-zinc-300'} font-mono font-black text-2xl flex items-center justify-center rounded-lg shadow-inner">
-                      {judgeComparisons.aoPoints}
+                  <!-- Bendera Value for AO (Ambrilindo Local standard: 5 - AKA) -->
+                  <td class="py-2.5 px-2 text-center">
+                    <div
+                      class="w-16 h-11 bg-[#111216] border-2 border-blue-500/70 text-blue-200 font-mono font-black text-xl flex items-center justify-center rounded-lg shadow-inner mx-auto select-none"
+                      title="Jumlah bendera otomatis Sudut Biru (AO) = 5 - AKA"
+                    >
+                      {aoBendera}
+                    </div>
+                  </td>
+
+                  <!-- Total Points for AO -->
+                  <td class="py-2.5 px-2">
+                    <div class="h-11 bg-[#111216] border-2 {effectiveAoPoints > effectiveAkaPoints ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-[#2b2d31] text-zinc-300'} font-mono font-black text-2xl flex items-center justify-center rounded-lg shadow-inner">
+                      {effectiveAoPoints}
                     </div>
                   </td>
 
                   <!-- Winner Status Button for AO -->
-                  <td class="py-2.5 px-3">
+                  <td class="py-2.5 px-2.5">
                     <button
                       type="button"
                       onclick={() => selectWinner("2")}
@@ -911,17 +1051,35 @@
         <div class="mt-4 pt-3 border-t border-[#2b2d31] flex items-center justify-between text-xs text-zinc-400">
           <div class="flex items-center space-x-2">
             <span class="font-semibold text-zinc-300">Hasil Komparasi:</span>
-            <span class="px-2 py-0.5 rounded font-mono font-black {judgeComparisons.akaPoints > judgeComparisons.aoPoints ? 'bg-red-500/20 text-red-400 border border-red-500/40' : judgeComparisons.aoPoints > judgeComparisons.akaPoints ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40' : 'bg-zinc-800 text-zinc-400'}">
-              AKA ({judgeComparisons.akaPoints}) - AO ({judgeComparisons.aoPoints})
+            <span class="px-2 py-0.5 rounded font-mono font-black {effectiveAkaPoints > effectiveAoPoints ? 'bg-red-500/20 text-red-400 border border-red-500/40' : effectiveAoPoints > effectiveAkaPoints ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40' : 'bg-zinc-800 text-zinc-400'}">
+              AKA ({effectiveAkaPoints}) - AO ({effectiveAoPoints})
             </span>
+            {#if isScorePublished}
+              <span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
+                BOARD AKTIF: {boardAkaScore} - {boardAoScore}
+              </span>
+            {:else}
+              <span class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
+                BELUM DIKIRIM KE BOARD
+              </span>
+            {/if}
           </div>
           <div class="flex items-center space-x-3">
             <button
               type="button"
-              onclick={toggleKataScoreOverlay}
-              class="px-3 py-1 rounded text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 {showKataScoreOnBoard ? 'bg-amber-500 text-black' : 'bg-[#1e2029] hover:bg-[#2b2d31] text-zinc-300 border border-white/10'}"
+              onclick={publishScoresToBoard}
+              class="px-3 py-1 rounded text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow active:scale-95 {publishFeedbackActive ? 'bg-emerald-600 text-white shadow-emerald-600/40' : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow'}"
+              title="Kirim skor poin ke scoring board (tanpa pop up)"
             >
-              <span>{showKataScoreOnBoard ? "Tutup Skor di Board" : "Buka Skor di Board"}</span>
+              <span>{publishFeedbackActive ? "Skor Terkirim!" : "Tampilkan Skor di Board"}</span>
+            </button>
+            <button
+              type="button"
+              onclick={toggleKataScorePopup}
+              class="px-3 py-1 rounded text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 {showKataScoreOnBoard ? 'bg-amber-500 text-black' : 'bg-[#1e2029] hover:bg-[#2b2d31] text-zinc-300 border border-white/10'}"
+              title="Buka / tutup overlay pop up skor 5 juri di scoring board"
+            >
+              <span>{showKataScoreOnBoard ? "Tutup Pop Up 5 Juri" : "Pop Up Skor 5 Juri"}</span>
             </button>
             <label class="flex items-center space-x-2 cursor-pointer text-xs text-zinc-300">
               <input type="checkbox" bind:checked={isMatchFinished} class="rounded text-emerald-600 focus:ring-emerald-500" />

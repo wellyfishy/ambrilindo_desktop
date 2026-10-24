@@ -73,7 +73,61 @@
       logoMap = map;
     } catch (err: any) {
       console.error("Gagal memuat detail partai:", err);
-      errorMessage = err?.message || String(err);
+      // Fallback for browser dev/test mode when Tauri internals are not available
+      if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
+        console.warn("Menggunakan fallback dummy data untuk browser / test mode");
+        currentMatch = {
+          id: matchId || 1,
+          bagan_id: baganId || 1,
+          round: 1,
+          urutan: 1,
+          atlet1_id: 101,
+          atlet2_id: 102,
+          score1: "0",
+          score2: "0",
+          scorekecil1: null,
+          scorekecil2: null,
+          vr1: false,
+          vr2: false,
+          kata1: "0 - Blank",
+          kata2: "0 - Blank",
+          pemenang: null,
+          hantei: false,
+          selesai: false,
+          team: false,
+          assigned_tatami_id: 1,
+          kode: "KAT-SEN-01",
+          atlet1_nama: "Ahmad Fauzi",
+          atlet1_kontingen: "INKAI JAWA BARAT",
+          atlet2_nama: "Budi Santoso",
+          atlet2_kontingen: "LEMKARI DKI JAKARTA",
+        };
+        baganName = "KATA PERORANGAN SENIOR PUTRA";
+        baganInfo = {
+          id: baganId || 1,
+          event_id: 1,
+          nama_bagan: "KATA PERORANGAN SENIOR PUTRA",
+          nomor_tanding_id: 1,
+          tipe_tanding: "1", // 1 is Kata
+          juara_1_id: null,
+          juara_2_id: null,
+          juara_3a_id: null,
+          juara_3b_id: null,
+          peringkat_5_id: null,
+          peringkat_6_id: null,
+          peringkat_7_id: null,
+          peringkat_8_id: null,
+          round_robin: false,
+          pool: 1,
+          kode: "KAT-SEN-PUTRA",
+          is_bob: false,
+          has_vr: false,
+        };
+        tatamiNumber = 1;
+        errorMessage = null;
+      } else {
+        errorMessage = err?.message || String(err);
+      }
     } finally {
       isLoading = false;
     }
