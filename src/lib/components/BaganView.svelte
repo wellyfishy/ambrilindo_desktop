@@ -599,7 +599,7 @@
                                 AKA
                               </span>
                               {#if (match.atlet1_logo && logoMap[match.atlet1_logo]) || match.atlet1_is_priority}
-                                <div class="flex items-center shrink-0 space-x-0.5">
+                                <div class="flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? '-mr-1' : ''}">
                                   {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
                                     <img
                                       src={logoMap[match.atlet1_logo]}
@@ -608,9 +608,9 @@
                                     />
                                   {/if}
                                   {#if match.atlet1_is_priority}
-                                    <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
-                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                    <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                        <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                       </svg>
                                     </span>
                                   {/if}
@@ -658,7 +658,7 @@
                                 AO
                               </span>
                               {#if (match.atlet2_logo && logoMap[match.atlet2_logo]) || match.atlet2_is_priority}
-                                <div class="flex items-center shrink-0 space-x-0.5">
+                                <div class="flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? '-mr-1' : ''}">
                                   {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
                                     <img
                                       src={logoMap[match.atlet2_logo]}
@@ -667,9 +667,9 @@
                                     />
                                   {/if}
                                   {#if match.atlet2_is_priority}
-                                    <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
-                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                    <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                      <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                        <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                       </svg>
                                     </span>
                                   {/if}
@@ -750,7 +750,7 @@
                               1
                             </span>
                             {#if (podium.j1.logo && logoMap[podium.j1.logo]) || podium.j1.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5">
+                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j1.is_priority ? '-mr-1' : ''}">
                                 {#if podium.j1.logo && logoMap[podium.j1.logo]}
                                   <img
                                     src={logoMap[podium.j1.logo]}
@@ -759,9 +759,9 @@
                                   />
                                 {/if}
                                 {#if podium.j1.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
-                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
                                 {/if}
@@ -779,7 +779,7 @@
                               2
                             </span>
                             {#if (podium.j2.logo && logoMap[podium.j2.logo]) || podium.j2.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5">
+                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j2.is_priority ? '-mr-1' : ''}">
                                 {#if podium.j2.logo && logoMap[podium.j2.logo]}
                                   <img
                                     src={logoMap[podium.j2.logo]}
@@ -788,9 +788,9 @@
                                   />
                                 {/if}
                                 {#if podium.j2.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
-                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
                                 {/if}
@@ -808,7 +808,7 @@
                               3
                             </span>
                             {#if (podium.j3a.logo && logoMap[podium.j3a.logo]) || podium.j3a.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5">
+                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j3a.is_priority ? '-mr-1' : ''}">
                                 {#if podium.j3a.logo && logoMap[podium.j3a.logo]}
                                   <img
                                     src={logoMap[podium.j3a.logo]}
@@ -817,9 +817,9 @@
                                   />
                                 {/if}
                                 {#if podium.j3a.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
-                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
                                 {/if}
@@ -837,7 +837,7 @@
                               3
                             </span>
                             {#if (podium.j3b.logo && logoMap[podium.j3b.logo]) || podium.j3b.is_priority}
-                              <div class="flex items-center shrink-0 space-x-0.5">
+                              <div class="flex items-center shrink-0 space-x-0.5 {podium.j3b.is_priority ? '-mr-1' : ''}">
                                 {#if podium.j3b.logo && logoMap[podium.j3b.logo]}
                                   <img
                                     src={logoMap[podium.j3b.logo]}
@@ -846,9 +846,9 @@
                                   />
                                 {/if}
                                 {#if podium.j3b.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-400 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 20 20">
-                                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
+                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
                                     </svg>
                                   </span>
                                 {/if}
