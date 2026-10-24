@@ -68,9 +68,12 @@
   let akaJudgeScores = $state<string[]>(["", "", "", "", ""]);
   let aoJudgeScores = $state<string[]>(["", "", "", "", ""]);
 
-  // Quick Score Picker Popover State
-  let activeScorePicker = $state<{ side: "aka" | "ao"; idx: number } | null>(null);
-  const COMMON_SCORE_PRESETS = ["7.0", "7.5", "8.0", "8.2", "8.4", "8.5", "8.6", "8.8", "9.0"];
+  // Quick Score Picker Popover State (Clean, AKA atas, AO bawah, Horizontal scroll)
+  let activeJudgePicker = $state<number | null>(null);
+  const KATA_SCORE_LIST = [
+    "0.0",
+    ...Array.from({ length: 51 }, (_, i) => (5.0 + i * 0.1).toFixed(1))
+  ];
 
   // Kata Discord-style Selection Modal State
   let isKataModalOpen = $state<boolean>(false);
@@ -135,21 +138,32 @@
     }
   }
 
-  // ==================== MATCH TIMER STATE & PRESETS ====================
+  // ==================== MATCH TIMER STATE & PRESETS (MILLISECONDS) ====================
   const TIMER_PRESETS = [30, 60, 90, 120, 150, 180, 300];
   let selectedPresetSeconds = $state<number>(120);
-  let timerSeconds = $state<number>(120);
+  let timerMs = $state<number>(120000);
   let isTimerRunning = $state<boolean>(false);
-  let timerInterval: any = null;
+  let animFrameId: number | null = null;
+  let lastTickTimestamp: number = 0;
+  let lastBroadcastTimestamp: number = 0;
 
-  function formatTimeMMSS(sec: number): string {
-    const safeSec = Math.max(0, sec);
-    const m = Math.floor(safeSec / 60);
-    const s = safeSec % 60;
+  let timerFormatted = $derived.by(() => {
+    const safeMs = Math.max(0, Math.floor(timerMs));
+    const totalSec = Math.floor(safeMs / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    const hundredths = Math.floor((safeMs % 1000) / 10);
     const mStr = m < 10 ? `0${m}` : `${m}`;
     const sStr = s < 10 ? `0${s}` : `${s}`;
-    return `${mStr}:${sStr}`;
-  }
+    const msStr = hundredths < 10 ? `0${hundredths}` : `${hundredths}`;
+    return {
+      mStr,
+      sStr,
+      msStr,
+      mmss: `${mStr}:${sStr}`,
+      full: `${mStr}:${sStr}.${msStr}`,
+    };
+  });
 
   function formatPresetLabel(preset: number): string {
     if (preset < 60) return `${preset}s`;
@@ -159,11 +173,35 @@
     return `${m}:${s < 10 ? "0" + s : s}`;
   }
 
+  function runTimerLoop() {
+    if (!isTimerRunning) return;
+    const now = performance.now();
+    const delta = now - lastTickTimestamp;
+    lastTickTimestamp = now;
+
+    timerMs = Math.max(0, timerMs - delta);
+
+    // Periodic live sync pulse (every 150ms) to sync scoreboard without flooding IPC
+    if (now - lastBroadcastTimestamp > 150) {
+      lastBroadcastTimestamp = now;
+      broadcastLiveState();
+    }
+
+    if (timerMs <= 0) {
+      timerMs = 0;
+      isTimerRunning = false;
+      broadcastLiveState();
+      return;
+    }
+
+    animFrameId = requestAnimationFrame(runTimerLoop);
+  }
+
   function selectTimerPreset(seconds: number) {
     selectedPresetSeconds = seconds;
-    timerSeconds = seconds;
+    timerMs = seconds * 1000;
     if (isTimerRunning) {
-      clearInterval(timerInterval);
+      if (animFrameId) cancelAnimationFrame(animFrameId);
       isTimerRunning = false;
     }
     broadcastLiveState();
@@ -171,39 +209,32 @@
 
   function toggleTimer() {
     if (isTimerRunning) {
-      clearInterval(timerInterval);
+      if (animFrameId) cancelAnimationFrame(animFrameId);
       isTimerRunning = false;
       broadcastLiveState();
     } else {
-      if (timerSeconds <= 0) {
-        timerSeconds = selectedPresetSeconds;
+      if (timerMs <= 0) {
+        timerMs = selectedPresetSeconds * 1000;
       }
       isTimerRunning = true;
+      lastTickTimestamp = performance.now();
+      lastBroadcastTimestamp = lastTickTimestamp;
       broadcastLiveState();
-      timerInterval = setInterval(() => {
-        if (timerSeconds > 0) {
-          timerSeconds -= 1;
-          broadcastLiveState();
-        } else {
-          clearInterval(timerInterval);
-          isTimerRunning = false;
-          broadcastLiveState();
-        }
-      }, 1000);
+      animFrameId = requestAnimationFrame(runTimerLoop);
     }
   }
 
   function resetTimer() {
     if (isTimerRunning) {
-      clearInterval(timerInterval);
+      if (animFrameId) cancelAnimationFrame(animFrameId);
       isTimerRunning = false;
     }
-    timerSeconds = selectedPresetSeconds;
+    timerMs = selectedPresetSeconds * 1000;
     broadcastLiveState();
   }
 
-  function adjustTimer(delta: number) {
-    timerSeconds = Math.max(0, timerSeconds + delta);
+  function adjustTimer(deltaMs: number) {
+    timerMs = Math.max(0, timerMs + deltaMs);
     broadcastLiveState();
   }
 
@@ -296,12 +327,6 @@
     updateJudgeScore(side, judgeIdx, cleaned);
   }
 
-  function pickPresetScore(val: string) {
-    if (!activeScorePicker) return;
-    updateJudgeScore(activeScorePicker.side, activeScorePicker.idx, val);
-    activeScorePicker = null;
-  }
-
   // Kiken Handlers
   function applyKiken(side: "aka" | "ao") {
     if (side === "aka") {
@@ -383,7 +408,8 @@
       category: baganName,
       round: match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`,
       matchNumber: match.urutan || 1,
-      timerSeconds,
+      timerMs,
+      timerSeconds: Math.ceil(timerMs / 1000),
       isTimerRunning,
       isKata,
       aka: {
@@ -480,6 +506,12 @@
     }).catch(() => {});
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Escape closes activeJudgePicker
+      if (e.key === "Escape" && activeJudgePicker !== null) {
+        e.preventDefault();
+        activeJudgePicker = null;
+        return;
+      }
       // Spacebar for Timer Start/Stop
       if (e.code === "Space" && !(e.target instanceof HTMLInputElement)) {
         e.preventDefault();
@@ -499,7 +531,7 @@
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      if (timerInterval) clearInterval(timerInterval);
+      if (animFrameId) cancelAnimationFrame(animFrameId);
       if (unlistenRequest) unlistenRequest();
     };
   });
@@ -567,12 +599,12 @@
               </svg>
               Timer Penampilan Kata
             </span>
-            <!-- Digital Clock Display MM:SS -->
+            <!-- Digital Clock Display MM:SS.ms -->
             <div class="bg-[#111216] border border-[#2b2d31] px-4 py-1.5 rounded-lg flex items-baseline space-x-1 shadow-inner">
               <span class="font-mono font-black text-2xl text-amber-300 tracking-wider">
-                {formatTimeMMSS(timerSeconds)}
+                {timerFormatted.mmss}
               </span>
-              <span class="font-mono text-xs text-amber-500/70">.00</span>
+              <span class="font-mono text-sm text-amber-400 font-bold">.{timerFormatted.msStr}</span>
             </div>
             <!-- Start/Pause Toggle -->
             <button
@@ -600,7 +632,7 @@
             <div class="flex items-center space-x-1">
               <button
                 type="button"
-                onclick={() => adjustTimer(-1)}
+                onclick={() => adjustTimer(-1000)}
                 class="px-2 py-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-xs font-mono font-bold text-zinc-300 rounded-md"
                 title="Kurangi 1 detik"
               >
@@ -608,7 +640,7 @@
               </button>
               <button
                 type="button"
-                onclick={() => adjustTimer(1)}
+                onclick={() => adjustTimer(1000)}
                 class="px-2 py-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-xs font-mono font-bold text-zinc-300 rounded-md"
                 title="Tambah 1 detik"
               >
@@ -723,11 +755,11 @@
                         max="10.0"
                         placeholder="0.0"
                         value={akaJudgeScores[idx]}
-                        onclick={() => (activeScorePicker = { side: "aka", idx })}
+                        onclick={() => (activeJudgePicker = idx)}
                         onblur={(e) => handleScoreInputBlur("aka", idx, e.currentTarget.value)}
                         oninput={(e) => updateJudgeScore("aka", idx, e.currentTarget.value)}
                         class="w-20 h-11 bg-[#111216] border-2 cursor-pointer {decision?.winner === 'aka' ? 'border-red-500 text-red-200 ring-2 ring-red-500/30' : 'border-[#2b2d31] text-zinc-200'} focus:border-red-400 text-center font-mono font-bold text-lg rounded-lg outline-none transition"
-                        title="Klik untuk memilih nilai dari daftar cepat, atau ketik manual (Min 5.0)"
+                        title="Pilih nilai untuk Juri {idx + 1}"
                       />
                     </td>
                   {/each}
@@ -766,7 +798,7 @@
                           <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
                         </svg>
                       {/if}
-                      <span>AKA Menang</span>
+                      <span>PEMENANG</span>
                     </button>
                   </td>
                 </tr>
@@ -799,11 +831,11 @@
                         max="10.0"
                         placeholder="0.0"
                         value={aoJudgeScores[idx]}
-                        onclick={() => (activeScorePicker = { side: "ao", idx })}
+                        onclick={() => (activeJudgePicker = idx)}
                         onblur={(e) => handleScoreInputBlur("ao", idx, e.currentTarget.value)}
                         oninput={(e) => updateJudgeScore("ao", idx, e.currentTarget.value)}
                         class="w-20 h-11 bg-[#111216] border-2 cursor-pointer {decision?.winner === 'ao' ? 'border-blue-500 text-blue-200 ring-2 ring-blue-500/30' : 'border-[#2b2d31] text-zinc-200'} focus:border-blue-400 text-center font-mono font-bold text-lg rounded-lg outline-none transition"
-                        title="Klik untuk memilih nilai dari daftar cepat, atau ketik manual (Min 5.0)"
+                        title="Pilih nilai untuk Juri {idx + 1}"
                       />
                     </td>
                   {/each}
@@ -842,7 +874,7 @@
                           <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
                         </svg>
                       {/if}
-                      <span>AO Menang</span>
+                      <span>PEMENANG</span>
                     </button>
                   </td>
                 </tr>
@@ -867,76 +899,92 @@
           </div>
         </div>
 
-        <!-- QUICK SCORE PICKER POPOVER -->
-        {#if activeScorePicker}
-          <div class="absolute z-40 top-16 left-1/2 -translate-x-1/2 bg-[#181a20] border-2 border-[#5865f2] rounded-2xl p-4 shadow-2xl max-w-lg w-full animate-in fade-in zoom-in-95 duration-150">
-            <div class="flex items-center justify-between pb-2 mb-3 border-b border-[#2b2d31]">
-              <div class="flex items-center space-x-2">
-                <span class="px-2 py-0.5 text-xs font-mono font-bold rounded {activeScorePicker.side === 'aka' ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}">
-                  {activeScorePicker.side.toUpperCase()}
-                </span>
-                <span class="font-bold text-xs text-white">
-                  Pilih Nilai Cepat untuk Juri {activeScorePicker.idx + 1}
-                </span>
-              </div>
-              <button
-                type="button"
-                onclick={() => (activeScorePicker = null)}
-                class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-white rounded"
-                aria-label="Tutup picker"
-              >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-              </button>
-            </div>
-
-            <!-- Quick Common Presets -->
-            <div class="mb-3">
-              <div class="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Preset Populer:</div>
-              <div class="grid grid-cols-5 gap-1.5">
-                {#each COMMON_SCORE_PRESETS as presetVal}
-                  <button
-                    type="button"
-                    onclick={() => pickPresetScore(presetVal)}
-                    class="py-2 bg-[#111216] hover:bg-[#5865f2] hover:text-white border border-[#2b2d31] rounded-lg font-mono font-bold text-sm text-zinc-200 transition"
-                  >
-                    {presetVal}
-                  </button>
-                {/each}
+        <!-- QUICK SCORE PICKER POPOVER (SIMPEL, AKA ATAS, AO BAWAH, HORIZONTAL SCROLL) -->
+        {#if activeJudgePicker !== null}
+          <div
+            class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 outline-none"
+            onclick={(e) => { if (e.target === e.currentTarget) activeJudgePicker = null; }}
+            onkeydown={(e) => { if (e.key === "Escape") activeJudgePicker = null; }}
+            role="dialog"
+            tabindex="-1"
+            aria-modal="true"
+            aria-label="Pilih Nilai Juri"
+          >
+            <div
+              class="bg-[#181a20] border-2 border-[#5865f2] rounded-2xl p-4 shadow-2xl max-w-xl w-full animate-in fade-in zoom-in-95 duration-150"
+            >
+              <!-- Minimal Header -->
+              <div class="flex items-center justify-between pb-2 mb-3 border-b border-[#2b2d31]">
+                <div class="flex items-center space-x-2">
+                  <span class="font-mono font-black text-xs text-white uppercase tracking-wider">
+                    JURI {activeJudgePicker + 1}
+                  </span>
+                </div>
                 <button
                   type="button"
-                  onclick={() => pickPresetScore("0.0")}
-                  class="py-2 bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/40 rounded-lg font-mono font-bold text-xs transition"
+                  onclick={() => (activeJudgePicker = null)}
+                  class="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white bg-[#111216] hover:bg-[#2b2d31] rounded-lg transition"
+                  aria-label="Tutup"
                 >
-                  0.0 (Kiken)
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
               </div>
-            </div>
 
-            <!-- Quick Ranges: 5.x to 9.x / 10.0 -->
-            <div class="mb-2">
-              <div class="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider mb-1.5">Rentang Standar (5.0 s/d 10.0):</div>
-              <div class="grid grid-cols-6 gap-1 font-mono text-xs">
-                {#each ["5.0", "5.5", "6.0", "6.5", "7.0", "7.5", "8.0", "8.3", "8.5", "8.7", "9.0", "9.5", "9.8", "10.0"] as rVal}
-                  <button
-                    type="button"
-                    onclick={() => pickPresetScore(rVal)}
-                    class="py-1.5 bg-[#1e2029] hover:bg-white/10 border border-white/5 rounded font-bold text-zinc-300 transition"
+              <!-- Atas: AKA (Horizontal scrollable ke kanan-kiri) -->
+              <div class="mb-3">
+                <div class="flex items-center space-x-2">
+                  <span class="px-2.5 py-1.5 bg-red-600 text-white font-mono font-black text-xs rounded-lg shrink-0 w-12 text-center">
+                    AKA
+                  </span>
+                  <div
+                    class="flex-1 overflow-x-auto whitespace-nowrap flex space-x-1.5 py-1 px-1 scrollbar-thin scroll-smooth"
+                    onwheel={(e) => {
+                      if (e.deltaY !== 0) {
+                        e.preventDefault();
+                        e.currentTarget.scrollLeft += e.deltaY;
+                      }
+                    }}
                   >
-                    {rVal}
-                  </button>
-                {/each}
+                    {#each KATA_SCORE_LIST as scoreVal}
+                      <button
+                        type="button"
+                        onclick={() => updateJudgeScore("aka", activeJudgePicker!, scoreVal)}
+                        class="px-3 py-1.5 rounded-lg font-mono font-bold text-xs shrink-0 transition {akaJudgeScores[activeJudgePicker] === scoreVal ? 'bg-red-600 text-white shadow-md shadow-red-600/40 ring-2 ring-red-400' : 'bg-[#111216] text-zinc-300 hover:bg-white/10 hover:text-white border border-[#2b2d31]'}"
+                      >
+                        {scoreVal}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
               </div>
-            </div>
 
-            <div class="pt-2 border-t border-[#2b2d31] flex items-center justify-between text-[11px] text-zinc-400 font-mono">
-              <span>Guardrail: Nilai minimal 5.0 (kecuali 0.0 Kiken)</span>
-              <button
-                type="button"
-                onclick={() => pickPresetScore("")}
-                class="text-amber-400 hover:underline font-bold"
-              >
-                Hapus Nilai
-              </button>
+              <!-- Bawah: AO (Horizontal scrollable ke kanan-kiri) -->
+              <div>
+                <div class="flex items-center space-x-2">
+                  <span class="px-2.5 py-1.5 bg-blue-600 text-white font-mono font-black text-xs rounded-lg shrink-0 w-12 text-center">
+                    AO
+                  </span>
+                  <div
+                    class="flex-1 overflow-x-auto whitespace-nowrap flex space-x-1.5 py-1 px-1 scrollbar-thin scroll-smooth"
+                    onwheel={(e) => {
+                      if (e.deltaY !== 0) {
+                        e.preventDefault();
+                        e.currentTarget.scrollLeft += e.deltaY;
+                      }
+                    }}
+                  >
+                    {#each KATA_SCORE_LIST as scoreVal}
+                      <button
+                        type="button"
+                        onclick={() => updateJudgeScore("ao", activeJudgePicker!, scoreVal)}
+                        class="px-3 py-1.5 rounded-lg font-mono font-bold text-xs shrink-0 transition {aoJudgeScores[activeJudgePicker] === scoreVal ? 'bg-blue-600 text-white shadow-md shadow-blue-600/40 ring-2 ring-blue-400' : 'bg-[#111216] text-zinc-300 hover:bg-white/10 hover:text-white border border-[#2b2d31]'}"
+                      >
+                        {scoreVal}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         {/if}
@@ -1068,9 +1116,9 @@
           </span>
           <div class="w-full bg-[#111216] border-2 border-amber-500/70 rounded-xl py-3 px-2 shadow-inner mb-3">
             <span class="text-4xl md:text-5xl font-mono font-black text-amber-300 tracking-wider">
-              {formatTimeMMSS(timerSeconds)}
+              {timerFormatted.mmss}
             </span>
-            <span class="text-xs font-mono text-amber-500/70 block mt-0.5">.00</span>
+            <span class="text-sm font-mono font-bold text-amber-400 block mt-0.5">.{timerFormatted.msStr}</span>
           </div>
 
           <button
@@ -1088,8 +1136,8 @@
           </button>
 
           <div class="grid grid-cols-2 gap-1.5 mb-2 font-mono text-xs">
-            <button type="button" onclick={() => adjustTimer(-1)} class="py-1.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded font-bold text-zinc-300">-1s</button>
-            <button type="button" onclick={() => adjustTimer(1)} class="py-1.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded font-bold text-zinc-300">+1s</button>
+            <button type="button" onclick={() => adjustTimer(-1000)} class="py-1.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded font-bold text-zinc-300">-1s</button>
+            <button type="button" onclick={() => adjustTimer(1000)} class="py-1.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded font-bold text-zinc-300">+1s</button>
           </div>
 
           <div class="grid grid-cols-2 gap-1.5 font-mono text-[11px] mb-2">

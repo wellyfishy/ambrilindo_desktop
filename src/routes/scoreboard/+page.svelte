@@ -16,9 +16,11 @@
   let matchWinner = $state("");
   let isMatchFinished = $state(false);
 
-  // Timer state
-  let timerSeconds = $state(120);
+  // Timer state (with high-precision milliseconds)
+  let timerMs = $state(120000);
   let isTimerRunning = $state(false);
+  let animFrameId: number | null = null;
+  let lastTickTimestamp: number = 0;
 
   // AKA (Red) combatant state
   let akaName = $state("SUDUT MERAH (AKA)");
@@ -40,13 +42,38 @@
   let aoSenshu = $state(false);
   let aoPenalties = $state({ c1: false, c2: false, c3: false, hc: false, h: false });
 
-  // Formatting minutes:seconds
-  let formattedTime = $derived.by(() => {
-    const safeSec = Math.max(0, timerSeconds);
-    const mins = Math.floor(safeSec / 60);
-    const secs = safeSec % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  // Formatting minutes:seconds and milliseconds
+  let timerFormatted = $derived.by(() => {
+    const safeMs = Math.max(0, Math.floor(timerMs));
+    const totalSec = Math.floor(safeMs / 1000);
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    const hundredths = Math.floor((safeMs % 1000) / 10);
+    const mStr = mins < 10 ? `0${mins}` : `${mins}`;
+    const sStr = secs < 10 ? `0${secs}` : `${secs}`;
+    const msStr = hundredths < 10 ? `0${hundredths}` : `${hundredths}`;
+    return {
+      mmss: `${mStr}:${sStr}`,
+      msStr,
+      full: `${mStr}:${sStr}.${msStr}`,
+    };
   });
+
+  function runScoreboardTimerLoop() {
+    if (!isTimerRunning) return;
+    const now = performance.now();
+    const delta = now - lastTickTimestamp;
+    lastTickTimestamp = now;
+
+    timerMs = Math.max(0, timerMs - delta);
+    if (timerMs <= 0) {
+      timerMs = 0;
+      isTimerRunning = false;
+      return;
+    }
+
+    animFrameId = requestAnimationFrame(runScoreboardTimerLoop);
+  }
 
   // Calculate judge highlights for 5-judge table
   let judgeDecisions = $derived.by(() => {
@@ -72,11 +99,37 @@
 
   function applyLiveState(data: any) {
     if (!data) return;
+    isLocalSyncConnected = true;
     if (data.category) categoryName = data.category;
     if (data.round) matchRound = data.round;
     if (data.matchNumber !== undefined) matchNumber = String(data.matchNumber);
-    if (data.timerSeconds !== undefined) timerSeconds = data.timerSeconds;
-    if (data.isTimerRunning !== undefined) isTimerRunning = data.isTimerRunning;
+    
+    if (data.timerMs !== undefined) {
+      if (isTimerRunning) {
+        if (Math.abs(timerMs - data.timerMs) > 150) {
+          timerMs = data.timerMs;
+        }
+      } else {
+        timerMs = data.timerMs;
+      }
+    } else if (data.timerSeconds !== undefined) {
+      if (!isTimerRunning) {
+        timerMs = data.timerSeconds * 1000;
+      }
+    }
+
+    if (data.isTimerRunning !== undefined) {
+      const wasRunning = isTimerRunning;
+      isTimerRunning = data.isTimerRunning;
+      if (!wasRunning && isTimerRunning) {
+        lastTickTimestamp = performance.now();
+        animFrameId = requestAnimationFrame(runScoreboardTimerLoop);
+      } else if (wasRunning && !isTimerRunning) {
+        if (animFrameId) cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
+    }
+
     if (data.isKata !== undefined) isKata = data.isKata;
     if (data.winner !== undefined) matchWinner = data.winner;
     if (data.isFinished !== undefined) isMatchFinished = data.isFinished;
@@ -108,8 +161,9 @@
 
   onMount(() => {
     let unlisten: (() => void) | undefined;
+    let bc: BroadcastChannel | null = null;
 
-    // Listen to local realtime desktop IPC event
+    // 1. Listen to local realtime desktop IPC event
     listen("tatami_live_state", (event: any) => {
       const payload = event.payload;
       if (payload && (payload.tatami === tatamiNumber || !payload.tatami)) {
@@ -121,11 +175,26 @@
       console.warn("Failed to listen to tatami_live_state:", err);
     });
 
+    // 2. BroadcastChannel fallback for multi-window web / dev mode
+    try {
+      bc = new BroadcastChannel("ambrilindo_live_sync");
+      bc.onmessage = (event) => {
+        const payload = event.data;
+        if (payload && (payload.tatami === tatamiNumber || !payload.tatami)) {
+          applyLiveState(payload);
+        }
+      };
+    } catch (e) {
+      console.warn("BroadcastChannel not available:", e);
+    }
+
     // Request current state immediately from open control panel
     emit("request_tatami_state", { tatami: tatamiNumber }).catch(() => {});
 
     return () => {
       if (unlisten) unlisten();
+      if (bc) bc.close();
+      if (animFrameId) cancelAnimationFrame(animFrameId);
     };
   });
 </script>
@@ -371,9 +440,9 @@
     <div class="flex items-center space-x-4">
       <div class="bg-[#111216] border-2 border-amber-500/60 px-6 py-1.5 rounded-xl flex items-baseline space-x-1.5 shadow-inner">
         <span class="font-mono font-black text-4xl 2xl:text-5xl text-amber-300 tracking-wider">
-          {formattedTime}
+          {timerFormatted.mmss}
         </span>
-        <span class="font-mono text-xs text-amber-500/70">.00</span>
+        <span class="font-mono text-base 2xl:text-lg text-amber-400 font-bold">.{timerFormatted.msStr}</span>
       </div>
 
       <div class="py-1.5 px-3 rounded-lg text-xs font-mono font-black tracking-wider uppercase border {isTimerRunning ? 'bg-emerald-950 text-emerald-400 border-emerald-500/50' : 'bg-zinc-800 text-zinc-400 border-zinc-700'}">

@@ -29,47 +29,71 @@
   let aoSenshu = $state(false);
   let aoPenalties = $state({ c1: false, c2: false, c3: false, hc: false, h: false });
 
-  // Timer
-  let timerSeconds = $state(120);
+  // Timer (Milliseconds)
+  let timerMs = $state(120000);
   let isTimerRunning = $state(false);
-  let timerInterval: any = null;
+  let animFrameId: any = null;
+  let lastTickTimestamp: number = 0;
 
-  let formattedTime = $derived.by(() => {
-    const mins = Math.floor(timerSeconds / 60);
-    const secs = timerSeconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  let timerFormatted = $derived.by(() => {
+    const safeMs = Math.max(0, Math.floor(timerMs));
+    const totalSec = Math.floor(safeMs / 1000);
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    const hundredths = Math.floor((safeMs % 1000) / 10);
+    const mStr = mins < 10 ? `0${mins}` : `${mins}`;
+    const sStr = secs < 10 ? `0${secs}` : `${secs}`;
+    const msStr = hundredths < 10 ? `0${hundredths}` : `${hundredths}`;
+    return {
+      mmss: `${mStr}:${sStr}`,
+      msStr,
+      full: `${mStr}:${sStr}.${msStr}`,
+    };
   });
 
-  let isWarningTime = $derived(timerSeconds <= 15 && timerSeconds > 0);
+  let isWarningTime = $derived(timerMs <= 15000 && timerMs > 0);
+
+  function runTatamiTimerLoop() {
+    if (!isTimerRunning) return;
+    const now = performance.now();
+    const delta = now - lastTickTimestamp;
+    lastTickTimestamp = now;
+
+    const prevMs = timerMs;
+    timerMs = Math.max(0, timerMs - delta);
+
+    if (prevMs > 15000 && timerMs <= 15000) {
+      onTriggerBuzzer("warning");
+    }
+
+    if (timerMs <= 0) {
+      timerMs = 0;
+      isTimerRunning = false;
+      onTriggerBuzzer("finish");
+      return;
+    }
+
+    animFrameId = requestAnimationFrame(runTatamiTimerLoop);
+  }
 
   function toggleTimer() {
     if (isTimerRunning) {
-      clearInterval(timerInterval);
-      timerInterval = null;
+      if (animFrameId) cancelAnimationFrame(animFrameId);
+      animFrameId = null;
       isTimerRunning = false;
     } else {
+      if (timerMs <= 0) timerMs = 120000;
       isTimerRunning = true;
-      timerInterval = setInterval(() => {
-        if (timerSeconds > 0) {
-          timerSeconds -= 1;
-          if (timerSeconds === 15) {
-            onTriggerBuzzer("warning");
-          }
-        } else {
-          clearInterval(timerInterval);
-          timerInterval = null;
-          isTimerRunning = false;
-          onTriggerBuzzer("finish");
-        }
-      }, 1000);
+      lastTickTimestamp = performance.now();
+      animFrameId = requestAnimationFrame(runTatamiTimerLoop);
     }
   }
 
   function resetTimer(seconds: number = 120) {
-    if (timerInterval) clearInterval(timerInterval);
-    timerInterval = null;
+    if (animFrameId) cancelAnimationFrame(animFrameId);
+    animFrameId = null;
     isTimerRunning = false;
-    timerSeconds = seconds;
+    timerMs = seconds * 1000;
   }
 
   function addScore(side: 'aka' | 'ao', points: number) {
@@ -112,7 +136,7 @@
   }
 
   onDestroy(() => {
-    if (timerInterval) clearInterval(timerInterval);
+    if (animFrameId) cancelAnimationFrame(animFrameId);
   });
 </script>
 
@@ -253,7 +277,7 @@
             {isWarningTime ? 'ATOSHI BARAKU (15s)' : 'WAKTU'}
           </span>
           <div class="text-4xl 2xl:text-5xl font-mono font-black tabular-nums tracking-tighter {isWarningTime ? 'text-amber-400' : 'text-white'}">
-            {formattedTime}
+            {timerFormatted.mmss}<span class="text-xl 2xl:text-2xl font-bold opacity-80">.{timerFormatted.msStr}</span>
           </div>
         </div>
 
