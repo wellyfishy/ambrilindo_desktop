@@ -1,10 +1,16 @@
 export type AppMode = 'landing' | 'solo' | 'host' | 'client';
 
 export interface ActiveChannel {
-  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan';
+  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival';
   id: number | string;
   name: string;
   subtitle?: string;
+}
+
+export interface NetworkInterfaceInfo {
+  name: string;
+  ip: string;
+  is_default: boolean;
 }
 
 export interface NetworkInfo {
@@ -12,6 +18,7 @@ export interface NetworkInfo {
   local_ip: string;
   server_url: string;
   qr_svg: string;
+  available_ips?: NetworkInterfaceInfo[];
 }
 
 export interface EventItem {
@@ -28,6 +35,17 @@ export interface NomorTandingItem {
   tipe: string | null;
   is_bob: boolean;
   has_vr: boolean;
+}
+
+export interface EnrichedNomorTanding {
+  id: number;
+  event_id: number | null;
+  nama_nomor_tanding: string | null;
+  is_bob: boolean;
+  has_vr: boolean;
+  athlete_count: number;
+  bagan_count: number;
+  first_bagan_id: number | null;
 }
 
 export interface DatabaseSummary {
@@ -341,4 +359,247 @@ export interface SummaryBaganResult {
   total_bronze: number;
   bagans: SummaryBaganItem[];
 }
+
+export interface TimetableDay {
+  id: number;
+  event_id: number;
+  order: number;
+  tanggal: string | null;
+}
+
+export interface TimetableRow {
+  id: number;
+  day_id: number | null;
+  order: number;
+  row_type: 'slot' | 'label';
+  time_label: string;
+  label_text: string;
+}
+
+export interface TimetableCell {
+  id: number;
+  row_id: number;
+  tatami_id: number;
+  nomor_tanding_id: number | null;
+  custom_text: string;
+}
+
+export interface EnrichedTimetableCell {
+  id: number;
+  row_id: number;
+  tatami_id: number;
+  tatami_number: number;
+  nomor_tanding_id: number | null;
+  nomor_tanding_nama: string | null;
+  custom_text: string;
+  atlet_count: number;
+  matches: number;
+  discipline: 'kata' | 'kumite';
+  est_duration_minutes: number;
+  progress_status: 'belum_disentuh' | 'running' | 'selesai' | 'festival' | 'break';
+  progress_pct: number;
+  finished_matches: number;
+  remaining_matches: number;
+  is_festival: boolean;
+  is_break: boolean;
+}
+
+export interface AthleteConflictDetail {
+  athlete_name: string;
+  tatami1_number: number;
+  category1_id: number;
+  category1_name: string;
+  tatami2_number: number;
+  category2_id: number;
+  category2_name: string;
+}
+
+export interface EnrichedTimetableRow {
+  id: number;
+  day_id: number;
+  order: number;
+  row_type: 'slot' | 'label';
+  time_label: string;
+  label_text: string;
+  cells: EnrichedTimetableCell[];
+  conflicts: AthleteConflictDetail[];
+}
+
+export interface EnrichedTimetableDay {
+  id: number;
+  event_id: number;
+  order: number;
+  tanggal: string | null;
+  label: string;
+  rows: EnrichedTimetableRow[];
+}
+
+export interface TimetableCategoryOption {
+  id: number;
+  nama: string;
+  age_group: string;
+  atlet_count: number;
+  matches: number;
+  discipline: 'kata' | 'kumite';
+  est_duration_minutes: number;
+  is_festival: boolean;
+  progress_status: 'belum_disentuh' | 'running' | 'selesai';
+  progress_pct: number;
+  is_assigned: boolean;
+  assigned_tatami: number | null;
+  assigned_day_order: number | null;
+}
+
+export interface TatamiLiveStatus {
+  tatami_id: number;
+  tatami_number: number;
+  is_running: boolean;
+  category_name: string | null;
+  round: number | null;
+  urutan: number | null;
+  atlet1_name: string | null;
+  atlet2_name: string | null;
+}
+
+export interface KopSurat {
+  id: number;
+  event_id: number;
+  logo: string | null;
+  nama_organisasi: string;
+  alamat: string;
+  kontak: string;
+}
+
+export interface TimetableProgressSummary {
+  total_matches: number;
+  finished_matches: number;
+  remaining_matches: number;
+  running_categories_count: number;
+  finished_categories_count: number;
+  unstarted_categories_count: number;
+  total_categories_count: number;
+  overall_pct: number;
+  total_conflicts: number;
+  tatamis_live: TatamiLiveStatus[];
+}
+
+export interface TimetableEditorData {
+  event_id: number;
+  event_name: string;
+  tatamis: TatamiItem[];
+  days: EnrichedTimetableDay[];
+  categories: TimetableCategoryOption[];
+  summary: TimetableProgressSummary;
+  kop_surat: KopSurat | null;
+  nt_athletes?: Record<number, string[]>;
+}
+
+export interface SaveTimetableCellInput {
+  tatami_id: number;
+  nomor_tanding_id: number | null;
+  custom_text: string;
+}
+
+export interface SaveTimetableRowInput {
+  id: number | null;
+  order: number;
+  row_type: 'slot' | 'label';
+  time_label: string;
+  label_text: string;
+  cells: SaveTimetableCellInput[];
+}
+
+export interface SaveTimetableDayInput {
+  day_id: number;
+  tanggal: string | null;
+  rows: SaveTimetableRowInput[];
+}
+
+export interface SaveTimetablePayload {
+  days: SaveTimetableDayInput[];
+}
+
+export interface TatamiBookletCategory {
+  match_seq: number;
+  category_id: number;
+  category_name: string;
+  discipline: string;
+  matches_count: number;
+  athletes_count: number;
+  bagan_id: number | null;
+  bagan_kode: string | null;
+  bagan_nama: string | null;
+  tipe_tanding: string | null;
+  winners: SummaryBaganWinner[];
+  matches: DetailBaganItem[];
+}
+
+export interface TatamiBookletData {
+  event_id: number;
+  event_name: string;
+  venue?: string | null;
+  kop_surat: KopSurat | null;
+  tatami_id: number;
+  tatami_number: number;
+  day_id: number;
+  day_order: number;
+  day_label: string;
+  day_date: string | null;
+  unscheduled_list: string[];
+  ordered_categories: TatamiBookletCategory[];
+}
+
+// --- FESTIVAL ROSTER TYPES ---
+
+export interface FestivalAthlete {
+  id: number;
+  nama: string;
+  perguruan: string;
+  utusan: string;
+  jenis_kelamin: string;
+}
+
+export interface FestivalMatch {
+  match_num: number;
+  aka: FestivalAthlete;
+  ao: FestivalAthlete | null;
+  is_clash: boolean;
+}
+
+export interface FestivalCategory {
+  id: number;
+  nama: string;
+  display_name: string;
+  discipline: "kata" | "kumite";
+  tatami_id: number;
+  matches: FestivalMatch[];
+  atlet_count: number;
+  match_count: number;
+}
+
+export interface FestivalTatamiSection {
+  tatami_id: number;
+  tatami_number: number;
+  categories: FestivalCategory[];
+  total_athletes: number;
+  total_matches: number;
+}
+
+export interface FestivalRosterData {
+  event_id: number;
+  event_name: string;
+  tatamis: TatamiItem[];
+  sections: FestivalTatamiSection[];
+  total_categories: number;
+  total_athletes: number;
+  total_matches: number;
+  total_clashes: number;
+  kop_surat?: KopSurat | null;
+}
+
+export interface FestivalRosterState {
+  tatami_assignments: Record<string, number[]>;
+  athlete_pairings: Record<string, number[]>;
+}
+
 

@@ -8,10 +8,15 @@ use tracing::info;
 
 use crate::bracket::{build_bracket_in_memory, split_athletes_into_pools, AthleteInput};
 use crate::models::{
-    Atlet, AthleteMutationInput, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, StandingItem,
-    SummaryBaganItem, SummaryBaganResult, SummaryBaganWinner,
-    SummaryJuaraResult, SummaryWinnerAthlete, Tatami, UpdateMatchAthletesInput, Utusan,
+    AthleteConflictDetail, Atlet, AthleteMutationInput, Bagan, BaganPodium, CategoryMutationInput,
+    DrawingCategoryInfo, DrawingSummary, EnrichedAtlet, EnrichedDetailBagan, EnrichedNomorTanding,
+    EnrichedTimetableCell, EnrichedTimetableDay, EnrichedTimetableRow, Event, FestivalAthlete,
+    FestivalCategory, FestivalMatch, FestivalRosterData, FestivalRosterState, FestivalTatamiSection,
+    KopSurat, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, SaveTimetablePayload,
+    StandingItem, SummaryBaganItem, SummaryBaganResult, SummaryBaganWinner, SummaryJuaraResult,
+    SummaryWinnerAthlete, Tatami, TatamiBookletCategory, TatamiBookletData, TatamiLiveStatus,
+    TimetableCategoryOption, TimetableCell, TimetableDay, TimetableEditorData, TimetableProgressSummary,
+    TimetableRow, UpdateMatchAthletesInput, Utusan,
 };
 
 #[derive(Clone)]
@@ -159,14 +164,66 @@ impl DatabaseManager {
         })
     }
 
-    /// Deletes a tatami by ID
+    /// Deletes a tatami by ID, safely cascading references to avoid foreign key errors
     pub async fn delete_tatami(&self, tatami_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Bersihkan sel jadwal yang terikat ke tatami ini
+        sqlx::query("DELETE FROM backend_timetablecell WHERE tatami_id = ?")
+            .bind(tatami_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal membersihkan sel jadwal tatami: {}", e))?;
+
+        // 2. Putuskan assigned_tatami_id pada detail bagan
+        sqlx::query("UPDATE backend_detailbagan SET assigned_tatami_id = NULL WHERE assigned_tatami_id = ?")
+            .bind(tatami_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memutuskan penugasan tatami pada bagan: {}", e))?;
+
+        // 3. Putuskan tatami_id pada wasit tatami
+        sqlx::query("DELETE FROM backend_wasittatami WHERE tatami_id = ?")
+            .bind(tatami_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus penugasan wasit tatami: {}", e))?;
+
+        // 4. Putuskan tatami_id pada penugasan admin, juri, dan role
+        sqlx::query("UPDATE backend_admintatami SET tatami_id = NULL WHERE tatami_id = ?")
+            .bind(tatami_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memperbarui admin tatami: {}", e))?;
+
+        sqlx::query("UPDATE backend_jury SET tatami_id = NULL WHERE tatami_id = ?")
+            .bind(tatami_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memperbarui juri tatami: {}", e))?;
+
+        sqlx::query("UPDATE backend_role SET tatami_id = NULL WHERE tatami_id = ?")
+            .bind(tatami_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memperbarui role tatami: {}", e))?;
+
+        // 5. Putuskan hubungan detail_bagan_id pada tatami sebelum delete
+        sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE id = ?")
+            .bind(tatami_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal mereset detail_bagan pada tatami: {}", e))?;
+
+        // 6. Hapus tatami
         sqlx::query("DELETE FROM backend_tatami WHERE id = ?")
             .bind(tatami_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| format!("Gagal menghapus tatami: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan transaksi penghapusan tatami: {}", e))?;
         Ok(())
     }
 
@@ -192,6 +249,239 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat kategori pertandingan: {}", e))
+    }
+
+    /// Fetches all categories for an event with participant count, bracket count, and first bracket ID
+    pub async fn get_enriched_categories(&self, event_id: i64) -> Result<Vec<EnrichedNomorTanding>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, EnrichedNomorTanding>(
+            r#"
+            SELECT 
+                nt.id,
+                nt.event_id,
+                nt.nama_nomor_tanding,
+                COALESCE(nt.is_bob, 0) as is_bob,
+                COALESCE(nt.has_vr, 0) as has_vr,
+                (
+                    SELECT COUNT(*) FROM backend_atlet a 
+                    WHERE a.nomor_tanding_id = nt.id 
+                      AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+                ) as athlete_count,
+                (
+                    SELECT COUNT(*) FROM backend_bagan b 
+                    WHERE b.nomor_tanding_id = nt.id
+                ) as bagan_count,
+                (
+                    SELECT b.id FROM backend_bagan b
+                    WHERE b.nomor_tanding_id = nt.id
+                    ORDER BY b.id ASC
+                    LIMIT 1
+                ) as first_bagan_id
+            FROM backend_nomortanding nt
+            WHERE nt.event_id = ?
+            ORDER BY nt.nama_nomor_tanding ASC
+            "#
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat kategori nomor tanding: {}", e))
+    }
+
+    /// Creates a new competition category (Nomor Tanding)
+    pub async fn create_category(&self, input: CategoryMutationInput) -> Result<EnrichedNomorTanding, String> {
+        let pool = self.get_pool()?;
+        let res = sqlx::query(
+            "INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (?, ?, ?, ?)"
+        )
+        .bind(input.event_id)
+        .bind(&input.nama_nomor_tanding)
+        .bind(input.is_bob)
+        .bind(input.has_vr)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menambahkan kategori: {}", e))?;
+
+        let id = res.last_insert_rowid();
+        Ok(EnrichedNomorTanding {
+            id,
+            event_id: Some(input.event_id),
+            nama_nomor_tanding: Some(input.nama_nomor_tanding),
+            is_bob: input.is_bob,
+            has_vr: input.has_vr,
+            athlete_count: 0,
+            bagan_count: 0,
+            first_bagan_id: None,
+        })
+    }
+
+    /// Updates an existing competition category (Nomor Tanding)
+    pub async fn update_category(&self, input: CategoryMutationInput) -> Result<EnrichedNomorTanding, String> {
+        let cat_id = input.id.ok_or_else(|| "ID kategori tidak boleh kosong untuk pembaruan".to_string())?;
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        sqlx::query(
+            "UPDATE backend_nomortanding SET nama_nomor_tanding = ?, is_bob = ?, has_vr = ? WHERE id = ?"
+        )
+        .bind(&input.nama_nomor_tanding)
+        .bind(input.is_bob)
+        .bind(input.has_vr)
+        .bind(cat_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal memperbarui kategori: {}", e))?;
+
+        // Synchronize VR & is_bob to related bagans if existing
+        sqlx::query(
+            "UPDATE backend_bagan SET is_bob = ?, has_vr = ? WHERE nomor_tanding_id = ?"
+        )
+        .bind(input.is_bob)
+        .bind(input.has_vr)
+        .bind(cat_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal menyinkronkan status ke bagan: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan transaksi: {}", e))?;
+
+        // Query updated counts
+        let enriched = sqlx::query_as::<_, EnrichedNomorTanding>(
+            r#"
+            SELECT 
+                nt.id,
+                nt.event_id,
+                nt.nama_nomor_tanding,
+                COALESCE(nt.is_bob, 0) as is_bob,
+                COALESCE(nt.has_vr, 0) as has_vr,
+                (
+                    SELECT COUNT(*) FROM backend_atlet a 
+                    WHERE a.nomor_tanding_id = nt.id 
+                      AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+                ) as athlete_count,
+                (
+                    SELECT COUNT(*) FROM backend_bagan b 
+                    WHERE b.nomor_tanding_id = nt.id
+                ) as bagan_count,
+                (
+                    SELECT b.id FROM backend_bagan b
+                    WHERE b.nomor_tanding_id = nt.id
+                    ORDER BY b.id ASC
+                    LIMIT 1
+                ) as first_bagan_id
+            FROM backend_nomortanding nt
+            WHERE nt.id = ?
+            "#
+        )
+        .bind(cat_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat kategori yang diperbarui: {}", e))?;
+
+        Ok(enriched)
+    }
+
+    /// Toggles Video Review (VR) status for a category and its associated brackets
+    pub async fn toggle_category_vr(&self, category_id: i64, has_vr: bool) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        sqlx::query("UPDATE backend_nomortanding SET has_vr = ? WHERE id = ?")
+            .bind(has_vr)
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memperbarui status VR kategori: {}", e))?;
+
+        sqlx::query("UPDATE backend_bagan SET has_vr = ? WHERE nomor_tanding_id = ?")
+            .bind(has_vr)
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menyinkronkan status VR ke bagan: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan transaksi: {}", e))?;
+        Ok(())
+    }
+
+    /// Deletes a competition category, safely unlinking athletes and cleaning up any related brackets
+    pub async fn delete_category(&self, category_id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Unassign tatamis
+        sqlx::query(
+            "UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id IN (
+                SELECT d.id FROM backend_detailbagan d 
+                JOIN backend_bagan b ON d.bagan_id = b.id 
+                WHERE b.nomor_tanding_id = ?
+            )"
+        )
+        .bind(category_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal mereset tatami: {}", e))?;
+
+        // 2. Delete detail bagans
+        sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus detail bagan: {}", e))?;
+
+        // 3. Delete bagans
+        sqlx::query("DELETE FROM backend_bagan WHERE nomor_tanding_id = ?")
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus bagan: {}", e))?;
+
+        // 4. Detach athletes (set nomor_tanding_id = NULL so athlete records are safely preserved)
+        sqlx::query("UPDATE backend_atlet SET nomor_tanding_id = NULL WHERE nomor_tanding_id = ?")
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal melepaskan atlet dari kategori: {}", e))?;
+
+        // 5. Delete category itself
+        sqlx::query("DELETE FROM backend_nomortanding WHERE id = ?")
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus kategori: {}", e))?;
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan perubahan: {}", e))?;
+        Ok(())
+    }
+
+    /// Fetches all athletes belonging to a specific category
+    pub async fn get_category_athletes(&self, category_id: i64) -> Result<Vec<EnrichedAtlet>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, EnrichedAtlet>(
+            r#"
+            SELECT 
+                a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
+                a.perguruan_id, p.nama_perguruan as perguruan_nama,
+                a.utusan_id, u.nama_utusan as utusan_nama, u.logo as utusan_logo,
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama,
+                CASE 
+                    WHEN nt.is_bob = 1 THEN 'BOB'
+                    WHEN UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%' THEN 'Festival'
+                    ELSE 'Tournament'
+                END as nomor_tanding_tipe,
+                nt.is_bob
+            FROM backend_atlet a
+            LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+            LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+            LEFT JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+            WHERE a.nomor_tanding_id = ?
+            ORDER BY a.nama_atlet ASC
+            "#
+        )
+        .bind(category_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat atlet untuk kategori: {}", e))
     }
 
     /// Fetches all brackets (Bagan) for an event
@@ -372,6 +662,110 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat detail bagan: {}", e))
+    }
+
+    /// Fetches the currently active match for a specific tatami number
+    pub async fn get_tatami_current_match(&self, tatami_num: i32) -> Result<Option<EnrichedDetailBagan>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, EnrichedDetailBagan>(
+            r#"
+            SELECT 
+                d.id, d.bagan_id, d.round, d.urutan, d.atlet1_id, d.atlet2_id,
+                d.score1, d.score2, d.scorekecil1, d.scorekecil2,
+                d.vr1, d.vr2, d.kata1, d.kata2, d.pemenang, d.hantei, d.selesai, d.team,
+                d.assigned_tatami_id, d.kode,
+                a1.nama_atlet as atlet1_nama,
+                CASE 
+                    WHEN p1.nama_perguruan IS NOT NULL AND u1.nama_utusan IS NOT NULL AND p1.nama_perguruan != u1.nama_utusan 
+                        THEN p1.nama_perguruan || ' • ' || u1.nama_utusan
+                    ELSE COALESCE(u1.nama_utusan, p1.nama_perguruan)
+                END as atlet1_kontingen,
+                u1.logo as atlet1_logo,
+                a1.is_priority as atlet1_is_priority,
+                a2.nama_atlet as atlet2_nama,
+                CASE 
+                    WHEN p2.nama_perguruan IS NOT NULL AND u2.nama_utusan IS NOT NULL AND p2.nama_perguruan != u2.nama_utusan 
+                        THEN p2.nama_perguruan || ' • ' || u2.nama_utusan
+                    ELSE COALESCE(u2.nama_utusan, p2.nama_perguruan)
+                END as atlet2_kontingen,
+                u2.logo as atlet2_logo,
+                a2.is_priority as atlet2_is_priority
+            FROM backend_detailbagan d
+            JOIN backend_tatami t ON t.detail_bagan_id = d.id
+            LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
+            LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id
+            LEFT JOIN backend_perguruan p1 ON a1.perguruan_id = p1.id
+            LEFT JOIN backend_atlet a2 ON d.atlet2_id = a2.id
+            LEFT JOIN backend_utusan u2 ON a2.utusan_id = u2.id
+            LEFT JOIN backend_perguruan p2 ON a2.perguruan_id = p2.id
+            WHERE t.tatami_number = ?
+            LIMIT 1
+            "#
+        )
+        .bind(tatami_num)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat partai aktif tatami: {}", e))
+    }
+
+    /// Fetches all matches assigned to a specific tatami number
+    pub async fn get_tatami_matches(&self, tatami_num: i32) -> Result<Vec<EnrichedDetailBagan>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, EnrichedDetailBagan>(
+            r#"
+            SELECT 
+                d.id, d.bagan_id, d.round, d.urutan, d.atlet1_id, d.atlet2_id,
+                d.score1, d.score2, d.scorekecil1, d.scorekecil2,
+                d.vr1, d.vr2, d.kata1, d.kata2, d.pemenang, d.hantei, d.selesai, d.team,
+                d.assigned_tatami_id, d.kode,
+                a1.nama_atlet as atlet1_nama,
+                CASE 
+                    WHEN p1.nama_perguruan IS NOT NULL AND u1.nama_utusan IS NOT NULL AND p1.nama_perguruan != u1.nama_utusan 
+                        THEN p1.nama_perguruan || ' • ' || u1.nama_utusan
+                    ELSE COALESCE(u1.nama_utusan, p1.nama_perguruan)
+                END as atlet1_kontingen,
+                u1.logo as atlet1_logo,
+                a1.is_priority as atlet1_is_priority,
+                a2.nama_atlet as atlet2_nama,
+                CASE 
+                    WHEN p2.nama_perguruan IS NOT NULL AND u2.nama_utusan IS NOT NULL AND p2.nama_perguruan != u2.nama_utusan 
+                        THEN p2.nama_perguruan || ' • ' || u2.nama_utusan
+                    ELSE COALESCE(u2.nama_utusan, p2.nama_perguruan)
+                END as atlet2_kontingen,
+                u2.logo as atlet2_logo,
+                a2.is_priority as atlet2_is_priority
+            FROM backend_detailbagan d
+            JOIN backend_tatami t ON (d.assigned_tatami_id = t.id OR d.assigned_tatami_id = t.tatami_number)
+            LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
+            LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id
+            LEFT JOIN backend_perguruan p1 ON a1.perguruan_id = p1.id
+            LEFT JOIN backend_atlet a2 ON d.atlet2_id = a2.id
+            LEFT JOIN backend_utusan u2 ON a2.utusan_id = u2.id
+            LEFT JOIN backend_perguruan p2 ON a2.perguruan_id = p2.id
+            WHERE t.tatami_number = ?
+            ORDER BY d.round ASC, d.urutan ASC
+            "#
+        )
+        .bind(tatami_num)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat daftar partai tatami: {}", e))
+    }
+
+    /// Saves assigned Kata names for a match
+    pub async fn save_match_kata(&self, match_id: i64, kata1: Option<String>, kata2: Option<String>) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query(
+            "UPDATE backend_detailbagan SET kata1 = ?, kata2 = ? WHERE id = ?"
+        )
+        .bind(kata1)
+        .bind(kata2)
+        .bind(match_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menyimpan kata pertandingan: {}", e))?;
+
+        Ok(())
     }
 
     /// Fetches all athletes for an event with contingent, club, and category details
@@ -664,7 +1058,6 @@ impl DatabaseManager {
                 ) as bagan_count
             FROM backend_nomortanding nt
             WHERE nt.event_id = ?
-              AND LOWER(COALESCE(nt.nama_nomor_tanding, '')) NOT LIKE '%festival%'
               AND (nt.is_bob = 0 OR nt.is_bob IS NULL)
             ORDER BY nt.nama_nomor_tanding ASC
             "#
@@ -2460,4 +2853,1819 @@ impl DatabaseManager {
             bagans: result_bagans,
         })
     }
+
+    /// Memuat data jadwal pertandingan (Timetable Run-Sheet) lengkap dengan deteksi konflik atlet
+    pub async fn get_timetable_editor_data(&self, event_id: i64) -> Result<TimetableEditorData, String> {
+        let pool = self.get_pool()?;
+
+        // 1. Validasi Event
+        let event_row: Option<(String,)> = sqlx::query_as("SELECT COALESCE(nama_event, 'Turnamen') FROM backend_event WHERE id = ?")
+            .bind(event_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat event: {}", e))?;
+        let event_name = event_row.map(|r| r.0).unwrap_or_else(|| "Turnamen".to_string());
+
+        // 2. Muat Tatamis
+        let tatamis: Vec<Tatami> = sqlx::query_as("SELECT id, event_id, tatami_number, detail_bagan_id FROM backend_tatami WHERE event_id = ? ORDER BY tatami_number ASC")
+            .bind(event_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat tatami: {}", e))?;
+
+        // 3. Muat TimetableDays (buat Hari 1 jika belum ada)
+        let mut days: Vec<TimetableDay> = sqlx::query_as("SELECT id, event_id, [order], tanggal FROM backend_timetableday WHERE event_id = ? ORDER BY [order] ASC")
+            .bind(event_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat hari jadwal: {}", e))?;
+
+        if days.is_empty() {
+            let _ = sqlx::query("INSERT INTO backend_timetableday (event_id, [order], tanggal) VALUES (?, 0, NULL)")
+                .bind(event_id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Gagal membuat hari default: {}", e))?;
+
+            days = sqlx::query_as("SELECT id, event_id, [order], tanggal FROM backend_timetableday WHERE event_id = ? ORDER BY [order] ASC")
+                .bind(event_id)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| format!("Gagal memuat hari jadwal setelah pembuatan default: {}", e))?;
+        }
+
+        // 4. Muat NomorTanding dan Hitungan Atlet
+        let categories_raw: Vec<(i64, Option<String>, bool, bool)> = sqlx::query_as(
+            "SELECT id, nama_nomor_tanding, is_bob, has_vr FROM backend_nomortanding WHERE event_id = ? ORDER BY nama_nomor_tanding ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat nomor tanding: {}", e))?;
+
+        let athlete_counts_raw: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT nomor_tanding_id, COUNT(id) FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id IS NOT NULL GROUP BY nomor_tanding_id"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal menghitung atlet: {}", e))?;
+        let athlete_counts: HashMap<i64, i64> = athlete_counts_raw.into_iter().collect();
+
+        // 5. Muat Bagan & DetailBagan untuk kalkulasi progress per kategori
+        let bagans_raw: Vec<(i64, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT id, nomor_tanding_id, nama_bagan FROM backend_bagan WHERE event_id = ?"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut nt_bagans_map: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (b_id, nt_id_opt, _) in &bagans_raw {
+            if let Some(nt_id) = nt_id_opt {
+                nt_bagans_map.entry(*nt_id).or_default().push(*b_id);
+            }
+        }
+
+        let active_tatamis_raw: Vec<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT tatami_number, detail_bagan_id FROM backend_tatami WHERE event_id = ? AND detail_bagan_id IS NOT NULL"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut active_detail_tatami_map: HashMap<i64, i64> = HashMap::new();
+        for (t_num, d_id_opt) in active_tatamis_raw {
+            if let Some(d_id) = d_id_opt {
+                active_detail_tatami_map.insert(d_id, t_num);
+            }
+        }
+
+        let detail_bagans_raw: Vec<(i64, i64, bool)> = sqlx::query_as(
+            "SELECT db.id, db.bagan_id, db.selesai FROM backend_detailbagan db JOIN backend_bagan b ON db.bagan_id = b.id WHERE b.event_id = ?"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut bagan_matches: HashMap<i64, (i64, i64, bool)> = HashMap::new();
+        for (d_id, b_id, selesai) in detail_bagans_raw {
+            let entry = bagan_matches.entry(b_id).or_insert((0, 0, false));
+            entry.0 += 1;
+            if selesai {
+                entry.1 += 1;
+            }
+            if active_detail_tatami_map.contains_key(&d_id) {
+                entry.2 = true;
+            }
+        }
+
+        struct InternalCatProgress {
+            status: String,
+            total_matches: i64,
+            finished_matches: i64,
+            remaining_matches: i64,
+            progress_pct: f64,
+        }
+
+        let mut cat_progress_map: HashMap<i64, InternalCatProgress> = HashMap::new();
+        for (nt_id, _, _, _) in &categories_raw {
+            let b_list = nt_bagans_map.get(nt_id);
+            let ath_cnt = athlete_counts.get(nt_id).copied().unwrap_or(0);
+            if let Some(bagans) = b_list {
+                let mut nt_total = 0;
+                let mut nt_fin = 0;
+                let mut nt_active = false;
+                for b_id in bagans {
+                    if let Some(&(tot, fin, act)) = bagan_matches.get(b_id) {
+                        nt_total += tot;
+                        nt_fin += fin;
+                        if act { nt_active = true; }
+                    }
+                }
+                let nt_all_fin = nt_total > 0 && nt_fin >= nt_total;
+                let status = if nt_all_fin {
+                    "selesai".to_string()
+                } else if nt_active || nt_fin > 0 {
+                    "running".to_string()
+                } else {
+                    "belum_disentuh".to_string()
+                };
+                let remaining = std::cmp::max(0, nt_total - nt_fin);
+                let pct = if nt_total > 0 {
+                    ((nt_fin as f64 / nt_total as f64) * 100.0 * 10.0).round() / 10.0
+                } else if nt_all_fin {
+                    100.0
+                } else {
+                    0.0
+                };
+                cat_progress_map.insert(*nt_id, InternalCatProgress {
+                    status,
+                    total_matches: nt_total,
+                    finished_matches: nt_fin,
+                    remaining_matches: remaining,
+                    progress_pct: pct,
+                });
+            } else {
+                let nt_total = if ath_cnt > 1 { ath_cnt - 1 } else if ath_cnt == 1 { 1 } else { 0 };
+                cat_progress_map.insert(*nt_id, InternalCatProgress {
+                    status: "belum_disentuh".to_string(),
+                    total_matches: nt_total,
+                    finished_matches: 0,
+                    remaining_matches: nt_total,
+                    progress_pct: 0.0,
+                });
+            }
+        }
+
+        // 6. Muat Atlet untuk Algoritma Deteksi Konflik Lintas Tatami
+        let athletes_raw: Vec<(i64, Option<String>, Option<i64>, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT a.id, a.nama_atlet, a.nomor_tanding_id, nt.nama_nomor_tanding, a.utusan_id
+             FROM backend_atlet a
+             LEFT JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+             WHERE a.event_id = ? AND a.nomor_tanding_id IS NOT NULL"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut individual_athletes: HashSet<String> = HashSet::new();
+        let mut individual_by_utusan: HashMap<i64, Vec<String>> = HashMap::new();
+        let mut athlete_names: HashMap<String, String> = HashMap::new();
+
+        for (_id, name_opt, _nt_id_opt, nt_nama_opt, u_id_opt) in &athletes_raw {
+            let raw_name = name_opt.as_deref().unwrap_or("").trim();
+            let nt_nama = nt_nama_opt.as_deref().unwrap_or("").to_lowercase();
+            if !nt_nama.contains("beregu") {
+                let norm = helper_normalize_name(raw_name);
+                if norm.len() >= 3 {
+                    individual_athletes.insert(norm.clone());
+                    athlete_names.insert(norm.clone(), raw_name.to_string());
+                    if let Some(u_id) = u_id_opt {
+                        individual_by_utusan.entry(*u_id).or_default().push(norm);
+                    }
+                }
+            }
+        }
+
+        let stop_words = [
+            "TEAM", "DOJO", "INKANAS", "FORKI", "LEMKARI", "WADOKAI", "KUTAI",
+            "SAMARINDA", "BALIKPAPAN", "PUTRA", "PUTRI", "GABUNGAN", "CAMPURAN",
+            "CS", "DAN", "AND", "BIN", "BINTI"
+        ];
+
+        let mut nt_athletes_map: HashMap<i64, Vec<String>> = HashMap::new();
+        for (_id, name_opt, nt_id_opt, _nt_nama_opt, u_id_opt) in &athletes_raw {
+            if let Some(nt_id) = nt_id_opt {
+                let raw_name = name_opt.as_deref().unwrap_or("").trim();
+                let norm = helper_normalize_name(raw_name);
+                if norm.is_empty() {
+                    continue;
+                }
+
+                let list = nt_athletes_map.entry(*nt_id).or_default();
+                if !list.contains(&norm) {
+                    list.push(norm.clone());
+                }
+                if !athlete_names.contains_key(&norm) {
+                    athlete_names.insert(norm.clone(), raw_name.to_string());
+                }
+
+                // Cross check kata beregu / nama ganda dengan atlet perorangan
+                for ind in &individual_athletes {
+                    let words_count = ind.split_whitespace().count();
+                    if words_count >= 2 && (norm.contains(ind) || ind.contains(&norm)) {
+                        let l = nt_athletes_map.entry(*nt_id).or_default();
+                        if !l.contains(ind) {
+                            l.push(ind.clone());
+                        }
+                    }
+                }
+
+                // Panggilan di dalam kurung e.g. '(FAJAR CS)' - lingkup satu utusan/dojo
+                if let Some(u_id) = u_id_opt {
+                    if let Some(dojo_inds) = individual_by_utusan.get(u_id) {
+                        let parens = helper_extract_parentheses(raw_name);
+                        for p in parens {
+                            let cleaned = p.replace("CS", " ");
+                            let tokens: Vec<String> = cleaned.split_whitespace()
+                                .map(|s| s.to_ascii_uppercase())
+                                .filter(|s| s.len() >= 3 && !stop_words.contains(&s.as_str()))
+                                .collect();
+
+                            for t in &tokens {
+                                for ind in dojo_inds {
+                                    if ind.split_whitespace().any(|part| part == t) {
+                                        let l = nt_athletes_map.entry(*nt_id).or_default();
+                                        if !l.contains(ind) {
+                                            l.push(ind.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 7. Muat Rows dan Cells
+        let day_ids: Vec<i64> = days.iter().map(|d| d.id).collect();
+        let mut rows_by_day: HashMap<i64, Vec<TimetableRow>> = HashMap::new();
+
+        if !day_ids.is_empty() {
+            let placeholders = day_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let query_str = format!(
+                "SELECT id, day_id, [order], row_type, time_label, label_text FROM backend_timetablerow WHERE day_id IN ({}) ORDER BY [order] ASC",
+                placeholders
+            );
+            let mut query = sqlx::query_as::<_, TimetableRow>(&query_str);
+            for d_id in &day_ids {
+                query = query.bind(d_id);
+            }
+            let all_rows = query.fetch_all(pool).await.unwrap_or_default();
+            for r in all_rows {
+                if let Some(d_id) = r.day_id {
+                    rows_by_day.entry(d_id).or_default().push(r);
+                }
+            }
+        }
+
+        let mut row_ids: Vec<i64> = Vec::new();
+        for rows in rows_by_day.values() {
+            for r in rows {
+                row_ids.push(r.id);
+            }
+        }
+
+        let mut cells_by_row: HashMap<i64, HashMap<i64, TimetableCell>> = HashMap::new();
+        if !row_ids.is_empty() {
+            let placeholders = row_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let query_str = format!(
+                "SELECT id, row_id, tatami_id, nomor_tanding_id, custom_text FROM backend_timetablecell WHERE row_id IN ({})",
+                placeholders
+            );
+            let mut query = sqlx::query_as::<_, TimetableCell>(&query_str);
+            for r_id in &row_ids {
+                query = query.bind(r_id);
+            }
+            let all_cells = query.fetch_all(pool).await.unwrap_or_default();
+            for c in all_cells {
+                cells_by_row.entry(c.row_id).or_default().insert(c.tatami_id, c);
+            }
+        }
+
+        // 8. Bentuk Enriched Days, Rows, Cells dan Jalankan Deteksi Konflik
+        let mut enriched_days = Vec::new();
+        let mut total_conflict_count = 0;
+        let mut assigned_categories: HashMap<i64, (i32, i32)> = HashMap::new();
+
+        for day in &days {
+            let rows = rows_by_day.remove(&day.id).unwrap_or_default();
+            let mut enriched_rows = Vec::new();
+
+            for row in rows {
+                let mut cells_map = cells_by_row.remove(&row.id).unwrap_or_default();
+                let mut enriched_cells = Vec::new();
+
+                for tatami in &tatamis {
+                    let t_num = tatami.tatami_number.unwrap_or(1);
+                    if let Some(c) = cells_map.remove(&tatami.id) {
+                        let nt_id = c.nomor_tanding_id;
+                        let mut nt_nama = None;
+                        let mut atlet_cnt = 0;
+                        let mut matches = 0;
+                        let mut discipline = "kumite".to_string();
+                        let mut est_dur = 15;
+                        let mut prog_status = "belum_disentuh".to_string();
+                        let mut prog_pct = 0.0;
+                        let mut finished_matches = 0;
+                        let mut remaining_matches = 0;
+                        let mut is_fest = false;
+                        let mut is_break = false;
+
+                        if let Some(nid) = nt_id {
+                            assigned_categories.insert(nid, (t_num, day.order));
+                            if let Some(cat) = categories_raw.iter().find(|c| c.0 == nid) {
+                                nt_nama = cat.1.clone();
+                                let upper = nt_nama.as_deref().unwrap_or("").to_uppercase();
+                                is_fest = upper.contains("FESTIVAL");
+                                let is_kata = upper.contains("KATA");
+                                discipline = if is_kata { "kata".to_string() } else { "kumite".to_string() };
+                                atlet_cnt = athlete_counts.get(&nid).copied().unwrap_or(0);
+                                let dur_per_match = if is_kata {
+                                    3.5
+                                } else if upper.contains("SENIOR") || upper.contains("U-21") || upper.contains("UNDER 21") {
+                                    6.0
+                                } else if upper.contains("CADET") || upper.contains("KADET") || upper.contains("JUNIOR") {
+                                    4.5
+                                } else {
+                                    4.0
+                                };
+                                if atlet_cnt > 1 {
+                                    matches = atlet_cnt - 1;
+                                    est_dur = std::cmp::max(15, (matches as f64 * dur_per_match).round() as i64);
+                                } else if atlet_cnt == 1 {
+                                    matches = 0;
+                                    est_dur = 15;
+                                } else {
+                                    matches = 0;
+                                    est_dur = 0;
+                                }
+
+                                if let Some(prog) = cat_progress_map.get(&nid) {
+                                    prog_status = prog.status.clone();
+                                    prog_pct = prog.progress_pct;
+                                    finished_matches = prog.finished_matches;
+                                    remaining_matches = prog.remaining_matches;
+                                }
+                            }
+                        } else if !c.custom_text.trim().is_empty() {
+                            let ct_upper = c.custom_text.to_uppercase();
+                            if ct_upper.contains("FESTIVAL") {
+                                is_fest = true;
+                                prog_status = "festival".to_string();
+                            } else if ct_upper.contains("ISHOMA") || ct_upper.contains("BREAK") || ct_upper.contains("ISTIRAHAT") || ct_upper.contains("JEDA") {
+                                is_break = true;
+                                prog_status = "break".to_string();
+                            }
+                        }
+
+                        enriched_cells.push(EnrichedTimetableCell {
+                            id: c.id,
+                            row_id: row.id,
+                            tatami_id: tatami.id,
+                            tatami_number: t_num,
+                            nomor_tanding_id: nt_id,
+                            nomor_tanding_nama: nt_nama,
+                            custom_text: c.custom_text,
+                            atlet_count: atlet_cnt,
+                            matches,
+                            discipline,
+                            est_duration_minutes: est_dur,
+                            progress_status: prog_status,
+                            progress_pct: prog_pct,
+                            finished_matches,
+                            remaining_matches,
+                            is_festival: is_fest,
+                            is_break,
+                        });
+                    } else {
+                        enriched_cells.push(EnrichedTimetableCell {
+                            id: 0,
+                            row_id: row.id,
+                            tatami_id: tatami.id,
+                            tatami_number: t_num,
+                            nomor_tanding_id: None,
+                            nomor_tanding_nama: None,
+                            custom_text: String::new(),
+                            atlet_count: 0,
+                            matches: 0,
+                            discipline: "kumite".to_string(),
+                            est_duration_minutes: 0,
+                            progress_status: "belum_disentuh".to_string(),
+                            progress_pct: 0.0,
+                            finished_matches: 0,
+                            remaining_matches: 0,
+                            is_festival: false,
+                            is_break: false,
+                        });
+                    }
+                }
+
+                // Deteksi bentrok atlet pada row yang sama antar tatami berbeda
+                let mut row_conflicts = Vec::new();
+                if row.row_type == "slot" {
+                    for i in 0..enriched_cells.len() {
+                        for j in (i + 1)..enriched_cells.len() {
+                            let cell_a = &enriched_cells[i];
+                            let cell_b = &enriched_cells[j];
+                            if cell_a.tatami_id == cell_b.tatami_id {
+                                continue;
+                            }
+                            if let (Some(nt_a), Some(nt_b)) = (cell_a.nomor_tanding_id, cell_b.nomor_tanding_id) {
+                                if let (Some(ath_a), Some(ath_b)) = (nt_athletes_map.get(&nt_a), nt_athletes_map.get(&nt_b)) {
+                                    for ath in ath_a {
+                                        if ath_b.contains(ath) {
+                                            let display_name = athlete_names.get(ath).cloned().unwrap_or_else(|| ath.clone());
+                                            row_conflicts.push(AthleteConflictDetail {
+                                                athlete_name: display_name,
+                                                tatami1_number: cell_a.tatami_number,
+                                                category1_id: nt_a,
+                                                category1_name: cell_a.nomor_tanding_nama.clone().unwrap_or_default(),
+                                                tatami2_number: cell_b.tatami_number,
+                                                category2_id: nt_b,
+                                                category2_name: cell_b.nomor_tanding_nama.clone().unwrap_or_default(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                total_conflict_count += row_conflicts.len();
+
+                enriched_rows.push(EnrichedTimetableRow {
+                    id: row.id,
+                    day_id: day.id,
+                    order: row.order,
+                    row_type: row.row_type,
+                    time_label: row.time_label,
+                    label_text: row.label_text,
+                    cells: enriched_cells,
+                    conflicts: row_conflicts,
+                });
+            }
+
+            let day_label = helper_format_day_label(day.order, &day.tanggal);
+            enriched_days.push(EnrichedTimetableDay {
+                id: day.id,
+                event_id: day.event_id,
+                order: day.order,
+                tanggal: day.tanggal.clone(),
+                label: day_label,
+                rows: enriched_rows,
+            });
+        }
+
+        // 9. Bentuk Daftar Kategori Lengkap untuk Drawer / Picker
+        let mut categories: Vec<TimetableCategoryOption> = Vec::new();
+        for (nt_id, name_opt, _, _) in &categories_raw {
+            let name_str = name_opt.clone().unwrap_or_else(|| format!("Kategori #{}", nt_id));
+            let age_grp = helper_get_age_group(&name_str);
+            let upper = name_str.to_uppercase();
+            let is_fest = upper.contains("FESTIVAL");
+            let is_kata = upper.contains("KATA");
+            let discipline = if is_kata { "kata".to_string() } else { "kumite".to_string() };
+            let cnt = athlete_counts.get(nt_id).copied().unwrap_or(0);
+            let dur_per_match = if is_kata {
+                3.5
+            } else if upper.contains("SENIOR") || upper.contains("U-21") || upper.contains("UNDER 21") {
+                6.0
+            } else if upper.contains("CADET") || upper.contains("KADET") || upper.contains("JUNIOR") {
+                4.5
+            } else {
+                4.0
+            };
+            let (matches, est_dur) = if cnt > 1 {
+                let m = cnt - 1;
+                (m, std::cmp::max(15, (m as f64 * dur_per_match).round() as i64))
+            } else if cnt == 1 {
+                (0, 15)
+            } else {
+                (0, 0)
+            };
+
+            let prog = cat_progress_map.get(nt_id);
+            let status = prog.map(|p| p.status.clone()).unwrap_or_else(|| "belum_disentuh".to_string());
+            let pct = prog.map(|p| p.progress_pct).unwrap_or(0.0);
+
+            let assigned_info = assigned_categories.get(nt_id);
+
+            categories.push(TimetableCategoryOption {
+                id: *nt_id,
+                nama: name_str,
+                age_group: age_grp,
+                atlet_count: cnt,
+                matches,
+                discipline,
+                est_duration_minutes: est_dur,
+                is_festival: is_fest,
+                progress_status: status,
+                progress_pct: pct,
+                is_assigned: assigned_info.is_some(),
+                assigned_tatami: assigned_info.map(|(t, _)| *t),
+                assigned_day_order: assigned_info.map(|(_, d)| *d),
+            });
+        }
+
+        // 10. Summary Progress Keseluruhan
+        let total_m = cat_progress_map.values().map(|p| p.total_matches).sum();
+        let fin_m = cat_progress_map.values().map(|p| p.finished_matches).sum();
+        let rem_m = cat_progress_map.values().map(|p| p.remaining_matches).sum();
+        let run_cnt = cat_progress_map.values().filter(|p| p.status == "running").count();
+        let fin_cnt = cat_progress_map.values().filter(|p| p.status == "selesai").count();
+        let unstart_cnt = cat_progress_map.values().filter(|p| p.status == "belum_disentuh").count();
+        let tot_cnt = categories.len();
+        let overall_pct = if total_m > 0 {
+            ((fin_m as f64 / total_m as f64) * 100.0 * 10.0).round() / 10.0
+        } else {
+            0.0
+        };
+
+        // Live status match tiap tatami
+        let live_tatami_rows: Vec<(i64, i32, Option<String>, Option<i32>, Option<i32>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT t.id, t.tatami_number, nt.nama_nomor_tanding, db.round, db.urutan, a1.nama_atlet, a2.nama_atlet
+             FROM backend_tatami t
+             LEFT JOIN backend_detailbagan db ON t.detail_bagan_id = db.id AND db.selesai = 0
+             LEFT JOIN backend_bagan b ON db.bagan_id = b.id
+             LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
+             LEFT JOIN backend_atlet a1 ON db.atlet1_id = a1.id
+             LEFT JOIN backend_atlet a2 ON db.atlet2_id = a2.id
+             WHERE t.event_id = ?
+             ORDER BY t.tatami_number ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut tatamis_live = Vec::new();
+        for (t_id, t_num, cat_opt, round_opt, urutan_opt, a1_opt, a2_opt) in live_tatami_rows {
+            let is_running = cat_opt.is_some();
+            tatamis_live.push(TatamiLiveStatus {
+                tatami_id: t_id,
+                tatami_number: t_num,
+                is_running,
+                category_name: cat_opt,
+                round: round_opt,
+                urutan: urutan_opt,
+                atlet1_name: a1_opt,
+                atlet2_name: a2_opt,
+            });
+        }
+
+        // Kop Surat Event
+        let kop_surat: Option<KopSurat> = sqlx::query_as(
+            "SELECT id, event_id, logo, nama_organisasi, alamat, kontak FROM backend_kopsurat WHERE event_id = ?"
+        )
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+
+        let summary = TimetableProgressSummary {
+            total_matches: total_m,
+            finished_matches: fin_m,
+            remaining_matches: rem_m,
+            running_categories_count: run_cnt,
+            finished_categories_count: fin_cnt,
+            unstarted_categories_count: unstart_cnt,
+            total_categories_count: tot_cnt,
+            overall_pct,
+            total_conflicts: total_conflict_count,
+            tatamis_live,
+        };
+
+        Ok(TimetableEditorData {
+            event_id,
+            event_name,
+            tatamis,
+            days: enriched_days,
+            categories,
+            summary,
+            kop_surat,
+            nt_athletes: nt_athletes_map,
+        })
+    }
+
+    /// Menyimpan perubahan baris dan cell pada timetable secara transaksional
+    pub async fn save_timetable_data(&self, event_id: i64, payload: SaveTimetablePayload) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        for (day_idx, day_input) in payload.days.into_iter().enumerate() {
+            // Validasi hari milik event
+            let day_exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM backend_timetableday WHERE id = ? AND event_id = ?")
+                .bind(day_input.day_id)
+                .bind(event_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal memverifikasi hari: {}", e))?;
+
+            if day_exists.is_none() {
+                continue;
+            }
+
+            // Update urutan [order] dan tanggal hari agar hari selalu terindeks 0, 1, 2...
+            let tanggal_val = match day_input.tanggal.as_deref() {
+                Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+                _ => None,
+            };
+            sqlx::query("UPDATE backend_timetableday SET [order] = ?, tanggal = ? WHERE id = ?")
+                .bind(day_idx as i32)
+                .bind(tanggal_val)
+                .bind(day_input.day_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal memperbarui tanggal dan urutan hari: {}", e))?;
+
+            // Hapus cell lama dan row lama untuk hari ini
+            sqlx::query("DELETE FROM backend_timetablecell WHERE row_id IN (SELECT id FROM backend_timetablerow WHERE day_id = ?)")
+                .bind(day_input.day_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal menghapus cell lama: {}", e))?;
+
+            sqlx::query("DELETE FROM backend_timetablerow WHERE day_id = ?")
+                .bind(day_input.day_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal menghapus baris lama: {}", e))?;
+
+            // Simpan baris baru dan cell baru
+            for (idx, row_input) in day_input.rows.into_iter().enumerate() {
+                let row_order = idx as i32;
+                let insert_res = sqlx::query(
+                    "INSERT INTO backend_timetablerow (day_id, [order], row_type, time_label, label_text) VALUES (?, ?, ?, ?, ?)"
+                )
+                .bind(day_input.day_id)
+                .bind(row_order)
+                .bind(&row_input.row_type)
+                .bind(&row_input.time_label)
+                .bind(&row_input.label_text)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal menyimpan baris jadwal: {}", e))?;
+
+                let new_row_id = insert_res.last_insert_rowid();
+
+                if row_input.row_type == "slot" {
+                    for cell_input in row_input.cells {
+                        if cell_input.tatami_id > 0 {
+                            sqlx::query(
+                                "INSERT INTO backend_timetablecell (row_id, tatami_id, nomor_tanding_id, custom_text) VALUES (?, ?, ?, ?)"
+                            )
+                            .bind(new_row_id)
+                            .bind(cell_input.tatami_id)
+                            .bind(cell_input.nomor_tanding_id)
+                            .bind(&cell_input.custom_text)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| format!("Gagal menyimpan cell jadwal: {}", e))?;
+                        }
+                    }
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal commit transaksi jadwal: {}", e))?;
+        Ok(())
+    }
+
+    /// Menambahkan hari baru pada timetable
+    pub async fn add_timetable_day(&self, event_id: i64) -> Result<TimetableDay, String> {
+        let pool = self.get_pool()?;
+        let next_order: (i32,) = sqlx::query_as("SELECT COALESCE(MAX([order]), -1) + 1 FROM backend_timetableday WHERE event_id = ?")
+            .bind(event_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("Gagal menghitung urutan hari: {}", e))?;
+
+        let insert_res = sqlx::query("INSERT INTO backend_timetableday (event_id, [order], tanggal) VALUES (?, ?, NULL)")
+            .bind(event_id)
+            .bind(next_order.0)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menambahkan hari baru: {}", e))?;
+
+        let new_id = insert_res.last_insert_rowid();
+
+        Ok(TimetableDay {
+            id: new_id,
+            event_id,
+            order: next_order.0,
+            tanggal: None,
+        })
+    }
+
+    /// Menghapus hari beserta baris dan cell pada timetable, lalu me-reindex sisa hari agar urutannya selalu 0, 1, 2...
+    pub async fn delete_timetable_day(&self, day_id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Dapatkan event_id sebelum baris hari dihapus
+        let event_row: Option<(i64,)> = sqlx::query_as("SELECT event_id FROM backend_timetableday WHERE id = ?")
+            .bind(day_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal membaca event hari: {}", e))?;
+
+        let event_id = event_row.map(|r| r.0);
+
+        // 2. Hapus cell dan baris
+        sqlx::query("DELETE FROM backend_timetablecell WHERE row_id IN (SELECT id FROM backend_timetablerow WHERE day_id = ?)")
+            .bind(day_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus cell: {}", e))?;
+
+        sqlx::query("DELETE FROM backend_timetablerow WHERE day_id = ?")
+            .bind(day_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus baris: {}", e))?;
+
+        sqlx::query("DELETE FROM backend_timetableday WHERE id = ?")
+            .bind(day_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus hari: {}", e))?;
+
+        // 3. Re-index sisa hari agar urutan [order] selalu berurutan (0, 1, 2, ...) sehingga jika Hari 1 dihapus, Hari 2 otomatis jadi Hari 1!
+        if let Some(ev_id) = event_id {
+            let remaining_days: Vec<(i64,)> = sqlx::query_as(
+                "SELECT id FROM backend_timetableday WHERE event_id = ? ORDER BY [order] ASC, id ASC"
+            )
+            .bind(ev_id)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap_or_default();
+
+            for (idx, (d_id,)) in remaining_days.iter().enumerate() {
+                sqlx::query("UPDATE backend_timetableday SET [order] = ? WHERE id = ?")
+                    .bind(idx as i32)
+                    .bind(d_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal memperbarui urutan hari: {}", e))?;
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal commit hapus hari: {}", e))?;
+        Ok(())
+    }
+
+    /// Memuat data lengkap Buku Tatami / LO Booklet (Sampul, Roster, dan Bagan Berurutan)
+    pub async fn get_tatami_booklet_data(
+        &self,
+        event_id: i64,
+        day_id: i64,
+        tatami_id: i64,
+    ) -> Result<TatamiBookletData, String> {
+        let pool = self.get_pool()?;
+
+        // 1. Info Event
+        let event_row: Option<(String,)> = sqlx::query_as("SELECT COALESCE(nama_event, 'Turnamen') FROM backend_event WHERE id = ?")
+            .bind(event_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat event: {}", e))?;
+        let event_name = event_row.map(|r| r.0).unwrap_or_else(|| "Turnamen".to_string());
+
+        // 2. Kop Surat
+        let kop_surat = self.get_kop_surat(event_id).await.unwrap_or(None);
+
+        // 3. Info Tatami
+        let tatami_row: Option<(i64,)> = sqlx::query_as("SELECT tatami_number FROM backend_tatami WHERE id = ?")
+            .bind(tatami_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat tatami: {}", e))?;
+        let tatami_number = tatami_row.map(|r| r.0).unwrap_or(1);
+
+        // 4. Info Hari
+        let day_row: Option<(i32, Option<String>)> = sqlx::query_as("SELECT [order], tanggal FROM backend_timetableday WHERE id = ?")
+            .bind(day_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat hari: {}", e))?;
+        let (day_order, day_date) = day_row.unwrap_or((0, None));
+        let day_label = helper_format_day_label(day_order, &day_date);
+
+        // 5. Sel terjadwal pada tatami ini di hari ini
+        let cells_raw: Vec<(i64, Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT r.[order], c.nomor_tanding_id, n.nama_nomor_tanding, c.custom_text
+            FROM backend_timetablerow r
+            JOIN backend_timetablecell c ON c.row_id = r.id
+            LEFT JOIN backend_nomortanding n ON c.nomor_tanding_id = n.id
+            WHERE r.day_id = ? AND c.tatami_id = ? AND r.row_type = 'slot'
+            ORDER BY r.[order] ASC
+            "#
+        )
+        .bind(day_id)
+        .bind(tatami_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat sel tatami: {}", e))?;
+
+        let mut ordered_categories: Vec<TatamiBookletCategory> = Vec::new();
+        let mut seq_counter = 0;
+
+        for (_order, nt_id_opt, nt_name_opt, custom_opt) in cells_raw {
+            if let Some(nt_id) = nt_id_opt {
+                seq_counter += 1;
+                let cat_name = nt_name_opt.unwrap_or_else(|| format!("Kategori #{}", nt_id));
+                let is_kata = cat_name.to_lowercase().contains("kata");
+                let discipline = if is_kata { "kata".to_string() } else { "kumite".to_string() };
+
+                // Hitung atlet
+                let ath_count: i64 = sqlx::query_scalar("SELECT COUNT(id) FROM backend_atlet WHERE nomor_tanding_id = ?")
+                    .bind(nt_id)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+
+                // Cari bagan untuk kategori ini
+                let bagan_row: Option<(i64, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
+                    "SELECT id, nama_bagan, kode, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ? LIMIT 1"
+                )
+                .bind(event_id)
+                .bind(nt_id)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None);
+
+                let mut winners: Vec<SummaryBaganWinner> = Vec::new();
+
+                let (bagan_id, bagan_nama, bagan_kode, tipe_tanding, matches) = match bagan_row {
+                    Some((b_id, b_nama, b_kode, b_tipe, j1, j2, j3a, j3b)) => {
+                        let matches = self.get_detail_bagan(b_id).await.unwrap_or_default();
+
+                        // Query juara untuk Hasil Juara podium box
+                        let rank_tuples = vec![
+                            ("1", j1),
+                            ("2", j2),
+                            ("3a", j3a),
+                            ("3b", j3b),
+                        ];
+
+                        for (rank, opt_aid) in rank_tuples {
+                            if let Some(aid) = opt_aid {
+                                let ath_info: Option<(String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                                    r#"
+                                    SELECT a.nama_atlet, p.nama_perguruan, u.nama_utusan, u.logo
+                                    FROM backend_atlet a
+                                    LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                                    LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                                    WHERE a.id = ?
+                                    "#
+                                )
+                                .bind(aid)
+                                .fetch_optional(pool)
+                                .await
+                                .unwrap_or(None);
+
+                                if let Some((nama_atlet, nama_p, nama_u, logo)) = ath_info {
+                                    winners.push(SummaryBaganWinner {
+                                        juara: rank.to_string(),
+                                        athlete_id: aid,
+                                        nama_atlet,
+                                        perguruan_nama: nama_p.unwrap_or_else(|| "-".to_string()),
+                                        utusan_nama: nama_u.unwrap_or_else(|| "-".to_string()),
+                                        logo,
+                                        is_uncounted: false,
+                                    });
+                                }
+                            }
+                        }
+
+                        (Some(b_id), b_nama, b_kode, b_tipe, matches)
+                    }
+                    None => (None, None, None, None, Vec::new()),
+                };
+
+                let matches_count = matches.len() as i64;
+
+                ordered_categories.push(TatamiBookletCategory {
+                    match_seq: seq_counter,
+                    category_id: nt_id,
+                    category_name: cat_name,
+                    discipline,
+                    matches_count,
+                    athletes_count: ath_count,
+                    bagan_id,
+                    bagan_kode,
+                    bagan_nama,
+                    tipe_tanding,
+                    winners,
+                    matches,
+                });
+            } else if let Some(cust) = custom_opt {
+                if !cust.trim().is_empty() {
+                    seq_counter += 1;
+                    ordered_categories.push(TatamiBookletCategory {
+                        match_seq: seq_counter,
+                        category_id: 0,
+                        category_name: cust,
+                        discipline: "festival".to_string(),
+                        matches_count: 0,
+                        athletes_count: 0,
+                        bagan_id: None,
+                        bagan_kode: None,
+                        bagan_nama: None,
+                        tipe_tanding: None,
+                        winners: Vec::new(),
+                        matches: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        // 6. Hitung kelas yang tidak ditandingkan (unscheduled list)
+        let scheduled_nt_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT c.nomor_tanding_id FROM backend_timetablecell c JOIN backend_timetablerow r ON c.row_id = r.id JOIN backend_timetableday d ON r.day_id = d.id WHERE d.event_id = ? AND c.nomor_tanding_id IS NOT NULL"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let scheduled_set: std::collections::HashSet<i64> = scheduled_nt_ids.into_iter().collect();
+
+        let all_nts: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, nama_nomor_tanding FROM backend_nomortanding WHERE event_id = ? ORDER BY nama_nomor_tanding ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let mut unscheduled_list = Vec::new();
+        for (nt_id, nt_nama) in all_nts {
+            if !scheduled_set.contains(&nt_id) && !nt_nama.to_lowercase().contains("festival") {
+                let cnt: i64 = sqlx::query_scalar("SELECT COUNT(id) FROM backend_atlet WHERE nomor_tanding_id = ?")
+                    .bind(nt_id)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                unscheduled_list.push(format!("{} ({})", nt_nama, cnt));
+            }
+        }
+
+        Ok(TatamiBookletData {
+            event_id,
+            event_name,
+            kop_surat,
+            tatami_id,
+            tatami_number,
+            day_id,
+            day_order,
+            day_label,
+            day_date,
+            unscheduled_list,
+            ordered_categories,
+        })
+    }
+
+    /// Mereset seluruh jadwal pertandingan untuk suatu event (menghapus semua sel dan baris)
+    pub async fn reset_timetable_data(&self, event_id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Hapus semua cell jadwal event ini
+        sqlx::query(
+            "DELETE FROM backend_timetablecell WHERE row_id IN (
+                SELECT r.id FROM backend_timetablerow r
+                JOIN backend_timetableday d ON r.day_id = d.id
+                WHERE d.event_id = ?
+            )"
+        )
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal membersihkan sel jadwal: {}", e))?;
+
+        // 2. Hapus semua baris jadwal event ini
+        sqlx::query(
+            "DELETE FROM backend_timetablerow WHERE day_id IN (
+                SELECT id FROM backend_timetableday WHERE event_id = ?
+            )"
+        )
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal membersihkan baris jadwal: {}", e))?;
+
+        // 3. Hapus hari tambahan selain Hari 1
+        sqlx::query("DELETE FROM backend_timetableday WHERE event_id = ? AND [order] > 0")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal mereset hari jadwal tambahan: {}", e))?;
+
+        // 4. Pastikan minimal Hari 1 tetap ada
+        let count_days: (i64,) = sqlx::query_as("SELECT COUNT(id) FROM backend_timetableday WHERE event_id = ?")
+            .bind(event_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghitung hari jadwal: {}", e))?;
+
+        if count_days.0 == 0 {
+            sqlx::query("INSERT INTO backend_timetableday (event_id, [order], tanggal) VALUES (?, 0, NULL)")
+                .bind(event_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal membuat hari default: {}", e))?;
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan reset jadwal: {}", e))?;
+        Ok(())
+    }
+
+    /// Memuat pengaturan kop surat event
+    pub async fn get_kop_surat(&self, event_id: i64) -> Result<Option<KopSurat>, String> {
+        let pool = self.get_pool()?;
+        let kop: Option<KopSurat> = sqlx::query_as(
+            "SELECT id, event_id, logo, nama_organisasi, alamat, kontak FROM backend_kopsurat WHERE event_id = ?"
+        )
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat kop surat: {}", e))?;
+        Ok(kop)
+    }
+
+    /// Menyimpan pengaturan kop surat event
+    pub async fn save_kop_surat(
+        &self,
+        event_id: i64,
+        nama_organisasi: String,
+        alamat: String,
+        kontak: String,
+        logo: Option<String>,
+    ) -> Result<KopSurat, String> {
+        let pool = self.get_pool()?;
+        let existing: Option<(i64, Option<String>)> = sqlx::query_as("SELECT id, logo FROM backend_kopsurat WHERE event_id = ?")
+            .bind(event_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memeriksa kop surat: {}", e))?;
+
+        if let Some((id, old_logo)) = existing {
+            let final_logo = if logo.is_some() { logo } else { old_logo };
+            sqlx::query(
+                "UPDATE backend_kopsurat SET nama_organisasi = ?, alamat = ?, kontak = ?, logo = ? WHERE id = ?"
+            )
+            .bind(&nama_organisasi)
+            .bind(&alamat)
+            .bind(&kontak)
+            .bind(&final_logo)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal memperbarui kop surat: {}", e))?;
+
+            Ok(KopSurat {
+                id,
+                event_id,
+                nama_organisasi,
+                alamat,
+                kontak,
+                logo: final_logo,
+            })
+        } else {
+            let res = sqlx::query(
+                "INSERT INTO backend_kopsurat (event_id, nama_organisasi, alamat, kontak, logo) VALUES (?, ?, ?, ?, ?)"
+            )
+            .bind(event_id)
+            .bind(&nama_organisasi)
+            .bind(&alamat)
+            .bind(&kontak)
+            .bind(&logo)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal membuat kop surat baru: {}", e))?;
+
+            Ok(KopSurat {
+                id: res.last_insert_rowid(),
+                event_id,
+                nama_organisasi,
+                alamat,
+                kontak,
+                logo,
+            })
+        }
+    }
+
+    // =========================================================================
+    // FESTIVAL ROSTER MAKER METHODS
+    // =========================================================================
+
+    pub async fn get_festival_roster_data(&self, event_id: i64) -> Result<FestivalRosterData, String> {
+        let pool = self.pool.as_ref().ok_or("Database tidak terhubung.")?;
+
+        // 1. Get Event Name
+        let event_name: String = sqlx::query_scalar("SELECT nama_event FROM backend_event WHERE id = ?")
+            .bind(event_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "Turnamen Karate".to_string());
+
+        // 2. Get Kop Surat
+        let kop_surat = self.get_kop_surat(event_id).await.ok().flatten();
+
+        // 3. Get Tatamis
+        let tatamis: Vec<Tatami> = sqlx::query_as(
+            "SELECT id, tatami_number, detail_bagan_id, event_id FROM backend_tatami WHERE event_id = ? ORDER BY tatami_number ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let tatamis = if tatamis.is_empty() {
+            vec![Tatami {
+                id: 1,
+                tatami_number: Some(1),
+                detail_bagan_id: None,
+                event_id: Some(event_id),
+            }]
+        } else {
+            tatamis
+        };
+
+        // 4. Query All Festival Categories
+        let cat_rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, nama_nomor_tanding FROM backend_nomortanding WHERE event_id = ? AND UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let mut all_festival_nts: Vec<(i64, String)> = cat_rows;
+        all_festival_nts.sort_by(|a, b| {
+            helper_festival_category_sort_key(&a.1).cmp(&helper_festival_category_sort_key(&b.1))
+        });
+
+        let all_nt_ids: std::collections::HashSet<i64> = all_festival_nts.iter().map(|c| c.0).collect();
+        let all_nt_map: std::collections::HashMap<i64, String> = all_festival_nts.iter().cloned().collect();
+
+        // 5. Query Athletes for all festival categories
+        let ath_rows: Vec<(i64, i64, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT a.id, a.nomor_tanding_id, a.nama_atlet, u.nama_utusan, p.nama_perguruan
+             FROM backend_atlet a
+             LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+             LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+             WHERE a.event_id = ? AND a.nomor_tanding_id IS NOT NULL"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let mut athletes_by_id: std::collections::HashMap<i64, FestivalAthlete> = std::collections::HashMap::new();
+        let mut athletes_by_nt: std::collections::HashMap<i64, Vec<FestivalAthlete>> = std::collections::HashMap::new();
+
+        for (a_id, nt_id, a_nama, a_utusan, a_perguruan) in ath_rows {
+            if all_nt_ids.contains(&nt_id) {
+                let nt_name = all_nt_map.get(&nt_id).map(|s| s.as_str()).unwrap_or("");
+                let jk = if nt_name.to_lowercase().contains("putri") || nt_name.to_lowercase().contains("pi") {
+                    "PUTRI".to_string()
+                } else {
+                    "PUTRA".to_string()
+                };
+                let fa = FestivalAthlete {
+                    id: a_id,
+                    nama: a_nama,
+                    perguruan: a_perguruan.unwrap_or_else(|| "-".to_string()),
+                    utusan: a_utusan.unwrap_or_else(|| "-".to_string()),
+                    jenis_kelamin: jk,
+                };
+                athletes_by_id.insert(a_id, fa.clone());
+                athletes_by_nt.entry(nt_id).or_default().push(fa);
+            }
+        }
+
+        // 6. Load State
+        let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+
+        // Sanitize tatami_assignments
+        let mut cleaned_assignments: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+        let mut assigned_nt_ids = std::collections::HashSet::new();
+
+        for t in &tatamis {
+            let t_key = t.id.to_string();
+            let mut valid_pks = Vec::new();
+            if let Some(pks) = state.tatami_assignments.get(&t_key) {
+                for pk in pks {
+                    if all_nt_ids.contains(pk) && !assigned_nt_ids.contains(pk) {
+                        valid_pks.push(*pk);
+                        assigned_nt_ids.insert(*pk);
+                    }
+                }
+            }
+            cleaned_assignments.insert(t_key, valid_pks);
+        }
+
+        // Distribute unassigned categories evenly across tatamis
+        let unassigned_nts: Vec<i64> = all_festival_nts
+            .iter()
+            .map(|c| c.0)
+            .filter(|pk| !assigned_nt_ids.contains(pk))
+            .collect();
+
+        if !unassigned_nts.is_empty() {
+            let t_count = tatamis.len();
+            for (idx, nt_id) in unassigned_nts.into_iter().enumerate() {
+                let target_tatami_id = tatamis[idx % t_count].id;
+                cleaned_assignments
+                    .entry(target_tatami_id.to_string())
+                    .or_default()
+                    .push(nt_id);
+            }
+        }
+
+        // Re-sort categories inside each tatami according to WKF sort key (Kata first, Kumite second)
+        for (_, pks) in cleaned_assignments.iter_mut() {
+            pks.sort_by(|a, b| {
+                let name_a = all_nt_map.get(a).map(|s| s.as_str()).unwrap_or("");
+                let name_b = all_nt_map.get(b).map(|s| s.as_str()).unwrap_or("");
+                helper_festival_category_sort_key(name_a).cmp(&helper_festival_category_sort_key(name_b))
+            });
+        }
+
+        // Sanitize athlete pairings for each category
+        let mut cleaned_pairings: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+
+        for (nt_id, _) in &all_festival_nts {
+            let nt_key = nt_id.to_string();
+            let current_athletes = athletes_by_nt.get(nt_id).cloned().unwrap_or_default();
+            let curr_id_set: std::collections::HashSet<i64> = current_athletes.iter().map(|a| a.id).collect();
+
+            let saved_order = state.athlete_pairings.get(&nt_key).cloned().unwrap_or_default();
+            let saved_id_set: std::collections::HashSet<i64> = saved_order.iter().cloned().collect();
+
+            if curr_id_set == saved_id_set && !saved_order.is_empty() {
+                cleaned_pairings.insert(nt_key, saved_order);
+            } else {
+                // Run anti-collision auto-pairing
+                let paired = helper_pair_festival_athletes_anti_collision(current_athletes);
+                let paired_ids: Vec<i64> = paired.iter().map(|a| a.id).collect();
+                cleaned_pairings.insert(nt_key, paired_ids);
+            }
+        }
+
+        state.tatami_assignments = cleaned_assignments.clone();
+        state.athlete_pairings = cleaned_pairings.clone();
+        let _ = helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state);
+
+        // 7. Assemble Sections, Categories, Matches, and Clashes
+        let mut sections = Vec::new();
+        let mut total_categories = 0;
+        let mut total_athletes = 0;
+        let mut total_matches = 0;
+        let mut total_clashes = 0;
+
+        for t in &tatamis {
+            let t_key = t.id.to_string();
+            let cat_pks = cleaned_assignments.get(&t_key).cloned().unwrap_or_default();
+            let mut categories_data = Vec::new();
+            let mut tatami_athlete_count = 0;
+            let mut tatami_match_count = 0;
+
+            for cat_id in cat_pks {
+                let cat_name = match all_nt_map.get(&cat_id) {
+                    Some(n) => n.clone(),
+                    None => continue,
+                };
+
+                let paired_ids = cleaned_pairings.get(&cat_id.to_string()).cloned().unwrap_or_default();
+                let mut cat_athletes = Vec::new();
+                for aid in paired_ids {
+                    if let Some(ath) = athletes_by_id.get(&aid) {
+                        cat_athletes.push(ath.clone());
+                    }
+                }
+
+                // Buat match pairs
+                let mut matches = Vec::new();
+                for i in (0..cat_athletes.len()).step_by(2) {
+                    let aka = cat_athletes[i].clone();
+                    let ao = if i + 1 < cat_athletes.len() {
+                        Some(cat_athletes[i + 1].clone())
+                    } else {
+                        None
+                    };
+
+                    let is_clash = if let Some(ref ao_ath) = ao {
+                        let u1 = aka.utusan.trim().to_uppercase();
+                        let u2 = ao_ath.utusan.trim().to_uppercase();
+                        !u1.is_empty() && !u2.is_empty() && u1 == u2
+                    } else {
+                        false
+                    };
+
+                    if is_clash {
+                        total_clashes += 1;
+                    }
+
+                    matches.push(FestivalMatch {
+                        match_num: (i / 2) + 1,
+                        aka,
+                        ao,
+                        is_clash,
+                    });
+                }
+
+                let discipline = if cat_name.to_lowercase().contains("kata") {
+                    "kata".to_string()
+                } else {
+                    "kumite".to_string()
+                };
+
+                let display_name = helper_clean_festival_display_name(&cat_name);
+                let ath_count = cat_athletes.len();
+                let m_count = matches.len();
+
+                tatami_athlete_count += ath_count;
+                tatami_match_count += m_count;
+
+                categories_data.push(FestivalCategory {
+                    id: cat_id,
+                    nama: cat_name,
+                    display_name,
+                    discipline,
+                    tatami_id: t.id,
+                    matches,
+                    atlet_count: ath_count,
+                    match_count: m_count,
+                });
+            }
+
+            total_categories += categories_data.len();
+            total_athletes += tatami_athlete_count;
+            total_matches += tatami_match_count;
+
+            sections.push(FestivalTatamiSection {
+                tatami_id: t.id,
+                tatami_number: t.tatami_number.unwrap_or(1) as i64,
+                categories: categories_data,
+                total_athletes: tatami_athlete_count,
+                total_matches: tatami_match_count,
+            });
+        }
+
+        Ok(FestivalRosterData {
+            event_id,
+            event_name,
+            tatamis,
+            sections,
+            total_categories,
+            total_athletes,
+            total_matches,
+            total_clashes,
+            kop_surat,
+        })
+    }
+
+    pub async fn save_festival_roster_state(&self, event_id: i64, state: FestivalRosterState) -> Result<(), String> {
+        helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state)
+    }
+
+    pub async fn auto_pair_festival_category(&self, event_id: i64, nomor_tanding_id: Option<i64>) -> Result<FestivalRosterData, String> {
+        let pool = self.pool.as_ref().ok_or("Database tidak terhubung.")?;
+
+        let target_clause = if let Some(nt_id) = nomor_tanding_id {
+            format!("AND a.nomor_tanding_id = {}", nt_id)
+        } else {
+            "AND UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%'".to_string()
+        };
+
+        let sql = format!(
+            "SELECT a.id, a.nomor_tanding_id, a.nama_atlet, nt.nama_nomor_tanding, u.nama_utusan, p.nama_perguruan
+             FROM backend_atlet a
+             JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+             LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+             LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+             WHERE a.event_id = ? {}",
+            target_clause
+        );
+
+        let ath_rows: Vec<(i64, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(&sql)
+            .bind(event_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut athletes_by_nt: std::collections::HashMap<i64, Vec<FestivalAthlete>> = std::collections::HashMap::new();
+        for (a_id, nt_id, a_nama, a_nt_name, a_utusan, a_perguruan) in ath_rows {
+            let cat_str = a_nt_name.unwrap_or_default();
+            let jk = if cat_str.to_lowercase().contains("putri") || cat_str.to_lowercase().contains("pi") {
+                "PUTRI".to_string()
+            } else {
+                "PUTRA".to_string()
+            };
+            let fa = FestivalAthlete {
+                id: a_id,
+                nama: a_nama,
+                perguruan: a_perguruan.unwrap_or_else(|| "-".to_string()),
+                utusan: a_utusan.unwrap_or_else(|| "-".to_string()),
+                jenis_kelamin: jk,
+            };
+            athletes_by_nt.entry(nt_id).or_default().push(fa);
+        }
+
+        let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+
+        for (nt_id, athletes) in athletes_by_nt {
+            let paired = helper_pair_festival_athletes_anti_collision(athletes);
+            let paired_ids: Vec<i64> = paired.iter().map(|a| a.id).collect();
+            state.athlete_pairings.insert(nt_id.to_string(), paired_ids);
+        }
+
+        let _ = helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state);
+
+        self.get_festival_roster_data(event_id).await
+    }
+
+    pub async fn mix_festival_categories(
+        &self,
+        event_id: i64,
+        source_ids: Vec<i64>,
+        target_id: Option<i64>,
+        new_name: String,
+        delete_sources: bool,
+    ) -> Result<FestivalRosterData, String> {
+        let pool = self.pool.as_ref().ok_or("Database tidak terhubung.")?;
+
+        if source_ids.is_empty() {
+            return Err("Pilih minimal 1 kategori festival untuk digabungkan.".to_string());
+        }
+
+        let mut clean_new_name = new_name.trim().to_uppercase();
+        if !clean_new_name.is_empty() && !clean_new_name.starts_with("FESTIVAL") {
+            clean_new_name = format!("FESTIVAL {}", clean_new_name);
+        }
+
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+
+        let final_target_id: i64 = if let Some(tid) = target_id {
+            if tid > 0 {
+                if !clean_new_name.is_empty() {
+                    sqlx::query("UPDATE backend_nomortanding SET nama_nomor_tanding = ? WHERE id = ? AND event_id = ?")
+                        .bind(&clean_new_name)
+                        .bind(tid)
+                        .bind(event_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                tid
+            } else {
+                let name = if clean_new_name.is_empty() {
+                    "FESTIVAL GABUNGAN".to_string()
+                } else {
+                    clean_new_name.clone()
+                };
+                let row: (i64,) = sqlx::query_as("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (?, ?, 0, 0) RETURNING id")
+                    .bind(event_id)
+                    .bind(&name)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                row.0
+            }
+        } else {
+            let name = if clean_new_name.is_empty() {
+                "FESTIVAL GABUNGAN".to_string()
+            } else {
+                clean_new_name.clone()
+            };
+            let row: (i64,) = sqlx::query_as("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (?, ?, 0, 0) RETURNING id")
+                .bind(event_id)
+                .bind(&name)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+            row.0
+        };
+
+        // Move all athletes from source_ids (excluding final_target_id) to final_target_id
+        let source_str_list: Vec<String> = source_ids.iter().filter(|id| **id != final_target_id).map(|id| id.to_string()).collect();
+        if !source_str_list.is_empty() {
+            let in_clause = source_str_list.join(",");
+            let update_sql = format!(
+                "UPDATE backend_atlet SET nomor_tanding_id = ? WHERE event_id = ? AND nomor_tanding_id IN ({})",
+                in_clause
+            );
+            sqlx::query(&update_sql)
+                .bind(final_target_id)
+                .bind(event_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            if delete_sources {
+                let delete_sql = format!(
+                    "DELETE FROM backend_nomortanding WHERE event_id = ? AND id IN ({})",
+                    in_clause
+                );
+                sqlx::query(&delete_sql)
+                    .bind(event_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        tx.commit().await.map_err(|e| e.to_string())?;
+
+        // Update state file: remove deleted sources and auto-pair the target category
+        let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        if delete_sources {
+            for s_id in &source_ids {
+                if *s_id != final_target_id {
+                    let s_key = s_id.to_string();
+                    state.athlete_pairings.remove(&s_key);
+                    for (_, pks) in state.tatami_assignments.iter_mut() {
+                        pks.retain(|pk| *pk != *s_id);
+                    }
+                }
+            }
+        }
+
+        // Ensure final_target_id is in tatami_assignments
+        let mut already_in_tatami = false;
+        for (_, pks) in &state.tatami_assignments {
+            if pks.contains(&final_target_id) {
+                already_in_tatami = true;
+                break;
+            }
+        }
+        if !already_in_tatami {
+            let first_key = state.tatami_assignments.keys().next().cloned().unwrap_or_else(|| "1".to_string());
+            state.tatami_assignments.entry(first_key).or_default().push(final_target_id);
+        }
+
+        let _ = helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state);
+
+        // Auto-pair target category
+        self.auto_pair_festival_category(event_id, Some(final_target_id)).await
+    }
+}
+
+// Helper functions for Timetable
+fn helper_get_age_group(name: &str) -> String {
+    let lower = name.to_lowercase();
+    if lower.contains("pra usia dini") {
+        "Pra Usia Dini".to_string()
+    } else if lower.contains("usia dini") {
+        "Usia Dini".to_string()
+    } else if lower.contains("pra pemula") {
+        "Pra Pemula".to_string()
+    } else if lower.contains("pemula") {
+        "Pemula".to_string()
+    } else if lower.contains("kadet") || lower.contains("cadet") {
+        "Kadet".to_string()
+    } else if lower.contains("junior") {
+        "Junior".to_string()
+    } else if lower.contains("under-21") || lower.contains("under 21") || lower.contains("u-21") || lower.contains("u21") {
+        "Under-21".to_string()
+    } else if lower.contains("senior") {
+        "Senior".to_string()
+    } else if lower.contains("veteran") {
+        "Veteran".to_string()
+    } else {
+        "Lainnya".to_string()
+    }
+}
+
+fn helper_format_day_label(order: i32, tanggal: &Option<String>) -> String {
+    let day_num = order + 1;
+    if let Some(t_str) = tanggal {
+        if !t_str.trim().is_empty() {
+            let parts: Vec<&str> = t_str.trim().split('-').collect();
+            if parts.len() == 3 {
+                if let (Ok(year), Ok(month), Ok(day)) = (parts[0].parse::<i32>(), parts[1].parse::<usize>(), parts[2].parse::<i32>()) {
+                    let indo_months = [
+                        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                        "Juli", "Agustus", "September", "Oktober", "November", "Desember"
+                    ];
+                    if month >= 1 && month <= 12 {
+                        return format!("Day {}, {} {} {}", day_num, day, indo_months[month - 1], year);
+                    }
+                }
+            }
+            return format!("Day {}, {}", day_num, t_str);
+        }
+    }
+    format!("Day {}", day_num)
+}
+
+fn helper_normalize_name(name: &str) -> String {
+    let mut clean = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == ' ' {
+            clean.push(c.to_ascii_uppercase());
+        }
+    }
+    clean.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+fn helper_extract_parentheses(text: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut in_paren = false;
+    let mut current = String::new();
+    for c in text.chars() {
+        if c == '(' {
+            in_paren = true;
+            current.clear();
+        } else if c == ')' {
+            if in_paren && !current.trim().is_empty() {
+                results.push(current.trim().to_string());
+            }
+            in_paren = false;
+        } else if in_paren {
+            current.push(c);
+        }
+    }
+    results
+}
+
+// --- Helper Functions for Festival Roster ---
+
+fn helper_clean_festival_display_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(stripped) = trimmed.strip_prefix("FESTIVAL ") {
+        stripped.trim().to_string()
+    } else if let Some(stripped) = trimmed.strip_prefix("Festival ") {
+        stripped.trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn helper_festival_category_sort_key(name: &str) -> (i32, i32, i32, String) {
+    let lower = name.to_lowercase();
+    let disc_rank = if lower.contains("kata") { 0 } else { 1 };
+    let age_rank = if lower.contains("pra usia dini") {
+        0
+    } else if lower.contains("usia dini") {
+        1
+    } else if lower.contains("pra pemula") {
+        2
+    } else if lower.contains("pemula") {
+        3
+    } else if lower.contains("kadet") || lower.contains("cadet") {
+        4
+    } else if lower.contains("junior") {
+        5
+    } else if lower.contains("under") || lower.contains("u-21") || lower.contains("u21") {
+        6
+    } else if lower.contains("senior") {
+        7
+    } else if lower.contains("veteran") {
+        8
+    } else {
+        9
+    };
+    let gender_rank = if lower.contains("putra") {
+        0
+    } else if lower.contains("putri") {
+        1
+    } else {
+        2
+    };
+    (disc_rank, age_rank, gender_rank, name.to_string())
+}
+
+fn helper_pair_festival_athletes_anti_collision(athletes: Vec<FestivalAthlete>) -> Vec<FestivalAthlete> {
+    if athletes.len() <= 1 {
+        return athletes;
+    }
+    use rand::Rng;
+    use std::collections::HashMap;
+
+    let mut groups: HashMap<String, Vec<FestivalAthlete>> = HashMap::new();
+    for a in athletes {
+        let u = if a.utusan.trim().is_empty() {
+            "UNKNOWN".to_string()
+        } else {
+            a.utusan.trim().to_uppercase()
+        };
+        groups.entry(u).or_default().push(a);
+    }
+
+    let mut sorted_groups: Vec<Vec<FestivalAthlete>> = groups.into_values().collect();
+    sorted_groups.sort_by(|a, b| b.len().cmp(&a.len()));
+
+    let mut all_sorted = Vec::new();
+    for g in sorted_groups {
+        all_sorted.extend(g);
+    }
+
+    let n = all_sorted.len();
+    let half = (n + 1) / 2;
+    let m_list = all_sorted[..half].to_vec();
+    let b_list = all_sorted[half..].to_vec();
+
+    let mut res = Vec::new();
+    for i in 0..b_list.len() {
+        res.push(m_list[i].clone());
+        res.push(b_list[i].clone());
+    }
+    if m_list.len() > b_list.len() {
+        res.push(m_list.last().unwrap().clone());
+    }
+
+    let count_clashes = |arr: &[FestivalAthlete]| -> usize {
+        let mut clashes = 0;
+        for i in (0..arr.len().saturating_sub(1)).step_by(2) {
+            let u1 = arr[i].utusan.trim().to_uppercase();
+            let u2 = arr[i + 1].utusan.trim().to_uppercase();
+            if !u1.is_empty() && !u2.is_empty() && u1 == u2 {
+                clashes += 1;
+            }
+        }
+        clashes
+    };
+
+    let mut best = res;
+    let mut best_c = count_clashes(&best);
+    let mut rng = rand::thread_rng();
+
+    for _ in 0..500 {
+        if best_c == 0 {
+            break;
+        }
+        let i1 = rng.gen_range(0..n);
+        let i2 = rng.gen_range(0..n);
+        if i1 == i2 {
+            continue;
+        }
+        let mut test = best.clone();
+        test.swap(i1, i2);
+        let c = count_clashes(&test);
+        if c < best_c {
+            best = test;
+            best_c = c;
+        }
+    }
+
+    best
+}
+
+fn helper_get_festival_roster_file_path(db_path: Option<&std::path::Path>, event_id: i64) -> std::path::PathBuf {
+    let base = if let Some(p) = db_path {
+        if let Some(parent) = p.parent() {
+            parent.to_path_buf()
+        } else {
+            std::path::PathBuf::from("tournament_data")
+        }
+    } else {
+        std::path::PathBuf::from("tournament_data")
+    };
+    let _ = std::fs::create_dir_all(&base);
+    base.join(format!("festival_roster_{}.json", event_id))
+}
+
+fn helper_load_festival_roster_state(db_path: Option<&std::path::Path>, event_id: i64) -> FestivalRosterState {
+    let path = helper_get_festival_roster_file_path(db_path, event_id);
+    if path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(state) = serde_json::from_str::<FestivalRosterState>(&content) {
+                return state;
+            }
+        }
+    }
+    FestivalRosterState {
+        tatami_assignments: std::collections::HashMap::new(),
+        athlete_pairings: std::collections::HashMap::new(),
+    }
+}
+
+fn helper_save_festival_roster_state(db_path: Option<&std::path::Path>, event_id: i64, state: &FestivalRosterState) -> Result<(), String> {
+    let path = helper_get_festival_roster_file_path(db_path, event_id);
+    let json_str = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json_str).map_err(|e| e.to_string())
 }

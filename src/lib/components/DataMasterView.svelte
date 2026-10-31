@@ -331,7 +331,7 @@
         type="button"
         onclick={() =>
           onNavigate({
-            type: "roster",
+            type: "nomor_tanding",
             id: "categories",
             name: "nomor-tanding",
             subtitle: "Kategori Nomor Pertandingan",

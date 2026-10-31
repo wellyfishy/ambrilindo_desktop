@@ -36,6 +36,8 @@ qrcode = "0.14"
 rand = "0.8"
 base64 = "0.22"
 
+[profile.dev]
+debug = 1
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

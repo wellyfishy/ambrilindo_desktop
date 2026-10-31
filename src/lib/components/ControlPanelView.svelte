@@ -661,6 +661,39 @@
       unlistenRequest = unsub;
     }).catch(() => {});
 
+    // Listen for remote input from mobile venue devices (Jury Panel & LO Kata)
+    let unlistenRemote: (() => void) | undefined;
+    listen("tatami_remote_input", (event: any) => {
+      const arenaMsg = event.payload;
+      if (!arenaMsg) return;
+      const data = arenaMsg.payload || arenaMsg;
+      const targetTatami = arenaMsg.tatami_pk || data.tatami;
+      if (targetTatami && targetTatami !== activeTatami) return;
+
+      if (data.type === "judge_score") {
+        const juriIdx = (Number(data.juri) || 1) - 1;
+        if (juriIdx >= 0 && juriIdx < 5) {
+          if (data.score_aka !== undefined && data.score_aka !== null) {
+            akaJudgeScores[juriIdx] = String(data.score_aka);
+          }
+          if (data.score_ao !== undefined && data.score_ao !== null) {
+            aoJudgeScores[juriIdx] = String(data.score_ao);
+          }
+          broadcastLiveState();
+        }
+      } else if (data.type === "lo_kata_broadcast") {
+        if (data.kata_aka !== undefined && data.kata_aka !== null) {
+          kataAkaName = String(data.kata_aka);
+        }
+        if (data.kata_ao !== undefined && data.kata_ao !== null) {
+          kataAoName = String(data.kata_ao);
+        }
+        broadcastLiveState();
+      }
+    }).then((unsub) => {
+      unlistenRemote = unsub;
+    }).catch(() => {});
+
     const handleKeyDown = (e: KeyboardEvent) => {
       // Escape closes activeJudgePicker
       if (e.key === "Escape" && activeJudgePicker !== null) {
@@ -689,6 +722,7 @@
       window.removeEventListener("keydown", handleKeyDown);
       if (animFrameId) cancelAnimationFrame(animFrameId);
       if (unlistenRequest) unlistenRequest();
+      if (unlistenRemote) unlistenRemote();
       if (liveBroadcastChannel) liveBroadcastChannel.close();
     };
   });

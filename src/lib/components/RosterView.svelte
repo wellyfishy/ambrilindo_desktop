@@ -459,8 +459,8 @@
 <div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
   <!-- Toast Alert Notification -->
   {#if toastMsg}
-    <div class="absolute top-4 right-6 z-50 bg-[#1c1f26] border border-white/20 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-2xl flex items-center space-x-2 transition-all">
-      <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+    <div class="absolute top-4 right-6 z-50 bg-[#181a20] border border-white/20 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-2xl flex items-center space-x-2 transition-all">
+      <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
       <span>{toastMsg}</span>
     </div>
   {/if}
@@ -472,12 +472,12 @@
         <h2 class="text-xl font-black text-white tracking-tight uppercase">
           {viewType === 'roster' ? 'DATA ATLET & PESERTA' : viewType === 'contingent' ? 'KONTINGEN & UTUSAN' : 'SINKRONISASI WEB'}
         </h2>
-        <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
+        <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] tabular-nums">
           {totalCount} PESERTA
         </span>
       </div>
       <p class="text-xs text-zinc-400 mt-1 font-normal">
-        {viewType === 'roster' ? 'Manajemen data peserta turnamen, seed prioritas, verifikasi NIK, dan sinkronisasi portal publik' : 'Daftar kontingen dan dojo peserta terdaftar'}
+        {viewType === 'roster' ? 'Verifikasi peserta turnamen, penomoran atlet, dan status unggulan' : 'Daftar kontingen dan dojo peserta terdaftar'}
       </p>
     </div>
 
@@ -487,10 +487,10 @@
         <button
           onclick={handleSyncPull}
           disabled={isSyncing}
-          class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-all flex items-center space-x-1.5 active:scale-95 disabled:opacity-50"
+          class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors flex items-center space-x-1.5 active:scale-95 disabled:opacity-50"
           title="Tarik data pendaftaran atlet terbaru dari portal ambrilindo.com"
         >
-          <svg class="w-3.5 h-3.5 {isSyncing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg class="w-3.5 h-3.5 text-zinc-400 {isSyncing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
           <span>{isSyncing ? "Menarik..." : "Tarik Atlet Web"}</span>
@@ -498,12 +498,12 @@
 
         <button
           onclick={openCreateModal}
-          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-all flex items-center space-x-1.5 active:scale-95 shadow-md"
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors flex items-center space-x-1.5 active:scale-95 shadow-md"
         >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
           </svg>
-          <span>Tambah Atlet</span>
+          <span>+ Tambah Atlet</span>
         </button>
       {/if}
     </div>
@@ -516,43 +516,53 @@
       <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
         <span class="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">Total Peserta</span>
         <div class="flex items-baseline justify-between mt-1">
-          <span class="text-2xl font-black font-mono text-white">{totalCount}</span>
+          <span class="text-2xl font-black font-mono text-white tabular-nums">{totalCount}</span>
           <span class="text-[10px] font-mono text-zinc-500">atlet</span>
         </div>
       </div>
 
       <!-- Turnamen -->
       <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-        <span class="text-[10px] font-bold tracking-wider text-sky-400 uppercase">Turnamen</span>
+        <span class="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">Turnamen</span>
         <div class="flex items-baseline justify-between mt-1">
-          <span class="text-2xl font-black font-mono text-white">{tournamentCount}</span>
+          <span class="text-2xl font-black font-mono text-white tabular-nums">{tournamentCount}</span>
           <span class="text-[10px] font-mono text-zinc-500">prestasi</span>
         </div>
       </div>
 
       <!-- Festival -->
       <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-        <span class="text-[10px] font-bold tracking-wider text-amber-400 uppercase">Festival</span>
+        <span class="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">Festival</span>
         <div class="flex items-baseline justify-between mt-1">
-          <span class="text-2xl font-black font-mono text-white">{festivalCount}</span>
+          <span class="text-2xl font-black font-mono text-white tabular-nums">{festivalCount}</span>
           <span class="text-[10px] font-mono text-zinc-500">peserta</span>
         </div>
       </div>
 
       <!-- Seed / Prioritas -->
       <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-        <span class="text-[10px] font-bold tracking-wider text-emerald-400 uppercase">Unggulan (Seed)</span>
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">Unggulan (Seed)</span>
+          {#if seedCount > 0}
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+          {/if}
+        </div>
         <div class="flex items-baseline justify-between mt-1">
-          <span class="text-2xl font-black font-mono text-white">{seedCount}</span>
+          <span class="text-2xl font-black font-mono text-white tabular-nums">{seedCount}</span>
           <span class="text-[10px] font-mono text-zinc-500">prioritas</span>
         </div>
       </div>
 
       <!-- Tanpa NIK -->
       <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-        <span class="text-[10px] font-bold tracking-wider {missingNikCount > 0 ? 'text-rose-400' : 'text-zinc-400'} uppercase">Tanpa NIK</span>
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">Tanpa NIK</span>
+          {#if missingNikCount > 0}
+            <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+          {/if}
+        </div>
         <div class="flex items-baseline justify-between mt-1">
-          <span class="text-2xl font-black font-mono {missingNikCount > 0 ? 'text-rose-300' : 'text-white'}">{missingNikCount}</span>
+          <span class="text-2xl font-black font-mono {missingNikCount > 0 ? 'text-rose-300' : 'text-white'} tabular-nums">{missingNikCount}</span>
           <span class="text-[10px] font-mono text-zinc-500">perlu verif</span>
         </div>
       </div>
@@ -566,31 +576,31 @@
       <div class="flex items-center space-x-1.5 overflow-x-auto pb-1 lg:pb-0 scrollbar-none">
         <button
           onclick={() => (selectedStatusFilter = 'all')}
-          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition border {selectedStatusFilter === 'all' ? 'bg-white text-black border-white' : 'bg-white/[0.04] text-zinc-300 border-white/[0.08] hover:bg-white/[0.08]'}"
+          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'all' ? 'bg-white text-black border-white shadow-sm' : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
         >
           Semua ({totalCount})
         </button>
         <button
           onclick={() => (selectedStatusFilter = 'tournament')}
-          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition border {selectedStatusFilter === 'tournament' ? 'bg-white text-black border-white' : 'bg-white/[0.04] text-zinc-300 border-white/[0.08] hover:bg-white/[0.08]'}"
+          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'tournament' ? 'bg-white text-black border-white shadow-sm' : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
         >
           Turnamen ({tournamentCount})
         </button>
         <button
           onclick={() => (selectedStatusFilter = 'festival')}
-          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition border {selectedStatusFilter === 'festival' ? 'bg-white text-black border-white' : 'bg-white/[0.04] text-zinc-300 border-white/[0.08] hover:bg-white/[0.08]'}"
+          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'festival' ? 'bg-white text-black border-white shadow-sm' : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
         >
           Festival ({festivalCount})
         </button>
         <button
           onclick={() => (selectedStatusFilter = 'seed')}
-          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition border {selectedStatusFilter === 'seed' ? 'bg-white text-black border-white' : 'bg-white/[0.04] text-zinc-300 border-white/[0.08] hover:bg-white/[0.08]'}"
+          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'seed' ? 'bg-white text-black border-white shadow-sm' : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
         >
           Seed ({seedCount})
         </button>
         <button
           onclick={() => (selectedStatusFilter = 'tanpa_nik')}
-          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition border {selectedStatusFilter === 'tanpa_nik' ? 'bg-white text-black border-white' : 'bg-white/[0.04] text-zinc-300 border-white/[0.08] hover:bg-white/[0.08]'}"
+          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'tanpa_nik' ? 'bg-white text-black border-white shadow-sm' : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
         >
           Tanpa NIK ({missingNikCount})
         </button>
@@ -628,7 +638,7 @@
             type="text"
             bind:value={searchKeyword}
             placeholder="Cari nama, NIK, kontingen..."
-            class="w-full bg-[#181a20] text-xs text-white pl-8 pr-7 py-1.5 rounded-xl border border-white/[0.1] focus:border-white outline-none"
+            class="w-full bg-[#181a20] text-xs text-white pl-8 pr-7 py-1.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500"
           />
           <svg class="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -636,6 +646,7 @@
           {#if searchKeyword}
             <button
               onclick={() => (searchKeyword = "")}
+              aria-label="Hapus pencarian"
               class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white text-xs"
             >
               ✕
@@ -650,32 +661,32 @@
   {#if selectedIds.size > 0 && viewType === 'roster'}
     <div class="bg-[#181a20] border border-white/20 rounded-xl px-4 py-2 mb-3 flex items-center justify-between shadow-lg shrink-0">
       <div class="flex items-center space-x-2">
-        <span class="w-2 h-2 rounded-full bg-white"></span>
-        <span class="text-xs font-bold text-white font-mono">{selectedIds.size} atlet terpilih</span>
+        <span class="w-1.5 h-1.5 rounded-full bg-white"></span>
+        <span class="text-xs font-bold text-white font-mono tabular-nums">{selectedIds.size} atlet terpilih</span>
       </div>
 
       <div class="flex items-center space-x-2">
         <button
           onclick={() => handleBatchSetPriority(true)}
-          class="px-2.5 py-1 bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 text-xs font-semibold rounded-lg border border-white/[0.1] transition"
+          class="h-7 px-3 bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 text-xs font-semibold rounded-lg border border-white/[0.1] transition-colors active:scale-95"
         >
-          Set Seed (Unggulan)
+          Set Seed
         </button>
         <button
           onclick={() => handleBatchSetPriority(false)}
-          class="px-2.5 py-1 bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 text-xs font-semibold rounded-lg border border-white/[0.1] transition"
+          class="h-7 px-3 bg-white/[0.06] hover:bg-white/[0.12] text-zinc-200 text-xs font-semibold rounded-lg border border-white/[0.1] transition-colors active:scale-95"
         >
-          Hapus Status Seed
+          Hapus Seed
         </button>
         <button
           onclick={() => (batchDeleteModalOpen = true)}
-          class="px-2.5 py-1 bg-red-500/15 hover:bg-red-500/25 text-red-300 text-xs font-bold rounded-lg border border-red-500/30 transition flex items-center space-x-1"
+          class="h-7 px-3 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-lg transition-colors active:scale-95 shadow-sm"
         >
           <span>Hapus Terpilih ({selectedIds.size})</span>
         </button>
         <button
           onclick={clearSelection}
-          class="px-2.5 py-1 text-zinc-400 hover:text-white text-xs font-semibold transition"
+          class="h-7 px-2.5 text-zinc-400 hover:text-white text-xs font-semibold transition-colors"
         >
           Batal
         </button>
@@ -690,7 +701,7 @@
         <svg class="w-6 h-6 animate-spin text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
         </svg>
-        <span>Memuat data peserta dari database...</span>
+        <span class="text-xs font-mono text-zinc-400">Memuat data peserta dari database...</span>
       </div>
     {:else if viewType === 'roster'}
       <!-- Athletes Table View -->
@@ -708,7 +719,7 @@
                 selectedContingentFilter = "all";
                 selectedStatusFilter = "all";
               }}
-              class="mt-3 px-3 py-1.5 bg-white/[0.06] hover:bg-white/[0.1] text-xs font-semibold rounded-lg border border-white/[0.1] text-zinc-200"
+              class="mt-3 h-8 px-3.5 bg-white/[0.06] hover:bg-white/[0.1] text-xs font-semibold rounded-xl border border-white/[0.1] text-zinc-200 transition-colors"
             >
               Reset Semua Filter
             </button>
@@ -719,66 +730,68 @@
           <table class="w-full text-left text-xs border-collapse">
             <thead class="bg-[#111215] text-zinc-400 font-mono text-[11px] uppercase tracking-wider sticky top-0 z-10 border-b border-white/[0.08]">
               <tr>
-                <th class="px-4 py-2.5 w-10 text-center">
+                <th class="px-4 py-3 w-10 text-center">
                   <input
                     type="checkbox"
+                    aria-label="Pilih semua atlet di halaman ini"
                     checked={paginatedAthletes.length > 0 && paginatedAthletes.every((a) => selectedIds.has(a.id))}
                     onchange={toggleSelectAll}
-                    class="rounded border-zinc-600 bg-zinc-800 text-white focus:ring-0 cursor-pointer"
+                    class="rounded border-white/20 bg-black/40 text-white focus:ring-0 cursor-pointer"
                   />
                 </th>
-                <th class="px-3 py-2.5 w-12 text-center">NO</th>
-                <th class="px-4 py-2.5">NAMA ATLET & IDENTITAS</th>
-                <th class="px-4 py-2.5">KONTINGEN & PERGURUAN</th>
-                <th class="px-4 py-2.5">NOMOR TANDING / KELAS</th>
-                <th class="px-3 py-2.5 text-center w-24">SEED</th>
-                <th class="px-4 py-2.5 text-right w-24">AKSI</th>
+                <th class="px-3 py-3 w-12 text-center font-bold">NO</th>
+                <th class="px-4 py-3 font-bold">NAMA ATLET & IDENTITAS</th>
+                <th class="px-4 py-3 font-bold">KONTINGEN & PERGURUAN</th>
+                <th class="px-4 py-3 font-bold">NOMOR TANDING / KELAS</th>
+                <th class="px-3 py-3 text-center w-24 font-bold">SEED</th>
+                <th class="px-4 py-3 text-right w-24 font-bold pr-5">AKSI</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-white/[0.04] font-medium">
               {#each paginatedAthletes as atlet, idx (atlet.id)}
-                <tr class="hover:bg-white/[0.02] transition {selectedIds.has(atlet.id) ? 'bg-white/[0.04]' : ''}">
+                <tr class="hover:bg-white/[0.02] transition-colors {selectedIds.has(atlet.id) ? 'bg-white/[0.04]' : ''}">
                   <!-- Checkbox -->
-                  <td class="px-4 py-2 text-center">
+                  <td class="px-4 py-2.5 text-center">
                     <input
                       type="checkbox"
+                      aria-label={`Pilih atlet ${atlet.nama_atlet}`}
                       checked={selectedIds.has(atlet.id)}
                       onchange={() => toggleSelectAthlete(atlet.id)}
-                      class="rounded border-zinc-600 bg-zinc-800 text-white focus:ring-0 cursor-pointer"
+                      class="rounded border-white/20 bg-black/40 text-white focus:ring-0 cursor-pointer"
                     />
                   </td>
 
                   <!-- Number -->
-                  <td class="px-3 py-2 text-center text-zinc-500 font-mono text-[11px]">
+                  <td class="px-3 py-2.5 text-center text-zinc-500 font-mono text-[11px] tabular-nums">
                     {(currentPage - 1) * pageSize + idx + 1}
                   </td>
 
                   <!-- Athlete Name & Identification -->
-                  <td class="px-4 py-2">
+                  <td class="px-4 py-2.5">
                     <div class="flex items-center space-x-2">
                       <span class="font-bold text-white text-[12.5px] uppercase tracking-tight">
                         {atlet.nama_atlet}
                       </span>
                       {#if atlet.is_priority}
-                        <span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
                           SEED
                         </span>
                       {/if}
                     </div>
 
-                    <div class="flex items-center space-x-2 mt-0.5">
+                    <div class="flex items-center space-x-1.5 mt-1">
                       {#if atlet.nik}
-                        <span class="font-mono text-[10px] text-zinc-400 bg-white/[0.04] px-1.5 py-0.2 rounded border border-white/[0.06]">
+                        <span class="font-mono text-[10px] text-zinc-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06] tabular-nums">
                           NIK {atlet.nik}
                         </span>
                       {:else}
-                        <span class="font-mono text-[9.5px] text-rose-400 bg-rose-500/10 px-1.5 py-0.2 rounded border border-rose-500/25">
+                        <span class="font-mono text-[9.5px] text-rose-400 bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">
                           TANPA NIK
                         </span>
                       {/if}
 
                       {#if atlet.kode_atlet}
-                        <span class="font-mono text-[10px] text-zinc-400 bg-white/[0.04] px-1.5 py-0.2 rounded border border-white/[0.06]">
+                        <span class="font-mono text-[10px] text-zinc-400 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06]">
                           #{atlet.kode_atlet}
                         </span>
                       {/if}
@@ -792,7 +805,7 @@
                   </td>
 
                   <!-- Contingent & Dojo -->
-                  <td class="px-4 py-2">
+                  <td class="px-4 py-2.5">
                     <div class="flex items-center space-x-2">
                       {#if atlet.utusan_logo && logoMap[atlet.utusan_logo]}
                         <img
@@ -805,7 +818,7 @@
                         <div class="font-bold text-zinc-200 text-xs truncate uppercase">
                           {atlet.utusan_nama || "KONTINGEN #" + (atlet.utusan_id || "-")}
                         </div>
-                        <div class="text-[10px] text-zinc-400 truncate">
+                        <div class="text-[10px] text-zinc-400 truncate mt-0.5">
                           {atlet.perguruan_nama || "—"}
                         </div>
                       </div>
@@ -813,31 +826,31 @@
                   </td>
 
                   <!-- Category -->
-                  <td class="px-4 py-2">
+                  <td class="px-4 py-2.5">
                     <div class="font-bold text-zinc-200 text-xs">
                       {atlet.nomor_tanding_nama || "KATEGORI #" + (atlet.nomor_tanding_id || "-")}
                     </div>
-                    <div class="flex items-center space-x-1.5 mt-0.5">
+                    <div class="flex items-center space-x-1.5 mt-1">
                       {#if (atlet.nomor_tanding_nama || "").toLowerCase().includes("kata")}
-                        <span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 border border-zinc-700">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.08]">
                           KATA
                         </span>
                       {:else}
-                        <span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-red-950/60 text-red-300 border border-red-800/60">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.08]">
                           KUMITE
                         </span>
                       {/if}
 
                       {#if isFestival(atlet)}
-                        <span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
                           FESTIVAL
                         </span>
                       {:else if atlet.is_bob}
-                        <span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-purple-500/10 text-purple-300 border border-purple-500/20">
                           BOB
                         </span>
                       {:else}
-                        <span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
                           PRESTASI
                         </span>
                       {/if}
@@ -845,10 +858,10 @@
                   </td>
 
                   <!-- Seed Toggle -->
-                  <td class="px-3 py-2 text-center">
+                  <td class="px-3 py-2.5 text-center">
                     <button
                       onclick={() => handleTogglePriority(atlet)}
-                      class="px-2 py-0.5 rounded text-[10px] font-mono font-bold transition border {atlet.is_priority ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30' : 'bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-zinc-300'}"
+                      class="h-6 px-2.5 rounded text-[10px] font-mono font-bold transition-colors border {atlet.is_priority ? 'bg-amber-500/10 text-amber-300 border-amber-500/25 hover:bg-amber-500/20' : 'bg-white/[0.04] text-zinc-500 border-white/[0.08] hover:text-zinc-300'}"
                       title="Klik untuk mengubah status unggulan"
                     >
                       {atlet.is_priority ? "SEED" : "—"}
@@ -856,11 +869,11 @@
                   </td>
 
                   <!-- Actions -->
-                  <td class="px-4 py-2 text-right">
+                  <td class="px-4 py-2.5 text-right pr-5">
                     <div class="flex items-center justify-end space-x-1">
                       <button
                         onclick={() => openEditModal(atlet)}
-                        class="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-white/[0.08] transition"
+                        class="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-white/[0.08] transition-colors"
                         title="Edit data atlet"
                       >
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -869,7 +882,7 @@
                       </button>
                       <button
                         onclick={() => openDeleteSingleModal(atlet)}
-                        class="p-1.5 text-zinc-500 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition"
+                        class="p-1.5 text-zinc-400 hover:text-rose-400 rounded-lg hover:bg-white/[0.08] transition-colors"
                         title="Hapus atlet"
                       >
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -885,16 +898,16 @@
         </div>
 
         <!-- Pagination Bar -->
-        <div class="bg-[#111215] border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-xs text-zinc-400 shrink-0">
-          <div class="flex items-center space-x-2">
+        <div class="bg-[#111215] border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-xs text-zinc-400 shrink-0 font-sans">
+          <div class="flex items-center space-x-2 tabular-nums">
             <span>Menampilkan {(currentPage - 1) * pageSize + 1} - {Math.min(currentPage * pageSize, filteredAthletes.length)} dari {filteredAthletes.length} atlet</span>
             <span>•</span>
-            <div class="flex items-center space-x-1">
+            <div class="flex items-center space-x-1.5">
               <span>Per baris:</span>
               <select
                 bind:value={pageSize}
                 onchange={() => (currentPage = 1)}
-                class="bg-[#181a20] text-zinc-300 text-xs px-2 py-0.5 rounded border border-white/[0.1] outline-none"
+                class="bg-[#181a20] text-zinc-300 text-xs px-2 py-0.5 rounded-lg border border-white/[0.1] outline-none focus:border-white cursor-pointer"
               >
                 <option value={25}>25</option>
                 <option value={50}>50</option>
@@ -909,17 +922,17 @@
               <button
                 disabled={currentPage <= 1}
                 onclick={() => (currentPage = Math.max(1, currentPage - 1))}
-                class="px-2.5 py-1 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-white disabled:opacity-30 disabled:pointer-events-none transition"
+                class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors"
               >
-                Sebelumnya
+                ‹
               </button>
-              <span class="px-2 text-zinc-500">Hal {currentPage} / {totalPages}</span>
+              <span class="px-2 text-zinc-400 tabular-nums">{currentPage} / {totalPages}</span>
               <button
                 disabled={currentPage >= totalPages}
                 onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
-                class="px-2.5 py-1 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-white disabled:opacity-30 disabled:pointer-events-none transition"
+                class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors"
               >
-                Selanjutnya
+                ›
               </button>
             </div>
           {/if}
@@ -929,7 +942,7 @@
       <!-- Contingents Grid View -->
       <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 p-4">
         {#each contingents as contingent}
-          <div class="bg-[#111215] border border-white/[0.08] rounded-xl p-3 flex items-center space-x-3 hover:border-white/20 transition">
+          <div class="bg-[#111215] border border-white/[0.08] rounded-xl p-3 flex items-center space-x-3 hover:border-white/20 transition-colors">
             {#if contingent.logo && logoMap[contingent.logo]}
               <img src={logoMap[contingent.logo]} alt="Logo" class="w-9 h-9 object-contain shrink-0" />
             {:else}
@@ -939,7 +952,7 @@
             {/if}
             <div class="truncate">
               <h4 class="text-xs font-bold text-white truncate uppercase">{contingent.nama_utusan}</h4>
-              <p class="text-[10px] font-mono text-zinc-500">ID #{contingent.id}</p>
+              <p class="text-[10px] font-mono text-zinc-500 tabular-nums">ID #{contingent.id}</p>
             </div>
           </div>
         {/each}
@@ -950,67 +963,67 @@
 
 <!-- Modal: Tambah / Edit Data Atlet -->
 {#if athleteModalOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fadeIn">
-    <div class="bg-[#181a20] border border-white/20 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 select-none">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
       <!-- Modal Header -->
-      <div class="px-5 py-3.5 bg-[#111215] border-b border-white/[0.08] flex items-center justify-between">
-        <h3 class="text-sm font-bold text-white uppercase tracking-wider">
+      <div class="px-6 py-4 bg-[#111215] border-b border-white/[0.08] flex items-center justify-between">
+        <h3 class="text-sm font-bold text-white tracking-tight">
           {isEditMode ? "Edit Data Atlet" : "Tambah Atlet Baru"}
         </h3>
-        <button onclick={() => (athleteModalOpen = false)} class="text-zinc-500 hover:text-white text-sm">
+        <button onclick={() => (athleteModalOpen = false)} class="text-zinc-500 hover:text-white transition-colors">
           ✕
         </button>
       </div>
 
       <!-- Modal Body Form -->
-      <div class="p-5 space-y-3.5 overflow-y-auto max-h-[70vh]">
+      <div class="p-6 space-y-4 overflow-y-auto max-h-[70vh]">
         {#if formError}
-          <div class="bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs px-3 py-2 rounded-lg">
+          <div class="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-3 py-2 rounded-xl">
             {formError}
           </div>
         {/if}
 
         <!-- Nama Atlet -->
         <div>
-          <label for="nama_atlet" class="block text-xs font-bold text-zinc-300 uppercase mb-1">
+          <label for="nama_atlet" class="block text-xs font-semibold text-zinc-300 mb-1.5">
             Nama Lengkap Atlet <span class="text-rose-400">*</span>
           </label>
           <input
             id="nama_atlet"
             type="text"
             bind:value={formInput.nama_atlet}
-            placeholder="CONTOH: AHMAD FADILLAH"
-            class="w-full bg-[#111215] text-xs font-bold text-white uppercase px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none"
+            placeholder="Contoh: Ahmad Fadillah"
+            class="w-full bg-[#111215] text-xs font-semibold text-white uppercase px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors"
           />
         </div>
 
         <!-- NIK & KTA Row -->
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label for="nik" class="block text-xs font-bold text-zinc-300 uppercase mb-1">NIK (16 Digit)</label>
+            <label for="nik" class="block text-xs font-semibold text-zinc-300 mb-1.5">NIK (16 Digit)</label>
             <input
               id="nik"
               type="text"
               bind:value={formInput.nik}
               placeholder="3507..."
-              class="w-full bg-[#111215] text-xs font-mono text-zinc-200 px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none"
+              class="w-full bg-[#111215] text-xs font-mono text-zinc-200 px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors tabular-nums"
             />
           </div>
           <div>
-            <label for="additional_code" class="block text-xs font-bold text-zinc-300 uppercase mb-1">No. KTA / Kode Tambahan</label>
+            <label for="additional_code" class="block text-xs font-semibold text-zinc-300 mb-1.5">No. KTA / Kode Tambahan</label>
             <input
               id="additional_code"
               type="text"
               bind:value={formInput.additional_code}
               placeholder="KTA-..."
-              class="w-full bg-[#111215] text-xs font-mono text-zinc-200 px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none"
+              class="w-full bg-[#111215] text-xs font-mono text-zinc-200 px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors"
             />
           </div>
         </div>
 
         <!-- Nomor Tanding Dropdown -->
         <div>
-          <label for="nomor_tanding" class="block text-xs font-bold text-zinc-300 uppercase mb-1">Nomor Tanding / Kelas</label>
+          <label for="nomor_tanding" class="block text-xs font-semibold text-zinc-300 mb-1.5">Nomor Tanding / Kelas</label>
           <FuzzySelect
             id="nomor_tanding"
             items={modalCategoryOptions}
@@ -1023,7 +1036,7 @@
         <!-- Kontingen & Perguruan Row -->
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label for="utusan" class="block text-xs font-bold text-zinc-300 uppercase mb-1">Kontingen / Utusan</label>
+            <label for="utusan" class="block text-xs font-semibold text-zinc-300 mb-1.5">Kontingen / Utusan</label>
             <FuzzySelect
               id="utusan"
               items={modalContingentOptions}
@@ -1033,7 +1046,7 @@
             />
           </div>
           <div>
-            <label for="perguruan" class="block text-xs font-bold text-zinc-300 uppercase mb-1">Perguruan</label>
+            <label for="perguruan" class="block text-xs font-semibold text-zinc-300 mb-1.5">Perguruan</label>
             <FuzzySelect
               id="perguruan"
               items={modalPerguruanOptions}
@@ -1048,33 +1061,33 @@
         </div>
 
         <!-- Seed / Prioritas Toggle -->
-        <div class="pt-2">
+        <div class="pt-1">
           <label class="flex items-center space-x-2.5 cursor-pointer">
             <input
               type="checkbox"
               bind:checked={formInput.is_priority}
-              class="rounded border-zinc-600 bg-zinc-800 text-white focus:ring-0 cursor-pointer w-4 h-4"
+              class="rounded border-white/20 bg-black/40 text-white focus:ring-0 cursor-pointer w-4 h-4"
             />
-            <span class="text-xs font-bold text-zinc-200">
-              Unggulan / Seed (Mendapatkan Prioritas BYE saat drawing bagan)
+            <span class="text-xs font-semibold text-zinc-200">
+              Unggulan / Seed (Mendapatkan prioritas penempatan drawing bagan)
             </span>
           </label>
         </div>
       </div>
 
       <!-- Modal Footer -->
-      <div class="px-5 py-3.5 bg-[#111215] border-t border-white/[0.08] flex items-center justify-end space-x-2">
+      <div class="px-6 py-3.5 bg-[#111215] border-t border-white/[0.08] flex items-center justify-end space-x-2">
         <button
           onclick={() => (athleteModalOpen = false)}
           disabled={isSaving}
-          class="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white transition"
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
         >
           Batal
         </button>
         <button
           onclick={handleSaveAthlete}
           disabled={isSaving}
-          class="px-4 py-2 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition shadow active:scale-95 disabled:opacity-50"
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
         >
           {isSaving ? "Menyimpan..." : isEditMode ? "Simpan Perubahan" : "Simpan Atlet"}
         </button>
@@ -1085,27 +1098,37 @@
 
 <!-- Modal: Konfirmasi Hapus Atlet Tunggal -->
 {#if deleteModalOpen && athleteToDelete}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fadeIn">
-    <div class="bg-[#181a20] border border-red-500/30 rounded-2xl w-full max-w-md shadow-2xl p-5">
-      <h3 class="text-sm font-bold text-white uppercase tracking-wider">Hapus Data Atlet</h3>
-      <p class="text-xs text-zinc-300 mt-2 leading-relaxed">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 select-none">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl w-full max-w-sm shadow-2xl p-6 animate-in zoom-in-95 duration-150">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm font-bold text-white tracking-tight">Hapus Data Atlet</h3>
+        </div>
+      </div>
+
+      <p class="text-xs text-zinc-300 mt-3 leading-relaxed">
         Apakah Anda yakin ingin menghapus atlet <strong class="text-white uppercase">{athleteToDelete.nama_atlet}</strong> dari database turnamen? Tindakan ini bersifat permanen.
       </p>
 
-      <div class="mt-5 flex items-center justify-end space-x-2">
+      <div class="mt-5 flex items-center justify-end space-x-2 pt-2 border-t border-white/[0.08]">
         <button
           onclick={() => { deleteModalOpen = false; athleteToDelete = null; }}
           disabled={isDeleting}
-          class="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white transition"
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
         >
           Batal
         </button>
         <button
           onclick={confirmDeleteSingle}
           disabled={isDeleting}
-          class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition shadow active:scale-95 disabled:opacity-50"
+          class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
         >
-          {isDeleting ? "Menghapus..." : "Ya, Hapus Atlet"}
+          {isDeleting ? "Menghapus..." : "Hapus Atlet"}
         </button>
       </div>
     </div>
@@ -1114,45 +1137,39 @@
 
 <!-- Modal: Konfirmasi Hapus Batch -->
 {#if batchDeleteModalOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fadeIn">
-    <div class="bg-[#181a20] border border-red-500/30 rounded-2xl w-full max-w-md shadow-2xl p-5">
-      <h3 class="text-sm font-bold text-white uppercase tracking-wider">Hapus {selectedIds.size} Atlet Terpilih</h3>
-      <p class="text-xs text-zinc-300 mt-2 leading-relaxed">
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 select-none">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl w-full max-w-sm shadow-2xl p-6 animate-in zoom-in-95 duration-150">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm font-bold text-white tracking-tight">Hapus {selectedIds.size} Atlet Terpilih</h3>
+        </div>
+      </div>
+
+      <p class="text-xs text-zinc-300 mt-3 leading-relaxed">
         Apakah Anda yakin ingin menghapus <strong>{selectedIds.size} atlet</strong> yang dipilih dari database turnamen? Atlet yang sudah terikat pada partai bagan tidak akan terhapus demi integritas bracket.
       </p>
 
-      <div class="mt-5 flex items-center justify-end space-x-2">
+      <div class="mt-5 flex items-center justify-end space-x-2 pt-2 border-t border-white/[0.08]">
         <button
           onclick={() => (batchDeleteModalOpen = false)}
           disabled={isBatchDeleting}
-          class="px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white transition"
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
         >
           Batal
         </button>
         <button
           onclick={confirmBatchDelete}
           disabled={isBatchDeleting}
-          class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition shadow active:scale-95 disabled:opacity-50"
+          class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
         >
-          {isBatchDeleting ? "Menghapus..." : `Ya, Hapus ${selectedIds.size} Atlet`}
+          {isBatchDeleting ? "Menghapus..." : `Hapus ${selectedIds.size} Atlet`}
         </button>
       </div>
     </div>
   </div>
 {/if}
-
-<style>
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-      transform: scale(0.98);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-  .animate-fadeIn {
-    animation: fadeIn 0.15s ease-out forwards;
-  }
-</style>

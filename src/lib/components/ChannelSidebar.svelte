@@ -290,12 +290,12 @@
           <button
             onclick={() =>
               onSelectChannel({
-                type: "roster",
+                type: "nomor_tanding",
                 id: "categories",
                 name: "nomor-tanding",
                 subtitle: "Kategori & Nomor Pertandingan",
               })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'nomor-tanding' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'nomor-tanding' || activeChannel.type === 'nomor_tanding' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
           >
             <span class="text-zinc-500 font-mono">#</span>
             <span>nomor-tanding</span>
@@ -517,6 +517,36 @@
 
       {#if !collapseAdminTools}
         <div class="mt-1 space-y-0.5">
+          <!-- Jadwal Pertandingan (Timetable Editor) -->
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "timetable",
+                id: "timetable-editor",
+                name: "jadwal-pertandingan",
+                subtitle: "Jadwal Pertandingan & Timetable Run-Sheet",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'jadwal-pertandingan' || activeChannel.type === 'timetable' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>jadwal-pertandingan</span>
+          </button>
+
+          <!-- Roster Festival -->
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "festival",
+                id: "festival-roster",
+                name: "roster-festival",
+                subtitle: "Manajemen Bagan & Auto-Pairing Festival",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'roster-festival' || activeChannel.type === 'festival' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>roster-festival</span>
+          </button>
+
           <button
             onclick={() =>
               onSelectChannel({

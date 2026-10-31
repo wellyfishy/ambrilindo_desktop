@@ -32,6 +32,13 @@
 
     // Handle stateless Festival match (no database required)
     if (isFestival) {
+      const qAka = page.url.searchParams.get("aka") || "Aka Contestant";
+      const qAkaClub = page.url.searchParams.get("aka_club") || "None";
+      const qAo = page.url.searchParams.get("ao") || "Ao Contestant";
+      const qAoClub = page.url.searchParams.get("ao_club") || "None";
+      const qCat = page.url.searchParams.get("cat") || "FESTIVAL";
+      const qDisc = (page.url.searchParams.get("disc") || "kumite").toLowerCase();
+
       currentMatch = {
         id: 0,
         bagan_id: 0,
@@ -53,18 +60,18 @@
         team: false,
         assigned_tatami_id: tatamiNumber,
         kode: "000",
-        atlet1_nama: "Aka Contestant",
-        atlet1_kontingen: "None",
-        atlet2_nama: "Ao Contestant",
-        atlet2_kontingen: "None",
+        atlet1_nama: qAka,
+        atlet1_kontingen: qAkaClub,
+        atlet2_nama: qAo,
+        atlet2_kontingen: qAoClub,
       };
-      baganName = "FESTIVAL";
+      baganName = qCat;
       baganInfo = {
         id: 0,
         event_id: 1,
-        nama_bagan: "Festival",
+        nama_bagan: qCat,
         nomor_tanding_id: null,
-        tipe_tanding: "2", // Default Kumite
+        tipe_tanding: qDisc === "kata" ? "1" : "2",
         juara_1_id: null,
         juara_2_id: null,
         juara_3a_id: null,

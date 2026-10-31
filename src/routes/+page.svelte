@@ -24,6 +24,9 @@
   import DataMasterView from "$lib/components/DataMasterView.svelte";
   import SummaryJuaraView from "$lib/components/SummaryJuaraView.svelte";
   import SummaryBaganView from "$lib/components/SummaryBaganView.svelte";
+  import NomorTandingView from "$lib/components/NomorTandingView.svelte";
+  import TimetableEditorView from "$lib/components/TimetableEditorView.svelte";
+  import FestivalRosterView from "$lib/components/FestivalRosterView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
@@ -86,7 +89,7 @@
 
   // --- Data Loading & Mode Handlers ---
 
-  async function handleSelectMode(mode: AppMode, remoteUrl?: string) {
+  async function handleSelectMode(mode: AppMode, remoteUrl?: string, selectedIp?: string) {
     if (mode === "solo") {
       appMode = "solo";
       showToast("Mode Offline Aktif");
@@ -95,7 +98,7 @@
       }
     } else if (mode === "host") {
       appMode = "host";
-      await startHostServer();
+      await startHostServer(selectedIp);
       if (!databaseSummary) {
         await autoMountDefaultDb();
       }
@@ -106,15 +109,15 @@
     }
   }
 
-  async function startHostServer() {
+  async function startHostServer(selectedIp?: string) {
     isStartingServer = true;
     try {
-      const info = await invoke<NetworkInfo>("start_arena_server");
+      const info = await invoke<NetworkInfo>("start_arena_server", { selectedIp: selectedIp || null });
       networkInfo = info;
       isServerRunning = true;
       portErrorModal = false;
       hostUrl = info.server_url;
-      showToast("Server Host LAN aktif di port 8000");
+      showToast(`Server Host LAN aktif di ${info.server_url}`);
     } catch (err: any) {
       portErrorMessage = typeof err === "string" ? err : JSON.stringify(err);
       portErrorModal = true;
@@ -459,6 +462,7 @@
             hostAddress={appMode === "host" ? (networkInfo?.server_url || "http://127.0.0.1:8000") : hostUrl}
             onRefreshTatamis={() => selectedEventId && selectEvent(selectedEventId)}
             onOpenMonitorPicker={(tNum) => openMonitorPicker(tNum)}
+            onShowToast={showToast}
           />
         {:else if activeChannel.type === "bagan"}
           <!-- Visual Bracket Tree View -->
@@ -506,6 +510,30 @@
             eventId={selectedEventId || 1}
             eventName={activeEvent?.nama_event || ""}
             hostAddress={hostUrl}
+          />
+        {:else if activeChannel.type === "nomor_tanding"}
+          <!-- Nomor Tanding (Competition Categories & Division Management) -->
+          <NomorTandingView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            hostAddress={hostUrl}
+            onNavigate={(channel) => handleSelectChannel(channel)}
+            onOpenDrawingModal={() => (drawingModal = true)}
+            onShowToast={showToast}
+          />
+        {:else if activeChannel.type === "timetable"}
+          <!-- Timetable Editor View -->
+          <TimetableEditorView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            hostAddress={hostUrl}
+            onShowToast={showToast}
+          />
+        {:else if activeChannel.type === "festival"}
+          <!-- Festival Roster Maker View -->
+          <FestivalRosterView
+            eventId={selectedEventId || 1}
+            onShowToast={showToast}
           />
         {/if}
       </main>

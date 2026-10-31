@@ -1,5 +1,5 @@
 @echo off
-title Ambrilindo Arena — Desktop Launcher
+title Ambrilindo Arena - Desktop Launcher
 echo ===================================================
 echo   Menjalankan Ambrilindo Arena (Tauri Desktop App)
 echo ===================================================

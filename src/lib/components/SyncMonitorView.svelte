@@ -13,6 +13,7 @@
     PullResult,
   } from "$lib/types";
   import FuzzySelect, { type SelectOption } from "./FuzzySelect.svelte";
+  import ConfirmModal from "./ConfirmModal.svelte";
 
   interface Props {
     eventId: number;
@@ -62,6 +63,51 @@
   // Modals
   let showLinkModal = $state<boolean>(false);
   let hostedEvents = $state<HostedEventOption[]>([]);
+
+  // Confirmation Modal State (Bulletproof: No window.confirm)
+  let confirmModalConfig = $state<{
+    open: boolean;
+    title: string;
+    message: string;
+    confirmText: string;
+    cancelText: string;
+    isDestructive: boolean;
+    isLoading: boolean;
+    onConfirm: () => Promise<void> | void;
+  }>({
+    open: false,
+    title: "",
+    message: "",
+    confirmText: "Lanjutkan",
+    cancelText: "Batal",
+    isDestructive: true,
+    isLoading: false,
+    onConfirm: () => {},
+  });
+
+  function openConfirmModal(opts: {
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    isDestructive?: boolean;
+    onConfirm: () => Promise<void> | void;
+  }) {
+    confirmModalConfig = {
+      open: true,
+      title: opts.title,
+      message: opts.message,
+      confirmText: opts.confirmText || "Lanjutkan",
+      cancelText: opts.cancelText || "Batal",
+      isDestructive: opts.isDestructive !== false,
+      isLoading: false,
+      onConfirm: opts.onConfirm,
+    };
+  }
+
+  function closeConfirmModal() {
+    confirmModalConfig.open = false;
+  }
   let isLoadingHostedEvents = $state<boolean>(false);
   let selectedHostedId = $state<number | null>(null);
   let selectedHostedName = $state<string>("");
@@ -249,24 +295,31 @@
   }
 
   // Pull Athletes
-  async function handlePullAthletes() {
+  function handlePullAthletes() {
     if (!eventMapping.hosted_event_id) {
       toast("Hubungkan ke event web terlebih dahulu");
       openLinkEventModal();
       return;
     }
-    if (!confirm(`Tarik data atlet terbaru dari Web?\n\nEvent Web: [#${eventMapping.hosted_event_id}] ${eventMapping.hosted_event_name}`)) return;
-
-    isPulling = true;
-    try {
-      const res = await invoke<PullResult>("pull_athletes_from_hosted", { localEventId: eventId });
-      toast(res.message);
-      await loadAllSyncData();
-    } catch (err: any) {
-      alert(`Gagal menarik atlet: ${err}`);
-    } finally {
-      isPulling = false;
-    }
+    openConfirmModal({
+      title: "Tarik Data Atlet dari Web",
+      message: `Tarik data atlet terbaru dari Web?\n\nEvent Web: [#${eventMapping.hosted_event_id}] ${eventMapping.hosted_event_name}`,
+      confirmText: "Tarik Atlet",
+      isDestructive: false,
+      onConfirm: async () => {
+        isPulling = true;
+        try {
+          const res = await invoke<PullResult>("pull_athletes_from_hosted", { localEventId: eventId });
+          toast(res.message);
+          closeConfirmModal();
+          await loadAllSyncData();
+        } catch (err: any) {
+          toast(`Gagal menarik atlet: ${err}`);
+        } finally {
+          isPulling = false;
+        }
+      },
+    });
   }
 
   // Push Bagan
@@ -344,15 +397,23 @@
     }
   }
 
-  async function handleDeleteSingle(item: SyncQueueEntry) {
-    if (!confirm(`Hapus item #${item.id}?`)) return;
-    try {
-      await invoke("delete_sync_item", { itemId: item.id });
-      toast(`Item #${item.id} dihapus`);
-      await loadAllSyncData();
-    } catch (err: any) {
-      toast(`Gagal: ${err}`);
-    }
+  function handleDeleteSingle(item: SyncQueueEntry) {
+    openConfirmModal({
+      title: `Hapus Item Antrean #${item.id}`,
+      message: `Apakah Anda yakin ingin menghapus item sync #${item.id}? Item ini tidak akan dikirimkan ke web.`,
+      confirmText: "Hapus Item",
+      isDestructive: true,
+      onConfirm: async () => {
+        try {
+          await invoke("delete_sync_item", { itemId: item.id });
+          toast(`Item #${item.id} dihapus`);
+          closeConfirmModal();
+          await loadAllSyncData();
+        } catch (err: any) {
+          toast(`Gagal: ${err}`);
+        }
+      },
+    });
   }
 
   async function handleRetryAllFailed() {
@@ -981,3 +1042,16 @@
     </div>
   </div>
 {/if}
+
+<!-- Reusable Bulletproof Confirmation Modal (Zero Browser confirm()) -->
+<ConfirmModal
+  open={confirmModalConfig.open}
+  title={confirmModalConfig.title}
+  message={confirmModalConfig.message}
+  confirmText={confirmModalConfig.confirmText}
+  cancelText={confirmModalConfig.cancelText}
+  isDestructive={confirmModalConfig.isDestructive}
+  isLoading={confirmModalConfig.isLoading}
+  onConfirm={confirmModalConfig.onConfirm}
+  onCancel={closeConfirmModal}
+/>

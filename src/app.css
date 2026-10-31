@@ -112,27 +112,35 @@ body {
 }
 
 /* ==========================================================================
-   Print Overrides (Clean White Tournament Sheet for A4 Landscape)
+   Top-Level Print Page Configurations (Must be outside @media print for Chromium)
+   ========================================================================== */
+@page {
+  size: A4 landscape;
+  margin: 0;
+}
+
+/* ==========================================================================
+   Print Overrides (Clean White Tournament Sheet for A4 Landscape & Mixed Booklet)
    ========================================================================== */
 @media print {
-  @page {
-    size: A4 landscape;
-    margin: 4mm 6mm;
-  }
-
   :root {
     color-scheme: light !important;
+  }
+
+  *, *::before, *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
   }
 
   html, body {
     background: #ffffff !important;
     background-color: #ffffff !important;
     color: #000000 !important;
-    width: 285mm !important;
-    max-width: 285mm !important;
-    height: 198mm !important;
-    max-height: 198mm !important;
-    overflow: hidden !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
+    position: static !important;
     margin: 0 !important;
     padding: 0 !important;
     -webkit-print-color-adjust: exact !important;
@@ -151,33 +159,19 @@ body {
   .app-shell,
   .workspace-column,
   .main-content,
-  main,
-  div {
-    background: transparent !important;
-    background-color: transparent !important;
-  }
-
-  .app-shell {
+  main {
     display: block !important;
-    width: 285mm !important;
-    max-width: 285mm !important;
-    height: 198mm !important;
-    max-height: 198mm !important;
-    overflow: hidden !important;
-    position: static !important;
-  }
-
-  .workspace-column,
-  .main-content {
-    display: block !important;
-    width: 285mm !important;
-    max-width: 285mm !important;
-    height: 198mm !important;
-    max-height: 198mm !important;
-    overflow: hidden !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
     position: static !important;
     padding: 0 !important;
     margin: 0 !important;
+    background: transparent !important;
+    background-color: transparent !important;
   }
 }
 

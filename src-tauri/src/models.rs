@@ -232,7 +232,7 @@ pub struct WasitDetailBagan {
 pub struct TimetableDay {
     pub id: i64,
     pub event_id: i64,
-    pub order: u32,
+    pub order: i32,
     pub tanggal: Option<String>,
 }
 
@@ -240,7 +240,7 @@ pub struct TimetableDay {
 pub struct TimetableRow {
     pub id: i64,
     pub day_id: Option<i64>,
-    pub order: u32,
+    pub order: i32,
     pub row_type: String, // 'slot', 'label'
     pub time_label: String,
     pub label_text: String,
@@ -293,6 +293,27 @@ pub struct DrawingCategoryInfo {
     pub has_vr: bool,
     pub is_kumite: bool,
     pub is_beregu: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct EnrichedNomorTanding {
+    pub id: i64,
+    pub event_id: Option<i64>,
+    pub nama_nomor_tanding: Option<String>,
+    pub is_bob: bool,
+    pub has_vr: bool,
+    pub athlete_count: i64,
+    pub bagan_count: i64,
+    pub first_bagan_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryMutationInput {
+    pub id: Option<i64>,
+    pub event_id: i64,
+    pub nama_nomor_tanding: String,
+    pub is_bob: bool,
+    pub has_vr: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -412,4 +433,233 @@ pub struct SummaryBaganResult {
     pub total_bronze: usize,
     pub bagans: Vec<SummaryBaganItem>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichedTimetableCell {
+    pub id: i64,
+    pub row_id: i64,
+    pub tatami_id: i64,
+    pub tatami_number: i32,
+    pub nomor_tanding_id: Option<i64>,
+    pub nomor_tanding_nama: Option<String>,
+    pub custom_text: String,
+    pub atlet_count: i64,
+    pub matches: i64,
+    pub discipline: String, // "kata" | "kumite"
+    pub est_duration_minutes: i64,
+    pub progress_status: String, // "belum_disentuh" | "running" | "selesai" | "festival" | "break"
+    pub progress_pct: f64,
+    pub finished_matches: i64,
+    pub remaining_matches: i64,
+    pub is_festival: bool,
+    pub is_break: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AthleteConflictDetail {
+    pub athlete_name: String,
+    pub tatami1_number: i32,
+    pub category1_id: i64,
+    pub category1_name: String,
+    pub tatami2_number: i32,
+    pub category2_id: i64,
+    pub category2_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichedTimetableRow {
+    pub id: i64,
+    pub day_id: i64,
+    pub order: i32,
+    pub row_type: String,
+    pub time_label: String,
+    pub label_text: String,
+    pub cells: Vec<EnrichedTimetableCell>,
+    pub conflicts: Vec<AthleteConflictDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichedTimetableDay {
+    pub id: i64,
+    pub event_id: i64,
+    pub order: i32,
+    pub tanggal: Option<String>,
+    pub label: String,
+    pub rows: Vec<EnrichedTimetableRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimetableCategoryOption {
+    pub id: i64,
+    pub nama: String,
+    pub age_group: String,
+    pub atlet_count: i64,
+    pub matches: i64,
+    pub discipline: String,
+    pub est_duration_minutes: i64,
+    pub is_festival: bool,
+    pub progress_status: String,
+    pub progress_pct: f64,
+    pub is_assigned: bool,
+    pub assigned_tatami: Option<i32>,
+    pub assigned_day_order: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TatamiLiveStatus {
+    pub tatami_id: i64,
+    pub tatami_number: i32,
+    pub is_running: bool,
+    pub category_name: Option<String>,
+    pub round: Option<i32>,
+    pub urutan: Option<i32>,
+    pub atlet1_name: Option<String>,
+    pub atlet2_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimetableProgressSummary {
+    pub total_matches: i64,
+    pub finished_matches: i64,
+    pub remaining_matches: i64,
+    pub running_categories_count: usize,
+    pub finished_categories_count: usize,
+    pub unstarted_categories_count: usize,
+    pub total_categories_count: usize,
+    pub overall_pct: f64,
+    pub total_conflicts: usize,
+    pub tatamis_live: Vec<TatamiLiveStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimetableEditorData {
+    pub event_id: i64,
+    pub event_name: String,
+    pub tatamis: Vec<Tatami>,
+    pub days: Vec<EnrichedTimetableDay>,
+    pub categories: Vec<TimetableCategoryOption>,
+    pub summary: TimetableProgressSummary,
+    pub kop_surat: Option<KopSurat>,
+    pub nt_athletes: std::collections::HashMap<i64, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveTimetableCellInput {
+    pub tatami_id: i64,
+    pub nomor_tanding_id: Option<i64>,
+    pub custom_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveTimetableRowInput {
+    pub id: Option<i64>,
+    pub order: i32,
+    pub row_type: String,
+    pub time_label: String,
+    pub label_text: String,
+    pub cells: Vec<SaveTimetableCellInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveTimetableDayInput {
+    pub day_id: i64,
+    pub tanggal: Option<String>,
+    pub rows: Vec<SaveTimetableRowInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveTimetablePayload {
+    pub days: Vec<SaveTimetableDayInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TatamiBookletCategory {
+    pub match_seq: usize,
+    pub category_id: i64,
+    pub category_name: String,
+    pub discipline: String,
+    pub matches_count: i64,
+    pub athletes_count: i64,
+    pub bagan_id: Option<i64>,
+    pub bagan_kode: Option<String>,
+    pub bagan_nama: Option<String>,
+    pub tipe_tanding: Option<String>,
+    pub winners: Vec<SummaryBaganWinner>,
+    pub matches: Vec<EnrichedDetailBagan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TatamiBookletData {
+    pub event_id: i64,
+    pub event_name: String,
+    pub kop_surat: Option<KopSurat>,
+    pub tatami_id: i64,
+    pub tatami_number: i64,
+    pub day_id: i64,
+    pub day_order: i32,
+    pub day_label: String,
+    pub day_date: Option<String>,
+    pub unscheduled_list: Vec<String>,
+    pub ordered_categories: Vec<TatamiBookletCategory>,
+}
+
+// --- FESTIVAL ROSTER MODELS ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalAthlete {
+    pub id: i64,
+    pub nama: String,
+    pub perguruan: String,
+    pub utusan: String,
+    pub jenis_kelamin: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalMatch {
+    pub match_num: usize,
+    pub aka: FestivalAthlete,
+    pub ao: Option<FestivalAthlete>,
+    pub is_clash: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalCategory {
+    pub id: i64,
+    pub nama: String,
+    pub display_name: String,
+    pub discipline: String, // "kata" | "kumite"
+    pub tatami_id: i64,
+    pub matches: Vec<FestivalMatch>,
+    pub atlet_count: usize,
+    pub match_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalTatamiSection {
+    pub tatami_id: i64,
+    pub tatami_number: i64,
+    pub categories: Vec<FestivalCategory>,
+    pub total_athletes: usize,
+    pub total_matches: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalRosterData {
+    pub event_id: i64,
+    pub event_name: String,
+    pub tatamis: Vec<Tatami>,
+    pub sections: Vec<FestivalTatamiSection>,
+    pub total_categories: usize,
+    pub total_athletes: usize,
+    pub total_matches: usize,
+    pub total_clashes: usize,
+    pub kop_surat: Option<KopSurat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalRosterState {
+    pub tatami_assignments: std::collections::HashMap<String, Vec<i64>>, // tatami_id -> [nt_id]
+    pub athlete_pairings: std::collections::HashMap<String, Vec<i64>>,  // nt_id -> [athlete_id]
+}
+
 

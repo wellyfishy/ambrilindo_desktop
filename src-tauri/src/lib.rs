@@ -49,6 +49,7 @@ fn get_network_info() -> NetworkInfo {
 
 #[tauri::command]
 async fn start_arena_server(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<NetworkInfo, String> {
     let mut running = state.server_running.lock().await;
@@ -59,6 +60,7 @@ async fn start_arena_server(
     let app_state = Arc::new(server::AppState {
         broadcast_tx: state.server_broadcast.clone(),
         db: state.db.clone(),
+        app_handle: Some(app),
     });
 
     server::start_server(app_state).await?;
@@ -408,6 +410,76 @@ async fn open_control_panel_window(
         .center()
         .build()
         .map_err(|e| format!("Gagal membuka window control panel: {}", e))?;
+
+    Ok(())
+}
+
+fn helper_url_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+            out.push(b as char);
+        } else if b == b' ' {
+            out.push_str("%20");
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+#[tauri::command]
+async fn open_festival_control_panel(
+    app: tauri::AppHandle,
+    tatami: Option<i64>,
+    aka_nama: Option<String>,
+    aka_utusan: Option<String>,
+    ao_nama: Option<String>,
+    ao_utusan: Option<String>,
+    cat_name: Option<String>,
+    discipline: Option<String>,
+) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    let win_label = "control-panel-0".to_string();
+    let t_num = tatami.unwrap_or(1);
+
+    for (label, existing_win) in app.webview_windows() {
+        if label.starts_with("control-panel") {
+            let _ = existing_win.close();
+        }
+    }
+
+    let mut query = format!("matchId=0&baganId=0&isFestival=true&tatami={}", t_num);
+    if let Some(ref n) = aka_nama {
+        query.push_str(&format!("&aka={}", helper_url_encode(n)));
+    }
+    if let Some(ref u) = aka_utusan {
+        query.push_str(&format!("&aka_club={}", helper_url_encode(u)));
+    }
+    if let Some(ref n) = ao_nama {
+        query.push_str(&format!("&ao={}", helper_url_encode(n)));
+    }
+    if let Some(ref u) = ao_utusan {
+        query.push_str(&format!("&ao_club={}", helper_url_encode(u)));
+    }
+    if let Some(ref c) = cat_name {
+        query.push_str(&format!("&cat={}", helper_url_encode(c)));
+    }
+    if let Some(ref d) = discipline {
+        query.push_str(&format!("&disc={}", helper_url_encode(d)));
+    }
+
+    let url = format!("/control-panel?{}", query);
+    let title = format!("Ambrilindo - Control Panel Festival (Bagan 000) - Tatami {}", t_num);
+
+    let _win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
+        .title(title)
+        .inner_size(1366.0, 820.0)
+        .min_inner_size(1024.0, 700.0)
+        .center()
+        .build()
+        .map_err(|e| format!("Gagal membuka window control panel festival: {}", e))?;
 
     Ok(())
 }
@@ -858,6 +930,182 @@ async fn clear_all_sync_queue(
     sync::SyncService::clear_all_queue(pool, event_id).await
 }
 
+#[tauri::command]
+async fn get_festival_roster_data(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::FestivalRosterData, String> {
+    let db = state.db.lock().await;
+    db.get_festival_roster_data(event_id).await
+}
+
+#[tauri::command]
+async fn save_festival_roster_state(
+    event_id: i64,
+    roster_state: models::FestivalRosterState,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.save_festival_roster_state(event_id, roster_state).await
+}
+
+#[tauri::command]
+async fn auto_pair_festival_category(
+    event_id: i64,
+    nomor_tanding_id: Option<i64>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::FestivalRosterData, String> {
+    let db = state.db.lock().await;
+    db.auto_pair_festival_category(event_id, nomor_tanding_id).await
+}
+
+#[tauri::command]
+async fn mix_festival_categories(
+    event_id: i64,
+    source_ids: Vec<i64>,
+    target_id: Option<i64>,
+    new_name: String,
+    delete_sources: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::FestivalRosterData, String> {
+    let db = state.db.lock().await;
+    db.mix_festival_categories(event_id, source_ids, target_id, new_name, delete_sources).await
+}
+
+#[tauri::command]
+async fn get_enriched_categories(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<models::EnrichedNomorTanding>, String> {
+    let db = state.db.lock().await;
+    db.get_enriched_categories(event_id).await
+}
+
+#[tauri::command]
+async fn create_category(
+    input: models::CategoryMutationInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::EnrichedNomorTanding, String> {
+    let db = state.db.lock().await;
+    db.create_category(input).await
+}
+
+#[tauri::command]
+async fn update_category(
+    input: models::CategoryMutationInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::EnrichedNomorTanding, String> {
+    let db = state.db.lock().await;
+    db.update_category(input).await
+}
+
+#[tauri::command]
+async fn toggle_category_vr(
+    category_id: i64,
+    has_vr: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.toggle_category_vr(category_id, has_vr).await
+}
+
+#[tauri::command]
+async fn delete_category(
+    category_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_category(category_id).await
+}
+
+#[tauri::command]
+async fn get_category_athletes(
+    category_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<models::EnrichedAtlet>, String> {
+    let db = state.db.lock().await;
+    db.get_category_athletes(category_id).await
+}
+
+#[tauri::command]
+async fn get_timetable_editor_data(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::TimetableEditorData, String> {
+    let db = state.db.lock().await;
+    db.get_timetable_editor_data(event_id).await
+}
+
+#[tauri::command]
+async fn save_timetable_data(
+    event_id: i64,
+    payload: models::SaveTimetablePayload,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.save_timetable_data(event_id, payload).await
+}
+
+#[tauri::command]
+async fn add_timetable_day(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::TimetableDay, String> {
+    let db = state.db.lock().await;
+    db.add_timetable_day(event_id).await
+}
+
+#[tauri::command]
+async fn delete_timetable_day(
+    day_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_timetable_day(day_id).await
+}
+
+#[tauri::command]
+async fn reset_timetable(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.reset_timetable_data(event_id).await
+}
+
+#[tauri::command]
+async fn get_kop_surat(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<models::KopSurat>, String> {
+    let db = state.db.lock().await;
+    db.get_kop_surat(event_id).await
+}
+
+#[tauri::command]
+async fn save_kop_surat(
+    event_id: i64,
+    nama_organisasi: String,
+    alamat: String,
+    kontak: String,
+    logo: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::KopSurat, String> {
+    let db = state.db.lock().await;
+    db.save_kop_surat(event_id, nama_organisasi, alamat, kontak, logo).await
+}
+
+#[tauri::command]
+async fn get_tatami_booklet_data(
+    event_id: i64,
+    day_id: i64,
+    tatami_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::TatamiBookletData, String> {
+    let db = state.db.lock().await;
+    db.get_tatami_booklet_data(event_id, day_id, tatami_id).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (broadcast_tx, _rx) = broadcast::channel(100);
@@ -935,7 +1183,26 @@ pub fn run() {
             mark_sync_item_synced,
             delete_sync_item,
             clear_synced_items,
-            clear_all_sync_queue
+            clear_all_sync_queue,
+            open_festival_control_panel,
+            get_festival_roster_data,
+            save_festival_roster_state,
+            auto_pair_festival_category,
+            mix_festival_categories,
+            get_enriched_categories,
+            create_category,
+            update_category,
+            toggle_category_vr,
+            delete_category,
+            get_category_athletes,
+            get_timetable_editor_data,
+            save_timetable_data,
+            add_timetable_day,
+            delete_timetable_day,
+            reset_timetable,
+            get_tatami_booklet_data,
+            get_kop_surat,
+            save_kop_surat
         ])
         .on_window_event(|window, event| {
             match event {

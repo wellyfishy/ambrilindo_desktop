@@ -4,17 +4,20 @@ use axum::{
         Path, State,
     },
     response::{IntoResponse, Json},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use qrcode::render::svg;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
+use tauri::Emitter;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
@@ -27,6 +30,7 @@ pub const DEFAULT_PORT: u16 = 8000;
 pub struct AppState {
     pub broadcast_tx: broadcast::Sender<ArenaMessage>,
     pub db: Arc<Mutex<crate::db::DatabaseManager>>,
+    pub app_handle: Option<tauri::AppHandle>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,12 +40,20 @@ pub struct ArenaMessage {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkInterfaceInfo {
+    pub name: String,
+    pub ip: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkInfo {
     pub port: u16,
     pub local_ip: String,
     pub server_url: String,
     pub qr_svg: String,
+    pub available_ips: Vec<NetworkInterfaceInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,6 +72,38 @@ pub fn get_local_ip() -> String {
     }
 }
 
+pub fn get_available_ips() -> Vec<NetworkInterfaceInfo> {
+    let default_ip = get_local_ip();
+    let mut result = Vec::new();
+
+    if let Ok(netifas) = local_ip_address::list_afinet_netifas() {
+        for (name, ip) in netifas {
+            if let IpAddr::V4(ipv4) = ip {
+                if !ipv4.is_loopback() && !ipv4.is_unspecified() {
+                    let ip_str = ipv4.to_string();
+                    if !result.iter().any(|item: &NetworkInterfaceInfo| item.ip == ip_str) {
+                        result.push(NetworkInterfaceInfo {
+                            name,
+                            ip: ip_str.clone(),
+                            is_default: ip_str == default_ip,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if result.is_empty() {
+        result.push(NetworkInterfaceInfo {
+            name: "Localhost".into(),
+            ip: "127.0.0.1".into(),
+            is_default: true,
+        });
+    }
+
+    result
+}
+
 pub fn generate_qr_svg(url: &str) -> String {
     match QrCode::new(url.as_bytes()) {
         Ok(code) => code
@@ -72,16 +116,34 @@ pub fn generate_qr_svg(url: &str) -> String {
     }
 }
 
-pub fn get_network_info() -> NetworkInfo {
-    let ip = get_local_ip();
-    let url = format!("http://{}:{}", ip, DEFAULT_PORT);
+pub fn get_network_info_with_ip(custom_ip: Option<&str>) -> NetworkInfo {
+    let available_ips = get_available_ips();
+    let default_ip = get_local_ip();
+
+    let selected_ip = if let Some(ip) = custom_ip {
+        if !ip.trim().is_empty() {
+            ip.trim().to_string()
+        } else {
+            default_ip
+        }
+    } else {
+        default_ip
+    };
+
+    let url = format!("http://{}:{}", selected_ip, DEFAULT_PORT);
     let qr_svg = generate_qr_svg(&url);
+
     NetworkInfo {
         port: DEFAULT_PORT,
-        local_ip: ip,
+        local_ip: selected_ip,
         server_url: url,
         qr_svg,
+        available_ips,
     }
+}
+
+pub fn get_network_info() -> NetworkInfo {
+    get_network_info_with_ip(None)
 }
 
 async fn health_check() -> Json<HealthStatus> {
@@ -127,7 +189,10 @@ async fn handle_socket(
                                 channel: channel.clone(),
                                 payload: parsed,
                             };
-                            let _ = state.broadcast_tx.send(arena_msg);
+                            let _ = state.broadcast_tx.send(arena_msg.clone());
+                            if let Some(app) = &state.app_handle {
+                                let _ = app.emit("tatami_remote_input", &arena_msg);
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
@@ -200,6 +265,128 @@ async fn list_contingents_api(Path(event_id): Path<i64>, State(state): State<Arc
     }
 }
 
+async fn tatami_current_match_api(
+    Path(tatami_num): Path<i32>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_tatami_current_match(tatami_num).await {
+        Ok(m) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": m }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn tatami_matches_api(
+    Path(tatami_num): Path<i32>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_tatami_matches(tatami_num).await {
+        Ok(matches) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": matches }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveKataInput {
+    pub match_id: i64,
+    pub tatami: Option<i64>,
+    pub kata1: Option<String>,
+    pub kata2: Option<String>,
+}
+
+async fn save_match_kata_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SaveKataInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    if let Err(e) = db.save_match_kata(payload.match_id, payload.kata1.clone(), payload.kata2.clone()).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response();
+    }
+
+    let tatami_pk = payload.tatami.unwrap_or(1);
+    let arena_msg = ArenaMessage {
+        tatami_pk,
+        channel: "lo-kata".into(),
+        payload: serde_json::json!({
+            "type": "lo_kata_broadcast",
+            "tatami": tatami_pk,
+            "match_id": payload.match_id,
+            "kata_aka": payload.kata1,
+            "kata_ao": payload.kata2,
+        }),
+    };
+
+    let _ = state.broadcast_tx.send(arena_msg.clone());
+    if let Some(app) = &state.app_handle {
+        let _ = app.emit("tatami_remote_input", &arena_msg);
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubmitJudgeScoreInput {
+    pub tatami: i64,
+    pub juri: i32,
+    pub score_aka: Option<String>,
+    pub score_ao: Option<String>,
+    pub flag: Option<String>,
+}
+
+async fn submit_judge_score_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SubmitJudgeScoreInput>,
+) -> impl IntoResponse {
+    let arena_msg = ArenaMessage {
+        tatami_pk: payload.tatami,
+        channel: "jury-panel".into(),
+        payload: serde_json::json!({
+            "type": "judge_score",
+            "tatami": payload.tatami,
+            "juri": payload.juri,
+            "score_aka": payload.score_aka,
+            "score_ao": payload.score_ao,
+            "flag": payload.flag,
+        }),
+    };
+
+    let _ = state.broadcast_tx.send(arena_msg.clone());
+    if let Some(app) = &state.app_handle {
+        let _ = app.emit("tatami_remote_input", &arena_msg);
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+}
+
+pub fn find_frontend_build_dir() -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from("build"),
+        PathBuf::from("../build"),
+        PathBuf::from("../../build"),
+    ];
+    for c in &candidates {
+        if c.exists() && c.join("index.html").exists() {
+            return c.canonicalize().ok().or_else(|| Some(c.clone()));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let exe_candidates = [
+                parent.join("build"),
+                parent.join("../build"),
+                parent.join("../../build"),
+            ];
+            for c in &exe_candidates {
+                if c.exists() && c.join("index.html").exists() {
+                    return c.canonicalize().ok().or_else(|| Some(c.clone()));
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn media_file_api(
     Path(file_path): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -238,17 +425,32 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new()
+    let mut router = Router::new()
         .route("/api/health", get(health_check))
         .route("/api/network-info", get(network_info_handler))
         .route("/api/events", get(list_events_api))
         .route("/api/tatamis/:event_id", get(list_tatamis_api))
+        .route("/api/tatami/:tatami_number/current-match", get(tatami_current_match_api))
+        .route("/api/tatami/:tatami_number/matches", get(tatami_matches_api))
         .route("/api/bagans/:event_id", get(list_bagans_api))
         .route("/api/detail-bagan/:bagan_id", get(detail_bagan_api))
         .route("/api/athletes/:event_id", get(list_athletes_api))
         .route("/api/contingents/:event_id", get(list_contingents_api))
+        .route("/api/match/save-kata", post(save_match_kata_api))
+        .route("/api/tatami/submit-judge-score", post(submit_judge_score_api))
         .route("/media/*file_path", get(media_file_api))
-        .route("/ws/:channel/:tatami_pk", get(ws_handler))
+        .route("/ws/:channel/:tatami_pk", get(ws_handler));
+
+    if let Some(build_dir) = find_frontend_build_dir() {
+        let index_file = build_dir.join("index.html");
+        info!("Serving venue mobile web frontend from {:?}", build_dir);
+        let serve_dir = ServeDir::new(&build_dir).fallback(ServeFile::new(index_file));
+        router = router.fallback_service(serve_dir);
+    } else {
+        info!("Frontend build directory not found, serving API only");
+    }
+
+    router
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
