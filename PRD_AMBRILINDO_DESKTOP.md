@@ -99,8 +99,13 @@ This document serves as the master Product Requirement Document (PRD), feature g
 
 ## 4. Critical Architectural Deficiencies (P0 Epics)
 
-### Epic 4.1: Live Cloud Sync Queue Disconnection & Worker Thread
-#### Problem
+### Epic 4.1: Live Cloud Sync Queue Disconnection & Worker Thread [COMPLETED]
+*Implemented in commit `9e9becc` (November 2026).*
+- Auto-enqueue implemented in `src-tauri/src/db.rs` (`save_match_result` for `api/result/` & `api/final-result/`, `notify_match_running` for `api/status/`).
+- Tokio background sync worker daemon implemented in `src-tauri/src/sync.rs` (`spawn_sync_worker` and `process_sync_queue`), spawned on startup in `src-tauri/src/lib.rs`.
+- Strict FIFO queue processing with retry limits, instant async flush on match updates, and real-time Tauri event dispatch (`sync_queue_changed`) hooked to `SyncMonitorView.svelte`.
+
+#### Problem (Resolved)
 In `ambrilindo_desktop/src-tauri/src/db.rs`, the `save_match_result` function updates `backend_detailbagan` and advances bracket winners. However, **it completely omits inserting records into `backend_syncqueue`**. Furthermore, while `sync.rs` provides functions to view and manually retry `backend_syncqueue`, **there is no background task or retry daemon spawned at runtime**. In a live tournament with `is_live_sync_enabled = true`, live match scores are trapped locally and never pushed to `ambrilindo.com`.
 
 #### Requirements
@@ -275,8 +280,8 @@ gantt
     dateFormat  YYYY-MM-DD
     section Phase 1: Core Integrity (P0)
     Sync Queue Auto-Enqueue in db.rs       :done, 2026-11-03, 2d
-    Tokio Sync Daemon Worker Thread        :active, 2026-11-05, 2d
-    Multi-Operator REST API in Axum        :2026-11-07, 3d
+    Tokio Sync Daemon Worker Thread        :done, 2026-11-05, 2d
+    Multi-Operator REST API in Axum        :active, 2026-11-07, 3d
     Unified Frontend API Transport         :2026-11-10, 2d
 
     section Phase 2: Formats & VR (P1)
