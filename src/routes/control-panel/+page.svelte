@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { page } from "$app/state";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, setConnectionConfig } from "$lib/api_client";
   import { emit } from "@tauri-apps/api/event";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { DetailBaganItem, BaganItem, SaveMatchInput } from "$lib/types";
@@ -26,6 +26,11 @@
   async function loadMatchData() {
     isLoading = true;
     errorMessage = null;
+
+    const qHost = page.url.searchParams.get("hostUrl") || page.url.searchParams.get("host");
+    if (qHost) {
+      setConnectionConfig("client", qHost);
+    }
 
     const urlTatami = parseInt(page.url.searchParams.get("tatami") || "1", 10);
     tatamiNumber = !isNaN(urlTatami) && urlTatami > 0 ? urlTatami : 1;

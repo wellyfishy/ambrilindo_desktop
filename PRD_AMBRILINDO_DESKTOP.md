@@ -128,8 +128,14 @@ In `ambrilindo_desktop/src-tauri/src/db.rs`, the `save_match_result` function up
 
 ---
 
-### Epic 4.2: Multi-Operator LAN Client Mode Architecture
-#### Problem
+### Epic 4.2: Multi-Operator LAN Client Mode Architecture [COMPLETED]
+*Implemented in November 2026.*
+- Expanded Axum REST API in `src-tauri/src/server.rs` with 45+ endpoints for reading and mutating tournament data (athletes, brackets, tatamis, categories, timetables, festival rosters, match results, kop surat) plus a universal `/api/command/:cmd` dispatcher.
+- Created `src/lib/api_client.ts` implementing a unified transport layer: seamlessly invokes local Tauri IPC commands when in Solo/Host mode, or proxies requests over HTTP to the host's Axum server when in Client/Browser mode.
+- Intercepts media queries on client mode to stream logos and assets directly over HTTP (`/media/*`).
+- Updated all main workspace views and control panels to import `invoke` from `$lib/api_client`.
+
+#### Problem (Resolved)
 `LandingGateway.svelte` allows operators to select **"Join Room (Client Mode)"** and connects to the host's IP (e.g., `http://192.168.1.50:8000`). However, internal Svelte components (`RosterView`, `BaganView`, `TimetableEditorView`) invoke Tauri backend commands directly via `invoke("create_athlete", ...)`. On client laptops, there is no local SQLite database mounted, causing all mutating operations to crash with `"Database not mounted"`.
 
 #### Requirements
@@ -281,11 +287,11 @@ gantt
     section Phase 1: Core Integrity (P0)
     Sync Queue Auto-Enqueue in db.rs       :done, 2026-11-03, 2d
     Tokio Sync Daemon Worker Thread        :done, 2026-11-05, 2d
-    Multi-Operator REST API in Axum        :active, 2026-11-07, 3d
-    Unified Frontend API Transport         :2026-11-10, 2d
+    Multi-Operator REST API in Axum        :done, 2026-11-07, 3d
+    Unified Frontend API Transport         :done, 2026-11-10, 2d
 
     section Phase 2: Formats & VR (P1)
-    Team Kumite Control Panel & Schema     :2026-11-12, 4d
+    Team Kumite Control Panel & Schema     :active, 2026-11-12, 4d
     WKF Repechage Bracket Generator        :2026-11-16, 3d
     Round Robin Pool Manager & Matrix      :2026-11-19, 3d
     Video Review (VR) Supervisor & Display :2026-11-22, 3d

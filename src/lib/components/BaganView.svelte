@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/api_client";
   import { listen } from "@tauri-apps/api/event";
   import type {
     DetailBaganItem,

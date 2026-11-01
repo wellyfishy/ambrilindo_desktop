@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, setConnectionConfig } from "$lib/api_client";
 
   import type {
     ActiveChannel,
@@ -92,6 +92,7 @@
   async function handleSelectMode(mode: AppMode, remoteUrl?: string, selectedIp?: string) {
     if (mode === "solo") {
       appMode = "solo";
+      setConnectionConfig("solo");
       showToast("Mode Offline Aktif");
       if (!databaseSummary) {
         await autoMountDefaultDb();
@@ -105,6 +106,7 @@
     } else if (mode === "client" && remoteUrl) {
       appMode = "client";
       hostUrl = remoteUrl;
+      setConnectionConfig("client", remoteUrl);
       await connectToRemoteHost(remoteUrl);
     }
   }
@@ -117,6 +119,7 @@
       isServerRunning = true;
       portErrorModal = false;
       hostUrl = info.server_url;
+      setConnectionConfig("host", info.server_url);
       showToast(`Server Host LAN aktif di ${info.server_url}`);
     } catch (err: any) {
       portErrorMessage = typeof err === "string" ? err : JSON.stringify(err);
@@ -130,24 +133,22 @@
   async function connectToRemoteHost(remoteUrl: string) {
     try {
       showToast(`Menghubungkan ke host ${remoteUrl}...`);
-      const eventsRes = await fetch(`${remoteUrl}/api/events`);
-      if (eventsRes.ok) {
-        const json = await eventsRes.json();
-        const evList: EventItem[] = json.data || [];
-        if (evList.length > 0) {
-          selectedEventId = evList[0].id;
-          databaseSummary = {
-            db_path: `Remote Host (${remoteUrl})`,
-            media_path: `${remoteUrl}/media`,
-            events: evList,
-          };
-          await loadEventDetailsRemote(remoteUrl, evList[0].id);
-        }
+      setConnectionConfig("client", remoteUrl);
+      const evList = await invoke<EventItem[]>("get_events");
+      if (evList && evList.length > 0) {
+        selectedEventId = evList[0].id;
+        databaseSummary = {
+          db_path: `Remote Host (${remoteUrl})`,
+          media_path: `${remoteUrl}/media`,
+          events: evList,
+        };
+        await selectEvent(evList[0].id);
       }
       showToast("Terhubung ke Host Turnamen");
     } catch (e: any) {
-      alert("Gagal memuat data dari host: " + e.message);
+      alert("Gagal memuat data dari host: " + (e.message || e));
       appMode = "landing";
+      setConnectionConfig("solo");
     }
   }
 
@@ -364,11 +365,17 @@
     // Restore previous session if user was working in solo or host mode
     try {
       const savedMode = sessionStorage.getItem("ambrilindo_app_mode") as AppMode | null;
+      const savedHost = sessionStorage.getItem("ambrilindo_host_url");
       const savedEventId = sessionStorage.getItem("ambrilindo_event_id");
       const savedChannel = sessionStorage.getItem("ambrilindo_active_channel");
       const savedRole = sessionStorage.getItem("ambrilindo_active_role");
 
+      if (savedHost) {
+        hostUrl = savedHost;
+      }
+
       if (savedMode && savedMode !== "landing") {
+        setConnectionConfig(savedMode, hostUrl);
         appMode = savedMode;
         if (savedEventId) {
           const eid = parseInt(savedEventId, 10);
@@ -422,7 +429,10 @@
       {selectedEventId}
       onSelectEvent={(id) => selectEvent(id)}
       onAddEvent={() => (addEventModal = true)}
-      onReturnToLanding={() => (appMode = "landing")}
+      onReturnToLanding={() => {
+        appMode = "landing";
+        setConnectionConfig("solo");
+      }}
     />
 
     <!-- 2. Channel Sidebar (256px) - Matching base-dashboard.html -->
@@ -444,7 +454,10 @@
       onSelectChannel={handleSelectChannel}
       onOpenQrModal={() => (qrModal = true)}
       onOpenDrawingModal={() => (drawingModal = true)}
-      onReturnToLanding={() => (appMode = "landing")}
+      onReturnToLanding={() => {
+        appMode = "landing";
+        setConnectionConfig("solo");
+      }}
     />
 
     <!-- 3. Channel Main Workspace -->

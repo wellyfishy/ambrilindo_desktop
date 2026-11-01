@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/api_client";
   import { listen } from "@tauri-apps/api/event";
   import type { TatamiItem } from "$lib/types";
 
