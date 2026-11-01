@@ -18,6 +18,7 @@ use crate::models::{
     SummaryWinnerAthlete, Tatami, TatamiBookletCategory, TatamiBookletData, TatamiLiveStatus,
     TimetableCategoryOption, TimetableCell, TimetableDay, TimetableEditorData, TimetableProgressSummary,
     TimetableRow, UpdateMatchAthletesInput, Utusan,
+    AssignBoutAthletesInput, TeamBoutItem, TeamCandidateAthlete, TeamMatchInfo,
 };
 
 #[derive(Clone)]
@@ -1794,15 +1795,15 @@ impl DatabaseManager {
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Fetch the match being updated
-        let current_match: (i64, i64, i64, i64, Option<i64>, Option<i64>) = sqlx::query_as(
-            "SELECT id, bagan_id, round, urutan, atlet1_id, atlet2_id FROM backend_detailbagan WHERE id = ?"
+        let current_match: (i64, i64, i64, i64, Option<i64>, Option<i64>, bool) = sqlx::query_as(
+            "SELECT id, bagan_id, round, urutan, atlet1_id, atlet2_id, team FROM backend_detailbagan WHERE id = ?"
         )
         .bind(input.match_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| format!("Partai dengan ID {} tidak ditemukan: {}", input.match_id, e))?;
 
-        let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id) = current_match;
+        let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id, is_team_child_bout) = current_match;
 
         // Fetch bagan metadata to identify pool / multi-pool context
         let bagan_meta: Option<(i32, Option<i64>, Option<String>, Option<i64>)> = sqlx::query_as(
@@ -1847,7 +1848,8 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal menyimpan partai: {}", e))?;
 
         // 3. Handle bracket advancement or reopening
-        if input.selesai && input.pemenang.is_some() {
+        if !is_team_child_bout {
+            if input.selesai && input.pemenang.is_some() {
             let pemenang_str = input.pemenang.as_deref().unwrap_or("");
             let winner_id = match pemenang_str {
                 "1" => a1_id,
@@ -2164,6 +2166,32 @@ impl DatabaseManager {
                         .await;
                     }
                 }
+            }
+        }
+        } else if is_team_child_bout && input.selesai {
+            // Auto-advance tatami to next unfinished team bout if available
+            let next_bout_id: Option<i64> = sqlx::query_scalar(
+                r#"
+                SELECT m.db_id FROM backend_matchup m
+                JOIN backend_detailbagan db ON m.db_id = db.id
+                WHERE m.detail_bagan_id = (SELECT detail_bagan_id FROM backend_matchup WHERE db_id = ?)
+                  AND db.selesai = 0
+                  AND m.db_id != ?
+                ORDER BY m.round ASC LIMIT 1
+                "#
+            )
+            .bind(input.match_id)
+            .bind(input.match_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+
+            if let Some(nid) = next_bout_id {
+                let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = ? WHERE detail_bagan_id = ?")
+                    .bind(nid)
+                    .bind(input.match_id)
+                    .execute(&mut *tx)
+                    .await;
             }
         }
 
@@ -4858,6 +4886,797 @@ impl DatabaseManager {
         // Auto-pair target category
         self.auto_pair_festival_category(event_id, Some(final_target_id)).await
     }
+
+    // --- TEAM KUMITE (KUMITE BEREGU) METHODS ---
+
+    /// Retrieves detailed Team Kumite match context, all sub-bouts, aggregate standings, and eligible athlete pools
+    pub async fn get_team_match_info(&self, match_id: i64) -> Result<TeamMatchInfo, String> {
+        let pool = self.get_pool()?;
+
+        // 1. Check if match_id is a child bout (db_id in backend_matchup)
+        let matchup_parent: Option<(i64, i32)> = sqlx::query_as(
+            "SELECT detail_bagan_id, round FROM backend_matchup WHERE db_id = ?"
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal cek matchup parent: {}", e))?;
+
+        let (parent_match_id, active_bout_id, active_bout_round) = if let Some((pid, r)) = matchup_parent {
+            (pid, match_id, r)
+        } else {
+            (match_id, 0, 1)
+        };
+
+        // 2. Fetch parent match metadata
+        #[derive(sqlx::FromRow)]
+        #[allow(dead_code)]
+        struct ParentRow {
+            bagan_id: Option<i64>,
+            round: Option<i32>,
+            urutan: Option<i32>,
+            atlet1_id: Option<i64>,
+            atlet2_id: Option<i64>,
+            assigned_tatami_id: Option<i64>,
+            selesai: bool,
+            pemenang: Option<String>,
+            nama_bagan: Option<String>,
+            nama_nomor_tanding: Option<String>,
+            tipe_tanding: Option<String>,
+            event_id: Option<i64>,
+        }
+
+        let parent: ParentRow = sqlx::query_as(
+            r#"
+            SELECT db.bagan_id, db.round, db.urutan, db.atlet1_id, db.atlet2_id, db.assigned_tatami_id,
+                   db.selesai, db.pemenang, b.nama_bagan, nt.nama_nomor_tanding, b.tipe_tanding, b.event_id
+            FROM backend_detailbagan db
+            JOIN backend_bagan b ON db.bagan_id = b.id
+            LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
+            WHERE db.id = ?
+            "#
+        )
+        .bind(parent_match_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Partai utama #{} tidak ditemukan: {}", parent_match_id, e))?;
+
+        let bagan_id = parent.bagan_id.unwrap_or(1);
+        let event_id = parent.event_id.unwrap_or(1);
+        let cat_name = parent.nama_nomor_tanding.as_deref().unwrap_or("").to_lowercase();
+        let bagan_name = parent.nama_bagan.as_deref().unwrap_or("").to_lowercase();
+        let tipe_tanding = parent.tipe_tanding.as_deref().unwrap_or("2");
+
+        let existing_bouts_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM backend_matchup WHERE detail_bagan_id = ?"
+        )
+        .bind(parent_match_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+        let is_team_cat = (cat_name.contains("beregu") || bagan_name.contains("beregu")) && tipe_tanding != "1";
+
+        if !is_team_cat && existing_bouts_count == 0 {
+            // Not a team match
+            return Ok(TeamMatchInfo {
+                is_team_match: false,
+                parent_match_id,
+                active_bout_id: match_id,
+                active_bout_round: 1,
+                team_aka_name: "TEAM AKA".to_string(),
+                team_ao_name: "TEAM AO".to_string(),
+                team_aka_utusan: String::new(),
+                team_ao_utusan: String::new(),
+                team_aka_logo: None,
+                team_ao_logo: None,
+                team_aka_score: 0,
+                team_ao_score: 0,
+                team_draw_count: 0,
+                team_aka_points: 0,
+                team_ao_points: 0,
+                bouts: Vec::new(),
+                candidate_atlets_aka: Vec::new(),
+                candidate_atlets_ao: Vec::new(),
+                is_finished: parent.selesai,
+                winner_team: parent.pemenang,
+            });
+        }
+
+        // 3. Initialize child bouts if not already generated
+        if existing_bouts_count == 0 {
+            let default_count = if cat_name.contains("putri")
+                || cat_name.contains("cadet")
+                || cat_name.contains("kadet")
+                || cat_name.contains("junior")
+                || cat_name.contains("pemula")
+                || cat_name.contains("usia dini")
+                || cat_name.contains("3")
+                || bagan_name.contains("putri")
+                || bagan_name.contains("3")
+            {
+                3
+            } else {
+                5
+            };
+
+            for r in 1..=default_count {
+                let child_id: i64 = sqlx::query_scalar(
+                    r#"
+                    INSERT INTO backend_detailbagan (
+                        bagan_id, round, urutan, atlet1_id, atlet2_id,
+                        score1, score2, vr1, vr2, team, selesai, assigned_tatami_id
+                    )
+                    VALUES (?, 10, ?, ?, ?, '0', '0', 0, 0, 1, 0, ?)
+                    RETURNING id
+                    "#
+                )
+                .bind(bagan_id)
+                .bind(r)
+                .bind(parent.atlet1_id)
+                .bind(parent.atlet2_id)
+                .bind(parent.assigned_tatami_id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("Gagal membuat partai anak #{}: {}", r, e))?;
+
+                sqlx::query(
+                    "INSERT INTO backend_matchup (bagan_id, detail_bagan_id, db_id, round) VALUES (?, ?, ?, ?)"
+                )
+                .bind(bagan_id)
+                .bind(parent_match_id)
+                .bind(child_id)
+                .bind(r)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Gagal membuat matchup relasi #{}: {}", r, e))?;
+            }
+        }
+
+        // 4. Query all child bouts
+        #[derive(sqlx::FromRow)]
+        struct BoutRow {
+            matchup_id: i64,
+            round: i32,
+            db_id: i64,
+            atlet1_id: Option<i64>,
+            atlet1_nama: Option<String>,
+            atlet1_utusan: Option<String>,
+            atlet2_id: Option<i64>,
+            atlet2_nama: Option<String>,
+            atlet2_utusan: Option<String>,
+            score1: Option<String>,
+            score2: Option<String>,
+            scorekecil1: Option<String>,
+            scorekecil2: Option<String>,
+            pemenang: Option<String>,
+            selesai: bool,
+        }
+
+        let bout_rows: Vec<BoutRow> = sqlx::query_as(
+            r#"
+            SELECT m.id AS matchup_id, m.round, m.db_id,
+                   db.atlet1_id, a1.nama_atlet AS atlet1_nama, ut1.nama_utusan AS atlet1_utusan,
+                   db.atlet2_id, a2.nama_atlet AS atlet2_nama, ut2.nama_utusan AS atlet2_utusan,
+                   db.score1, db.score2, db.scorekecil1, db.scorekecil2,
+                   db.pemenang, db.selesai
+            FROM backend_matchup m
+            JOIN backend_detailbagan db ON m.db_id = db.id
+            LEFT JOIN backend_atlet a1 ON db.atlet1_id = a1.id
+            LEFT JOIN backend_utusan ut1 ON a1.utusan_id = ut1.id
+            LEFT JOIN backend_atlet a2 ON db.atlet2_id = a2.id
+            LEFT JOIN backend_utusan ut2 ON a2.utusan_id = ut2.id
+            WHERE m.detail_bagan_id = ?
+            ORDER BY m.round ASC
+            "#
+        )
+        .bind(parent_match_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat list partai anak: {}", e))?;
+
+        let mut team_aka_score = 0;
+        let mut team_ao_score = 0;
+        let mut team_draw_count = 0;
+        let mut team_aka_points = 0;
+        let mut team_ao_points = 0;
+
+        let mut bouts: Vec<TeamBoutItem> = Vec::new();
+        let mut first_unfinished_id = None;
+        let mut first_unfinished_round = 1;
+
+        for b in bout_rows {
+            if let Some(ref pem) = b.pemenang {
+                if pem == "1" {
+                    team_aka_score += 1;
+                } else if pem == "2" {
+                    team_ao_score += 1;
+                } else if pem == "3" {
+                    team_draw_count += 1;
+                }
+            }
+            if let Some(ref s1) = b.score1 {
+                if let Ok(v) = s1.trim().parse::<i32>() {
+                    team_aka_points += v;
+                }
+            }
+            if let Some(ref s2) = b.score2 {
+                if let Ok(v) = s2.trim().parse::<i32>() {
+                    team_ao_points += v;
+                }
+            }
+
+            if !b.selesai && first_unfinished_id.is_none() {
+                first_unfinished_id = Some(b.db_id);
+                first_unfinished_round = b.round;
+            }
+
+            bouts.push(TeamBoutItem {
+                matchup_id: b.matchup_id,
+                round: b.round,
+                bout_id: b.db_id,
+                atlet1_id: b.atlet1_id,
+                atlet1_nama: b.atlet1_nama,
+                atlet1_kontingen: b.atlet1_utusan,
+                atlet2_id: b.atlet2_id,
+                atlet2_nama: b.atlet2_nama,
+                atlet2_kontingen: b.atlet2_utusan,
+                score1: b.score1,
+                score2: b.score2,
+                scorekecil1: b.scorekecil1,
+                scorekecil2: b.scorekecil2,
+                pemenang: b.pemenang,
+                selesai: b.selesai,
+            });
+        }
+
+        let resolved_active_id = if active_bout_id > 0 {
+            active_bout_id
+        } else {
+            first_unfinished_id.unwrap_or_else(|| bouts.first().map(|x| x.bout_id).unwrap_or(parent_match_id))
+        };
+
+        let resolved_active_round = if active_bout_id > 0 {
+            active_bout_round
+        } else {
+            first_unfinished_round
+        };
+
+        // 5. Query parent team names, contingents, and logos
+        #[derive(sqlx::FromRow)]
+        struct ParentTeamMeta {
+            a1_nama: Option<String>,
+            a1_utusan: Option<String>,
+            a1_logo: Option<String>,
+            a1_utusan_id: Option<i64>,
+            a2_nama: Option<String>,
+            a2_utusan: Option<String>,
+            a2_logo: Option<String>,
+            a2_utusan_id: Option<i64>,
+        }
+
+        let team_meta: ParentTeamMeta = sqlx::query_as(
+            r#"
+            SELECT a1.nama_atlet AS a1_nama, ut1.nama_utusan AS a1_utusan, ut1.logo AS a1_logo, a1.utusan_id AS a1_utusan_id,
+                   a2.nama_atlet AS a2_nama, ut2.nama_utusan AS a2_utusan, ut2.logo AS a2_logo, a2.utusan_id AS a2_utusan_id
+            FROM backend_detailbagan db
+            LEFT JOIN backend_atlet a1 ON db.atlet1_id = a1.id
+            LEFT JOIN backend_utusan ut1 ON a1.utusan_id = ut1.id
+            LEFT JOIN backend_atlet a2 ON db.atlet2_id = a2.id
+            LEFT JOIN backend_utusan ut2 ON a2.utusan_id = ut2.id
+            WHERE db.id = ?
+            "#
+        )
+        .bind(parent_match_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat metadata tim: {}", e))?;
+
+        let team_aka_name = team_meta.a1_nama.unwrap_or_else(|| "TEAM AKA".to_string());
+        let team_aka_utusan = team_meta.a1_utusan.unwrap_or_default();
+        let team_aka_logo = team_meta.a1_logo;
+
+        let team_ao_name = team_meta.a2_nama.unwrap_or_else(|| "TEAM AO".to_string());
+        let team_ao_utusan = team_meta.a2_utusan.unwrap_or_default();
+        let team_ao_logo = team_meta.a2_logo;
+
+        // 6. Query candidate athletes for AKA and AO by utusan_id
+        #[derive(sqlx::FromRow)]
+        struct CandRow {
+            id: i64,
+            nama_atlet: String,
+            perguruan_nama: Option<String>,
+            utusan_nama: Option<String>,
+        }
+
+        let mut candidate_atlets_aka: Vec<TeamCandidateAthlete> = Vec::new();
+        if let Some(ut_id) = team_meta.a1_utusan_id {
+            let p_id = parent.atlet1_id.unwrap_or(0);
+            let rows: Vec<CandRow> = sqlx::query_as(
+                r#"
+                SELECT a.id, a.nama_atlet, p.nama_perguruan, u.nama_utusan
+                FROM backend_atlet a
+                LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                WHERE a.event_id = ? AND a.utusan_id = ? AND a.id != ?
+                ORDER BY a.nama_atlet ASC
+                "#
+            )
+            .bind(event_id)
+            .bind(ut_id)
+            .bind(p_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+            for r in rows {
+                candidate_atlets_aka.push(TeamCandidateAthlete {
+                    id: r.id,
+                    nama_atlet: r.nama_atlet,
+                    perguruan_nama: r.perguruan_nama,
+                    utusan_nama: r.utusan_nama,
+                });
+            }
+        }
+
+        let mut candidate_atlets_ao: Vec<TeamCandidateAthlete> = Vec::new();
+        if let Some(ut_id) = team_meta.a2_utusan_id {
+            let p_id = parent.atlet2_id.unwrap_or(0);
+            let rows: Vec<CandRow> = sqlx::query_as(
+                r#"
+                SELECT a.id, a.nama_atlet, p.nama_perguruan, u.nama_utusan
+                FROM backend_atlet a
+                LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                WHERE a.event_id = ? AND a.utusan_id = ? AND a.id != ?
+                ORDER BY a.nama_atlet ASC
+                "#
+            )
+            .bind(event_id)
+            .bind(ut_id)
+            .bind(p_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+            for r in rows {
+                candidate_atlets_ao.push(TeamCandidateAthlete {
+                    id: r.id,
+                    nama_atlet: r.nama_atlet,
+                    perguruan_nama: r.perguruan_nama,
+                    utusan_nama: r.utusan_nama,
+                });
+            }
+        }
+
+        Ok(TeamMatchInfo {
+            is_team_match: true,
+            parent_match_id,
+            active_bout_id: resolved_active_id,
+            active_bout_round: resolved_active_round,
+            team_aka_name,
+            team_ao_name,
+            team_aka_utusan,
+            team_ao_utusan,
+            team_aka_logo,
+            team_ao_logo,
+            team_aka_score,
+            team_ao_score,
+            team_draw_count,
+            team_aka_points,
+            team_ao_points,
+            bouts,
+            candidate_atlets_aka,
+            candidate_atlets_ao,
+            is_finished: parent.selesai,
+            winner_team: parent.pemenang,
+        })
+    }
+
+    /// Assigns specific fighters to a child bout (creating new athlete records if custom names are entered)
+    pub async fn assign_bout_athletes(&self, input: AssignBoutAthletesInput) -> Result<(), String> {
+        let pool = self.get_pool()?;
+
+        // Fetch parent match context to inherit utusan & perguruan for custom athletes
+        #[derive(sqlx::FromRow)]
+        #[allow(dead_code)]
+        struct BoutContext {
+            bagan_id: Option<i64>,
+            parent_a1_id: Option<i64>,
+            parent_a2_id: Option<i64>,
+            p1_utusan_id: Option<i64>,
+            p1_perguruan_id: Option<i64>,
+            p1_event_id: Option<i64>,
+            p1_nt_id: Option<i64>,
+            p2_utusan_id: Option<i64>,
+            p2_perguruan_id: Option<i64>,
+        }
+
+        let ctx: BoutContext = sqlx::query_as(
+            r#"
+            SELECT db.bagan_id,
+                   p.atlet1_id AS parent_a1_id, p.atlet2_id AS parent_a2_id,
+                   a1.utusan_id AS p1_utusan_id, a1.perguruan_id AS p1_perguruan_id, a1.event_id AS p1_event_id, a1.nomor_tanding_id AS p1_nt_id,
+                   a2.utusan_id AS p2_utusan_id, a2.perguruan_id AS p2_perguruan_id
+            FROM backend_detailbagan db
+            JOIN backend_matchup m ON m.db_id = db.id
+            JOIN backend_detailbagan p ON m.detail_bagan_id = p.id
+            LEFT JOIN backend_atlet a1 ON p.atlet1_id = a1.id
+            LEFT JOIN backend_atlet a2 ON p.atlet2_id = a2.id
+            WHERE db.id = ?
+            "#
+        )
+        .bind(input.bout_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Konteks partai anak #{} tidak ditemukan: {}", input.bout_id, e))?;
+
+        let mut target_aka_id = input.aka_atlet_id;
+        if target_aka_id.is_none() {
+            if let Some(ref custom_aka) = input.aka_custom_name {
+                let clean_name = custom_aka.trim().to_uppercase();
+                if !clean_name.is_empty() {
+                    let ev_id = ctx.p1_event_id.unwrap_or(1);
+                    // Check if athlete with same name and utusan already exists
+                    let existing: Option<(i64,)> = sqlx::query_as(
+                        "SELECT id FROM backend_atlet WHERE event_id = ? AND utusan_id = ? AND UPPER(nama_atlet) = ?"
+                    )
+                    .bind(ev_id)
+                    .bind(ctx.p1_utusan_id)
+                    .bind(&clean_name)
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap_or(None);
+
+                    if let Some((aid,)) = existing {
+                        target_aka_id = Some(aid);
+                    } else {
+                        let new_id: i64 = sqlx::query_scalar(
+                            "INSERT INTO backend_atlet (event_id, nama_atlet, utusan_id, perguruan_id, nomor_tanding_id, is_priority) VALUES (?, ?, ?, ?, ?, 0) RETURNING id"
+                        )
+                        .bind(ev_id)
+                        .bind(&clean_name)
+                        .bind(ctx.p1_utusan_id)
+                        .bind(ctx.p1_perguruan_id)
+                        .bind(ctx.p1_nt_id)
+                        .fetch_one(pool)
+                        .await
+                        .map_err(|e| format!("Gagal membuat atlet AKA kustom: {}", e))?;
+                        target_aka_id = Some(new_id);
+                    }
+                }
+            }
+        }
+
+        let mut target_ao_id = input.ao_atlet_id;
+        if target_ao_id.is_none() {
+            if let Some(ref custom_ao) = input.ao_custom_name {
+                let clean_name = custom_ao.trim().to_uppercase();
+                if !clean_name.is_empty() {
+                    let ev_id = ctx.p1_event_id.unwrap_or(1);
+                    let existing: Option<(i64,)> = sqlx::query_as(
+                        "SELECT id FROM backend_atlet WHERE event_id = ? AND utusan_id = ? AND UPPER(nama_atlet) = ?"
+                    )
+                    .bind(ev_id)
+                    .bind(ctx.p2_utusan_id)
+                    .bind(&clean_name)
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap_or(None);
+
+                    if let Some((aid,)) = existing {
+                        target_ao_id = Some(aid);
+                    } else {
+                        let new_id: i64 = sqlx::query_scalar(
+                            "INSERT INTO backend_atlet (event_id, nama_atlet, utusan_id, perguruan_id, nomor_tanding_id, is_priority) VALUES (?, ?, ?, ?, ?, 0) RETURNING id"
+                        )
+                        .bind(ev_id)
+                        .bind(&clean_name)
+                        .bind(ctx.p2_utusan_id)
+                        .bind(ctx.p2_perguruan_id)
+                        .bind(ctx.p1_nt_id)
+                        .fetch_one(pool)
+                        .await
+                        .map_err(|e| format!("Gagal membuat atlet AO kustom: {}", e))?;
+                        target_ao_id = Some(new_id);
+                    }
+                }
+            }
+        }
+
+        sqlx::query("UPDATE backend_detailbagan SET atlet1_id = ?, atlet2_id = ? WHERE id = ?")
+            .bind(target_aka_id)
+            .bind(target_ao_id)
+            .bind(input.bout_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menetapkan atlet partai: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Adds an extra child bout to a team match (e.g. sudden-death tiebreaker bout)
+    pub async fn add_team_bout(&self, parent_match_id: i64) -> Result<TeamBoutItem, String> {
+        let pool = self.get_pool()?;
+
+        #[derive(sqlx::FromRow)]
+        struct ParentBoutMeta {
+            bagan_id: Option<i64>,
+            atlet1_id: Option<i64>,
+            atlet2_id: Option<i64>,
+            assigned_tatami_id: Option<i64>,
+            vr1: bool,
+            vr2: bool,
+        }
+
+        let p: ParentBoutMeta = sqlx::query_as(
+            "SELECT bagan_id, atlet1_id, atlet2_id, assigned_tatami_id, vr1, vr2 FROM backend_detailbagan WHERE id = ?"
+        )
+        .bind(parent_match_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Partai utama #{} tidak ditemukan: {}", parent_match_id, e))?;
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM backend_matchup WHERE detail_bagan_id = ?"
+        )
+        .bind(parent_match_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+        let next_round = (count + 1) as i32;
+
+        let child_id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO backend_detailbagan (
+                bagan_id, round, urutan, atlet1_id, atlet2_id,
+                score1, score2, vr1, vr2, team, selesai, assigned_tatami_id
+            )
+            VALUES (?, 10, ?, ?, ?, '0', '0', ?, ?, 1, 0, ?)
+            RETURNING id
+            "#
+        )
+        .bind(p.bagan_id)
+        .bind(next_round)
+        .bind(p.atlet1_id)
+        .bind(p.atlet2_id)
+        .bind(p.vr1)
+        .bind(p.vr2)
+        .bind(p.assigned_tatami_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal menambah partai anak: {}", e))?;
+
+        let matchup_id: i64 = sqlx::query_scalar(
+            "INSERT INTO backend_matchup (bagan_id, detail_bagan_id, db_id, round) VALUES (?, ?, ?, ?) RETURNING id"
+        )
+        .bind(p.bagan_id)
+        .bind(parent_match_id)
+        .bind(child_id)
+        .bind(next_round)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal membuat matchup relasi: {}", e))?;
+
+        Ok(TeamBoutItem {
+            matchup_id,
+            round: next_round,
+            bout_id: child_id,
+            atlet1_id: p.atlet1_id,
+            atlet1_nama: None,
+            atlet1_kontingen: None,
+            atlet2_id: p.atlet2_id,
+            atlet2_nama: None,
+            atlet2_kontingen: None,
+            score1: Some("0".to_string()),
+            score2: Some("0".to_string()),
+            scorekecil1: None,
+            scorekecil2: None,
+            pemenang: None,
+            selesai: false,
+        })
+    }
+
+    /// Deletes a team bout
+    pub async fn delete_team_bout(&self, bout_id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+
+        sqlx::query("DELETE FROM backend_matchup WHERE db_id = ?")
+            .bind(bout_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menghapus matchup: {}", e))?;
+
+        sqlx::query("DELETE FROM backend_detailbagan WHERE id = ? AND team = 1")
+            .bind(bout_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menghapus partai anak: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Finalizes a team match: computes final aggregate scores, advances winning team in bracket tree, enqueues sync
+    pub async fn finish_team_match(&self, parent_match_id: i64, winner_override: Option<String>) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Fetch all child bouts to calculate aggregate tallies
+        #[derive(sqlx::FromRow)]
+        struct ChildBoutTally {
+            score1: Option<String>,
+            score2: Option<String>,
+            pemenang: Option<String>,
+        }
+
+        let bouts: Vec<ChildBoutTally> = sqlx::query_as(
+            "SELECT db.score1, db.score2, db.pemenang FROM backend_matchup m JOIN backend_detailbagan db ON m.db_id = db.id WHERE m.detail_bagan_id = ? ORDER BY m.round ASC"
+        )
+        .bind(parent_match_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal memuat partai beregu: {}", e))?;
+
+        let mut t_aka_score = 0;
+        let mut t_ao_score = 0;
+        let mut t_aka_points = 0;
+        let mut t_ao_points = 0;
+
+        for b in &bouts {
+            if let Some(ref pem) = b.pemenang {
+                if pem == "1" {
+                    t_aka_score += 1;
+                } else if pem == "2" {
+                    t_ao_score += 1;
+                }
+            }
+            if let Some(ref s1) = b.score1 {
+                if let Ok(v) = s1.trim().parse::<i32>() {
+                    t_aka_points += v;
+                }
+            }
+            if let Some(ref s2) = b.score2 {
+                if let Ok(v) = s2.trim().parse::<i32>() {
+                    t_ao_points += v;
+                }
+            }
+        }
+
+        // 2. Determine final winner
+        let final_pemenang = if let Some(w) = winner_override {
+            w
+        } else if t_aka_score > t_ao_score {
+            "1".to_string()
+        } else if t_ao_score > t_aka_score {
+            "2".to_string()
+        } else if t_aka_points > t_ao_points {
+            "1".to_string()
+        } else if t_ao_points > t_aka_points {
+            "2".to_string()
+        } else {
+            "1".to_string()
+        };
+
+        // 3. Update parent match
+        sqlx::query(
+            "UPDATE backend_detailbagan SET score1 = ?, score2 = ?, scorekecil1 = ?, scorekecil2 = ?, pemenang = ?, selesai = 1 WHERE id = ?"
+        )
+        .bind(t_aka_score.to_string())
+        .bind(t_ao_score.to_string())
+        .bind(t_aka_points.to_string())
+        .bind(t_ao_points.to_string())
+        .bind(&final_pemenang)
+        .bind(parent_match_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal update partai utama: {}", e))?;
+
+        // 4. Advance winning team in bracket tree
+        #[derive(sqlx::FromRow)]
+        struct ParentTreeMeta {
+            bagan_id: i64,
+            round: i64,
+            urutan: i64,
+            atlet1_id: Option<i64>,
+            atlet2_id: Option<i64>,
+            assigned_tatami_id: Option<i64>,
+            event_id: Option<i64>,
+        }
+
+        let p_meta: ParentTreeMeta = sqlx::query_as(
+            "SELECT db.bagan_id, db.round, db.urutan, db.atlet1_id, db.atlet2_id, db.assigned_tatami_id, b.event_id FROM backend_detailbagan db JOIN backend_bagan b ON db.bagan_id = b.id WHERE db.id = ?"
+        )
+        .bind(parent_match_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal memuat pohon bagan: {}", e))?;
+
+        let winner_athlete_id = if final_pemenang == "1" {
+            p_meta.atlet1_id
+        } else {
+            p_meta.atlet2_id
+        };
+
+        if let Some(w_id) = winner_athlete_id {
+            let next_round = p_meta.round + 1;
+            let next_urutan = (p_meta.urutan + 1) / 2;
+
+            if p_meta.urutan % 2 == 1 {
+                let _ = sqlx::query(
+                    "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                )
+                .bind(w_id)
+                .bind(p_meta.bagan_id)
+                .bind(next_round)
+                .bind(next_urutan)
+                .execute(&mut *tx)
+                .await;
+            } else {
+                let _ = sqlx::query(
+                    "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                )
+                .bind(w_id)
+                .bind(p_meta.bagan_id)
+                .bind(next_round)
+                .bind(next_urutan)
+                .execute(&mut *tx)
+                .await;
+            }
+        }
+
+        // 5. Clear tatami assignment or advance
+        if let Some(t_id) = p_meta.assigned_tatami_id {
+            let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE id = ? AND detail_bagan_id = ?")
+                .bind(t_id)
+                .bind(parent_match_id)
+                .execute(&mut *tx)
+                .await;
+        }
+
+        // 6. Enqueue cloud sync if enabled
+        if let Some(ev_id) = p_meta.event_id {
+            let ev_info: Option<(Option<String>, bool)> = sqlx::query_as(
+                "SELECT kode_event, is_live_sync_enabled FROM backend_event WHERE id = ?"
+            )
+            .bind(ev_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+
+            if let Some((kode_event, is_live_sync_enabled)) = ev_info {
+                if is_live_sync_enabled {
+                    let ev_code = kode_event.unwrap_or_else(|| format!("EV{}", ev_id));
+                    let kode_realtime = format!("{}-{}-{}", ev_code, p_meta.bagan_id, parent_match_id);
+
+                    let payload = serde_json::json!({
+                        "status": "finished",
+                        "pemenang": if final_pemenang == "1" { "aka" } else { "ao" },
+                        "round": p_meta.round,
+                        "urutan": p_meta.urutan,
+                        "kode_realtime": kode_realtime,
+                        "score_aka": t_aka_score.to_string(),
+                        "score_ao": t_ao_score.to_string(),
+                        "lil_score_aka": t_aka_points.to_string(),
+                        "lil_score_ao": t_ao_points.to_string(),
+                    });
+
+                    let _ = sqlx::query(
+                        "INSERT INTO backend_syncqueue (event_id, endpoint, payload, attempts, created_at) VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)"
+                    )
+                    .bind(ev_id)
+                    .bind("api/result/")
+                    .bind(payload.to_string())
+                    .execute(&mut *tx)
+                    .await;
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan partai beregu: {}", e))?;
+        Ok(())
+    }
+
 }
 
 // Helper functions for Timetable

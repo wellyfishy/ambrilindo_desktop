@@ -4,7 +4,7 @@
   import { invoke, setConnectionConfig } from "$lib/api_client";
   import { emit } from "@tauri-apps/api/event";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import type { DetailBaganItem, BaganItem, SaveMatchInput } from "$lib/types";
+  import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, AssignBoutAthletesInput } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
 
   let matchId = $derived(Number(page.url.searchParams.get("matchId") || "0"));
@@ -15,6 +15,8 @@
   );
 
   let currentMatch = $state<DetailBaganItem | null>(null);
+  let allMatchesInBagan = $state<DetailBaganItem[]>([]);
+  let teamMatchInfo = $state<TeamMatchInfo | null>(null);
   let baganInfo = $state<BaganItem | null>(null);
   let baganName = $state<string>("");
   let eventName = $state<string>("AMBRILINDO OPEN KARATE CHAMPIONSHIP");
@@ -102,14 +104,49 @@
 
       // 1. Fetch all matches in this bagan
       const matches: DetailBaganItem[] = await invoke("get_detail_bagan", { baganId });
-      const found = matches.find((m) => m.id === matchId);
-      if (!found) {
-        throw new Error(`Partai dengan ID ${matchId} tidak ditemukan dalam bagan #${baganId}.`);
-      }
-      currentMatch = found;
-      tatamiNumber = found.assigned_tatami_id || 1;
+      allMatchesInBagan = matches;
 
-      // 2. Fetch bagan info directly by baganId
+      // 2. Fetch team match info if this is Kumite Beregu
+      try {
+        const tInfo: TeamMatchInfo = await invoke("get_team_match_info", { matchId });
+        if (tInfo && tInfo.is_team_match) {
+          teamMatchInfo = tInfo;
+          // Determine target match: active bout or currently focused bout
+          let targetBoutId = tInfo.active_bout_id;
+          if (currentMatch && tInfo.bouts.some((b) => b.bout_id === currentMatch?.id)) {
+            targetBoutId = currentMatch.id;
+          }
+          const foundBout = matches.find((m) => m.id === targetBoutId);
+          if (foundBout) {
+            currentMatch = foundBout;
+            tatamiNumber = foundBout.assigned_tatami_id || 1;
+          } else {
+            const foundParent = matches.find((m) => m.id === matchId);
+            if (foundParent) {
+              currentMatch = foundParent;
+              tatamiNumber = foundParent.assigned_tatami_id || 1;
+            }
+          }
+        } else {
+          teamMatchInfo = null;
+          const found = matches.find((m) => m.id === matchId);
+          if (!found) {
+            throw new Error(`Partai dengan ID ${matchId} tidak ditemukan dalam bagan #${baganId}.`);
+          }
+          currentMatch = found;
+          tatamiNumber = found.assigned_tatami_id || 1;
+        }
+      } catch (e) {
+        console.warn("get_team_match_info check:", e);
+        const found = matches.find((m) => m.id === matchId);
+        if (!found) {
+          throw new Error(`Partai dengan ID ${matchId} tidak ditemukan dalam bagan #${baganId}.`);
+        }
+        currentMatch = found;
+        tatamiNumber = found.assigned_tatami_id || 1;
+      }
+
+      // 3. Fetch bagan info directly by baganId
       try {
         const b: BaganItem | null = await invoke("get_bagan_by_id", { baganId });
         if (b) {
@@ -128,9 +165,15 @@
         } catch (_) {}
       }
 
-      // 3. Resolve logos if present
+      // 4. Resolve logos if present
       const map: Record<string, string> = {};
-      for (const logoKey of [found.atlet1_logo, found.atlet2_logo]) {
+      const logoCandidates = [
+        currentMatch?.atlet1_logo,
+        currentMatch?.atlet2_logo,
+        teamMatchInfo?.team_aka_logo,
+        teamMatchInfo?.team_ao_logo,
+      ];
+      for (const logoKey of logoCandidates) {
         if (logoKey && !map[logoKey]) {
           try {
             const dataUrl: string | null = await invoke("get_media_data_url", {
@@ -218,6 +261,82 @@
     }
   }
 
+  async function handleSwitchBout(boutId: number) {
+    const target = allMatchesInBagan.find((m) => m.id === boutId);
+    if (target) {
+      currentMatch = target;
+      tatamiNumber = target.assigned_tatami_id || tatamiNumber;
+    } else {
+      try {
+        const matches: DetailBaganItem[] = await invoke("get_detail_bagan", { baganId });
+        allMatchesInBagan = matches;
+        const found = matches.find((m) => m.id === boutId);
+        if (found) {
+          currentMatch = found;
+          tatamiNumber = found.assigned_tatami_id || tatamiNumber;
+        }
+      } catch (_) {}
+    }
+
+    if (teamMatchInfo) {
+      try {
+        const tInfo: TeamMatchInfo = await invoke("get_team_match_info", {
+          matchId: teamMatchInfo.parent_match_id,
+        });
+        teamMatchInfo = tInfo;
+      } catch (_) {}
+    }
+  }
+
+  async function handleAddBout() {
+    if (!teamMatchInfo) return;
+    try {
+      await invoke("add_team_bout", { parentMatchId: teamMatchInfo.parent_match_id });
+      await loadMatchData();
+    } catch (err: any) {
+      alert("Gagal menambah partai: " + (err?.message || err));
+    }
+  }
+
+  async function handleDeleteBout(boutId: number) {
+    if (!confirm("Hapus partai beregu ini?")) return;
+    try {
+      await invoke("delete_team_bout", { boutId });
+      await loadMatchData();
+    } catch (err: any) {
+      alert("Gagal menghapus partai: " + (err?.message || err));
+    }
+  }
+
+  async function handleAssignBoutAthletes(input: AssignBoutAthletesInput) {
+    try {
+      await invoke("assign_bout_athletes", { input });
+      await loadMatchData();
+    } catch (err: any) {
+      alert("Gagal menyimpan atlet partai: " + (err?.message || err));
+    }
+  }
+
+  async function handleFinishTeamMatch(winnerOverride?: string) {
+    if (!teamMatchInfo) return;
+    try {
+      await invoke("finish_team_match", {
+        parentMatchId: teamMatchInfo.parent_match_id,
+        winnerOverride: winnerOverride || null,
+      });
+      try {
+        await emit("bracket_updated", {
+          matchId: teamMatchInfo.parent_match_id,
+          baganId,
+        });
+      } catch (_) {}
+      alert("Pertandingan Beregu Selesai! Skor akhir dan bagan turnamen telah diperbarui.");
+      await handleCloseWindow();
+    } catch (err: any) {
+      alert("Gagal menyelesaikan pertandingan beregu: " + (err?.message || err));
+    }
+  }
+
   async function handleSaveMatchResult(input: SaveMatchInput) {
     if (isFestival) {
       // Festival matches are stateless (not saved to database)
@@ -235,8 +354,13 @@
       } catch (emitErr) {
         console.warn("Emit bracket_updated failed:", emitErr);
       }
-      // Close this window after successful save
-      await handleCloseWindow();
+      if (teamMatchInfo?.is_team_match) {
+        // If team match, reload state to update team score and active bout
+        await loadMatchData();
+      } else {
+        // Close this window after successful save for standard individual match
+        await handleCloseWindow();
+      }
     } catch (err: any) {
       alert("Gagal menyimpan hasil partai: " + (err?.message || err));
     }
@@ -278,8 +402,15 @@
       eventName={eventName}
       tatamiNumber={tatamiNumber}
       logoMap={logoMap}
+      teamMatchInfo={teamMatchInfo}
       onBack={handleCloseWindow}
       onSave={handleSaveMatchResult}
+      onRefreshTeam={loadMatchData}
+      onSwitchBout={handleSwitchBout}
+      onAddBout={handleAddBout}
+      onDeleteBout={handleDeleteBout}
+      onAssignBoutAthletes={handleAssignBoutAthletes}
+      onFinishTeamMatch={handleFinishTeamMatch}
     />
   {/if}
 </div>

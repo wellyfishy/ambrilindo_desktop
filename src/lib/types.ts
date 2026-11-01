@@ -618,3 +618,62 @@ export interface FestivalRosterState {
 }
 
 
+
+
+// --- TEAM KUMITE (KUMITE BEREGU) TYPES ---
+
+export interface TeamBoutItem {
+  matchup_id: number;
+  round: number;
+  bout_id: number;
+  atlet1_id: number | null;
+  atlet1_nama: string | null;
+  atlet1_kontingen: string | null;
+  atlet2_id: number | null;
+  atlet2_nama: string | null;
+  atlet2_kontingen: string | null;
+  score1: string | null;
+  score2: string | null;
+  scorekecil1: string | null;
+  scorekecil2: string | null;
+  pemenang: string | null;
+  selesai: boolean;
+}
+
+export interface TeamCandidateAthlete {
+  id: number;
+  nama_atlet: string;
+  perguruan_nama: string | null;
+  utusan_nama: string | null;
+}
+
+export interface TeamMatchInfo {
+  is_team_match: boolean;
+  parent_match_id: number;
+  active_bout_id: number;
+  active_bout_round: number;
+  team_aka_name: string;
+  team_ao_name: string;
+  team_aka_utusan: string;
+  team_ao_utusan: string;
+  team_aka_logo: string | null;
+  team_ao_logo: string | null;
+  team_aka_score: number;
+  team_ao_score: number;
+  team_draw_count: number;
+  team_aka_points: number;
+  team_ao_points: number;
+  bouts: TeamBoutItem[];
+  candidate_atlets_aka: TeamCandidateAthlete[];
+  candidate_atlets_ao: TeamCandidateAthlete[];
+  is_finished: boolean;
+  winner_team: string | null;
+}
+
+export interface AssignBoutAthletesInput {
+  bout_id: number;
+  aka_atlet_id?: number | null;
+  ao_atlet_id?: number | null;
+  aka_custom_name?: string | null;
+  ao_custom_name?: string | null;
+}

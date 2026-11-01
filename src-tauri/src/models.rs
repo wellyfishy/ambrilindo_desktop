@@ -679,4 +679,66 @@ pub struct FestivalRosterState {
     pub athlete_pairings: std::collections::HashMap<String, Vec<i64>>,  // nt_id -> [athlete_id]
 }
 
+// --- TEAM KUMITE (KUMITE BEREGU) MODELS ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamBoutItem {
+    pub matchup_id: i64,
+    pub round: i32, // Bout 1, 2, 3...
+    pub bout_id: i64,
+    pub atlet1_id: Option<i64>,
+    pub atlet1_nama: Option<String>,
+    pub atlet1_kontingen: Option<String>,
+    pub atlet2_id: Option<i64>,
+    pub atlet2_nama: Option<String>,
+    pub atlet2_kontingen: Option<String>,
+    pub score1: Option<String>,
+    pub score2: Option<String>,
+    pub scorekecil1: Option<String>,
+    pub scorekecil2: Option<String>,
+    pub pemenang: Option<String>, // '1', '2', '3' (Draw)
+    pub selesai: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamCandidateAthlete {
+    pub id: i64,
+    pub nama_atlet: String,
+    pub perguruan_nama: Option<String>,
+    pub utusan_nama: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamMatchInfo {
+    pub is_team_match: bool,
+    pub parent_match_id: i64,
+    pub active_bout_id: i64,
+    pub active_bout_round: i32,
+    pub team_aka_name: String,
+    pub team_ao_name: String,
+    pub team_aka_utusan: String,
+    pub team_ao_utusan: String,
+    pub team_aka_logo: Option<String>,
+    pub team_ao_logo: Option<String>,
+    pub team_aka_score: i32,      // Bouts won
+    pub team_ao_score: i32,       // Bouts won
+    pub team_draw_count: i32,     // Bouts tied
+    pub team_aka_points: i32,     // Aggregate points
+    pub team_ao_points: i32,      // Aggregate points
+    pub bouts: Vec<TeamBoutItem>,
+    pub candidate_atlets_aka: Vec<TeamCandidateAthlete>,
+    pub candidate_atlets_ao: Vec<TeamCandidateAthlete>,
+    pub is_finished: bool,
+    pub winner_team: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignBoutAthletesInput {
+    pub bout_id: i64,
+    pub aka_atlet_id: Option<i64>,
+    pub ao_atlet_id: Option<i64>,
+    pub aka_custom_name: Option<String>,
+    pub ao_custom_name: Option<String>,
+}
+
 

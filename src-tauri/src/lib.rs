@@ -15,6 +15,7 @@ use models::{
     AthleteMutationInput, Atlet, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
     EnrichedDetailBagan, EnrichedPerguruan, EnrichedUtusan, Event, NomorTanding, Perguruan, SaveMatchInput, SummaryBaganResult, SummaryJuaraResult, Tatami,
     UpdateMatchAthletesInput, Utusan,
+    AssignBoutAthletesInput, TeamBoutItem, TeamMatchInfo,
 };
 use server::{ArenaMessage, NetworkInfo};
 
@@ -733,6 +734,52 @@ async fn save_contingent_logo(
 }
 
 #[tauri::command]
+async fn get_team_match_info(
+    match_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<TeamMatchInfo, String> {
+    let db = state.db.lock().await;
+    db.get_team_match_info(match_id).await
+}
+
+#[tauri::command]
+async fn assign_bout_athletes(
+    input: AssignBoutAthletesInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.assign_bout_athletes(input).await
+}
+
+#[tauri::command]
+async fn add_team_bout(
+    parent_match_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<TeamBoutItem, String> {
+    let db = state.db.lock().await;
+    db.add_team_bout(parent_match_id).await
+}
+
+#[tauri::command]
+async fn delete_team_bout(
+    bout_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_team_bout(bout_id).await
+}
+
+#[tauri::command]
+async fn finish_team_match(
+    parent_match_id: i64,
+    winner_override: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.finish_team_match(parent_match_id, winner_override).await
+}
+
+#[tauri::command]
 async fn create_tatami(
     event_id: i64,
     tatami_number: i32,
@@ -1309,6 +1356,11 @@ pub fn run() {
             update_perguruan,
             delete_perguruan,
             save_contingent_logo,
+            get_team_match_info,
+            assign_bout_athletes,
+            add_team_bout,
+            delete_team_bout,
+            finish_team_match,
             play_buzzer,
             get_available_monitors,
             project_scoreboard,

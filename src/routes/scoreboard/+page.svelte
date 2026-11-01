@@ -17,6 +17,18 @@
   let isMatchFinished = $state(false);
   let showKataScoreOverlay = $state(false);
 
+  // Team Kumite (Kumite Beregu) state
+  let isTeamMatch = $state(false);
+  let teamAkaName = $state("");
+  let teamAoName = $state("");
+  let teamAkaScore = $state(0);
+  let teamAoScore = $state(0);
+  let teamDrawCount = $state(0);
+  let teamAkaPoints = $state(0);
+  let teamAoPoints = $state(0);
+  let activeBoutRound = $state(1);
+  let totalBouts = $state(5);
+
   // Timer state (with high-precision milliseconds)
   let timerMs = $state(120000);
   let isTimerRunning = $state(false);
@@ -138,6 +150,17 @@
     if (data.isFinished !== undefined) isMatchFinished = data.isFinished;
     if (data.showKataScoreOverlay !== undefined) showKataScoreOverlay = data.showKataScoreOverlay;
 
+    if (data.isTeamMatch !== undefined) isTeamMatch = data.isTeamMatch;
+    if (data.teamAkaName !== undefined) teamAkaName = data.teamAkaName;
+    if (data.teamAoName !== undefined) teamAoName = data.teamAoName;
+    if (data.teamAkaScore !== undefined) teamAkaScore = data.teamAkaScore;
+    if (data.teamAoScore !== undefined) teamAoScore = data.teamAoScore;
+    if (data.teamDrawCount !== undefined) teamDrawCount = data.teamDrawCount;
+    if (data.teamAkaPoints !== undefined) teamAkaPoints = data.teamAkaPoints;
+    if (data.teamAoPoints !== undefined) teamAoPoints = data.teamAoPoints;
+    if (data.activeBoutRound !== undefined) activeBoutRound = data.activeBoutRound;
+    if (data.totalBouts !== undefined) totalBouts = data.totalBouts;
+
     if (data.aka) {
       if (data.aka.name) akaName = data.aka.name;
       if (data.aka.contingent) akaClub = data.aka.contingent;
@@ -209,8 +232,19 @@
   <!-- Top Match Banner Bar with Scrolling Marquee Ticker -->
   <header class="bg-[#0b0e14] border-b-2 border-white/10 px-6 py-3 flex items-center justify-between shadow-2xl shrink-0 gap-6 overflow-hidden">
     <!-- Tatami Badge (Way bigger!) -->
-    <div class="bg-gradient-to-r from-amber-400 to-amber-600 text-black font-black px-8 py-2.5 rounded-2xl text-3xl md:text-4xl 2xl:text-5xl font-mono tracking-wider shadow-xl shrink-0 select-none">
-      TATAMI {tatamiNumber}
+    <div class="flex items-center gap-3 shrink-0">
+      <div class="bg-gradient-to-r from-amber-400 to-amber-600 text-black font-black px-8 py-2.5 rounded-2xl text-3xl md:text-4xl 2xl:text-5xl font-mono tracking-wider shadow-xl shrink-0 select-none">
+        TATAMI {tatamiNumber}
+      </div>
+      {#if isTeamMatch}
+        <div class="bg-gradient-to-r from-red-600 via-amber-500 to-blue-600 text-white font-black px-5 py-2.5 rounded-2xl text-2xl md:text-3xl font-mono tracking-wider shadow-xl shrink-0 flex items-center gap-3 border border-white/20">
+          <span>BEREGU</span>
+          <span class="bg-black/60 px-2.5 py-0.5 rounded-lg text-amber-300">P{activeBoutRound}/{totalBouts}</span>
+          <span class="text-red-300">{teamAkaScore}</span>
+          <span>:</span>
+          <span class="text-blue-300">{teamAoScore}</span>
+        </div>
+      {/if}
     </div>
 
     <!-- Scrolling Marquee Ticker (Way bigger & takes up full available space) -->
@@ -250,6 +284,13 @@
 
           <!-- Competitor Details (Giant Arena Scale) -->
           <div class="flex-1 min-w-0">
+            {#if isTeamMatch && teamAkaName}
+              <div class="inline-flex items-center gap-2 mb-2 px-4 py-1 bg-red-600/40 border border-red-400/60 rounded-xl text-red-200 text-lg 2xl:text-xl font-black uppercase tracking-wider shadow-md">
+                <span class="text-amber-300 font-mono">TIM:</span>
+                <span>{teamAkaName}</span>
+              </div>
+            {/if}
+
             {#if matchWinner === "1"}
               <div class="inline-flex items-center gap-1.5 mb-2 px-4 py-1 bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 text-xs 2xl:text-sm font-black uppercase rounded-lg shadow-[0_0_20px_rgba(245,158,11,0.8)] animate-pulse">
                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
@@ -323,6 +364,13 @@
 
           <!-- Competitor Details (Giant Arena Scale) -->
           <div class="flex-1 min-w-0">
+            {#if isTeamMatch && teamAoName}
+              <div class="inline-flex items-center gap-2 mb-2 px-4 py-1 bg-blue-600/40 border border-blue-400/60 rounded-xl text-blue-200 text-lg 2xl:text-xl font-black uppercase tracking-wider shadow-md">
+                <span class="text-amber-300 font-mono">TIM:</span>
+                <span>{teamAoName}</span>
+              </div>
+            {/if}
+
             {#if matchWinner === "2"}
               <div class="inline-flex items-center gap-1.5 mb-2 px-4 py-1 bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 text-xs 2xl:text-sm font-black uppercase rounded-lg shadow-[0_0_20px_rgba(245,158,11,0.8)] animate-pulse">
                 <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
@@ -435,8 +483,27 @@
       </div>
     </div>
 
-    <!-- Right: Empty slot to keep center timer mathematically balanced -->
-    <div class="flex items-center justify-end"></div>
+    <!-- Right: Big Golden Team Score (if team kumite) or balanced spacer -->
+    <div class="flex items-center justify-end">
+      {#if isTeamMatch}
+        <div class="bg-gradient-to-r from-amber-500/10 via-amber-400/20 to-amber-500/10 border-2 border-amber-400/80 px-6 py-2.5 rounded-3xl flex items-center gap-5 shadow-[0_0_30px_rgba(251,191,36,0.35)] backdrop-blur-xs">
+          <div class="text-right">
+            <div class="text-xs 2xl:text-sm font-mono font-black text-amber-300 uppercase tracking-widest flex items-center gap-1.5 justify-end">
+              <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+              <span>SKOR TIM BEREGU</span>
+            </div>
+            <div class="text-[11px] 2xl:text-xs font-mono font-bold text-zinc-300">
+              Partai {activeBoutRound}/{totalBouts} • Agg {teamAkaPoints}-{teamAoPoints} Pts
+            </div>
+          </div>
+          <div class="flex items-center gap-2 font-mono font-black text-5xl 2xl:text-6xl drop-shadow-[0_0_20px_rgba(251,191,36,0.95)]">
+            <span class="text-red-400">{teamAkaScore}</span>
+            <span class="text-amber-400">-</span>
+            <span class="text-blue-400">{teamAoScore}</span>
+          </div>
+        </div>
+      {/if}
+    </div>
   </footer>
 </div>
 

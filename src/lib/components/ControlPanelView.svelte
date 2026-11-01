@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { emit, listen } from "@tauri-apps/api/event";
-  import type { DetailBaganItem, BaganItem, SaveMatchInput } from "$lib/types";
+  import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput } from "$lib/types";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
 
   interface Props {
@@ -12,8 +12,15 @@
     tatamiNumber?: number;
     hostUrl?: string;
     logoMap?: Record<string, string>;
+    teamMatchInfo?: TeamMatchInfo | null;
     onBack?: () => void;
     onSave: (input: SaveMatchInput) => Promise<void> | void;
+    onRefreshTeam?: () => Promise<void> | void;
+    onSwitchBout?: (boutId: number) => Promise<void> | void;
+    onAddBout?: () => Promise<void> | void;
+    onDeleteBout?: (boutId: number) => Promise<void> | void;
+    onAssignBoutAthletes?: (input: AssignBoutAthletesInput) => Promise<void> | void;
+    onFinishTeamMatch?: (winnerOverride?: string) => Promise<void> | void;
   }
 
   let {
@@ -24,8 +31,15 @@
     tatamiNumber = 1,
     hostUrl = "",
     logoMap = {},
+    teamMatchInfo = null,
     onBack = () => {},
     onSave,
+    onRefreshTeam = () => {},
+    onSwitchBout = () => {},
+    onAddBout = () => {},
+    onDeleteBout = () => {},
+    onAssignBoutAthletes = () => {},
+    onFinishTeamMatch = () => {},
   }: Props = $props();
 
   // Automatic Discipline Detection (No manual switching required, with manual override for festival)
@@ -64,6 +78,107 @@
   let hasVr1 = $state<boolean>(false);
   let hasVr2 = $state<boolean>(false);
   let isHantei = $state<boolean>(false);
+
+  // Reactive Sync when match prop changes (switching bouts in team kumite)
+  let lastLoadedMatchId = $state<number | null>(null);
+
+  function syncFromMatch(m: DetailBaganItem) {
+    matchWinner = m.pemenang || "";
+    isMatchFinished = m.selesai || false;
+    hasVr1 = m.vr1 || false;
+    hasVr2 = m.vr2 || false;
+    isHantei = m.hantei || false;
+
+    akaScore = parseInt(m.score1 || "0", 10) || 0;
+    aoScore = parseInt(m.score2 || "0", 10) || 0;
+
+    kataAkaName = m.kata1 || "";
+    kataAoName = m.kata2 || "";
+
+    akaPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
+    aoPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
+    akaSenshu = false;
+    aoSenshu = false;
+
+    if (m.score1 || m.score2 || m.pemenang || m.selesai) {
+      boardAkaScore = parseInt(m.score1 || "0", 10) || 0;
+      boardAoScore = parseInt(m.score2 || "0", 10) || 0;
+      isScorePublished = true;
+      if (isKata) {
+        akaBendera = String(boardAkaScore);
+      }
+    } else {
+      boardAkaScore = 0;
+      boardAoScore = 0;
+      isScorePublished = false;
+      akaBendera = "-";
+    }
+
+    timerMs = selectedPresetSeconds * 1000;
+    isTimerRunning = false;
+  }
+
+  $effect(() => {
+    if (match.id !== lastLoadedMatchId) {
+      lastLoadedMatchId = match.id;
+      syncFromMatch(match);
+      broadcastLiveState();
+    }
+  });
+
+  // Team Kumite Modal States
+  let isRosterModalOpen = $state(false);
+  let rosterAkaId = $state<number | null>(null);
+  let rosterAoId = $state<number | null>(null);
+  let rosterAkaCustom = $state<string>("");
+  let rosterAoCustom = $state<string>("");
+
+  function openRosterModal() {
+    rosterAkaId = match.atlet1_id;
+    rosterAoId = match.atlet2_id;
+    rosterAkaCustom = match.atlet1_nama || "";
+    rosterAoCustom = match.atlet2_nama || "";
+    isRosterModalOpen = true;
+  }
+
+  async function handleSaveRoster() {
+    await onAssignBoutAthletes({
+      bout_id: match.id,
+      aka_atlet_id: rosterAkaId,
+      ao_atlet_id: rosterAoId,
+      aka_custom_name: rosterAkaCustom.trim() || null,
+      ao_custom_name: rosterAoCustom.trim() || null,
+    });
+    isRosterModalOpen = false;
+  }
+
+  let isFinishTeamModalOpen = $state(false);
+  let selectedTeamWinner = $state<"1" | "2" | "">("");
+
+  function openFinishTeamModal() {
+    if (!teamMatchInfo) return;
+    if (teamMatchInfo.team_aka_score > teamMatchInfo.team_ao_score) {
+      selectedTeamWinner = "1";
+    } else if (teamMatchInfo.team_ao_score > teamMatchInfo.team_aka_score) {
+      selectedTeamWinner = "2";
+    } else if (teamMatchInfo.team_aka_points > teamMatchInfo.team_ao_points) {
+      selectedTeamWinner = "1";
+    } else if (teamMatchInfo.team_ao_points > teamMatchInfo.team_aka_points) {
+      selectedTeamWinner = "2";
+    } else {
+      selectedTeamWinner = "";
+    }
+    isFinishTeamModalOpen = true;
+  }
+
+  async function handleConfirmFinishTeam() {
+    if (!selectedTeamWinner) {
+      alert("Pilih tim pemenang (AKA atau AO) terlebih dahulu!");
+      return;
+    }
+    await onFinishTeamMatch(selectedTeamWinner);
+    isFinishTeamModalOpen = false;
+  }
 
   // Kumite Score State
   let akaScore = $state<number>(0);
@@ -519,7 +634,7 @@
     }
   }
 
-  function selectWinner(winner: "1" | "2") {
+  function selectWinner(winner: "1" | "2" | "3") {
     if (matchWinner === winner) {
       matchWinner = "";
     } else {
@@ -567,6 +682,16 @@
       winner: isKata ? (isScorePublished ? matchWinner : "") : matchWinner,
       isFinished: isMatchFinished,
       showKataScoreOverlay: showKataScoreOnBoard,
+      isTeamMatch: !!(teamMatchInfo && teamMatchInfo.is_team_match),
+      teamAkaName: teamMatchInfo?.team_aka_name || "",
+      teamAoName: teamMatchInfo?.team_ao_name || "",
+      teamAkaScore: teamMatchInfo?.team_aka_score || 0,
+      teamAoScore: teamMatchInfo?.team_ao_score || 0,
+      teamDrawCount: teamMatchInfo?.team_draw_count || 0,
+      teamAkaPoints: teamMatchInfo?.team_aka_points || 0,
+      teamAoPoints: teamMatchInfo?.team_ao_points || 0,
+      activeBoutRound: teamMatchInfo?.active_bout_round || match.urutan || 1,
+      totalBouts: teamMatchInfo?.bouts.length || 0,
     };
 
     emit("tatami_live_state", $state.snapshot(payload)).catch((err) => {
@@ -745,7 +870,7 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
         </svg>
-        <span>{isSaving ? "Menyimpan..." : "Simpan & Keluar"}</span>
+        <span>{isSaving ? "Menyimpan..." : teamMatchInfo?.is_team_match ? `Simpan Partai #${teamMatchInfo.active_bout_round || match.urutan || 1}` : "Simpan & Keluar"}</span>
       </button>
 
       <!-- Reset Option Button -->
@@ -822,6 +947,124 @@
       </div>
     </div>
   </div>
+
+  <!-- ==================== TEAM KUMITE (KUMITE BEREGU) HUB ==================== -->
+  {#if teamMatchInfo && teamMatchInfo.is_team_match}
+    <section class="bg-[#12141a] border border-[#2b2d31] rounded-2xl p-3 shadow-xl shrink-0 flex flex-col gap-2.5">
+      <!-- Team Overview Banner -->
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <!-- AKA Team Card -->
+        <div class="flex items-center gap-3 bg-red-950/40 border border-red-500/40 rounded-xl px-3.5 py-2 min-w-[240px]">
+          {#if teamMatchInfo.team_aka_logo && logoMap[teamMatchInfo.team_aka_logo]}
+            <img src={logoMap[teamMatchInfo.team_aka_logo]} alt="Logo AKA" class="w-10 h-10 object-contain rounded-lg shrink-0 bg-black/40 p-1" />
+          {/if}
+          <div class="min-w-0">
+            <span class="text-[9px] font-mono font-bold text-red-400 uppercase tracking-wider block">TIM AKA</span>
+            <div class="text-sm font-black text-white uppercase truncate">{teamMatchInfo.team_aka_name}</div>
+            <div class="text-[10px] text-zinc-400 truncate">{teamMatchInfo.team_aka_utusan}</div>
+          </div>
+          <div class="ml-auto text-right font-mono">
+            <div class="text-2xl font-black text-red-400 leading-none">{teamMatchInfo.team_aka_score}</div>
+            <div class="text-[9px] font-bold text-zinc-400">{teamMatchInfo.team_aka_points} Pts</div>
+          </div>
+        </div>
+
+        <!-- Center Score Summary & Action Buttons -->
+        <div class="flex flex-col items-center gap-1.5">
+          <div class="flex items-center gap-2 font-mono font-black text-xl">
+            <span class="text-red-400">{teamMatchInfo.team_aka_score}</span>
+            <span class="text-amber-400">-</span>
+            <span class="text-blue-400">{teamMatchInfo.team_ao_score}</span>
+          </div>
+          <div class="text-[10px] font-mono font-semibold text-zinc-400">
+            {teamMatchInfo.team_draw_count > 0 ? `${teamMatchInfo.team_draw_count} Seri • ` : ''}Total {teamMatchInfo.bouts.length} Partai
+          </div>
+          <div class="flex items-center gap-2 mt-0.5">
+            <button
+              type="button"
+              onclick={openRosterModal}
+              class="px-2.5 py-1 bg-[#1e2029] hover:bg-[#2b2d31] border border-amber-500/40 text-amber-300 text-[11px] font-bold rounded-lg transition flex items-center gap-1"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+              <span>Atur Atlet Partai</span>
+            </button>
+            <button
+              type="button"
+              onclick={onAddBout}
+              class="px-2.5 py-1 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-zinc-300 hover:text-white text-[11px] font-bold rounded-lg transition flex items-center gap-1"
+              title="Tambah partai extra / playoff bila hasil seri"
+            >
+              <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              <span>+ Partai</span>
+            </button>
+            <button
+              type="button"
+              onclick={openFinishTeamModal}
+              class="px-3 py-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-[11px] font-black rounded-lg transition shadow-md flex items-center gap-1"
+            >
+              <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
+              <span>Selesaikan Beregu</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- AO Team Card -->
+        <div class="flex items-center gap-3 bg-blue-950/40 border border-blue-500/40 rounded-xl px-3.5 py-2 min-w-[240px]">
+          <div class="mr-auto font-mono">
+            <div class="text-2xl font-black text-blue-400 leading-none">{teamMatchInfo.team_ao_score}</div>
+            <div class="text-[9px] font-bold text-zinc-400">{teamMatchInfo.team_ao_points} Pts</div>
+          </div>
+          <div class="text-right min-w-0">
+            <span class="text-[9px] font-mono font-bold text-blue-400 uppercase tracking-wider block">TIM AO</span>
+            <div class="text-sm font-black text-white uppercase truncate">{teamMatchInfo.team_ao_name}</div>
+            <div class="text-[10px] text-zinc-400 truncate">{teamMatchInfo.team_ao_utusan}</div>
+          </div>
+          {#if teamMatchInfo.team_ao_logo && logoMap[teamMatchInfo.team_ao_logo]}
+            <img src={logoMap[teamMatchInfo.team_ao_logo]} alt="Logo AO" class="w-10 h-10 object-contain rounded-lg shrink-0 bg-black/40 p-1" />
+          {/if}
+        </div>
+      </div>
+
+      <!-- Bout Switcher Pills -->
+      <div class="flex items-center gap-2 overflow-x-auto pb-1 pt-1 border-t border-white/5 scrollbar-thin">
+        {#each teamMatchInfo.bouts as bout, bIdx}
+          {@const isCurrent = bout.bout_id === match.id}
+          <div class="relative shrink-0 flex items-center">
+            <button
+              type="button"
+              onclick={() => onSwitchBout(bout.bout_id)}
+              class="px-3 py-1.5 rounded-xl text-xs font-mono font-bold transition flex items-center gap-2 border {isCurrent ? 'bg-amber-500/20 text-amber-300 border-amber-400 shadow-md shadow-amber-500/20' : 'bg-[#181a20] text-zinc-300 hover:text-white border-white/10 hover:border-white/20'}"
+            >
+              <span>Partai {bout.round}</span>
+              {#if bout.selesai}
+                {#if bout.pemenang === '1'}
+                  <span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black">AKA ({bout.score1 || 0}-{bout.score2 || 0})</span>
+                {:else if bout.pemenang === '2'}
+                  <span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[9px] font-black">AO ({bout.score1 || 0}-{bout.score2 || 0})</span>
+                {:else if bout.pemenang === '3'}
+                  <span class="px-1.5 py-0.5 rounded bg-amber-500 text-black text-[9px] font-black">SERI ({bout.score1 || 0}-{bout.score2 || 0})</span>
+                {:else}
+                  <span class="px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-200 text-[9px]">Selesai</span>
+                {/if}
+              {:else}
+                <span class="px-1.5 py-0.5 rounded bg-white/5 text-zinc-400 text-[9px]">Belum</span>
+              {/if}
+            </button>
+            {#if teamMatchInfo.bouts.length > 1 && bIdx === teamMatchInfo.bouts.length - 1 && !bout.selesai}
+              <button
+                type="button"
+                onclick={() => onDeleteBout(bout.bout_id)}
+                class="ml-1 w-5 h-5 flex items-center justify-center text-zinc-500 hover:text-red-400 rounded transition"
+                title="Hapus partai ini"
+              >
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
   <!-- Main View Area (Kata vs Kumite automatically) -->
   {#if isKata}
@@ -1444,6 +1687,18 @@
           </button>
         </div>
 
+        {#if teamMatchInfo?.is_team_match}
+          <div class="w-full mb-2">
+            <button
+              type="button"
+              onclick={() => selectWinner("3")}
+              class="w-full py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition shrink-0 flex items-center justify-center gap-1.5 shadow {matchWinner === '3' ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 border-2 border-white shadow-amber-500/50' : 'bg-[#1e2029] border border-amber-500/30 text-amber-300 hover:bg-[#2b2d31]'}"
+            >
+              <span>Hikiwake (Seri)</span>
+            </button>
+          </div>
+        {/if}
+
         <div class="w-full pt-3 border-t border-[#2b2d31] flex flex-col items-center gap-1.5 text-xs text-zinc-400">
           <label class="flex items-center space-x-2 cursor-pointer font-semibold text-zinc-300">
             <input type="checkbox" bind:checked={isHantei} class="rounded text-amber-500 focus:ring-amber-400" />
@@ -1789,6 +2044,196 @@
           class="text-red-400 hover:underline font-bold"
         >
           Kosongkan Pilihan
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+
+<!-- ==================== ROSTER ATLET PARTAI MODAL ==================== -->
+{#if isRosterModalOpen && teamMatchInfo}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
+    <div class="relative w-full max-w-xl bg-[#181a20] border border-[#2b2d31] rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      <div class="p-4 border-b border-[#2b2d31] flex items-center justify-between bg-[#14161b]">
+        <div>
+          <h3 class="text-sm font-black text-white uppercase tracking-wider">
+            Atur Atlet Partai #{teamMatchInfo.active_bout_round || match.urutan || 1}
+          </h3>
+          <p class="text-xs text-zinc-400 mt-0.5">Pilih nama atlet dari daftar anggota kontingen atau ketik nama langsung.</p>
+        </div>
+        <button type="button" onclick={() => (isRosterModalOpen = false)} aria-label="Tutup modal roster" class="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white rounded-lg">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <!-- AKA Athlete Selection -->
+        <div class="bg-red-950/20 border border-red-500/30 rounded-xl p-3.5">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-mono font-bold text-red-400 uppercase">ATLET SUDUT MERAH (AKA)</span>
+            <span class="text-[10px] text-zinc-400">{teamMatchInfo.team_aka_name}</span>
+          </div>
+          {#if teamMatchInfo.candidate_atlets_aka.length > 0}
+            <div class="mb-2">
+              <label for="aka-candidate-select" class="block text-[11px] text-zinc-400 mb-1">Pilih dari Kontingen:</label>
+              <select
+                id="aka-candidate-select"
+                bind:value={rosterAkaId}
+                onchange={(e) => {
+                  const target = teamMatchInfo?.candidate_atlets_aka.find((a: TeamCandidateAthlete) => a.id === Number((e.target as HTMLSelectElement).value));
+                  if (target) rosterAkaCustom = target.nama_atlet;
+                }}
+                class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-red-500"
+              >
+                <option value={null}>-- Pilih Atlet Anggota --</option>
+                {#each teamMatchInfo.candidate_atlets_aka as cand}
+                  <option value={cand.id}>{cand.nama_atlet} {cand.perguruan_nama ? `(${cand.perguruan_nama})` : ''}</option>
+                {/each}
+              </select>
+            </div>
+          {/if}
+          <div>
+            <label for="aka-custom-name" class="block text-[11px] text-zinc-400 mb-1">Nama Tampil / Custom:</label>
+            <input
+              id="aka-custom-name"
+              type="text"
+              bind:value={rosterAkaCustom}
+              placeholder="Ketik nama atlet AKA..."
+              class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-red-500"
+            />
+          </div>
+        </div>
+
+        <!-- AO Athlete Selection -->
+        <div class="bg-blue-950/20 border border-blue-500/30 rounded-xl p-3.5">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-mono font-bold text-blue-400 uppercase">ATLET SUDUT BIRU (AO)</span>
+            <span class="text-[10px] text-zinc-400">{teamMatchInfo.team_ao_name}</span>
+          </div>
+          {#if teamMatchInfo.candidate_atlets_ao.length > 0}
+            <div class="mb-2">
+              <label for="ao-candidate-select" class="block text-[11px] text-zinc-400 mb-1">Pilih dari Kontingen:</label>
+              <select
+                id="ao-candidate-select"
+                bind:value={rosterAoId}
+                onchange={(e) => {
+                  const target = teamMatchInfo?.candidate_atlets_ao.find((a: TeamCandidateAthlete) => a.id === Number((e.target as HTMLSelectElement).value));
+                  if (target) rosterAoCustom = target.nama_atlet;
+                }}
+                class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value={null}>-- Pilih Atlet Anggota --</option>
+                {#each teamMatchInfo.candidate_atlets_ao as cand}
+                  <option value={cand.id}>{cand.nama_atlet} {cand.perguruan_nama ? `(${cand.perguruan_nama})` : ''}</option>
+                {/each}
+              </select>
+            </div>
+          {/if}
+          <div>
+            <label for="ao-custom-name" class="block text-[11px] text-zinc-400 mb-1">Nama Tampil / Custom:</label>
+            <input
+              id="ao-custom-name"
+              type="text"
+              bind:value={rosterAoCustom}
+              placeholder="Ketik nama atlet AO..."
+              class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div class="p-3 bg-[#14161b] border-t border-[#2b2d31] flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onclick={() => (isRosterModalOpen = false)}
+          class="px-4 py-2 bg-[#1e2029] hover:bg-[#2b2d31] text-zinc-300 text-xs font-bold rounded-lg transition"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={handleSaveRoster}
+          class="px-5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black rounded-lg transition shadow-md"
+        >
+          Simpan Roster Atlet
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ==================== FINISH TEAM MATCH MODAL ==================== -->
+{#if isFinishTeamModalOpen && teamMatchInfo}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
+    <div class="relative w-full max-w-lg bg-[#181a20] border border-[#2b2d31] rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      <div class="p-4 border-b border-[#2b2d31] flex items-center justify-between bg-[#14161b]">
+        <div>
+          <h3 class="text-sm font-black text-white uppercase tracking-wider">
+            Konfirmasi Penyelesaian Pertandingan Beregu
+          </h3>
+          <p class="text-xs text-zinc-400 mt-0.5">Finalisasi skor tim dan pemenang yang lolos di bagan kejuaraan.</p>
+        </div>
+        <button type="button" onclick={() => (isFinishTeamModalOpen = false)} aria-label="Tutup modal finalisasi" class="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white rounded-lg">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <!-- Summary Scorecard -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="bg-red-950/30 border-2 {selectedTeamWinner === '1' ? 'border-red-500 shadow-md shadow-red-500/20' : 'border-red-500/30'} rounded-xl p-3 text-center">
+            <span class="text-[10px] font-mono font-bold text-red-400 uppercase">TIM AKA</span>
+            <div class="text-sm font-black text-white uppercase mt-0.5 truncate">{teamMatchInfo.team_aka_name}</div>
+            <div class="text-3xl font-mono font-black text-red-400 mt-2">{teamMatchInfo.team_aka_score}</div>
+            <div class="text-[11px] font-mono text-zinc-400">{teamMatchInfo.team_aka_points} Total Poin</div>
+          </div>
+
+          <div class="bg-blue-950/30 border-2 {selectedTeamWinner === '2' ? 'border-blue-500 shadow-md shadow-blue-500/20' : 'border-blue-500/30'} rounded-xl p-3 text-center">
+            <span class="text-[10px] font-mono font-bold text-blue-400 uppercase">TIM AO</span>
+            <div class="text-sm font-black text-white uppercase mt-0.5 truncate">{teamMatchInfo.team_ao_name}</div>
+            <div class="text-3xl font-mono font-black text-blue-400 mt-2">{teamMatchInfo.team_ao_score}</div>
+            <div class="text-[11px] font-mono text-zinc-400">{teamMatchInfo.team_ao_points} Total Poin</div>
+          </div>
+        </div>
+
+        <!-- Winner Selection Option -->
+        <div>
+          <div class="block text-xs font-mono font-bold text-zinc-300 mb-2">TENTUKAN TIM PEMENANG AKHIR:</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onclick={() => (selectedTeamWinner = "1")}
+              class="py-3 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-1.5 {selectedTeamWinner === '1' ? 'bg-red-600 text-white border-red-300 shadow-lg shadow-red-600/40' : 'bg-[#111216] border-[#2b2d31] text-zinc-400 hover:text-white'}"
+            >
+              <span>AKA ({teamMatchInfo.team_aka_name})</span>
+            </button>
+            <button
+              type="button"
+              onclick={() => (selectedTeamWinner = "2")}
+              class="py-3 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-1.5 {selectedTeamWinner === '2' ? 'bg-blue-600 text-white border-blue-300 shadow-lg shadow-blue-600/40' : 'bg-[#111216] border-[#2b2d31] text-zinc-400 hover:text-white'}"
+            >
+              <span>AO ({teamMatchInfo.team_ao_name})</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-3 bg-[#14161b] border-t border-[#2b2d31] flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onclick={() => (isFinishTeamModalOpen = false)}
+          class="px-4 py-2 bg-[#1e2029] hover:bg-[#2b2d31] text-zinc-300 text-xs font-bold rounded-lg transition"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={handleConfirmFinishTeam}
+          class="px-5 py-2 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white text-xs font-black rounded-lg transition shadow-md flex items-center gap-1.5"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          <span>Finalisasi & Loloskan Pemenang</span>
         </button>
       </div>
     </div>

@@ -153,27 +153,30 @@ In `ambrilindo_desktop/src-tauri/src/db.rs`, the `save_match_result` function up
 
 ---
 
-### Epic 4.3: Team Kumite (*Kumite Beregu*) Scoring System
-#### Problem
-Karate tournaments feature prestigious Team Kumite categories (Men's & Women's Team Kumite). In Team Kumite:
-- Two contingents face off across **3 to 5 individual bouts** (*Partai 1 to 5*).
-- Each bout has independent scoring, Senshu, penalties, and a bout winner.
-- The team winner is decided by:
-  1. Most bouts won (e.g., 3 out of 5).
-  2. If bouts are tied (e.g., 2-2 with 1 draw), tiebreak by total points scored across all bouts.
-  3. If points are tied, an extra deciding bout (*Partai Tambahan / Sudden Death*) is fought.
-The desktop app currently has zero support for Team Kumite bouts.
-
-#### Requirements
-1. **Schema & Model**:
-   - Add table `backend_teammatch` or enrich `backend_detailbagan` with bout tracking (bout index 1..5, bout athlete names, bout scores, bout winner).
-2. **Team Control Panel Component (`ControlPanelTeamView.svelte`)**:
-   - Bout selector strip (Partai 1 to 5).
-   - Roster lineup picker for both teams (Aka Team List vs Ao Team List).
-   - Running bout summary card (Aka Team Score vs Ao Team Score: e.g. `2 W - 1 W (1 Draw)`).
-   - Bout completion advances to the next team bout automatically.
-3. **Team Scoreboard Screen Overlay**:
-   - Update `scoreboard/+page.svelte` to show team names, current bout number, and accumulated team match points.
+### Epic 4.3: Team Kumite (*Kumite Beregu*) Scoring System [COMPLETED]
+*Implemented in November 2026.*
+- **Schema & Architecture**:
+  - Leveraged `backend_matchup` linking parent match (`DetailBagan`, `team: false`) to child sub-bouts (`DetailBagan`, `team: true`, `round = 10, urutan = bout_number`).
+  - Added Rust backend commands in `src-tauri/src/db.rs`, `src-tauri/src/lib.rs`, and mapped to Axum REST API in `src-tauri/src/server.rs`:
+    - `get_team_match_info`: Auto-initializes child bouts (3 or 5 based on category name putri/pemula/senior), calculates running bouts won and aggregate points (*skor kecil*), fetches candidate member athletes from the respective contingents.
+    - `assign_bout_athletes`: Updates bout athletes by selecting contingent members or custom names.
+    - `add_team_bout`: Adds extra sudden-death playoff bout when scores and points are tied.
+    - `delete_team_bout`: Deletes pending extra bouts.
+    - `finish_team_match`: Finalizes parent match with overall scores and winner, advances winner in bracket tree, enqueues cloud sync.
+  - In `save_match_result`: Added child bout detection so saving individual team bouts skips parent bracket round advancement and auto-advances the Tatami to the next unfinished bout.
+  - Added support for Draw outcome (*Hikiwake* `pemenang = "3"`).
+- **Interactive Control Panel (`ControlPanelView.svelte` + `control-panel/+page.svelte`)**:
+  - Embedded **Team Kumite Command Hub**:
+    - Header with Team AKA vs Team AO logos, names, contingents, bouts won, and aggregate points.
+    - Horizontal bout switcher tabs with status badges (Done with scores, active glowing ring, pending).
+    - `+ Tambah Partai (Playoff)` button.
+    - `Atur Atlet Partai` modal to assign member athletes from contingent roster or custom input.
+    - `Selesaikan Pertandingan Beregu` modal with automated winner suggestion and bracket finalization.
+    - Dedicated `Hikiwake (Seri)` button in Kumite scoring deck.
+- **Scoreboard Arena Integration (`scoreboard/+page.svelte`)**:
+  - Added top header badge: `BEREGU • P{activeBoutRound}/{totalBouts} • {teamAkaScore} : {teamAoScore}`.
+  - Added Team Name badges to competitor cards (`TIM: {teamAkaName}` / `TIM: {teamAoName}`).
+  - Added Big Golden Team Score in the bottom-right footer displaying active team wins and aggregate points.
 
 ---
 

@@ -1618,6 +1618,63 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "get_team_match_info" => {
+            let m_id = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            match db.get_team_match_info(m_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "assign_bout_athletes" => {
+            let bout_id = get_i64_val(&payload, &["boutId", "bout_id"]).unwrap_or(0);
+            let aka_id = get_i64_val(&payload, &["akaAtletId", "aka_atlet_id"]);
+            let ao_id = get_i64_val(&payload, &["aoAtletId", "ao_atlet_id"]);
+            let aka_custom = get_str_val(&payload, &["akaCustomName", "aka_custom_name"]);
+            let ao_custom = get_str_val(&payload, &["aoCustomName", "ao_custom_name"]);
+            let input = AssignBoutAthletesInput {
+                bout_id,
+                aka_atlet_id: aka_id,
+                ao_atlet_id: ao_id,
+                aka_custom_name: aka_custom,
+                ao_custom_name: ao_custom,
+            };
+            match db.assign_bout_athletes(input).await {
+                Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "add_team_bout" => {
+            let p_id = get_i64_val(&payload, &["parentMatchId", "parent_match_id"]).unwrap_or(0);
+            match db.add_team_bout(p_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "delete_team_bout" => {
+            let b_id = get_i64_val(&payload, &["boutId", "bout_id"]).unwrap_or(0);
+            match db.delete_team_bout(b_id).await {
+                Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "finish_team_match" => {
+            let p_id = get_i64_val(&payload, &["parentMatchId", "parent_match_id"]).unwrap_or(0);
+            let winner = get_str_val(&payload, &["winnerOverride", "winner_override"]);
+            match db.finish_team_match(p_id, winner).await {
+                Ok(_) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "bracket".into(),
+                        payload: serde_json::json!({ "type": "bracket_updated" }),
+                    });
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         unknown => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "status": "error", "message": format!("Unknown command: {}", unknown) }))).into_response(),
     }
 }
