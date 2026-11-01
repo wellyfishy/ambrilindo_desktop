@@ -305,8 +305,8 @@ gantt
     Unified Frontend API Transport         :done, 2026-11-10, 2d
 
     section Phase 2: Formats & VR (P1)
-    Team Kumite Control Panel & Schema     :active, 2026-11-12, 4d
-    WKF Repechage Bracket Generator        :2026-11-16, 3d
+    Team Kumite Control Panel & Schema     :done, 2026-11-12, 4d
+    WKF Repechage Bracket Generator        :active, 2026-11-16, 3d
     Round Robin Pool Manager & Matrix      :2026-11-19, 3d
     Video Review (VR) Supervisor & Display :2026-11-22, 3d
 
@@ -330,3 +330,59 @@ All future views and components added to `ambrilindo_desktop` MUST strictly conf
    Maintain utilitarian operational UI. Never pair every title or card with generic boilerplate taglines. Headings and action buttons must be crisp, direct, and operational.
 4. **Offline Resilience**:
    Zero CDN references. All fonts, icons, SVGs, audio files, and style assets must be bundled locally with WhiteNoise/Tauri.
+
+---
+
+## 9. Handover Notes for Next Session / Next PC's Agent
+
+> [!IMPORTANT]
+> **Instructions for the Agent Resuming on the Other PC**:
+> 1. Run `git pull origin main` in `ambrilindo_desktop` before starting work.
+> 2. Verify environment health:
+>    - `cmd /c "cd /d ...\ambrilindo_desktop && npm run check"` (must report 0 errors, 0 warnings).
+>    - `cmd /c "cd /d ...\ambrilindo_desktop\src-tauri && cargo check"` (must report 0 errors, 0 warnings).
+> 3. Read `ambrilindo_desktop/PRD_AMBRILINDO_DESKTOP.md` (this file) and the design rules in `ambrilindo_desktop/AGENTS.md`.
+
+### Completed Epics Summary
+- **Epic 4.1: Live Cloud Sync Engine** `[COMPLETED]`
+  - Match completion auto-enqueues sync payloads in `src-tauri/src/db.rs`.
+  - Tokio background worker thread in `src-tauri/src/sync.rs` handles auto-retry, status broadcasts, and immediate flushing.
+  - Dedicated `SyncMonitorView.svelte` for queue monitoring and manual re-syncing.
+- **Epic 4.2: Multi-Operator LAN Client Mode Architecture** `[COMPLETED]`
+  - Axum REST API in `src-tauri/src/server.rs` with 45+ endpoints plus universal RPC dispatcher `POST /api/command/:cmd`.
+  - Unified data transport layer in `src/lib/api_client.ts` (`invoke` drop-in replacement) that transparently invokes Tauri IPC in Solo/Host mode or HTTP fetch in Client/Browser mode.
+  - Intercepts media queries in client mode to stream logos across LAN.
+- **Epic 4.3: Team Kumite (*Kumite Beregu*) Scoring System** `[COMPLETED]`
+  - Sub-bout tracking via `backend_matchup` linking parent match (`team = false`) to child bouts (`team = true`, `round = 10`).
+  - Backend commands: `get_team_match_info`, `assign_bout_athletes`, `add_team_bout`, `delete_team_bout`, `finish_team_match`.
+  - Updated `save_match_result` to skip bracket advancement for child bouts and auto-advance Tatami. Support for Draw (*Hikiwake* `pemenang = "3"`).
+  - Cockpit Team Hub in `ControlPanelView.svelte` + `control-panel/+page.svelte` (bout tabs, roster modal, finish modal).
+  - Arena Scoreboard in `scoreboard/+page.svelte` with Big Golden Team Score (`2 - 1`) and aggregate point counter.
+- **Epic 5.5: Master Data CRUD for Contingents & Clubs** `[COMPLETED]`
+  - Offline CRUD for `backend_utusan` and `backend_perguruan` with logo file upload and base64 decode.
+  - Card grid UI with live search filters under sidebar channel `kontingen-perguruan`.
+
+---
+
+### What's Next: Priority Implementation Queue
+
+The next logical step on the roadmap is **Phase 2: Tournament Formats & Video Review**:
+
+#### 1. Immediate Next Task: **Epic 5.1 — WKF Repechage (*Referchange*) Bracket Generator**
+- **Domain Rule**: Under WKF rules, all competitors defeated by the two finalists throughout the tournament qualify for the repechage bracket. They fight through bronze pools to award Bronze Medal 3A and Bronze Medal 3B.
+- **Reference / Benchmark**:
+  - Check how Django local venue server implements this in `ambrilindo/ambrilindo/backend/views.py` (search for `tambah_bagan_referchange` and `referchange`).
+- **Files to Modify / Create**:
+  - `src-tauri/src/bracket.rs`: Add repechage seeding logic that traces the ancestor defeat graph of both finalists once finalists reach Round 4.
+  - `src-tauri/src/db.rs`: Add `generate_repechage_bracket(bagan_id: i64) -> Result<(), String>`.
+  - `src-tauri/src/lib.rs` & `server.rs`: Expose `generate_repechage_bracket` via Tauri command and REST API.
+  - `src/lib/components/BaganView.svelte`: Render repechage trees (Pool A and Pool B) visually underneath or alongside the main championship bracket.
+
+#### 2. Subsequent Tasks:
+- **Epic 5.2: Round-Robin Tournament Manager**
+  - Berger schedule matrix (3 to 5 athletes), live standings table (Wins, Losses, Draws, PF, PA), tiebreaker calculation, and auto-podium.
+- **Epic 5.3: Video Review (VR) Subsystem**
+  - Mobile supervisor trigger screen (`/coach-supervisor/[tatami]`), Wasit VR review screen (`/wasit-vr/[tatami]`), and animated scoreboard challenge overlays.
+- **Epic 5.4: Referee (*Wasit*) Management & Tatami Panel Assigner**
+  - Referee CRUD (License grade, region, club), 5-member panel assigner per tatami, anti-collision warnings.
+
