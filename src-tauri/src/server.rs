@@ -514,6 +514,38 @@ pub struct MixCategoriesHttpInput {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateContingentHttpInput {
+    pub event_id: i64,
+    pub nama_utusan: String,
+    pub logo: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateContingentHttpInput {
+    pub id: i64,
+    pub nama_utusan: String,
+    pub logo: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreatePerguruanHttpInput {
+    pub event_id: i64,
+    pub nama_perguruan: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdatePerguruanHttpInput {
+    pub id: i64,
+    pub nama_perguruan: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveLogoHttpInput {
+    pub file_name: String,
+    pub base64_data: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SaveKopSuratHttpInput {
     pub event_id: i64,
     pub nama_organisasi: String,
@@ -1009,6 +1041,100 @@ async fn save_kop_surat_api(
     }
 }
 
+
+async fn list_enriched_contingents_api(Path(event_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_enriched_contingents(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn create_contingent_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CreateContingentHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.create_contingent(payload.event_id, payload.nama_utusan, payload.logo).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn update_contingent_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UpdateContingentHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.update_contingent(payload.id, payload.nama_utusan, payload.logo).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn delete_contingent_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<IdHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.delete_contingent(payload.id).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn list_enriched_perguruans_api(Path(event_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_enriched_perguruans(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn create_perguruan_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CreatePerguruanHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.create_perguruan(payload.event_id, payload.nama_perguruan).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn update_perguruan_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UpdatePerguruanHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.update_perguruan(payload.id, payload.nama_perguruan).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn delete_perguruan_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<IdHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.delete_perguruan(payload.id).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn save_contingent_logo_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SaveLogoHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.save_contingent_logo(&payload.file_name, &payload.base64_data).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
 async fn dispatch_command_api(
     Path(cmd): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1306,6 +1432,77 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        
+        "get_enriched_contingents" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_enriched_contingents(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "create_contingent" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let nama = get_str_val(&payload, &["namaUtusan", "nama_utusan", "nama"]).unwrap_or_default();
+            let logo = get_str_val(&payload, &["logo"]);
+            match db.create_contingent(ev_id, nama, logo).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "update_contingent" => {
+            let id = get_i64_val(&payload, &["id"]).unwrap_or(0);
+            let nama = get_str_val(&payload, &["namaUtusan", "nama_utusan", "nama"]).unwrap_or_default();
+            let logo = get_str_val(&payload, &["logo"]);
+            match db.update_contingent(id, nama, logo).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "delete_contingent" => {
+            let id = get_i64_val(&payload, &["id"]).unwrap_or(0);
+            match db.delete_contingent(id).await {
+                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_enriched_perguruans" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_enriched_perguruans(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "create_perguruan" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let nama = get_str_val(&payload, &["namaPerguruan", "nama_perguruan", "nama"]).unwrap_or_default();
+            match db.create_perguruan(ev_id, nama).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "update_perguruan" => {
+            let id = get_i64_val(&payload, &["id"]).unwrap_or(0);
+            let nama = get_str_val(&payload, &["namaPerguruan", "nama_perguruan", "nama"]).unwrap_or_default();
+            match db.update_perguruan(id, nama).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "delete_perguruan" => {
+            let id = get_i64_val(&payload, &["id"]).unwrap_or(0);
+            match db.delete_perguruan(id).await {
+                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "save_contingent_logo" => {
+            let file_name = get_str_val(&payload, &["fileName", "file_name"]).unwrap_or_else(|| "logo.png".into());
+            let base64_data = get_str_val(&payload, &["base64Data", "base64_data"]).unwrap_or_default();
+            match db.save_contingent_logo(&file_name, &base64_data).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "get_perguruans" => {
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             match db.get_perguruans(ev_id).await {
@@ -1533,6 +1730,16 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/categories/delete", post(delete_category_api))
         // Contingent & Perguruan routes
         .route("/api/contingents/:event_id", get(list_contingents_api))
+        .route("/api/enriched-contingents/:event_id", get(list_enriched_contingents_api))
+        .route("/api/contingents/create", post(create_contingent_api))
+        .route("/api/contingents/update", post(update_contingent_api))
+        .route("/api/contingents/delete", post(delete_contingent_api))
+        .route("/api/contingents/upload-logo", post(save_contingent_logo_api))
+        .route("/api/enriched-perguruans/:event_id", get(list_enriched_perguruans_api))
+        .route("/api/perguruans/create", post(create_perguruan_api))
+        .route("/api/perguruans/update", post(update_perguruan_api))
+        .route("/api/perguruans/delete", post(delete_perguruan_api))
+
         .route("/api/perguruans/:event_id", get(list_perguruans_api))
         .route("/api/athletes-for-bagan/:bagan_id", get(athletes_for_bagan_api))
         // Match results

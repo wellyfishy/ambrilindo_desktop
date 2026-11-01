@@ -13,7 +13,7 @@ use audio::{AudioService, SoundType};
 use db::DatabaseManager;
 use models::{
     AthleteMutationInput, Atlet, Bagan, BaganPodium, DrawingCategoryInfo, DrawingSummary, EnrichedAtlet,
-    EnrichedDetailBagan, Event, NomorTanding, Perguruan, SaveMatchInput, SummaryBaganResult, SummaryJuaraResult, Tatami,
+    EnrichedDetailBagan, EnrichedPerguruan, EnrichedUtusan, Event, NomorTanding, Perguruan, SaveMatchInput, SummaryBaganResult, SummaryJuaraResult, Tatami,
     UpdateMatchAthletesInput, Utusan,
 };
 use server::{ArenaMessage, NetworkInfo};
@@ -645,6 +645,94 @@ async fn get_contingents(
 }
 
 #[tauri::command]
+async fn get_enriched_contingents(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<EnrichedUtusan>, String> {
+    let db = state.db.lock().await;
+    db.get_enriched_contingents(event_id).await
+}
+
+#[tauri::command]
+async fn create_contingent(
+    event_id: i64,
+    nama_utusan: String,
+    logo: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<EnrichedUtusan, String> {
+    let db = state.db.lock().await;
+    db.create_contingent(event_id, nama_utusan, logo).await
+}
+
+#[tauri::command]
+async fn update_contingent(
+    id: i64,
+    nama_utusan: String,
+    logo: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<EnrichedUtusan, String> {
+    let db = state.db.lock().await;
+    db.update_contingent(id, nama_utusan, logo).await
+}
+
+#[tauri::command]
+async fn delete_contingent(
+    id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_contingent(id).await
+}
+
+#[tauri::command]
+async fn get_enriched_perguruans(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<EnrichedPerguruan>, String> {
+    let db = state.db.lock().await;
+    db.get_enriched_perguruans(event_id).await
+}
+
+#[tauri::command]
+async fn create_perguruan(
+    event_id: i64,
+    nama_perguruan: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<EnrichedPerguruan, String> {
+    let db = state.db.lock().await;
+    db.create_perguruan(event_id, nama_perguruan).await
+}
+
+#[tauri::command]
+async fn update_perguruan(
+    id: i64,
+    nama_perguruan: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<EnrichedPerguruan, String> {
+    let db = state.db.lock().await;
+    db.update_perguruan(id, nama_perguruan).await
+}
+
+#[tauri::command]
+async fn delete_perguruan(
+    id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_perguruan(id).await
+}
+
+#[tauri::command]
+async fn save_contingent_logo(
+    file_name: String,
+    base64_data: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<String, String> {
+    let db = state.db.lock().await;
+    db.save_contingent_logo(&file_name, &base64_data).await
+}
+
+#[tauri::command]
 async fn create_tatami(
     event_id: i64,
     tatami_number: i32,
@@ -1212,6 +1300,15 @@ pub fn run() {
             toggle_athlete_priority,
             get_perguruans,
             get_contingents,
+            get_enriched_contingents,
+            create_contingent,
+            update_contingent,
+            delete_contingent,
+            get_enriched_perguruans,
+            create_perguruan,
+            update_perguruan,
+            delete_perguruan,
+            save_contingent_logo,
             play_buzzer,
             get_available_monitors,
             project_scoreboard,

@@ -26,11 +26,28 @@ pub struct Perguruan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnrichedPerguruan {
+    pub id: i64,
+    pub event_id: Option<i64>,
+    pub nama_perguruan: Option<String>,
+    pub athlete_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Utusan {
     pub id: i64,
     pub event_id: Option<i64>,
     pub nama_utusan: Option<String>,
     pub logo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnrichedUtusan {
+    pub id: i64,
+    pub event_id: Option<i64>,
+    pub nama_utusan: Option<String>,
+    pub logo: Option<String>,
+    pub athlete_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

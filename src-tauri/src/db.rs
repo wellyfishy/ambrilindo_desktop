@@ -10,6 +10,7 @@ use crate::bracket::{build_bracket_in_memory, split_athletes_into_pools, Athlete
 use crate::models::{
     AthleteConflictDetail, Atlet, AthleteMutationInput, Bagan, BaganPodium, CategoryMutationInput,
     DrawingCategoryInfo, DrawingSummary, EnrichedAtlet, EnrichedDetailBagan, EnrichedNomorTanding,
+    EnrichedPerguruan, EnrichedUtusan,
     EnrichedTimetableCell, EnrichedTimetableDay, EnrichedTimetableRow, Event, FestivalAthlete,
     FestivalCategory, FestivalMatch, FestivalRosterData, FestivalRosterState, FestivalTatamiSection,
     KopSurat, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, SaveTimetablePayload,
@@ -1036,6 +1037,225 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat daftar kontingen: {}", e))
+    }
+
+    /// Fetches all contingents for an event with athlete counts
+    pub async fn get_enriched_contingents(&self, event_id: i64) -> Result<Vec<EnrichedUtusan>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, EnrichedUtusan>(
+            "SELECT u.id, u.event_id, u.nama_utusan, u.logo, COUNT(a.id) as athlete_count
+             FROM backend_utusan u
+             LEFT JOIN backend_atlet a ON a.utusan_id = u.id
+             WHERE u.event_id = ?
+             GROUP BY u.id, u.event_id, u.nama_utusan, u.logo
+             ORDER BY u.nama_utusan ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat kontingen: {}", e))
+    }
+
+    /// Creates a new contingent
+    pub async fn create_contingent(&self, event_id: i64, nama_utusan: String, logo: Option<String>) -> Result<EnrichedUtusan, String> {
+        let pool = self.get_pool()?;
+        let clean_name = nama_utusan.trim().to_uppercase();
+        if clean_name.is_empty() {
+            return Err("Nama kontingen tidak boleh kosong".into());
+        }
+
+        let res = sqlx::query("INSERT INTO backend_utusan (event_id, nama_utusan, logo) VALUES (?, ?, ?)")
+            .bind(event_id)
+            .bind(&clean_name)
+            .bind(&logo)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menambahkan kontingen: {}", e))?;
+
+        let id = res.last_insert_rowid();
+        Ok(EnrichedUtusan {
+            id,
+            event_id: Some(event_id),
+            nama_utusan: Some(clean_name),
+            logo,
+            athlete_count: 0,
+        })
+    }
+
+    /// Updates an existing contingent
+    pub async fn update_contingent(&self, id: i64, nama_utusan: String, logo: Option<String>) -> Result<EnrichedUtusan, String> {
+        let pool = self.get_pool()?;
+        let clean_name = nama_utusan.trim().to_uppercase();
+        if clean_name.is_empty() {
+            return Err("Nama kontingen tidak boleh kosong".into());
+        }
+
+        if let Some(ref l) = logo {
+            sqlx::query("UPDATE backend_utusan SET nama_utusan = ?, logo = ? WHERE id = ?")
+                .bind(&clean_name)
+                .bind(l)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Gagal memperbarui kontingen: {}", e))?;
+        } else {
+            sqlx::query("UPDATE backend_utusan SET nama_utusan = ? WHERE id = ?")
+                .bind(&clean_name)
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("Gagal memperbarui kontingen: {}", e))?;
+        }
+
+        sqlx::query_as::<_, EnrichedUtusan>(
+            "SELECT u.id, u.event_id, u.nama_utusan, u.logo, COUNT(a.id) as athlete_count
+             FROM backend_utusan u
+             LEFT JOIN backend_atlet a ON a.utusan_id = u.id
+             WHERE u.id = ?
+             GROUP BY u.id, u.event_id, u.nama_utusan, u.logo"
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat kontingen setelah update: {}", e))
+    }
+
+    /// Deletes a contingent and dissociates any attached athletes
+    pub async fn delete_contingent(&self, id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query("UPDATE backend_atlet SET utusan_id = NULL WHERE utusan_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal melepas asosiasi atlet: {}", e))?;
+
+        sqlx::query("DELETE FROM backend_utusan WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menghapus kontingen: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Fetches all perguruans for an event with athlete counts
+    pub async fn get_enriched_perguruans(&self, event_id: i64) -> Result<Vec<EnrichedPerguruan>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, EnrichedPerguruan>(
+            "SELECT p.id, p.event_id, p.nama_perguruan, COUNT(a.id) as athlete_count
+             FROM backend_perguruan p
+             LEFT JOIN backend_atlet a ON a.perguruan_id = p.id
+             WHERE p.event_id = ?
+             GROUP BY p.id, p.event_id, p.nama_perguruan
+             ORDER BY p.nama_perguruan ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat perguruan: {}", e))
+    }
+
+    /// Creates a new perguruan
+    pub async fn create_perguruan(&self, event_id: i64, nama_perguruan: String) -> Result<EnrichedPerguruan, String> {
+        let pool = self.get_pool()?;
+        let clean_name = nama_perguruan.trim().to_uppercase();
+        if clean_name.is_empty() {
+            return Err("Nama perguruan tidak boleh kosong".into());
+        }
+
+        let res = sqlx::query("INSERT INTO backend_perguruan (event_id, nama_perguruan) VALUES (?, ?)")
+            .bind(event_id)
+            .bind(&clean_name)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menambahkan perguruan: {}", e))?;
+
+        let id = res.last_insert_rowid();
+        Ok(EnrichedPerguruan {
+            id,
+            event_id: Some(event_id),
+            nama_perguruan: Some(clean_name),
+            athlete_count: 0,
+        })
+    }
+
+    /// Updates an existing perguruan
+    pub async fn update_perguruan(&self, id: i64, nama_perguruan: String) -> Result<EnrichedPerguruan, String> {
+        let pool = self.get_pool()?;
+        let clean_name = nama_perguruan.trim().to_uppercase();
+        if clean_name.is_empty() {
+            return Err("Nama perguruan tidak boleh kosong".into());
+        }
+
+        sqlx::query("UPDATE backend_perguruan SET nama_perguruan = ? WHERE id = ?")
+            .bind(&clean_name)
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal memperbarui perguruan: {}", e))?;
+
+        sqlx::query_as::<_, EnrichedPerguruan>(
+            "SELECT p.id, p.event_id, p.nama_perguruan, COUNT(a.id) as athlete_count
+             FROM backend_perguruan p
+             LEFT JOIN backend_atlet a ON a.perguruan_id = p.id
+             WHERE p.id = ?
+             GROUP BY p.id, p.event_id, p.nama_perguruan"
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat perguruan setelah update: {}", e))
+    }
+
+    /// Deletes a perguruan and dissociates any attached athletes
+    pub async fn delete_perguruan(&self, id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query("UPDATE backend_atlet SET perguruan_id = NULL WHERE perguruan_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal melepas asosiasi atlet: {}", e))?;
+
+        sqlx::query("DELETE FROM backend_perguruan WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menghapus perguruan: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Saves a contingent logo from base64 data to media/logo_utusan/
+    pub async fn save_contingent_logo(&self, file_name: &str, base64_data: &str) -> Result<String, String> {
+        let media_dir = self.get_media_dir()
+            .ok_or_else(|| "Media directory tidak aktif (database belum dimount)".to_string())?;
+
+        let logo_dir = media_dir.join("logo_utusan");
+        if !logo_dir.exists() {
+            let _ = std::fs::create_dir_all(&logo_dir);
+        }
+
+        // Clean base64 string if it contains data URI header
+        let raw_b64 = if let Some(idx) = base64_data.find(";base64,") {
+            &base64_data[idx + 8..]
+        } else {
+            base64_data
+        };
+
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw_b64.trim())
+            .map_err(|e| format!("Gagal decode base64 gambar: {}", e))?;
+
+        let safe_name = file_name.replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '-', "_");
+        let dest_path = logo_dir.join(&safe_name);
+
+        tokio::fs::write(&dest_path, bytes)
+            .await
+            .map_err(|e| format!("Gagal menyimpan file logo: {}", e))?;
+
+        let relative = format!("logo_utusan/{}", safe_name);
+        Ok(relative)
     }
 
     /// Fetches all tournament categories eligible for bracket drawing

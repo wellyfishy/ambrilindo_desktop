@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "$lib/api_client";
-  import type { EnrichedAtletItem, UtusanItem, PerguruanItem, NomorTandingItem, PullResult } from "$lib/types";
+  import type { EnrichedAtletItem, UtusanItem, PerguruanItem, EnrichedUtusanItem, EnrichedPerguruanItem, NomorTandingItem, PullResult } from "$lib/types";
   import FuzzySelect, { type SelectOption } from "./FuzzySelect.svelte";
 
   interface Props {
@@ -19,6 +19,72 @@
   let categories = $state<NomorTandingItem[]>([]);
   let isLoading = $state(false);
   let isSyncing = $state(false);
+
+  // Master Data (Contingent & Perguruan) State
+  let activeContingentSubTab = $state<'contingent' | 'perguruan'>('contingent');
+  let enrichedContingents = $state<EnrichedUtusanItem[]>([]);
+  let enrichedPerguruans = $state<EnrichedPerguruanItem[]>([]);
+  let masterSearchKeyword = $state("");
+
+  let filteredEnrichedContingents = $derived<EnrichedUtusanItem[]>(
+    enrichedContingents.filter((c) =>
+      !masterSearchKeyword ||
+      (c.nama_utusan && c.nama_utusan.toLowerCase().includes(masterSearchKeyword.toLowerCase()))
+    )
+  );
+
+  let filteredEnrichedPerguruans = $derived<EnrichedPerguruanItem[]>(
+    enrichedPerguruans.filter((p) =>
+      !masterSearchKeyword ||
+      (p.nama_perguruan && p.nama_perguruan.toLowerCase().includes(masterSearchKeyword.toLowerCase()))
+    )
+  );
+
+  let totalContingentAthletes = $derived(
+    enrichedContingents.reduce((acc, c) => acc + (c.athlete_count || 0), 0)
+  );
+  let totalPerguruanAthletes = $derived(
+    enrichedPerguruans.reduce((acc, p) => acc + (p.athlete_count || 0), 0)
+  );
+
+  // Contingent Modal State
+  let contingentModalOpen = $state(false);
+  let isContingentEdit = $state(false);
+  let isSavingContingent = $state(false);
+  let contingentFormError = $state<string | null>(null);
+  let contingentForm = $state<{
+    id: number | null;
+    nama_utusan: string;
+    logo: string | null;
+    new_logo_data: string | null;
+    new_logo_filename: string | null;
+  }>({
+    id: null,
+    nama_utusan: "",
+    logo: null,
+    new_logo_data: null,
+    new_logo_filename: null,
+  });
+
+  // Perguruan Modal State
+  let perguruanModalOpen = $state(false);
+  let isPerguruanEdit = $state(false);
+  let isSavingPerguruan = $state(false);
+  let perguruanFormError = $state<string | null>(null);
+  let perguruanForm = $state<{
+    id: number | null;
+    nama_perguruan: string;
+  }>({
+    id: null,
+    nama_perguruan: "",
+  });
+
+  // Delete Master Modal State
+  let deleteMasterModalOpen = $state(false);
+  let masterTypeToDelete = $state<'contingent' | 'perguruan'>('contingent');
+  let contingentToDelete = $state<EnrichedUtusanItem | null>(null);
+  let perguruanToDelete = $state<EnrichedPerguruanItem | null>(null);
+  let isDeletingMaster = $state(false);
 
   // Logo Cache Map
   let logoMap = $state<Record<string, string>>({});
@@ -454,6 +520,204 @@
   onMount(() => {
     loadData();
   });
+
+  async function resolveContingentLogos(items: EnrichedUtusanItem[]) {
+    for (const item of items) {
+      if (!item.logo) continue;
+      if (logoMap[item.logo]) continue;
+      if (item.logo.startsWith("http://") || item.logo.startsWith("https://") || item.logo.startsWith("data:")) {
+        logoMap[item.logo] = item.logo;
+        continue;
+      }
+      try {
+        const dataUrl = await invoke<string | null>("get_media_data_url", { relativePath: item.logo });
+        if (dataUrl) {
+          logoMap[item.logo] = dataUrl;
+        }
+      } catch (e) {
+        console.warn("Gagal resolve logo utusan:", item.logo, e);
+      }
+    }
+  }
+
+  function openCreateContingentModal() {
+    isContingentEdit = false;
+    contingentFormError = null;
+    contingentForm = {
+      id: null,
+      nama_utusan: "",
+      logo: null,
+      new_logo_data: null,
+      new_logo_filename: null,
+    };
+    contingentModalOpen = true;
+  }
+
+  function openEditContingentModal(c: EnrichedUtusanItem) {
+    isContingentEdit = true;
+    contingentFormError = null;
+    contingentForm = {
+      id: c.id,
+      nama_utusan: c.nama_utusan || "",
+      logo: c.logo || null,
+      new_logo_data: null,
+      new_logo_filename: null,
+    };
+    contingentModalOpen = true;
+  }
+
+  function handleLogoFileChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    if (target.files && target.files[0]) {
+      const file = target.files[0];
+      contingentForm.new_logo_filename = file.name;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        contingentForm.new_logo_data = e.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function clearContingentLogo() {
+    contingentForm.logo = null;
+    contingentForm.new_logo_data = null;
+    contingentForm.new_logo_filename = null;
+  }
+
+  async function handleSaveContingent() {
+    contingentFormError = null;
+    const name = contingentForm.nama_utusan.trim();
+    if (!name) {
+      contingentFormError = "Nama kontingen wajib diisi.";
+      return;
+    }
+    isSavingContingent = true;
+    try {
+      let finalLogoPath = contingentForm.logo;
+      if (contingentForm.new_logo_data && contingentForm.new_logo_filename) {
+        finalLogoPath = await invoke<string>("save_contingent_logo", {
+          fileName: contingentForm.new_logo_filename,
+          base64Data: contingentForm.new_logo_data,
+        });
+        if (finalLogoPath) {
+          logoMap[finalLogoPath] = contingentForm.new_logo_data;
+        }
+      }
+
+      if (isContingentEdit && contingentForm.id) {
+        await invoke("update_contingent", {
+          id: contingentForm.id,
+          namaUtusan: name,
+          logo: finalLogoPath,
+        });
+        showToast(`Kontingen "${name}" berhasil diperbarui.`);
+      } else {
+        await invoke("create_contingent", {
+          eventId,
+          namaUtusan: name,
+          logo: finalLogoPath,
+        });
+        showToast(`Kontingen "${name}" berhasil ditambahkan.`);
+      }
+      contingentModalOpen = false;
+      await loadData();
+    } catch (err: any) {
+      console.error("Gagal menyimpan kontingen:", err);
+      contingentFormError = typeof err === "string" ? err : err?.message || JSON.stringify(err);
+    } finally {
+      isSavingContingent = false;
+    }
+  }
+
+  function openDeleteContingentModal(c: EnrichedUtusanItem) {
+    masterTypeToDelete = 'contingent';
+    contingentToDelete = c;
+    perguruanToDelete = null;
+    deleteMasterModalOpen = true;
+  }
+
+  function openCreatePerguruanModal() {
+    isPerguruanEdit = false;
+    perguruanFormError = null;
+    perguruanForm = {
+      id: null,
+      nama_perguruan: "",
+    };
+    perguruanModalOpen = true;
+  }
+
+  function openEditPerguruanModal(p: EnrichedPerguruanItem) {
+    isPerguruanEdit = true;
+    perguruanFormError = null;
+    perguruanForm = {
+      id: p.id,
+      nama_perguruan: p.nama_perguruan || "",
+    };
+    perguruanModalOpen = true;
+  }
+
+  async function handleSavePerguruan() {
+    perguruanFormError = null;
+    const name = perguruanForm.nama_perguruan.trim();
+    if (!name) {
+      perguruanFormError = "Nama perguruan wajib diisi.";
+      return;
+    }
+    isSavingPerguruan = true;
+    try {
+      if (isPerguruanEdit && perguruanForm.id) {
+        await invoke("update_perguruan", {
+          id: perguruanForm.id,
+          namaPerguruan: name,
+        });
+        showToast(`Perguruan "${name}" berhasil diperbarui.`);
+      } else {
+        await invoke("create_perguruan", {
+          eventId,
+          namaPerguruan: name,
+        });
+        showToast(`Perguruan "${name}" berhasil ditambahkan.`);
+      }
+      perguruanModalOpen = false;
+      await loadData();
+    } catch (err: any) {
+      console.error("Gagal menyimpan perguruan:", err);
+      perguruanFormError = typeof err === "string" ? err : err?.message || JSON.stringify(err);
+    } finally {
+      isSavingPerguruan = false;
+    }
+  }
+
+  function openDeletePerguruanModal(p: EnrichedPerguruanItem) {
+    masterTypeToDelete = 'perguruan';
+    perguruanToDelete = p;
+    contingentToDelete = null;
+    deleteMasterModalOpen = true;
+  }
+
+  async function confirmDeleteMaster() {
+    isDeletingMaster = true;
+    try {
+      if (masterTypeToDelete === 'contingent' && contingentToDelete) {
+        await invoke("delete_contingent", { id: contingentToDelete.id });
+        showToast(`Kontingen "${contingentToDelete.nama_utusan}" berhasil dihapus.`);
+      } else if (masterTypeToDelete === 'perguruan' && perguruanToDelete) {
+        await invoke("delete_perguruan", { id: perguruanToDelete.id });
+        showToast(`Perguruan "${perguruanToDelete.nama_perguruan}" berhasil dihapus.`);
+      }
+      deleteMasterModalOpen = false;
+      contingentToDelete = null;
+      perguruanToDelete = null;
+      await loadData();
+    } catch (err: any) {
+      console.error("Gagal menghapus data master:", err);
+      showToast(`Gagal menghapus data: ${typeof err === "string" ? err : err?.message || JSON.stringify(err)}`);
+    } finally {
+      isDeletingMaster = false;
+    }
+  }
+
 </script>
 
 <div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
@@ -1168,6 +1432,225 @@
           class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
         >
           {isBatchDeleting ? "Menghapus..." : `Hapus ${selectedIds.size} Atlet`}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+
+<!-- Modal: Tambah / Edit Kontingen -->
+{#if contingentModalOpen}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 select-none">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
+      <!-- Header -->
+      <div class="px-6 py-4 bg-[#111215] border-b border-white/[0.08] flex items-center justify-between">
+        <h3 class="text-sm font-bold text-white tracking-tight">
+          {isContingentEdit ? "Edit Kontingen / Utusan" : "Tambah Kontingen Baru"}
+        </h3>
+        <button onclick={() => (contingentModalOpen = false)} class="text-zinc-500 hover:text-white transition-colors">
+          ✕
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div class="p-6 space-y-4">
+        {#if contingentFormError}
+          <div class="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-3 py-2 rounded-xl">
+            {contingentFormError}
+          </div>
+        {/if}
+
+        <!-- Nama Kontingen -->
+        <div>
+          <label for="nama_kontingen_input" class="block text-xs font-semibold text-zinc-300 mb-1.5">
+            Nama Kontingen / Utusan <span class="text-rose-400">*</span>
+          </label>
+          <input
+            id="nama_kontingen_input"
+            type="text"
+            bind:value={contingentForm.nama_utusan}
+            placeholder="Contoh: KONTINGEN KOTA SURABAYA"
+            class="w-full bg-[#111215] text-xs font-semibold text-white uppercase px-3 py-2.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors"
+          />
+        </div>
+
+        <!-- Logo Upload Section -->
+        <div>
+          <span class="block text-xs font-semibold text-zinc-300 mb-1.5">
+            Logo Kontingen
+          </span>
+          
+          <div class="flex items-center space-x-3 p-3 bg-[#111215] rounded-xl border border-white/[0.08]">
+            {#if contingentForm.new_logo_data}
+              <div class="w-14 h-14 rounded-lg bg-white/[0.04] border border-white/[0.08] p-1 flex items-center justify-center shrink-0">
+                <img src={contingentForm.new_logo_data} alt="Preview" class="w-full h-full object-contain" />
+              </div>
+            {:else if contingentForm.logo && logoMap[contingentForm.logo]}
+              <div class="w-14 h-14 rounded-lg bg-white/[0.04] border border-white/[0.08] p-1 flex items-center justify-center shrink-0">
+                <img src={logoMap[contingentForm.logo]} alt="Existing Logo" class="w-full h-full object-contain" />
+              </div>
+            {:else}
+              <div class="w-14 h-14 rounded-lg bg-white/[0.03] border border-dashed border-white/20 flex flex-col items-center justify-center text-zinc-500 shrink-0">
+                <svg class="w-5 h-5 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span class="text-[9px] mt-0.5">No Logo</span>
+              </div>
+            {/if}
+
+            <div class="flex-1 space-y-1.5">
+              <label for="logo_file_input" class="cursor-pointer inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-semibold text-zinc-200 hover:text-white border border-white/[0.1] transition-colors">
+                <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                <span>Pilih File Gambar</span>
+                <input
+                  id="logo_file_input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  onchange={handleLogoFileChange}
+                  class="hidden"
+                />
+              </label>
+              {#if contingentForm.new_logo_data || contingentForm.logo}
+                <div>
+                  <button
+                    type="button"
+                    onclick={clearContingentLogo}
+                    class="text-[11px] text-rose-400 hover:text-rose-300 font-medium"
+                  >
+                    Hapus Logo
+                  </button>
+                </div>
+              {/if}
+              <p class="text-[10px] text-zinc-500">Format PNG, JPG, WebP atau SVG</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-6 py-3.5 bg-[#111215] border-t border-white/[0.08] flex items-center justify-end space-x-2">
+        <button
+          onclick={() => (contingentModalOpen = false)}
+          disabled={isSavingContingent}
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+        >
+          Batal
+        </button>
+        <button
+          onclick={handleSaveContingent}
+          disabled={isSavingContingent}
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
+        >
+          {isSavingContingent ? "Menyimpan..." : isContingentEdit ? "Simpan Perubahan" : "Simpan Kontingen"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Modal: Tambah / Edit Perguruan -->
+{#if perguruanModalOpen}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 select-none">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">
+      <!-- Header -->
+      <div class="px-6 py-4 bg-[#111215] border-b border-white/[0.08] flex items-center justify-between">
+        <h3 class="text-sm font-bold text-white tracking-tight">
+          {isPerguruanEdit ? "Edit Perguruan / Dojo" : "Tambah Perguruan Baru"}
+        </h3>
+        <button onclick={() => (perguruanModalOpen = false)} class="text-zinc-500 hover:text-white transition-colors">
+          ✕
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div class="p-6 space-y-4">
+        {#if perguruanFormError}
+          <div class="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-3 py-2 rounded-xl">
+            {perguruanFormError}
+          </div>
+        {/if}
+
+        <div>
+          <label for="nama_perguruan_input" class="block text-xs font-semibold text-zinc-300 mb-1.5">
+            Nama Perguruan / Dojo <span class="text-rose-400">*</span>
+          </label>
+          <input
+            id="nama_perguruan_input"
+            type="text"
+            bind:value={perguruanForm.nama_perguruan}
+            placeholder="Contoh: INKAI / LEMKARI / KERA SAKTI"
+            class="w-full bg-[#111215] text-xs font-semibold text-white uppercase px-3 py-2.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors"
+          />
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-6 py-3.5 bg-[#111215] border-t border-white/[0.08] flex items-center justify-end space-x-2">
+        <button
+          onclick={() => (perguruanModalOpen = false)}
+          disabled={isSavingPerguruan}
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+        >
+          Batal
+        </button>
+        <button
+          onclick={handleSavePerguruan}
+          disabled={isSavingPerguruan}
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
+        >
+          {isSavingPerguruan ? "Menyimpan..." : isPerguruanEdit ? "Simpan Perubahan" : "Simpan Perguruan"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Modal: Konfirmasi Hapus Master (Kontingen / Perguruan) -->
+{#if deleteMasterModalOpen}
+  {@const targetName = masterTypeToDelete === 'contingent' ? contingentToDelete?.nama_utusan : perguruanToDelete?.nama_perguruan}
+  {@const count = masterTypeToDelete === 'contingent' ? (contingentToDelete?.athlete_count || 0) : (perguruanToDelete?.athlete_count || 0)}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 select-none">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl w-full max-w-sm shadow-2xl p-6 animate-in zoom-in-95 duration-150">
+      <div class="flex items-center space-x-3">
+        <div class="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm font-bold text-white tracking-tight">
+            Hapus {masterTypeToDelete === 'contingent' ? 'Kontingen' : 'Perguruan'}
+          </h3>
+        </div>
+      </div>
+
+      <p class="text-xs text-zinc-300 mt-3 leading-relaxed">
+        Apakah Anda yakin ingin menghapus <strong class="text-white uppercase">{targetName}</strong> dari database turnamen? Tindakan ini bersifat permanen.
+      </p>
+
+      {#if count > 0}
+        <div class="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] leading-snug">
+          ⚠️ <strong>Perhatian:</strong> Terdapat <strong>{count} atlet</strong> yang terdaftar pada {masterTypeToDelete === 'contingent' ? 'kontingen' : 'perguruan'} ini. Menghapus data ini akan melepaskan afiliasi atlet tersebut.
+        </div>
+      {/if}
+
+      <div class="mt-5 flex items-center justify-end space-x-2 pt-2 border-t border-white/[0.08]">
+        <button
+          onclick={() => { deleteMasterModalOpen = false; contingentToDelete = null; perguruanToDelete = null; }}
+          disabled={isDeletingMaster}
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+        >
+          Batal
+        </button>
+        <button
+          onclick={confirmDeleteMaster}
+          disabled={isDeletingMaster}
+          class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
+        >
+          {isDeletingMaster ? "Menghapus..." : "Hapus Permanen"}
         </button>
       </div>
     </div>

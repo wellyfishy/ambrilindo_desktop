@@ -171,6 +171,21 @@ export interface UtusanItem {
   logo: string | null;
 }
 
+export interface EnrichedPerguruanItem {
+  id: number;
+  event_id: number | null;
+  nama_perguruan: string | null;
+  athlete_count: number;
+}
+
+export interface EnrichedUtusanItem {
+  id: number;
+  event_id: number | null;
+  nama_utusan: string | null;
+  logo: string | null;
+  athlete_count: number;
+}
+
 export interface MonitorOption {
   id: number;
   name: string;

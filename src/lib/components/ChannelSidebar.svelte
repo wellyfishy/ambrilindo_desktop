@@ -286,6 +286,21 @@
             <span>data-atlet</span>
           </button>
 
+          <!-- Kontingen & Perguruan -->
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "contingent",
+                id: "contingents",
+                name: "kontingen-perguruan",
+                subtitle: "Master Data Kontingen & Perguruan Silat / Karate",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'kontingen-perguruan' || activeChannel.type === 'contingent' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>kontingen-perguruan</span>
+          </button>
+
           <!-- Nomor Tanding -->
           <button
             onclick={() =>

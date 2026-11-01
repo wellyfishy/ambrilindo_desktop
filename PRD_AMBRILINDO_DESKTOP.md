@@ -232,12 +232,23 @@ The desktop app currently has zero support for Team Kumite bouts.
 
 ---
 
-### Epic 5.5: Master Data CRUD for Contingents & Clubs
-- **Specification**:
-  - Update `DataMasterView.svelte` or add dedicated tabs:
-    - **Contingents (`Utusan`)**: Create, Edit name, Upload contingent logo (`.png`/`.webp`), Delete, View associated athlete counts.
-    - **Clubs (`Perguruan`)**: Create, Edit name, Delete, View affiliated athlete counts.
-  - Implement Rust commands: `create_contingent`, `update_contingent`, `delete_contingent`, `create_perguruan`, `update_perguruan`, `delete_perguruan`.
+### Epic 5.5: Master Data CRUD for Contingents & Clubs [COMPLETED]
+- **Status**: Completed (Rust IPC + Axum REST API + Svelte 5 Reactive Sub-Tab Card Grid)
+- **Specification & Implementation**:
+  - **Full Offline CRUD for Contingents (`backend_utusan`)**:
+    - Creation, Name modification, Logo uploading & decoding to `media/logo_utusan/`, deletion, athlete affiliation count badges.
+  - **Full Offline CRUD for Clubs (`backend_perguruan`)**:
+    - Creation, Name modification, deletion, affiliated athlete count badges.
+  - **Rust Backend**:
+    - `get_enriched_contingents`, `create_contingent`, `update_contingent`, `delete_contingent`, `save_contingent_logo`
+    - `get_enriched_perguruans`, `create_perguruan`, `update_perguruan`, `delete_perguruan`
+  - **Axum REST API & LAN Client Mode**:
+    - Full endpoints `/api/enriched-contingents/:event_id`, `/api/contingents/*`, `/api/enriched-perguruans/:event_id`, `/api/perguruans/*` and universal RPC dispatch mapping in `dispatch_command_api`.
+  - **UI / UX in `RosterView.svelte` & `ChannelSidebar.svelte`**:
+    - Dedicated sidebar channel `kontingen-perguruan`.
+    - Tab switcher for **Kontingen / Utusan** and **Perguruan / Dojo**.
+    - Live search filter by name, athlete count badges, quick summary metrics.
+    - Modals for creation and editing with logo file preview and safe delete confirmation with athlete count impact warning.
 
 ---
 
