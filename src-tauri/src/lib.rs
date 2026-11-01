@@ -351,15 +351,36 @@ async fn close_control_panel_window(
 
 #[tauri::command]
 async fn save_match_result(
+    app: tauri::AppHandle,
     input: SaveMatchInput,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.save_match_result(input).await
+    let (pool_opt, db_path_opt) = {
+        db.save_match_result(input).await?;
+        (db.get_pool_cloned(), db.get_active_db_path_cloned())
+    };
+
+    if let Some(pool) = pool_opt {
+        let app_handle = app.clone();
+        tokio::spawn(async move {
+            if let Ok((synced, failed)) = sync::SyncService::process_sync_queue(&pool, db_path_opt.as_ref()).await {
+                if synced > 0 || failed > 0 {
+                    let _ = app_handle.emit("sync_queue_changed", serde_json::json!({
+                        "synced": synced,
+                        "failed": failed
+                    }));
+                }
+            }
+        });
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
 async fn open_control_panel_window(
+    state: tauri::State<'_, DesktopState>,
     app: tauri::AppHandle,
     match_id: i64,
     bagan_id: i64,
@@ -369,6 +390,29 @@ async fn open_control_panel_window(
 
     let win_label = format!("control-panel-{}", match_id);
     let t_num = tatami.unwrap_or(1);
+
+    // Notify match is running on this tatami and enqueue to sync
+    let t_num_i32 = t_num as i32;
+    if match_id > 0 {
+        let (pool_opt, db_path_opt) = {
+            let db = state.db.lock().await;
+            let _ = db.notify_match_running(match_id, t_num_i32).await;
+            (db.get_pool_cloned(), db.get_active_db_path_cloned())
+        };
+        if let Some(pool) = pool_opt {
+            let app_handle = app.clone();
+            tokio::spawn(async move {
+                if let Ok((synced, failed)) = sync::SyncService::process_sync_queue(&pool, db_path_opt.as_ref()).await {
+                    if synced > 0 || failed > 0 {
+                        let _ = app_handle.emit("sync_queue_changed", serde_json::json!({
+                            "synced": synced,
+                            "failed": failed
+                        }));
+                    }
+                }
+            });
+        }
+    }
 
     // If window for the exact same match already exists:
     // Close any other control panels, bring this one forward, reload, and focus
@@ -442,6 +486,7 @@ async fn open_festival_control_panel(
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
     let win_label = "control-panel-0".to_string();
+    let fest_tatami_num = tatami.unwrap_or(1);
     let t_num = tatami.unwrap_or(1);
 
     for (label, existing_win) in app.webview_windows() {
@@ -450,7 +495,7 @@ async fn open_festival_control_panel(
         }
     }
 
-    let mut query = format!("matchId=0&baganId=0&isFestival=true&tatami={}", t_num);
+    let mut query = format!("matchId=0&baganId=0&isFestival=true&tatami={}", fest_tatami_num);
     if let Some(ref n) = aka_nama {
         query.push_str(&format!("&aka={}", helper_url_encode(n)));
     }
@@ -1110,8 +1155,9 @@ async fn get_tatami_booklet_data(
 pub fn run() {
     let (broadcast_tx, _rx) = broadcast::channel(100);
 
+    let db_arc = Arc::new(Mutex::new(DatabaseManager::new()));
     let desktop_state = DesktopState {
-        db: Arc::new(Mutex::new(DatabaseManager::new())),
+        db: db_arc.clone(),
         audio: AudioService::new(),
         server_broadcast: broadcast_tx,
         server_running: Mutex::new(false),
@@ -1120,6 +1166,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            let app_handle = app.handle().clone();
+            sync::SyncService::spawn_sync_worker(db_arc, Some(app_handle));
+            Ok(())
+        })
         .manage(desktop_state)
         .invoke_handler(tauri::generate_handler![
             get_network_info,

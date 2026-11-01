@@ -73,6 +73,10 @@ impl DatabaseManager {
         self.active_db_path = Some(path);
         self.active_media_path = Some(media_dir);
 
+        if let Some(p) = &self.pool {
+            let _ = crate::sync::SyncService::ensure_sync_queue_table(p).await;
+        }
+
         Ok(())
     }
 
@@ -84,6 +88,14 @@ impl DatabaseManager {
 
     pub fn get_media_dir(&self) -> Option<&PathBuf> {
         self.active_media_path.as_ref()
+    }
+
+    pub fn get_pool_cloned(&self) -> Option<Pool<Sqlite>> {
+        self.pool.clone()
+    }
+
+    pub fn get_active_db_path_cloned(&self) -> Option<PathBuf> {
+        self.active_db_path.clone()
     }
 
     pub fn get_db_path(&self) -> Option<&PathBuf> {
@@ -1573,15 +1585,15 @@ impl DatabaseManager {
         let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id) = current_match;
 
         // Fetch bagan metadata to identify pool / multi-pool context
-        let bagan_meta: Option<(i32, Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT pool, nomor_tanding_id, nama_bagan FROM backend_bagan WHERE id = ?"
+        let bagan_meta: Option<(i32, Option<i64>, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT pool, nomor_tanding_id, nama_bagan, event_id FROM backend_bagan WHERE id = ?"
         )
         .bind(bagan_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| format!("Gagal memuat info bagan #{}: {}", bagan_id, e))?;
 
-        let (bagan_pool, nomor_tanding_id, nama_bagan) = bagan_meta.unwrap_or((1, None, None));
+        let (bagan_pool, nomor_tanding_id, nama_bagan, event_id) = bagan_meta.unwrap_or((1, None, None, None));
         let nama_bagan_upper = nama_bagan.unwrap_or_default().to_uppercase();
         let is_pool_bracket = bagan_pool == 2 || nama_bagan_upper.contains("POOL A") || nama_bagan_upper.contains("POOL B") || nama_bagan_upper.contains("POOL 1") || nama_bagan_upper.contains("POOL 2");
         let is_pool_a = nama_bagan_upper.contains("POOL A") || nama_bagan_upper.contains("POOL 1");
@@ -1935,7 +1947,201 @@ impl DatabaseManager {
             }
         }
 
+        // 4. Enqueue into backend_syncqueue if live sync is enabled for this event
+        if let Some(ev_id) = event_id {
+            let ev_info: Option<(Option<String>, bool)> = sqlx::query_as(
+                "SELECT kode_event, is_live_sync_enabled FROM backend_event WHERE id = ?"
+            )
+            .bind(ev_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+
+            if let Some((kode_event, is_live_sync_enabled)) = ev_info {
+                if is_live_sync_enabled {
+                    let ev_code = kode_event.unwrap_or_else(|| format!("EV{}", ev_id));
+                    let kode_realtime = format!("{}-{}-{}", ev_code, bagan_id, input.match_id);
+
+                    // Find tatami number associated with this match or assigned tatami
+                    let ring_number: Option<i64> = sqlx::query_scalar(
+                        r#"
+                        SELECT tatami_number FROM backend_tatami 
+                        WHERE detail_bagan_id = ? 
+                           OR id = (SELECT assigned_tatami_id FROM backend_detailbagan WHERE id = ?)
+                        LIMIT 1
+                        "#
+                    )
+                    .bind(input.match_id)
+                    .bind(input.match_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .unwrap_or(None);
+
+                    let ring_str = ring_number.map(|r| r.to_string()).unwrap_or_default();
+
+                    let mut result_payload = serde_json::json!({
+                        "status": if input.selesai { "finished" } else { "running" },
+                        "detail_bagan_id": input.match_id,
+                        "kode_realtime": &kode_realtime,
+                        "ring_number": ring_str,
+                        "pemenang": input.pemenang.as_deref().unwrap_or(""),
+                        "score1": input.score1.as_deref().unwrap_or("0"),
+                        "score2": input.score2.as_deref().unwrap_or("0"),
+                        "score_aka": input.score1.as_deref().unwrap_or("0"),
+                        "score_ao": input.score2.as_deref().unwrap_or("0"),
+                        "vr1": input.vr1,
+                        "vr2": input.vr2,
+                        "selesai": input.selesai,
+                        "hantei": input.hantei,
+                    });
+
+                    if let Some(s1) = &input.scorekecil1 {
+                        result_payload["lil_score_aka"] = serde_json::Value::String(s1.clone());
+                    }
+                    if let Some(s2) = &input.scorekecil2 {
+                        result_payload["lil_score_ao"] = serde_json::Value::String(s2.clone());
+                    }
+                    if let Some(k1) = &input.kata1 {
+                        result_payload["kata_aka"] = serde_json::Value::String(k1.clone());
+                    }
+                    if let Some(k2) = &input.kata2 {
+                        result_payload["kata_ao"] = serde_json::Value::String(k2.clone());
+                    }
+
+                    let payload_str = serde_json::to_string(&result_payload).unwrap_or_default();
+
+                    let _ = sqlx::query(
+                        "INSERT INTO backend_syncqueue (event_id, endpoint, payload, status) VALUES (?, 'api/result/', ?, 'pending')"
+                    )
+                    .bind(ev_id)
+                    .bind(&payload_str)
+                    .execute(&mut *tx)
+                    .await;
+
+                    // If final match completed, also enqueue api/final-result/
+                    if input.selesai && round_num == 4 {
+                        let podium_row: Option<(
+                            Option<String>, Option<String>,
+                            Option<String>, Option<String>,
+                            Option<String>, Option<String>,
+                            Option<String>, Option<String>,
+                        )> = sqlx::query_as(
+                            r#"
+                            SELECT 
+                                j1.nama_atlet, j1.kode_atlet,
+                                j2.nama_atlet, j2.kode_atlet,
+                                j3a.nama_atlet, j3a.kode_atlet,
+                                j3b.nama_atlet, j3b.kode_atlet
+                            FROM backend_bagan b
+                            LEFT JOIN backend_atlet j1 ON b.juara_1_id = j1.id
+                            LEFT JOIN backend_atlet j2 ON b.juara_2_id = j2.id
+                            LEFT JOIN backend_atlet j3a ON b.juara_3a_id = j3a.id
+                            LEFT JOIN backend_atlet j3b ON b.juara_3b_id = j3b.id
+                            WHERE b.id = ?
+                            "#
+                        )
+                        .bind(bagan_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .unwrap_or(None);
+
+                        if let Some((j1_name, j1_code, j2_name, j2_code, j3a_name, j3a_code, j3b_name, j3b_code)) = podium_row {
+                            let final_payload = serde_json::json!({
+                                "status": "finished",
+                                "kode_realtime": &kode_realtime,
+                                "juara_1": j1_name,
+                                "juara_1_kode": j1_code,
+                                "juara_2": j2_name,
+                                "juara_2_kode": j2_code,
+                                "juara_3a": j3a_name,
+                                "juara_3a_kode": j3a_code,
+                                "juara_3b": j3b_name,
+                                "juara_3b_kode": j3b_code,
+                            });
+                            let final_str = serde_json::to_string(&final_payload).unwrap_or_default();
+                            let _ = sqlx::query(
+                                "INSERT INTO backend_syncqueue (event_id, endpoint, payload, status) VALUES (?, 'api/final-result/', ?, 'pending')"
+                            )
+                            .bind(ev_id)
+                            .bind(&final_str)
+                            .execute(&mut *tx)
+                            .await;
+                        }
+                    }
+                }
+            }
+        }
+
         tx.commit().await.map_err(|e| format!("Gagal melakukan commit transaksi: {}", e))?;
+        Ok(())
+    }
+
+    /// Enqueues api/status/ (running) to backend_syncqueue and links the match to the tatami.
+    pub async fn notify_match_running(&self, match_id: i64, tatami_number: i32) -> Result<(), String> {
+        let pool = self.get_pool()?;
+
+        // 1. Update tatami's active match
+        let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = ? WHERE tatami_number = ?")
+            .bind(match_id)
+            .bind(tatami_number)
+            .execute(pool)
+            .await;
+
+        let _ = sqlx::query(
+            "UPDATE backend_detailbagan SET assigned_tatami_id = (SELECT id FROM backend_tatami WHERE tatami_number = ? LIMIT 1) WHERE id = ?"
+        )
+        .bind(tatami_number)
+        .bind(match_id)
+        .execute(pool)
+        .await;
+
+        // 2. Fetch match and event info to check live sync
+        let match_info: Option<(i64, i64, i64, bool, bool, Option<String>, Option<i64>, bool)> = sqlx::query_as(
+            r#"
+            SELECT d.bagan_id, d.round, d.urutan, d.vr1, d.vr2, e.kode_event, b.event_id, e.is_live_sync_enabled
+            FROM backend_detailbagan d
+            JOIN backend_bagan b ON d.bagan_id = b.id
+            JOIN backend_event e ON b.event_id = e.id
+            WHERE d.id = ?
+            "#
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let Some((bagan_id, round_num, urutan_num, vr1, vr2, kode_event, event_id, is_live_sync)) = match_info else {
+            return Ok(());
+        };
+
+        if !is_live_sync {
+            return Ok(());
+        }
+
+        let ev_code = kode_event.unwrap_or_else(|| format!("EV{}", event_id.unwrap_or(0)));
+        let kode_realtime = format!("{}-{}-{}", ev_code, bagan_id, match_id);
+
+        let status_payload = serde_json::json!({
+            "status": "running",
+            "detail_bagan_id": match_id,
+            "bagan_id": bagan_id,
+            "round": round_num,
+            "urutan": urutan_num,
+            "vr1": vr1,
+            "vr2": vr2,
+            "kode_realtime": kode_realtime,
+            "ring_number": tatami_number.to_string()
+        });
+
+        let payload_str = serde_json::to_string(&status_payload).unwrap_or_default();
+        let _ = sqlx::query(
+            "INSERT INTO backend_syncqueue (event_id, endpoint, payload, status) VALUES (?, 'api/status/', ?, 'pending')"
+        )
+        .bind(event_id)
+        .bind(&payload_str)
+        .execute(pool)
+        .await;
+
         Ok(())
     }
 

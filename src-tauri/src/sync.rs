@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tracing::info;
+use std::sync::Arc;
+use tauri::Emitter;
+use tokio::sync::Mutex;
+use tracing::{info, warn};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SyncConfig {
@@ -1823,6 +1826,167 @@ impl SyncService {
         }.map_err(|e| format!("Gagal membersihkan data tersinkron: {}", e))?;
 
         Ok(res.rows_affected())
+    }
+
+    /// Processes the sync queue in strict FIFO order for active events where live sync is enabled.
+    /// Returns (synced_count, failed_count).
+    pub async fn process_sync_queue(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+    ) -> Result<(usize, usize), String> {
+        let mut synced_count = 0;
+        let mut failed_count = 0;
+
+        loop {
+            // Find oldest active pending or failed item whose event has is_live_sync_enabled = 1 (or no event)
+            let row = sqlx::query(
+                r#"
+                SELECT sq.id, sq.endpoint, sq.payload, sq.retry_count, sq.event_id
+                FROM backend_syncqueue sq
+                LEFT JOIN backend_event ev ON sq.event_id = ev.id
+                WHERE sq.status IN ('pending', 'failed')
+                  AND (sq.event_id IS NULL OR ev.is_live_sync_enabled = 1)
+                ORDER BY sq.id ASC
+                LIMIT 1
+                "#
+            )
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+            let Some(r) = row else {
+                break; // No more pending or failed items
+            };
+
+            let item_id: i64 = r.get("id");
+            let endpoint: String = r.get("endpoint");
+            let payload_str: String = r.get("payload");
+            let retry_count: i32 = r.get("retry_count");
+
+            // Mark as processing
+            let _ = sqlx::query("UPDATE backend_syncqueue SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(item_id)
+                .execute(pool)
+                .await;
+
+            let sync_cfg = Self::get_sync_config(db_path);
+            let url = format!("{}/{}", sync_cfg.url.trim_end_matches('/'), endpoint.trim_start_matches('/'));
+            let token = Self::get_api_token();
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(6))
+                .build()
+                .unwrap_or_default();
+
+            let payload_json: serde_json::Value = serde_json::from_str(&payload_str)
+                .unwrap_or_else(|_| serde_json::json!({}));
+
+            match client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .json(&payload_json)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    let _ = sqlx::query(
+                        "UPDATE backend_syncqueue SET status = 'synced', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                    )
+                    .bind(item_id)
+                    .execute(pool)
+                    .await;
+                    synced_count += 1;
+                    info!("SyncQueue #{} to {} synced successfully", item_id, endpoint);
+                    // Strict FIFO: continue immediately to next item
+                    continue;
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let err_msg = format!("HTTP error: {}", status);
+                    let new_retry = retry_count + 1;
+                    let is_unrecoverable = status.as_u16() == 400 || status.as_u16() == 404 || new_retry >= 5;
+
+                    let final_status = if is_unrecoverable { "abandoned" } else { "failed" };
+                    let _ = sqlx::query(
+                        "UPDATE backend_syncqueue SET status = ?, retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                    )
+                    .bind(final_status)
+                    .bind(new_retry)
+                    .bind(&err_msg)
+                    .bind(item_id)
+                    .execute(pool)
+                    .await;
+
+                    failed_count += 1;
+                    warn!("SyncQueue #{} to {} returned {}: {}", item_id, endpoint, status, err_msg);
+                    if is_unrecoverable {
+                        // Unrecoverable: skip to unblock other matches
+                        continue;
+                    } else {
+                        // Temporary error: halt queue to preserve FIFO
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    let new_retry = retry_count + 1;
+                    let is_unrecoverable = new_retry >= 5;
+                    let final_status = if is_unrecoverable { "abandoned" } else { "failed" };
+
+                    let _ = sqlx::query(
+                        "UPDATE backend_syncqueue SET status = ?, retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                    )
+                    .bind(final_status)
+                    .bind(new_retry)
+                    .bind(&err_msg)
+                    .bind(item_id)
+                    .execute(pool)
+                    .await;
+
+                    failed_count += 1;
+                    warn!("SyncQueue #{} to {} connection failed: {}", item_id, endpoint, err_msg);
+                    if is_unrecoverable {
+                        continue;
+                    } else {
+                        // Offline: halt until next tick
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok((synced_count, failed_count))
+    }
+
+    /// Spawns a background worker daemon that retries pending/failed items every 12 seconds
+    pub fn spawn_sync_worker(
+        db: Arc<Mutex<crate::db::DatabaseManager>>,
+        app_handle: Option<tauri::AppHandle>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            info!("Ambrilindo Live Sync Background Daemon running (12s interval)");
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
+
+                let (pool_opt, db_path_opt) = {
+                    let db_guard = db.lock().await;
+                    (db_guard.get_pool_cloned(), db_guard.get_active_db_path_cloned())
+                };
+
+                if let Some(pool) = pool_opt {
+                    if let Ok((synced, failed)) = Self::process_sync_queue(&pool, db_path_opt.as_ref()).await {
+                        if (synced > 0 || failed > 0) && app_handle.is_some() {
+                            if let Some(app) = &app_handle {
+                                let _ = app.emit("sync_queue_changed", serde_json::json!({
+                                    "synced": synced,
+                                    "failed": failed
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        })
     }
 
     /// Clears all queue items

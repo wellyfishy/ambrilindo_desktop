@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import type {
     EventItem,
     BaganItem,
@@ -181,13 +182,20 @@
     setupAutoRefresh();
   });
 
+  let unlistenSync: UnlistenFn | null = null;
+
   onDestroy(() => {
     if (refreshTimer) clearInterval(refreshTimer);
+    if (unlistenSync) unlistenSync();
   });
 
   onMount(async () => {
     await loadAllSyncData();
     setupAutoRefresh();
+
+    unlistenSync = await listen("sync_queue_changed", () => {
+      loadAllSyncData();
+    });
   });
 
   $effect(() => {
