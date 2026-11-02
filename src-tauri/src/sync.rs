@@ -5,7 +5,7 @@ use std::time::Instant;
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SyncConfig {
@@ -1962,31 +1962,47 @@ impl SyncService {
     pub fn spawn_sync_worker(
         db: Arc<Mutex<crate::db::DatabaseManager>>,
         app_handle: Option<tauri::AppHandle>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            info!("Ambrilindo Live Sync Background Daemon running (12s interval)");
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
-
-                let (pool_opt, db_path_opt) = {
-                    let db_guard = db.lock().await;
-                    (db_guard.get_pool_cloned(), db_guard.get_active_db_path_cloned())
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::Builder::new()
+            .name("ambrilindo-sync-daemon".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!("Failed to create Tokio runtime for sync daemon: {}", e);
+                        return;
+                    }
                 };
 
-                if let Some(pool) = pool_opt {
-                    if let Ok((synced, failed)) = Self::process_sync_queue(&pool, db_path_opt.as_ref()).await {
-                        if (synced > 0 || failed > 0) && app_handle.is_some() {
-                            if let Some(app) = &app_handle {
-                                let _ = app.emit("sync_queue_changed", serde_json::json!({
-                                    "synced": synced,
-                                    "failed": failed
-                                }));
+                rt.block_on(async move {
+                    info!("Ambrilindo Live Sync Background Daemon running (12s interval)");
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
+
+                        let (pool_opt, db_path_opt) = {
+                            let db_guard = db.lock().await;
+                            (db_guard.get_pool_cloned(), db_guard.get_active_db_path_cloned())
+                        };
+
+                        if let Some(pool) = pool_opt {
+                            if let Ok((synced, failed)) = Self::process_sync_queue(&pool, db_path_opt.as_ref()).await {
+                                if (synced > 0 || failed > 0) && app_handle.is_some() {
+                                    if let Some(app) = &app_handle {
+                                        let _ = app.emit("sync_queue_changed", serde_json::json!({
+                                            "synced": synced,
+                                            "failed": failed
+                                        }));
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
-        })
+                });
+            })
+            .expect("Failed to spawn sync daemon thread")
     }
 
     /// Clears all queue items

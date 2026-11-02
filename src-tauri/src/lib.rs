@@ -364,7 +364,7 @@ async fn save_match_result(
 
     if let Some(pool) = pool_opt {
         let app_handle = app.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             if let Ok((synced, failed)) = sync::SyncService::process_sync_queue(&pool, db_path_opt.as_ref()).await {
                 if synced > 0 || failed > 0 {
                     let _ = app_handle.emit("sync_queue_changed", serde_json::json!({
@@ -402,7 +402,7 @@ async fn open_control_panel_window(
         };
         if let Some(pool) = pool_opt {
             let app_handle = app.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 if let Ok((synced, failed)) = sync::SyncService::process_sync_queue(&pool, db_path_opt.as_ref()).await {
                     if synced > 0 || failed > 0 {
                         let _ = app_handle.emit("sync_queue_changed", serde_json::json!({
