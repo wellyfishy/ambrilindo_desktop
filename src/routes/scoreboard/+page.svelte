@@ -542,9 +542,9 @@
 
 /* ==================== TOP BROADCAST HEADER BAR ==================== */
 .sb-header {
-  height: clamp(48px, 6.8vh, 68px);
-  min-height: clamp(48px, 6.8vh, 68px);
-  max-height: clamp(48px, 6.8vh, 68px);
+  height: clamp(44px, 6vh, 60px);
+  min-height: clamp(44px, 6vh, 60px);
+  max-height: clamp(44px, 6vh, 60px);
   background-color: var(--sb-header-bg);
   border-bottom: 1px solid var(--sb-line-subtle);
   padding: 0 clamp(12px, 1.8vw, 28px);
@@ -567,7 +567,7 @@
   background: linear-gradient(135deg, var(--sb-gold), var(--sb-gold-bright));
   color: var(--sb-ink);
   font-weight: 900;
-  font-size: clamp(1.3rem, 2.8vh, 2.2rem);
+  font-size: clamp(1.2rem, 2.6vh, 2rem);
   padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.8vw, 24px);
   border-radius: 8px;
   line-height: 1.1;
@@ -582,7 +582,7 @@
   border: 1px solid var(--sb-line-accent);
   padding: clamp(4px, 0.6vh, 8px) clamp(8px, 1vw, 16px);
   border-radius: 6px;
-  font-size: clamp(1rem, 2vh, 1.5rem);
+  font-size: clamp(0.95rem, 1.8vh, 1.4rem);
 }
 
 .sb-team-badge-tag {
@@ -618,7 +618,7 @@
 
 .sb-ribbon-item {
   font-weight: 800;
-  font-size: clamp(1.1rem, 2.4vh, 1.8rem);
+  font-size: clamp(1rem, 2.2vh, 1.6rem);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -631,7 +631,7 @@
 .sb-ribbon-sep {
   color: var(--sb-text-dim);
   padding: 0 clamp(8px, 1vw, 16px);
-  font-size: clamp(1rem, 2.2vh, 1.6rem);
+  font-size: clamp(0.95rem, 2vh, 1.4rem);
 }
 
 .sb-header-right {
@@ -642,7 +642,7 @@
 }
 
 .sb-event-name {
-  font-size: clamp(0.95rem, 1.9vh, 1.4rem);
+  font-size: clamp(0.9rem, 1.8vh, 1.3rem);
   font-weight: 700;
   color: var(--sb-text-sub);
   max-width: clamp(160px, 24vw, 360px);
@@ -669,8 +669,8 @@
   min-height: 0;
   display: grid;
   grid-template-rows: 1fr 1fr;
-  gap: clamp(8px, 1.1vh, 12px);
-  padding: clamp(8px, 1.1vh, 12px);
+  gap: clamp(4px, 1vh, 8px);
+  padding: clamp(4px, 1vh, 8px);
   box-sizing: border-box;
 }
 
@@ -681,7 +681,7 @@
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: clamp(8px, 1.3vh, 16px) clamp(12px, 1.8vw, 24px);
+  padding: clamp(4px, 1vh, 12px) clamp(12px, 1.6vw, 24px);
   position: relative;
   overflow: hidden;
   box-sizing: border-box;
@@ -716,8 +716,8 @@
 
 /* Logo Box */
 .sb-logo-frame {
-  height: clamp(84px, 20vh, 190px);
-  width: clamp(84px, 20vh, 190px);
+  height: clamp(80px, 20vh, 200px);
+  width: clamp(80px, 20vh, 200px);
   background-color: var(--sb-pod-bg);
   border: 1px solid var(--sb-line-accent);
   border-radius: 12px;
@@ -754,9 +754,9 @@
 }
 
 .sb-corner-tag {
-  font-size: clamp(1rem, 2.2vh, 1.7rem);
+  font-size: clamp(1.1rem, 2.4vh, 1.8rem);
   font-weight: 900;
-  padding: 4px 12px;
+  padding: 4px 16px;
   border-radius: 6px;
   color: var(--sb-text-bright);
 }
@@ -787,7 +787,7 @@
 }
 
 .sb-athlete-name {
-  font-size: clamp(2.4rem, 6.8vh, 6.2rem);
+  font-size: clamp(2.6rem, 7.8vh, 6.8rem);
   line-height: 1.05;
   font-weight: 900;
   color: var(--sb-text-bright);
@@ -799,8 +799,8 @@
 }
 
 .sb-club-name {
-  font-size: clamp(1.2rem, 3.2vh, 2.8rem);
-  font-weight: 700;
+  font-size: clamp(1.4rem, 3.8vh, 3.2rem);
+  font-weight: 800;
   margin: clamp(4px, 0.6vh, 8px) 0 0 0;
   white-space: nowrap;
   overflow: hidden;
@@ -827,6 +827,7 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  height: 90%;
 }
 
 .sb-senshu-ribbon {
@@ -844,15 +845,17 @@
 }
 
 .sb-score-box {
-  height: clamp(100px, 24vh, 220px);
-  min-width: clamp(120px, 15vw, 260px);
+  height: 100%;
+  max-height: clamp(130px, 26vh, 260px);
+  min-height: clamp(100px, 18vh, 220px);
+  min-width: clamp(136px, 16vw, 300px);
   background-color: var(--sb-pod-bg);
   border: 2px solid var(--sb-line-subtle);
   border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 clamp(12px, 1.8vw, 24px);
+  padding: 0 clamp(16px, 2vw, 32px);
   transition: border-color 0.2s ease;
   box-sizing: border-box;
 }
@@ -867,7 +870,7 @@
 .sb-score-val {
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(5.2rem, 19vh, 13.5rem);
+  font-size: clamp(6.5rem, 23vh, 17rem);
   line-height: 1;
   color: var(--sb-text-bright);
 }
@@ -886,14 +889,14 @@
 
 .sb-penalty-item {
   flex: 1;
-  height: clamp(30px, 4.8vh, 48px);
+  height: clamp(28px, 4.4vh, 44px);
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(1rem, 2.6vh, 1.8rem);
+  font-size: clamp(1rem, 2.4vh, 1.7rem);
   background-color: var(--sb-penalty-slot);
   color: var(--sb-text-dim);
   border: 1px solid var(--sb-line-subtle);
@@ -912,15 +915,15 @@
   border-color: var(--sb-ao);
 }
 
-/* ==================== BOTTOM FOOTER ==================== */
+/* ==================== BOTTOM FOOTER (GIANT ARENA TIMER VAULT) ==================== */
 .sb-footer {
-  height: clamp(60px, 10.5vh, 92px);
-  min-height: clamp(60px, 10.5vh, 92px);
-  max-height: clamp(60px, 10.5vh, 92px);
+  height: clamp(84px, 17vh, 152px);
+  min-height: clamp(84px, 17vh, 152px);
+  max-height: clamp(84px, 17vh, 152px);
   background-color: var(--sb-footer-bg);
   color: var(--sb-text);
   border-top: 1px solid var(--sb-line-subtle);
-  padding: 0 clamp(12px, 1.8vw, 28px);
+  padding: 0 clamp(16px, 2vw, 32px);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
@@ -935,8 +938,8 @@
 }
 
 .sb-sponsor-brand {
-  height: clamp(32px, 6.5vh, 56px);
-  max-width: clamp(120px, 20vw, 280px);
+  height: clamp(40px, 9vh, 84px);
+  max-width: clamp(140px, 20vw, 300px);
   object-fit: contain;
 }
 
@@ -944,27 +947,30 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 100%;
 }
 
 .sb-timer-vault {
-  height: clamp(48px, 8.8vh, 76px);
+  height: clamp(72px, 15vh, 136px);
   background-color: var(--sb-vault-bg);
-  border: 2px solid var(--sb-line-accent);
-  border-radius: 12px;
+  border: 3px solid var(--sb-line-accent);
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 clamp(16px, 2.5vw, 36px);
+  padding: 0 clamp(24px, 3.5vw, 56px);
   transition: border-color 0.2s ease, background-color 0.2s ease;
+  box-sizing: border-box;
 }
 .sb-timer-vault.is-running {
   border-color: var(--sb-gold);
+  background-color: var(--sb-pod-bg);
 }
 
 .sb-timer-digits {
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(2.6rem, 7.5vh, 5.6rem);
+  font-size: clamp(3.8rem, 13.5vh, 10.5rem);
   line-height: 1;
   color: var(--sb-text-bright);
   font-variant-numeric: tabular-nums;
@@ -986,7 +992,7 @@
   background-color: var(--sb-vault-bg);
   border: 1px solid var(--sb-border-gold);
   border-radius: 8px;
-  padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.4vw, 20px);
+  padding: clamp(4px, 1vh, 12px) clamp(12px, 1.4vw, 20px);
 }
 
 .sb-team-meta {
@@ -996,13 +1002,13 @@
 }
 
 .sb-team-meta-title {
-  font-size: clamp(0.85rem, 1.5vh, 1.15rem);
+  font-size: clamp(0.9rem, 1.6vh, 1.25rem);
   font-weight: 700;
   color: var(--sb-gold-bright);
 }
 
 .sb-team-meta-pts {
-  font-size: clamp(0.8rem, 1.3vh, 1rem);
+  font-size: clamp(0.85rem, 1.4vh, 1.1rem);
   color: var(--sb-text-sub);
 }
 
@@ -1012,7 +1018,7 @@
   gap: 8px;
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(1.8rem, 4.5vh, 3.6rem);
+  font-size: clamp(2rem, 5vh, 4rem);
   line-height: 1;
   text-wrap: balance;
 }
@@ -1027,12 +1033,12 @@
   color: var(--sb-text-sub);
 }
 .sb-arena-label {
-  font-size: clamp(0.95rem, 1.8vh, 1.35rem);
+  font-size: clamp(1rem, 2vh, 1.5rem);
   font-weight: 700;
   color: var(--sb-text-bright);
 }
 .sb-arena-sub {
-  font-size: clamp(0.75rem, 1.4vh, 1.05rem);
+  font-size: clamp(0.8rem, 1.5vh, 1.15rem);
 }
 
 /* ==================== KATA 5-JUDGE OVERLAY ==================== */
