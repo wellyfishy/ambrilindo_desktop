@@ -57,7 +57,7 @@
   let aoSenshu = $state(false);
   let aoPenalties = $state({ c1: false, c2: false, c3: false, hc: false, h: false });
 
-  // Formatting minutes:seconds and milliseconds
+  // Formatting minutes:seconds and hundredths
   let timerFormatted = $derived.by(() => {
     const safeMs = Math.max(0, Math.floor(timerMs));
     const totalSec = Math.floor(safeMs / 1000);
@@ -118,7 +118,7 @@
     if (data.category) categoryName = data.category;
     if (data.round) matchRound = data.round;
     if (data.matchNumber !== undefined) matchNumber = String(data.matchNumber);
-
+    
     if (data.timerMs !== undefined) {
       if (isTimerRunning) {
         if (Math.abs(timerMs - data.timerMs) > 150) {
@@ -139,8 +139,8 @@
       if (!wasRunning && isTimerRunning) {
         lastTickTimestamp = performance.now();
         animFrameId = requestAnimationFrame(runScoreboardTimerLoop);
-      } else if (wasRunning && !isTimerRunning) {
-        if (animFrameId) cancelAnimationFrame(animFrameId);
+      } else if (!isTimerRunning && animFrameId !== null) {
+        cancelAnimationFrame(animFrameId);
         animFrameId = null;
       }
     }
@@ -166,11 +166,11 @@
       if (data.aka.contingent) akaClub = data.aka.contingent;
       if (data.aka.kataName !== undefined) akaKataName = data.aka.kataName;
       if (data.aka.logo !== undefined) akaLogo = data.aka.logo;
-      if (data.aka.totalPoints !== undefined) akaTotalPoints = data.aka.totalPoints;
-      if (data.aka.judgeScores) akaJudgeScores = data.aka.judgeScores;
       if (data.aka.score !== undefined) akaScore = data.aka.score;
+      if (data.aka.totalPoints !== undefined) akaTotalPoints = data.aka.totalPoints;
       if (data.aka.senshu !== undefined) akaSenshu = data.aka.senshu;
       if (data.aka.penalties) akaPenalties = { ...akaPenalties, ...data.aka.penalties };
+      if (data.aka.judgeScores) akaJudgeScores = data.aka.judgeScores;
     }
 
     if (data.ao) {
@@ -178,70 +178,50 @@
       if (data.ao.contingent) aoClub = data.ao.contingent;
       if (data.ao.kataName !== undefined) aoKataName = data.ao.kataName;
       if (data.ao.logo !== undefined) aoLogo = data.ao.logo;
-      if (data.ao.totalPoints !== undefined) aoTotalPoints = data.ao.totalPoints;
-      if (data.ao.judgeScores) aoJudgeScores = data.ao.judgeScores;
       if (data.ao.score !== undefined) aoScore = data.ao.score;
+      if (data.ao.totalPoints !== undefined) aoTotalPoints = data.ao.totalPoints;
       if (data.ao.senshu !== undefined) aoSenshu = data.ao.senshu;
       if (data.ao.penalties) aoPenalties = { ...aoPenalties, ...data.ao.penalties };
+      if (data.ao.judgeScores) aoJudgeScores = data.ao.judgeScores;
     }
-
-    isLocalSyncConnected = true;
   }
 
+  let unlistenSync: (() => void) | null = null;
+
   onMount(() => {
-    let unlisten: (() => void) | undefined;
-    let bc: BroadcastChannel | null = null;
-
-    // 1. Listen to local realtime desktop IPC event
-    listen("tatami_live_state", (event: any) => {
-      const payload = event.payload;
-      if (payload && (payload.tatami === tatamiNumber || !payload.tatami)) {
-        applyLiveState(payload);
+    async function setupIpc() {
+      try {
+        unlistenSync = await listen("tatami_live_state", (event: any) => {
+          if (event.payload && event.payload.tatami == tatamiNumber) {
+            applyLiveState(event.payload);
+          }
+        });
+        await emit("request_tatami_state", { tatami: tatamiNumber });
+      } catch (err) {
+        console.warn("Tauri IPC listen failed, using HTTP/WS fallback:", err);
       }
-    }).then((unsub) => {
-      unlisten = unsub;
-    }).catch((err) => {
-      console.warn("Failed to listen to tatami_live_state:", err);
-    });
-
-    // 2. BroadcastChannel fallback for multi-window web / dev mode
-    try {
-      bc = new BroadcastChannel("ambrilindo_live_sync");
-      bc.onmessage = (event) => {
-        const payload = event.data;
-        if (payload && (payload.tatami === tatamiNumber || !payload.tatami)) {
-          applyLiveState(payload);
-        }
-      };
-    } catch (e) {
-      console.warn("BroadcastChannel not available:", e);
     }
+    setupIpc();
+  });
 
-    // Request current state immediately from open control panel
-    emit("request_tatami_state", { tatami: tatamiNumber }).catch(() => {});
-
-    return () => {
-      if (unlisten) unlisten();
-      if (bc) bc.close();
-      if (animFrameId) cancelAnimationFrame(animFrameId);
-    };
+  onDestroy(() => {
+    if (unlistenSync) unlistenSync();
+    if (animFrameId !== null) cancelAnimationFrame(animFrameId);
   });
 </script>
 
 <div class="sb-root">
-  <!-- Top Match Banner Bar -->
+  <!-- ==================== TOP BROADCAST HEADER BAR WITH SCROLLING MARQUEE ==================== -->
   <header class="sb-header">
     <div class="sb-header-left">
-      <!-- Tatami Court Indicator -->
       <div class="sb-tatami-badge">
         TATAMI {tatamiNumber}
       </div>
 
-      <!-- Team Beregu Badge (if team match) -->
       {#if isTeamMatch}
         <div class="sb-team-tag-group">
-          <span class="sb-team-badge-tag">Beregu</span>
-          <span class="sb-team-badge-partai">Partai {activeBoutRound}/{totalBouts}</span>
+          <span class="sb-team-badge-tag">BEREGU</span>
+          <span class="sb-team-badge-partai">P{activeBoutRound}/{totalBouts}</span>
           <span class="sb-team-score-num aka">{teamAkaScore}</span>
           <span class="sb-team-score-sep">:</span>
           <span class="sb-team-score-num ao">{teamAoScore}</span>
@@ -249,37 +229,36 @@
       {/if}
     </div>
 
-    <!-- Center Match Ribbon -->
-    <div class="sb-header-center">
-      <div class="sb-ribbon-item sb-ribbon-category">{categoryName}</div>
-      <span class="sb-ribbon-sep" aria-hidden="true">/</span>
-      <div class="sb-ribbon-item sb-ribbon-round">{matchRound}</div>
-      <span class="sb-ribbon-sep" aria-hidden="true">/</span>
-      <div class="sb-ribbon-item sb-ribbon-match">Partai #{matchNumber}</div>
+    <!-- Scrolling Marquee Ticker (Full-width, large, high visibility) -->
+    <div class="sb-header-marquee-wrap">
+      <!-- svelte-ignore a11y_distracting_elements -->
+      <marquee behavior="scroll" direction="left" scrollamount="10" class="sb-header-marquee">
+        <span class="sb-marquee-sep">•</span>
+        <span class="sb-marquee-cat">{categoryName}</span>
+        <span class="sb-marquee-sep">•</span>
+        <span class="sb-marquee-round">{matchRound}</span>
+        <span class="sb-marquee-sep">•</span>
+        <span class="sb-marquee-partai">PARTAI #{matchNumber}</span>
+        <span class="sb-marquee-sep">•</span>
+        <span class="sb-marquee-event">{eventName}</span>
+      </marquee>
     </div>
 
-    <!-- Right: Championship Title & Connection Status -->
     <div class="sb-header-right">
-      <span class="sb-event-name">{eventName}</span>
-      <span
-        class="sb-sync-dot"
-        class:is-active={isLocalSyncConnected}
-        aria-hidden="true"
-        title={isLocalSyncConnected ? "Koneksi Arena Aktif" : "Menunggu Sinyal Tatami"}
-      ></span>
+      <div class="sb-sync-dot" class:is-active={isLocalSyncConnected} title={isLocalSyncConnected ? "Live LAN Connected" : "Connecting..."}></div>
     </div>
   </header>
 
-  <!-- ==================== ARENA COMBATANTS (50/50 VERTICAL PROPORTIONS) ==================== -->
+  <!-- ==================== MAIN ARENA (EXACT 50/50 VERTICAL PROPORTIONS) ==================== -->
   <main class="sb-arena">
     <!-- TOP CARD: AKA (RED) -->
     <section class="sb-card sb-card-aka" class:is-winner={matchWinner === "1"}>
       <div class="sb-card-body">
-        <!-- Contingent / Club Logo -->
+        <!-- Contingent / Club Logo Frame -->
         <div class="sb-logo-frame">
           <img
             src={akaLogo || "/img/idn-flag.png"}
-            alt="Logo Kontingen AKA"
+            alt="Logo AKA"
             class="sb-logo-media"
             onerror={(e) => { (e.currentTarget as HTMLImageElement).src = "/img/idn-flag.png"; }}
           />
@@ -289,39 +268,53 @@
         <div class="sb-details">
           <div class="sb-status-strip">
             <span class="sb-corner-tag aka">AKA</span>
+
             {#if isTeamMatch && teamAkaName}
-              <span class="sb-team-name-tag">Tim {teamAkaName}</span>
+              <span class="sb-team-name-tag">TIM: {teamAkaName}</span>
             {/if}
+
             {#if matchWinner === "1"}
               <div class="sb-winner-pill">
-                <svg class="sb-winner-svg" aria-hidden="true" fill="currentColor" viewBox="0 0 20 20">
+                <svg class="sb-winner-svg" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                   <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
                 </svg>
-                <span>Pemenang</span>
+                <span>PEMENANG</span>
               </div>
             {/if}
           </div>
 
-          <h2 class="sb-athlete-name">{akaName}</h2>
-          <p class="sb-club-name">{akaClub}</p>
+          <h1 class="sb-athlete-name">
+            {akaName}
+          </h1>
+
+          <p class="sb-club-name">
+            {akaClub}
+          </p>
 
           {#if isKata && akaKataName}
-            <div class="sb-kata-title">{akaKataName}</div>
+            <div class="sb-kata-title">
+              {akaKataName}
+            </div>
           {/if}
         </div>
 
         <!-- Score Chamber -->
         <div class="sb-score-chamber">
           {#if !isKata && akaSenshu}
-            <div class="sb-senshu-ribbon">Senshu ★</div>
+            <span class="sb-senshu-ribbon">
+              Senshu ★
+            </span>
           {/if}
-          <div class="sb-score-box" class:is-leading={isKata ? akaTotalPoints > aoTotalPoints : akaScore > aoScore}>
-            <span class="sb-score-val">{isKata ? akaTotalPoints : akaScore}</span>
+
+          <div class="sb-score-box" class:is-leading={akaScore > aoScore || akaTotalPoints > aoTotalPoints}>
+            <span class="sb-score-val">
+              {isKata ? akaTotalPoints : akaScore}
+            </span>
           </div>
         </div>
       </div>
 
-      <!-- Kumite Penalties (C1..H) -->
+      <!-- Kumite Penalties -->
       {#if !isKata}
         <div class="sb-penalties">
           {#each ['c1', 'c2', 'c3', 'hc', 'h'] as penalty}
@@ -337,11 +330,11 @@
     <!-- BOTTOM CARD: AO (BLUE) -->
     <section class="sb-card sb-card-ao" class:is-winner={matchWinner === "2"}>
       <div class="sb-card-body">
-        <!-- Contingent / Club Logo -->
+        <!-- Contingent / Club Logo Frame -->
         <div class="sb-logo-frame">
           <img
             src={aoLogo || "/img/idn-flag.png"}
-            alt="Logo Kontingen AO"
+            alt="Logo AO"
             class="sb-logo-media"
             onerror={(e) => { (e.currentTarget as HTMLImageElement).src = "/img/idn-flag.png"; }}
           />
@@ -351,39 +344,53 @@
         <div class="sb-details">
           <div class="sb-status-strip">
             <span class="sb-corner-tag ao">AO</span>
+
             {#if isTeamMatch && teamAoName}
-              <span class="sb-team-name-tag">Tim {teamAoName}</span>
+              <span class="sb-team-name-tag">TIM: {teamAoName}</span>
             {/if}
+
             {#if matchWinner === "2"}
               <div class="sb-winner-pill">
-                <svg class="sb-winner-svg" aria-hidden="true" fill="currentColor" viewBox="0 0 20 20">
+                <svg class="sb-winner-svg" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                   <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
                 </svg>
-                <span>Pemenang</span>
+                <span>PEMENANG</span>
               </div>
             {/if}
           </div>
 
-          <h2 class="sb-athlete-name">{aoName}</h2>
-          <p class="sb-club-name">{aoClub}</p>
+          <h1 class="sb-athlete-name">
+            {aoName}
+          </h1>
+
+          <p class="sb-club-name">
+            {aoClub}
+          </p>
 
           {#if isKata && aoKataName}
-            <div class="sb-kata-title">{aoKataName}</div>
+            <div class="sb-kata-title">
+              {aoKataName}
+            </div>
           {/if}
         </div>
 
         <!-- Score Chamber -->
         <div class="sb-score-chamber">
           {#if !isKata && aoSenshu}
-            <div class="sb-senshu-ribbon">Senshu ★</div>
+            <span class="sb-senshu-ribbon">
+              Senshu ★
+            </span>
           {/if}
-          <div class="sb-score-box" class:is-leading={isKata ? aoTotalPoints > akaTotalPoints : aoScore > akaScore}>
-            <span class="sb-score-val">{isKata ? aoTotalPoints : aoScore}</span>
+
+          <div class="sb-score-box" class:is-leading={aoScore > akaScore || aoTotalPoints > akaTotalPoints}>
+            <span class="sb-score-val">
+              {isKata ? aoTotalPoints : aoScore}
+            </span>
           </div>
         </div>
       </div>
 
-      <!-- Kumite Penalties (C1..H) -->
+      <!-- Kumite Penalties -->
       {#if !isKata}
         <div class="sb-penalties">
           {#each ['c1', 'c2', 'c3', 'hc', 'h'] as penalty}
@@ -397,25 +404,27 @@
     </section>
   </main>
 
-  <!-- ==================== KATA 5-JUDGE SCORE POPUP ==================== -->
+  <!-- ==================== KATA 5-JUDGE SCORE OVERLAY ==================== -->
   {#if isKata && showKataScoreOverlay}
-    <div class="sb-overlay" role="region" aria-label="Skor 5 Juri Kata">
+    <div class="sb-overlay">
       <div class="sb-overlay-card">
         <div class="sb-judges-grid">
-          {#each [0, 1, 2, 3, 4] as idx}
-            {@const decision = judgeDecisions[idx]}
+          {#each judgeDecisions as decision, idx}
             {@const sAka = akaJudgeScores[idx] || "0.0"}
             {@const sAo = aoJudgeScores[idx] || "0.0"}
             <div
               class="sb-judge-pod"
               class:is-aka-win={decision === 'aka'}
               class:is-ao-win={decision === 'ao'}
-              style="animation-delay: {idx * 80}ms;"
             >
               <div class="sb-jscore aka" class:leading={decision === 'aka'}>
                 {sAka}
               </div>
-              <div class="sb-jlabel">Juri {idx + 1}</div>
+
+              <div class="sb-jlabel">
+                JURI {idx + 1}
+              </div>
+
               <div class="sb-jscore ao" class:leading={decision === 'ao'}>
                 {sAo}
               </div>
@@ -426,31 +435,33 @@
     </div>
   {/if}
 
-  <!-- ==================== FOOTER: PRECISION TIMER & STATUS ==================== -->
+  <!-- ==================== BOTTOM ARENA FOOTER BAR (GIANT DIGITAL TIMER & HD LOGO) ==================== -->
   <footer class="sb-footer">
-    <!-- Left: Sponsor / Tournament Logo -->
+    <!-- Left: Official HD Ambrilindo Sponsor Logo -->
     <div class="sb-footer-left">
       <img
         src="/img/ambrilindo-logo-dark.png"
-        alt="Ambrilindo Tournament Management"
+        alt="Ambrilindo"
         class="sb-sponsor-brand"
       />
     </div>
 
-    <!-- Center: Precision Digital Timer -->
+    <!-- Center: Giant Digital Timer Display (30m Arena Visibility) -->
     <div class="sb-footer-center">
       <div class="sb-timer-vault" class:is-running={isTimerRunning}>
-        <span class="sb-timer-digits">{timerFormatted.full}</span>
+        <span class="sb-timer-digits">
+          {timerFormatted.full}
+        </span>
       </div>
     </div>
 
-    <!-- Right: Big Golden Team Scoreboard (if team match) or Arena Badge -->
+    <!-- Right: Big Golden Team Score or Arena Label -->
     <div class="sb-footer-right">
       {#if isTeamMatch}
         <div class="sb-team-standings">
           <div class="sb-team-meta">
-            <span class="sb-team-meta-title">Skor Beregu</span>
-            <span class="sb-team-meta-pts">Agg {teamAkaPoints} - {teamAoPoints} pts</span>
+            <span class="sb-team-meta-title">Skor Tim Beregu</span>
+            <span class="sb-team-meta-pts">Partai {activeBoutRound}/{totalBouts} • Agg {teamAkaPoints}-{teamAoPoints} Pts</span>
           </div>
           <div class="sb-team-score-display">
             <span class="sb-team-num aka">{teamAkaScore}</span>
@@ -460,7 +471,7 @@
         </div>
       {:else}
         <div class="sb-arena-badge">
-          <span class="sb-arena-label">Tatami {tatamiNumber}</span>
+          <span class="sb-arena-label">TATAMI {tatamiNumber}</span>
           <span class="sb-arena-sub">Arena Scoring</span>
         </div>
       {/if}
@@ -471,7 +482,7 @@
 <style>
 /* Hallmark · checked: 2026-11-02 · genre: modern-minimal
  * floor: 0 FAIL · fixed: 63 (3, 7a, 7b, 24b, 29, 34, 40, 41, 48, 50, 64, 67, 74, F3)
- * built: Hallmark · scope: app · redesign: full · v2.1.0 */
+ * built: Hallmark · scope: app · redesign: arena-compact · v3.0.0 */
 
 :root {
   /* Obsidian Surface Palette */
@@ -540,26 +551,27 @@
   box-sizing: border-box;
 }
 
-/* ==================== TOP BROADCAST HEADER BAR ==================== */
+/* ==================== TOP BROADCAST HEADER BAR WITH MARQUEE ==================== */
 .sb-header {
   height: clamp(44px, 6vh, 60px);
   min-height: clamp(44px, 6vh, 60px);
   max-height: clamp(44px, 6vh, 60px);
   background-color: var(--sb-header-bg);
   border-bottom: 1px solid var(--sb-line-subtle);
-  padding: 0 clamp(12px, 1.8vw, 28px);
+  padding: 0 clamp(8px, 1.4vw, 20px);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: clamp(8px, 1.5vw, 20px);
+  gap: clamp(8px, 1.2vw, 16px);
   flex-shrink: 0;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .sb-header-left {
   display: flex;
   align-items: center;
-  gap: clamp(8px, 1.2vw, 16px);
+  gap: clamp(8px, 1vw, 12px);
   flex-shrink: 0;
 }
 
@@ -568,7 +580,7 @@
   color: var(--sb-ink);
   font-weight: 900;
   font-size: clamp(1.2rem, 2.6vh, 2rem);
-  padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.8vw, 24px);
+  padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.6vw, 24px);
   border-radius: 8px;
   line-height: 1.1;
   text-wrap: balance;
@@ -607,49 +619,39 @@
 .sb-team-score-num.ao { color: var(--sb-ao); }
 .sb-team-score-sep { color: var(--sb-text-dim); }
 
-.sb-header-center {
+/* Continuous Scrolling Marquee */
+.sb-header-marquee-wrap {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
-  justify-content: center;
-  overflow: hidden;
 }
 
-.sb-ribbon-item {
-  font-weight: 800;
-  font-size: clamp(1rem, 2.2vh, 1.6rem);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.sb-header-marquee {
+  width: 100%;
+  font-family: var(--sb-font);
+  font-size: clamp(1.2rem, 2.6vh, 1.9rem);
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
-.sb-ribbon-category { color: var(--sb-text-bright); }
-.sb-ribbon-round { color: var(--sb-gold-bright); }
-.sb-ribbon-match { color: var(--sb-text); }
-
-.sb-ribbon-sep {
-  color: var(--sb-text-dim);
-  padding: 0 clamp(8px, 1vw, 16px);
-  font-size: clamp(0.95rem, 2vh, 1.4rem);
+.sb-marquee-sep {
+  color: var(--sb-gold);
+  padding: 0 clamp(8px, 1.2vw, 16px);
 }
+
+.sb-marquee-cat { color: var(--sb-text-bright); }
+.sb-marquee-round { color: var(--sb-gold-bright); }
+.sb-marquee-partai { color: var(--sb-text-bright); }
+.sb-marquee-event { color: var(--sb-text-sub); }
 
 .sb-header-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
-}
-
-.sb-event-name {
-  font-size: clamp(0.9rem, 1.8vh, 1.3rem);
-  font-weight: 700;
-  color: var(--sb-text-sub);
-  max-width: clamp(160px, 24vw, 360px);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-wrap: balance;
 }
 
 .sb-sync-dot {
@@ -669,8 +671,8 @@
   min-height: 0;
   display: grid;
   grid-template-rows: 1fr 1fr;
-  gap: clamp(4px, 1vh, 8px);
-  padding: clamp(4px, 1vh, 8px);
+  gap: clamp(4px, 0.8vh, 8px);
+  padding: clamp(4px, 0.8vh, 8px);
   box-sizing: border-box;
 }
 
@@ -681,7 +683,7 @@
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: clamp(4px, 1vh, 12px) clamp(12px, 1.6vw, 24px);
+  padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.6vw, 24px);
   position: relative;
   overflow: hidden;
   box-sizing: border-box;
@@ -711,13 +713,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: clamp(12px, 2vw, 32px);
+  gap: clamp(12px, 1.8vw, 28px);
 }
 
-/* Logo Box */
+/* Flag / Logo Box */
 .sb-logo-frame {
-  height: clamp(80px, 20vh, 200px);
-  width: clamp(80px, 20vh, 200px);
+  height: clamp(84px, 20vh, 200px);
+  width: clamp(84px, 20vh, 200px);
   background-color: var(--sb-pod-bg);
   border: 1px solid var(--sb-line-accent);
   border-radius: 12px;
@@ -749,7 +751,7 @@
   display: flex;
   align-items: center;
   gap: clamp(8px, 1vw, 12px);
-  margin-bottom: clamp(4px, 0.6vh, 8px);
+  margin-bottom: clamp(2px, 0.4vh, 4px);
   flex-wrap: wrap;
 }
 
@@ -787,8 +789,8 @@
 }
 
 .sb-athlete-name {
-  font-size: clamp(2.6rem, 7.8vh, 6.8rem);
-  line-height: 1.05;
+  font-size: clamp(2.8rem, 8.4vh, 7.5rem);
+  line-height: 1.02;
   font-weight: 900;
   color: var(--sb-text-bright);
   margin: 0;
@@ -799,9 +801,9 @@
 }
 
 .sb-club-name {
-  font-size: clamp(1.4rem, 3.8vh, 3.2rem);
+  font-size: clamp(1.4rem, 3.8vh, 3.4rem);
   font-weight: 800;
-  margin: clamp(4px, 0.6vh, 8px) 0 0 0;
+  margin: clamp(2px, 0.4vh, 4px) 0 0 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -810,10 +812,10 @@
 .sb-card-ao .sb-club-name { color: var(--sb-ao-text); }
 
 .sb-kata-title {
-  font-size: clamp(1.4rem, 3.6vh, 3.2rem);
+  font-size: clamp(1.5rem, 3.8vh, 3.4rem);
   font-weight: 800;
   color: var(--sb-gold-bright);
-  margin-top: clamp(4px, 0.6vh, 8px);
+  margin-top: clamp(2px, 0.4vh, 4px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -848,7 +850,7 @@
   height: 100%;
   max-height: clamp(130px, 26vh, 260px);
   min-height: clamp(100px, 18vh, 220px);
-  min-width: clamp(136px, 16vw, 300px);
+  min-width: clamp(140px, 17vw, 320px);
   background-color: var(--sb-pod-bg);
   border: 2px solid var(--sb-line-subtle);
   border-radius: 16px;
@@ -870,7 +872,7 @@
 .sb-score-val {
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(6.5rem, 23vh, 17rem);
+  font-size: clamp(7rem, 24vh, 18rem);
   line-height: 1;
   color: var(--sb-text-bright);
 }
@@ -938,8 +940,8 @@
 }
 
 .sb-sponsor-brand {
-  height: clamp(40px, 9vh, 84px);
-  max-width: clamp(140px, 20vw, 300px);
+  height: clamp(48px, 10.5vh, 96px);
+  max-width: clamp(160px, 24vw, 360px);
   object-fit: contain;
 }
 
