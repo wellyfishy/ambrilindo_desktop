@@ -118,6 +118,7 @@
     if (data.category) categoryName = data.category;
     if (data.round) matchRound = data.round;
     if (data.matchNumber !== undefined) matchNumber = String(data.matchNumber);
+    if (data.eventName) eventName = data.eventName;
     
     if (data.timerMs !== undefined) {
       if (isTimerRunning) {
@@ -211,7 +212,7 @@
 </script>
 
 <div class="sb-root">
-  <!-- ==================== TOP BROADCAST HEADER BAR WITH SCROLLING MARQUEE ==================== -->
+  <!-- ==================== TOP BROADCAST HEADER BAR (STATIC HIGH-VISIBILITY) ==================== -->
   <header class="sb-header">
     <div class="sb-header-left">
       <div class="sb-tatami-badge">
@@ -229,22 +230,17 @@
       {/if}
     </div>
 
-    <!-- Scrolling Marquee Ticker (Full-width, large, high visibility) -->
-    <div class="sb-header-marquee-wrap">
-      <!-- svelte-ignore a11y_distracting_elements -->
-      <marquee behavior="scroll" direction="left" scrollamount="10" class="sb-header-marquee">
-        <span class="sb-marquee-sep">•</span>
-        <span class="sb-marquee-cat">{categoryName}</span>
-        <span class="sb-marquee-sep">•</span>
-        <span class="sb-marquee-round">{matchRound}</span>
-        <span class="sb-marquee-sep">•</span>
-        <span class="sb-marquee-partai">PARTAI #{matchNumber}</span>
-        <span class="sb-marquee-sep">•</span>
-        <span class="sb-marquee-event">{eventName}</span>
-      </marquee>
+    <!-- Center Match Hierarchy -->
+    <div class="sb-header-center">
+      <span class="sb-header-cat">{categoryName}</span>
+      <span class="sb-header-sep">/</span>
+      <span class="sb-header-round">{matchRound}</span>
+      <span class="sb-header-sep">/</span>
+      <span class="sb-header-partai">PARTAI #{matchNumber}</span>
     </div>
 
     <div class="sb-header-right">
+      <span class="sb-event-name">{eventName}</span>
       <div class="sb-sync-dot" class:is-active={isLocalSyncConnected} title={isLocalSyncConnected ? "Live LAN Connected" : "Connecting..."}></div>
     </div>
   </header>
@@ -264,24 +260,24 @@
           />
         </div>
 
-        <!-- Competitor Details -->
+        <!-- Competitor Details (AKA label removed, Contingent white & 80% scale) -->
         <div class="sb-details">
-          <div class="sb-status-strip">
-            <span class="sb-corner-tag aka">AKA</span>
+          {#if (isTeamMatch && teamAkaName) || matchWinner === "1"}
+            <div class="sb-status-strip">
+              {#if isTeamMatch && teamAkaName}
+                <span class="sb-team-name-tag">TIM: {teamAkaName}</span>
+              {/if}
 
-            {#if isTeamMatch && teamAkaName}
-              <span class="sb-team-name-tag">TIM: {teamAkaName}</span>
-            {/if}
-
-            {#if matchWinner === "1"}
-              <div class="sb-winner-pill">
-                <svg class="sb-winner-svg" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-                  <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
-                </svg>
-                <span>PEMENANG</span>
-              </div>
-            {/if}
-          </div>
+              {#if matchWinner === "1"}
+                <div class="sb-winner-pill">
+                  <svg class="sb-winner-svg" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                    <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
+                  </svg>
+                  <span>PEMENANG</span>
+                </div>
+              {/if}
+            </div>
+          {/if}
 
           <h1 class="sb-athlete-name">
             {akaName}
@@ -340,24 +336,24 @@
           />
         </div>
 
-        <!-- Competitor Details -->
+        <!-- Competitor Details (AO label removed, Contingent white & 80% scale) -->
         <div class="sb-details">
-          <div class="sb-status-strip">
-            <span class="sb-corner-tag ao">AO</span>
+          {#if (isTeamMatch && teamAoName) || matchWinner === "2"}
+            <div class="sb-status-strip">
+              {#if isTeamMatch && teamAoName}
+                <span class="sb-team-name-tag">TIM: {teamAoName}</span>
+              {/if}
 
-            {#if isTeamMatch && teamAoName}
-              <span class="sb-team-name-tag">TIM: {teamAoName}</span>
-            {/if}
-
-            {#if matchWinner === "2"}
-              <div class="sb-winner-pill">
-                <svg class="sb-winner-svg" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-                  <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
-                </svg>
-                <span>PEMENANG</span>
-              </div>
-            {/if}
-          </div>
+              {#if matchWinner === "2"}
+                <div class="sb-winner-pill">
+                  <svg class="sb-winner-svg" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                    <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
+                  </svg>
+                  <span>PEMENANG</span>
+                </div>
+              {/if}
+            </div>
+          {/if}
 
           <h1 class="sb-athlete-name">
             {aoName}
@@ -482,7 +478,7 @@
 <style>
 /* Hallmark · checked: 2026-11-02 · genre: modern-minimal
  * floor: 0 FAIL · fixed: 63 (3, 7a, 7b, 24b, 29, 34, 40, 41, 48, 50, 64, 67, 74, F3)
- * built: Hallmark · scope: app · redesign: arena-compact · v3.0.0 */
+ * built: Hallmark · scope: app · redesign: arena-compact-v4 · v4.0.0 */
 
 :root {
   /* Obsidian Surface Palette */
@@ -551,27 +547,26 @@
   box-sizing: border-box;
 }
 
-/* ==================== TOP BROADCAST HEADER BAR WITH MARQUEE ==================== */
+/* ==================== TOP BROADCAST HEADER BAR (STATIC HIGH-VISIBILITY) ==================== */
 .sb-header {
-  height: clamp(44px, 6vh, 60px);
-  min-height: clamp(44px, 6vh, 60px);
-  max-height: clamp(44px, 6vh, 60px);
+  height: clamp(48px, 6.5vh, 64px);
+  min-height: clamp(48px, 6.5vh, 64px);
+  max-height: clamp(48px, 6.5vh, 64px);
   background-color: var(--sb-header-bg);
   border-bottom: 1px solid var(--sb-line-subtle);
-  padding: 0 clamp(8px, 1.4vw, 20px);
+  padding: 0 clamp(12px, 1.8vw, 28px);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: clamp(8px, 1.2vw, 16px);
+  gap: clamp(12px, 1.6vw, 24px);
   flex-shrink: 0;
   box-sizing: border-box;
-  overflow: hidden;
 }
 
 .sb-header-left {
   display: flex;
   align-items: center;
-  gap: clamp(8px, 1vw, 12px);
+  gap: clamp(8px, 1vw, 16px);
   flex-shrink: 0;
 }
 
@@ -579,8 +574,8 @@
   background: linear-gradient(135deg, var(--sb-gold), var(--sb-gold-bright));
   color: var(--sb-ink);
   font-weight: 900;
-  font-size: clamp(1.2rem, 2.6vh, 2rem);
-  padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.6vw, 24px);
+  font-size: clamp(1.4rem, 3.2vh, 2.5rem);
+  padding: clamp(4px, 0.8vh, 8px) clamp(16px, 2vw, 28px);
   border-radius: 8px;
   line-height: 1.1;
   text-wrap: balance;
@@ -619,39 +614,54 @@
 .sb-team-score-num.ao { color: var(--sb-ao); }
 .sb-team-score-sep { color: var(--sb-text-dim); }
 
-/* Continuous Scrolling Marquee */
-.sb-header-marquee-wrap {
+/* Center Match Details */
+.sb-header-center {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
   display: flex;
   align-items: center;
-}
-
-.sb-header-marquee {
-  width: 100%;
-  font-family: var(--sb-font);
-  font-size: clamp(1.2rem, 2.6vh, 1.9rem);
+  justify-content: center;
+  overflow: hidden;
+  font-size: clamp(1.3rem, 2.8vh, 2.3rem);
   font-weight: 900;
   line-height: 1;
-  text-transform: uppercase;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.sb-marquee-sep {
-  color: var(--sb-gold);
-  padding: 0 clamp(8px, 1.2vw, 16px);
+.sb-header-cat {
+  color: var(--sb-text-bright);
 }
 
-.sb-marquee-cat { color: var(--sb-text-bright); }
-.sb-marquee-round { color: var(--sb-gold-bright); }
-.sb-marquee-partai { color: var(--sb-text-bright); }
-.sb-marquee-event { color: var(--sb-text-sub); }
+.sb-header-round {
+  color: var(--sb-gold-bright);
+}
+
+.sb-header-partai {
+  color: var(--sb-text);
+}
+
+.sb-header-sep {
+  color: var(--sb-text-dim);
+  padding: 0 clamp(8px, 1vw, 16px);
+}
 
 .sb-header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-shrink: 0;
+}
+
+.sb-event-name {
+  font-size: clamp(1.1rem, 2.4vh, 1.9rem);
+  font-weight: 800;
+  color: var(--sb-text-sub);
+  max-width: clamp(180px, 28vw, 420px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-wrap: balance;
 }
 
 .sb-sync-dot {
@@ -755,16 +765,6 @@
   flex-wrap: wrap;
 }
 
-.sb-corner-tag {
-  font-size: clamp(1.1rem, 2.4vh, 1.8rem);
-  font-weight: 900;
-  padding: 4px 16px;
-  border-radius: 6px;
-  color: var(--sb-text-bright);
-}
-.sb-corner-tag.aka { background-color: var(--sb-aka); }
-.sb-corner-tag.ao { background-color: var(--sb-ao); }
-
 .sb-team-name-tag {
   font-size: clamp(1rem, 2vh, 1.6rem);
   font-weight: 700;
@@ -801,21 +801,22 @@
 }
 
 .sb-club-name {
-  font-size: clamp(1.4rem, 3.8vh, 3.4rem);
-  font-weight: 800;
-  margin: clamp(2px, 0.4vh, 4px) 0 0 0;
+  font-size: clamp(2.2rem, 6.8vh, 6rem);
+  line-height: 1.05;
+  font-weight: 900;
+  color: var(--sb-text-bright);
+  margin: clamp(4px, 0.8vh, 8px) 0 0 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sb-card-aka .sb-club-name { color: var(--sb-aka-text); }
-.sb-card-ao .sb-club-name { color: var(--sb-ao-text); }
 
 .sb-kata-title {
-  font-size: clamp(1.5rem, 3.8vh, 3.4rem);
-  font-weight: 800;
+  font-size: clamp(2.2rem, 6.8vh, 6rem);
+  line-height: 1.05;
+  font-weight: 900;
   color: var(--sb-gold-bright);
-  margin-top: clamp(2px, 0.4vh, 4px);
+  margin-top: clamp(4px, 0.8vh, 8px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
