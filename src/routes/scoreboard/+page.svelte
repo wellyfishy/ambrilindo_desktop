@@ -542,12 +542,12 @@
 
 /* ==================== TOP BROADCAST HEADER BAR ==================== */
 .sb-header {
-  height: clamp(40px, 5.8vh, 60px);
-  min-height: clamp(40px, 5.8vh, 60px);
-  max-height: clamp(40px, 5.8vh, 60px);
+  height: clamp(48px, 6.8vh, 68px);
+  min-height: clamp(48px, 6.8vh, 68px);
+  max-height: clamp(48px, 6.8vh, 68px);
   background-color: var(--sb-header-bg);
   border-bottom: 1px solid var(--sb-line-subtle);
-  padding: 0 clamp(8px, 1.8vw, 24px);
+  padding: 0 clamp(12px, 1.8vw, 28px);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -567,8 +567,8 @@
   background: linear-gradient(135deg, var(--sb-gold), var(--sb-gold-bright));
   color: var(--sb-ink);
   font-weight: 900;
-  font-size: clamp(0.95rem, 2.1vh, 1.7rem);
-  padding: clamp(4px, 0.6vh, 8px) clamp(8px, 1.5vw, 16px);
+  font-size: clamp(1.3rem, 2.8vh, 2.2rem);
+  padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.8vw, 24px);
   border-radius: 8px;
   line-height: 1.1;
   text-wrap: balance;
@@ -580,9 +580,9 @@
   gap: clamp(4px, 0.8vw, 8px);
   background-color: var(--sb-pod-bg);
   border: 1px solid var(--sb-line-accent);
-  padding: clamp(2px, 0.4vh, 4px) clamp(8px, 1vw, 12px);
+  padding: clamp(4px, 0.6vh, 8px) clamp(8px, 1vw, 16px);
   border-radius: 6px;
-  font-size: clamp(0.8rem, 1.6vh, 1.2rem);
+  font-size: clamp(1rem, 2vh, 1.5rem);
 }
 
 .sb-team-badge-tag {
@@ -618,7 +618,7 @@
 
 .sb-ribbon-item {
   font-weight: 800;
-  font-size: clamp(0.75rem, 1.7vh, 1.25rem);
+  font-size: clamp(1.1rem, 2.4vh, 1.8rem);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -630,22 +630,22 @@
 
 .sb-ribbon-sep {
   color: var(--sb-text-dim);
-  padding: 0 clamp(4px, 0.8vw, 8px);
-  font-size: clamp(0.7rem, 1.5vh, 1.1rem);
+  padding: 0 clamp(8px, 1vw, 16px);
+  font-size: clamp(1rem, 2.2vh, 1.6rem);
 }
 
 .sb-header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-shrink: 0;
 }
 
 .sb-event-name {
-  font-size: clamp(0.7rem, 1.4vh, 1.05rem);
+  font-size: clamp(0.95rem, 1.9vh, 1.4rem);
   font-weight: 700;
   color: var(--sb-text-sub);
-  max-width: clamp(140px, 22vw, 320px);
+  max-width: clamp(160px, 24vw, 360px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -653,8 +653,8 @@
 }
 
 .sb-sync-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 9999px;
   background-color: var(--sb-text-dim);
   transition: background-color 0.2s ease;
@@ -681,7 +681,7 @@
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: clamp(8px, 1.3vh, 16px) clamp(8px, 1.6vw, 20px);
+  padding: clamp(8px, 1.3vh, 16px) clamp(12px, 1.8vw, 24px);
   position: relative;
   overflow: hidden;
   box-sizing: border-box;
@@ -711,21 +711,20 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: clamp(8px, 1.6vw, 24px);
+  gap: clamp(12px, 2vw, 32px);
 }
 
 /* Logo Box */
 .sb-logo-frame {
-  height: 100%;
-  max-height: clamp(52px, 13.5vh, 135px);
-  width: clamp(52px, 13.5vh, 135px);
+  height: clamp(84px, 20vh, 190px);
+  width: clamp(84px, 20vh, 190px);
   background-color: var(--sb-pod-bg);
   border: 1px solid var(--sb-line-accent);
-  border-radius: 8px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: clamp(4px, 0.8vh, 8px);
+  padding: clamp(4px, 1vh, 12px);
   flex-shrink: 0;
   box-sizing: border-box;
 }
@@ -734,7 +733,7 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 /* Competitor Details */
@@ -749,23 +748,23 @@
 .sb-status-strip {
   display: flex;
   align-items: center;
-  gap: clamp(4px, 1vw, 8px);
-  margin-bottom: clamp(2px, 0.4vh, 4px);
+  gap: clamp(8px, 1vw, 12px);
+  margin-bottom: clamp(4px, 0.6vh, 8px);
   flex-wrap: wrap;
 }
 
 .sb-corner-tag {
-  font-size: clamp(0.65rem, 1.3vh, 0.95rem);
+  font-size: clamp(1rem, 2.2vh, 1.7rem);
   font-weight: 900;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 4px 12px;
+  border-radius: 6px;
   color: var(--sb-text-bright);
 }
 .sb-corner-tag.aka { background-color: var(--sb-aka); }
 .sb-corner-tag.ao { background-color: var(--sb-ao); }
 
 .sb-team-name-tag {
-  font-size: clamp(0.7rem, 1.4vh, 1.05rem);
+  font-size: clamp(1rem, 2vh, 1.6rem);
   font-weight: 700;
   color: var(--sb-gold-bright);
 }
@@ -773,23 +772,23 @@
 .sb-winner-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   background-color: var(--sb-gold);
   color: var(--sb-ink);
-  font-size: clamp(0.65rem, 1.2vh, 0.9rem);
+  font-size: clamp(0.95rem, 2vh, 1.5rem);
   font-weight: 900;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 4px 12px;
+  border-radius: 6px;
 }
 
 .sb-winner-svg {
-  width: clamp(10px, 1.4vh, 14px);
-  height: clamp(10px, 1.4vh, 14px);
+  width: clamp(14px, 2vh, 20px);
+  height: clamp(14px, 2vh, 20px);
 }
 
 .sb-athlete-name {
-  font-size: clamp(1.4rem, 4.1vh, 4.6rem);
-  line-height: 1.06;
+  font-size: clamp(2.4rem, 6.8vh, 6.2rem);
+  line-height: 1.05;
   font-weight: 900;
   color: var(--sb-text-bright);
   margin: 0;
@@ -800,9 +799,9 @@
 }
 
 .sb-club-name {
-  font-size: clamp(0.85rem, 2vh, 1.75rem);
+  font-size: clamp(1.2rem, 3.2vh, 2.8rem);
   font-weight: 700;
-  margin: clamp(2px, 0.4vh, 4px) 0 0 0;
+  margin: clamp(4px, 0.6vh, 8px) 0 0 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -811,10 +810,10 @@
 .sb-card-ao .sb-club-name { color: var(--sb-ao-text); }
 
 .sb-kata-title {
-  font-size: clamp(0.95rem, 2.3vh, 2rem);
+  font-size: clamp(1.4rem, 3.6vh, 3.2rem);
   font-weight: 800;
   color: var(--sb-gold-bright);
-  margin-top: clamp(2px, 0.4vh, 4px);
+  margin-top: clamp(4px, 0.6vh, 8px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -832,28 +831,28 @@
 
 .sb-senshu-ribbon {
   position: absolute;
-  top: clamp(-10px, -1.8vh, -14px);
+  top: clamp(-12px, -2vh, -16px);
   right: 0;
   background-color: var(--sb-gold);
   color: var(--sb-ink);
-  font-size: clamp(0.65rem, 1.3vh, 0.95rem);
+  font-size: clamp(0.9rem, 2vh, 1.4rem);
   font-weight: 900;
-  padding: 2px 8px;
+  padding: 2px 12px;
   border-radius: 4px;
   z-index: 2;
   box-shadow: var(--sb-shadow-drop);
 }
 
 .sb-score-box {
-  height: clamp(65px, 16.5vh, 160px);
-  min-width: clamp(80px, 11vw, 210px);
+  height: clamp(100px, 24vh, 220px);
+  min-width: clamp(120px, 15vw, 260px);
   background-color: var(--sb-pod-bg);
   border: 2px solid var(--sb-line-subtle);
-  border-radius: 12px;
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 clamp(8px, 1.2vw, 16px);
+  padding: 0 clamp(12px, 1.8vw, 24px);
   transition: border-color 0.2s ease;
   box-sizing: border-box;
 }
@@ -868,7 +867,7 @@
 .sb-score-val {
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(2.8rem, 12vh, 8.2rem);
+  font-size: clamp(5.2rem, 19vh, 13.5rem);
   line-height: 1;
   color: var(--sb-text-bright);
 }
@@ -878,23 +877,23 @@
   display: flex;
   align-items: center;
   justify-content: space-around;
-  gap: clamp(4px, 0.8vw, 8px);
-  padding-top: clamp(4px, 0.6vh, 8px);
-  margin-top: clamp(2px, 0.4vh, 4px);
+  gap: clamp(4px, 0.8vw, 12px);
+  padding-top: clamp(4px, 0.8vh, 8px);
+  margin-top: clamp(4px, 0.6vh, 8px);
   border-top: 1px solid var(--sb-line-subtle);
   flex-shrink: 0;
 }
 
 .sb-penalty-item {
   flex: 1;
-  height: clamp(24px, 4vh, 42px);
+  height: clamp(30px, 4.8vh, 48px);
   border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(0.75rem, 2vh, 1.45rem);
+  font-size: clamp(1rem, 2.6vh, 1.8rem);
   background-color: var(--sb-penalty-slot);
   color: var(--sb-text-dim);
   border: 1px solid var(--sb-line-subtle);
@@ -915,13 +914,13 @@
 
 /* ==================== BOTTOM FOOTER ==================== */
 .sb-footer {
-  height: clamp(52px, 9.2vh, 84px);
-  min-height: clamp(52px, 9.2vh, 84px);
-  max-height: clamp(52px, 9.2vh, 84px);
+  height: clamp(60px, 10.5vh, 92px);
+  min-height: clamp(60px, 10.5vh, 92px);
+  max-height: clamp(60px, 10.5vh, 92px);
   background-color: var(--sb-footer-bg);
   color: var(--sb-text);
   border-top: 1px solid var(--sb-line-subtle);
-  padding: 0 clamp(8px, 1.8vw, 24px);
+  padding: 0 clamp(12px, 1.8vw, 28px);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
@@ -936,8 +935,8 @@
 }
 
 .sb-sponsor-brand {
-  height: clamp(28px, 5.8vh, 52px);
-  max-width: clamp(100px, 18vw, 250px);
+  height: clamp(32px, 6.5vh, 56px);
+  max-width: clamp(120px, 20vw, 280px);
   object-fit: contain;
 }
 
@@ -948,14 +947,14 @@
 }
 
 .sb-timer-vault {
-  height: clamp(40px, 7.2vh, 68px);
+  height: clamp(48px, 8.8vh, 76px);
   background-color: var(--sb-vault-bg);
   border: 2px solid var(--sb-line-accent);
-  border-radius: 10px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 clamp(12px, 2vw, 28px);
+  padding: 0 clamp(16px, 2.5vw, 36px);
   transition: border-color 0.2s ease, background-color 0.2s ease;
 }
 .sb-timer-vault.is-running {
@@ -965,7 +964,7 @@
 .sb-timer-digits {
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(1.9rem, 5.6vh, 4.8rem);
+  font-size: clamp(2.6rem, 7.5vh, 5.6rem);
   line-height: 1;
   color: var(--sb-text-bright);
   font-variant-numeric: tabular-nums;
@@ -987,7 +986,7 @@
   background-color: var(--sb-vault-bg);
   border: 1px solid var(--sb-border-gold);
   border-radius: 8px;
-  padding: clamp(4px, 0.6vh, 8px) clamp(8px, 1.2vw, 16px);
+  padding: clamp(4px, 0.8vh, 8px) clamp(12px, 1.4vw, 20px);
 }
 
 .sb-team-meta {
@@ -997,23 +996,23 @@
 }
 
 .sb-team-meta-title {
-  font-size: clamp(0.65rem, 1.2vh, 0.85rem);
+  font-size: clamp(0.85rem, 1.5vh, 1.15rem);
   font-weight: 700;
   color: var(--sb-gold-bright);
 }
 
 .sb-team-meta-pts {
-  font-size: clamp(0.65rem, 1.1vh, 0.8rem);
+  font-size: clamp(0.8rem, 1.3vh, 1rem);
   color: var(--sb-text-sub);
 }
 
 .sb-team-score-display {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(1.3rem, 3.8vh, 3rem);
+  font-size: clamp(1.8rem, 4.5vh, 3.6rem);
   line-height: 1;
   text-wrap: balance;
 }
@@ -1028,12 +1027,12 @@
   color: var(--sb-text-sub);
 }
 .sb-arena-label {
-  font-size: clamp(0.75rem, 1.4vh, 1rem);
+  font-size: clamp(0.95rem, 1.8vh, 1.35rem);
   font-weight: 700;
   color: var(--sb-text-bright);
 }
 .sb-arena-sub {
-  font-size: clamp(0.65rem, 1.1vh, 0.8rem);
+  font-size: clamp(0.75rem, 1.4vh, 1.05rem);
 }
 
 /* ==================== KATA 5-JUDGE OVERLAY ==================== */
@@ -1087,7 +1086,7 @@
   border-radius: 8px;
   font-family: var(--sb-mono);
   font-weight: 900;
-  font-size: clamp(1.4rem, 4vh, 3.8rem);
+  font-size: clamp(2rem, 5vh, 4.6rem);
   line-height: 1;
   text-align: center;
   color: var(--sb-text-bright);
@@ -1104,7 +1103,7 @@
 }
 
 .sb-jlabel {
-  font-size: clamp(0.7rem, 1.4vh, 1.1rem);
+  font-size: clamp(0.95rem, 1.8vh, 1.4rem);
   font-weight: 700;
   color: var(--sb-gold-bright);
 }
