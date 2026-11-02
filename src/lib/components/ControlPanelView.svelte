@@ -27,7 +27,7 @@
     match,
     baganInfo = null,
     baganName = "",
-    eventName = "AMBRILINDO KARATE CHAMPIONSHIP",
+    eventName = "",
     tatamiNumber = 1,
     hostUrl = "",
     logoMap = {},
@@ -648,6 +648,7 @@
     const payload = {
       tatami: activeTatami,
       matchId: match.id,
+      eventName: eventName || "",
       category: baganName,
       round: match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`,
       matchNumber: match.urutan || 1,

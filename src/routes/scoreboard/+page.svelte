@@ -8,7 +8,7 @@
   let isLocalSyncConnected = $state(false);
 
   // Match information state
-  let eventName = $state("AMBRILINDO KARATE CHAMPIONSHIP");
+  let eventName = $state("");
   let categoryName = $state("KATA PERORANGAN SENIOR PUTRA");
   let matchRound = $state("BABAK PENYISIHAN");
   let matchNumber = $state("1");
@@ -240,7 +240,9 @@
     </div>
 
     <div class="sb-header-right">
-      <span class="sb-event-name">{eventName}</span>
+      {#if eventName && eventName !== "AMBRILINDO KARATE CHAMPIONSHIP"}
+        <span class="sb-event-name">{eventName}</span>
+      {/if}
       <div class="sb-sync-dot" class:is-active={isLocalSyncConnected} title={isLocalSyncConnected ? "Live LAN Connected" : "Connecting..."}></div>
     </div>
   </header>
