@@ -17,6 +17,17 @@
   let isMatchFinished = $state(false);
   let showKataScoreOverlay = $state(false);
 
+  // Split-Second Scoreboard Banner Notification
+  interface ScoreboardBannerData {
+    id: number;
+    side: "aka" | "ao";
+    title: string;
+    subtitle: string;
+    durationMs?: number;
+  }
+  let currentBanner = $state<ScoreboardBannerData | null>(null);
+  let bannerDismissTimer: any = null;
+
   // Team Kumite (Kumite Beregu) state
   let isTeamMatch = $state(false);
   let teamAkaName = $state("");
@@ -185,6 +196,26 @@
       if (data.ao.penalties) aoPenalties = { ...aoPenalties, ...data.ao.penalties };
       if (data.ao.judgeScores) aoJudgeScores = data.ao.judgeScores;
     }
+
+    if (data.activeBanner !== undefined) {
+      if (data.activeBanner && data.activeBanner.id) {
+        if (!currentBanner || currentBanner.id !== data.activeBanner.id) {
+          currentBanner = data.activeBanner;
+          if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
+          const dur = data.activeBanner.durationMs || 1400;
+          bannerDismissTimer = setTimeout(() => {
+            currentBanner = null;
+            bannerDismissTimer = null;
+          }, dur);
+        }
+      } else if (data.activeBanner === null) {
+        currentBanner = null;
+        if (bannerDismissTimer) {
+          clearTimeout(bannerDismissTimer);
+          bannerDismissTimer = null;
+        }
+      }
+    }
   }
 
   let unlistenSync: (() => void) | null = null;
@@ -208,6 +239,7 @@
   onDestroy(() => {
     if (unlistenSync) unlistenSync();
     if (animFrameId !== null) cancelAnimationFrame(animFrameId);
+    if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
   });
 </script>
 
@@ -249,6 +281,28 @@
 
   <!-- ==================== MAIN ARENA (EXACT 50/50 VERTICAL PROPORTIONS) ==================== -->
   <main class="sb-arena">
+    {#if currentBanner}
+      <div
+        class="sb-banner-overlay"
+        class:is-aka={currentBanner.side === "aka"}
+        class:is-ao={currentBanner.side === "ao"}
+        role="alert"
+        aria-live="assertive"
+      >
+        <div class="sb-banner-side-badge">
+          <span class="sb-banner-side-name">{currentBanner.side === "aka" ? "Sudut Merah (AKA)" : "Sudut Biru (AO)"}</span>
+          <span class="sb-banner-side-sep">/</span>
+          <span class="sb-banner-athlete-name">{currentBanner.side === "aka" ? akaName : aoName}</span>
+        </div>
+        <div class="sb-banner-title">
+          {currentBanner.title}
+        </div>
+        <div class="sb-banner-subtitle">
+          {currentBanner.subtitle}
+        </div>
+      </div>
+    {/if}
+
     <!-- TOP CARD: AKA (RED) -->
     <section class="sb-card sb-card-aka" class:is-winner={matchWinner === "1"}>
       <div class="sb-card-body">
@@ -527,6 +581,17 @@
   --sb-shadow-drop: 0 4px 12px rgba(0, 0, 0, 0.5);
   --sb-overlay-shadow: 0 16px 40px rgba(0, 0, 0, 0.85);
 
+  /* Banner Tokens */
+  --sb-banner-aka-bg: #991b1b;
+  --sb-banner-aka-border: #f87171;
+  --sb-banner-ao-bg: #1e40af;
+  --sb-banner-ao-border: #93c5fd;
+  --sb-banner-badge-bg: #0c1018;
+  --sb-banner-badge-border: rgba(248, 250, 252, 0.24);
+  --sb-banner-shadow: inset 0 0 140px rgba(0, 0, 0, 0.76), 0 20px 48px rgba(0, 0, 0, 0.92);
+  --sb-banner-glow-gold: 0 4px 20px rgba(0, 0, 0, 0.92), 0 0 28px rgba(226, 155, 18, 0.68);
+  --sb-banner-glow-white: 0 8px 36px rgba(0, 0, 0, 0.96), 0 0 56px rgba(247, 249, 253, 0.76);
+
   --sb-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --sb-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -686,6 +751,92 @@
   gap: clamp(4px, 0.8vh, 8px);
   padding: clamp(4px, 0.8vh, 8px);
   box-sizing: border-box;
+  position: relative;
+}
+
+/* ==================== ARENA-SCALE SPLIT-SECOND POPUP BANNER ==================== */
+.sb-banner-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: clamp(16px, 3vh, 32px) clamp(24px, 4vw, 48px);
+  border-radius: 12px;
+  animation: sbBannerPopIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+  box-shadow: var(--sb-banner-shadow);
+  overflow: hidden;
+}
+
+.sb-banner-overlay.is-aka {
+  background-color: var(--sb-banner-aka-bg);
+  border-top: 4px solid var(--sb-banner-aka-border);
+  border-bottom: 4px solid var(--sb-banner-aka-border);
+}
+
+.sb-banner-overlay.is-ao {
+  background-color: var(--sb-banner-ao-bg);
+  border-top: 4px solid var(--sb-banner-ao-border);
+  border-bottom: 4px solid var(--sb-banner-ao-border);
+}
+
+@keyframes sbBannerPopIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.sb-banner-side-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-sb-sans);
+  font-size: clamp(1.25rem, 2.8vh, 2.25rem);
+  font-weight: 800;
+  color: var(--sb-text-bright);
+  background: var(--sb-banner-badge-bg);
+  border: 1px solid var(--sb-banner-badge-border);
+  padding: clamp(4px, 0.8vh, 8px) clamp(16px, 1.8vw, 28px);
+  border-radius: 9999px;
+  margin-bottom: clamp(8px, 1.5vh, 16px);
+  box-shadow: var(--sb-shadow-drop);
+}
+
+.sb-banner-side-sep {
+  opacity: 0.45;
+}
+
+.sb-banner-title {
+  font-family: var(--font-sb-mono);
+  font-size: clamp(3.25rem, 9.5vh, 7.5rem);
+  font-weight: 900;
+  line-height: 1.05;
+  color: var(--sb-gold-bright);
+  text-transform: uppercase;
+  text-shadow: var(--sb-banner-glow-gold);
+  margin: 0;
+  padding: 0;
+}
+
+.sb-banner-subtitle {
+  font-family: var(--font-sb-mono);
+  font-size: clamp(6.5rem, 22vh, 18rem);
+  font-weight: 900;
+  line-height: 0.95;
+  color: var(--sb-text-bright);
+  text-transform: uppercase;
+  text-shadow: var(--sb-banner-glow-white);
+  margin: 0;
+  padding: 0;
 }
 
 .sb-card {

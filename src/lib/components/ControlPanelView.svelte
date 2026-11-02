@@ -222,15 +222,6 @@
   function handleAkaBenderaChange(val: string) {
     akaBendera = val;
     if (val === "-") return;
-    const akaFlags = parseInt(val, 10) || 0;
-    const aoFlags = Math.max(0, 5 - akaFlags);
-    if (akaFlags > aoFlags) {
-      matchWinner = "1";
-    } else if (aoFlags > akaFlags) {
-      matchWinner = "2";
-    } else {
-      matchWinner = "";
-    }
     // Automatically output score to arena scoreboard when using manual bendera!
     publishScoresToBoard();
   }
@@ -522,16 +513,45 @@
     return { akaPoints, aoPoints, decisions };
   });
 
-  // Reactive auto winner for Kata (Uses effective points from Bendera or Judge comparisons)
-  $effect(() => {
-    if (isKata) {
-      if (effectiveAkaPoints > effectiveAoPoints) {
-        matchWinner = "1";
-      } else if (effectiveAoPoints > effectiveAkaPoints) {
-        matchWinner = "2";
-      }
+  // Split-Second Scoreboard Banner Notification State
+  interface LiveScoreBanner {
+    id: number;
+    side: "aka" | "ao";
+    title: string;
+    subtitle: string;
+    durationMs: number;
+  }
+  let activeBanner = $state<LiveScoreBanner | null>(null);
+  let bannerClearTimeout: any = null;
+
+  function triggerScoreBanner(side: "aka" | "ao", title: string, subtitle: string, durationMs = 1300) {
+    if (bannerClearTimeout) {
+      clearTimeout(bannerClearTimeout);
+      bannerClearTimeout = null;
     }
-  });
+    activeBanner = {
+      id: Date.now(),
+      side,
+      title,
+      subtitle,
+      durationMs,
+    };
+    broadcastLiveState();
+
+    bannerClearTimeout = setTimeout(() => {
+      activeBanner = null;
+      broadcastLiveState();
+    }, durationMs);
+  }
+
+  function dismissScoreBanner() {
+    if (bannerClearTimeout) {
+      clearTimeout(bannerClearTimeout);
+      bannerClearTimeout = null;
+    }
+    activeBanner = null;
+    broadcastLiveState();
+  }
 
   // Guardrails & Input Validation for Kata Judge Score
   function sanitizeScore(val: string): string {
@@ -591,46 +611,57 @@
     } else {
       aoScore = Math.max(0, aoScore + pts);
     }
-    autoSuggestKumiteWinner();
-    broadcastLiveState();
+
+    if (pts === 1) {
+      triggerScoreBanner(side, "1 - POINT", "YUKO", 1300);
+    } else if (pts === 2) {
+      triggerScoreBanner(side, "2 - POINT", "WAZA-ARI", 1300);
+    } else if (pts === 3) {
+      triggerScoreBanner(side, "3 - POINT", "IPPON", 1300);
+    } else if (pts < 0) {
+      dismissScoreBanner();
+    } else {
+      broadcastLiveState();
+    }
   }
 
   function toggleSenshu(side: "aka" | "ao") {
     if (side === "aka") {
       akaSenshu = !akaSenshu;
-      if (akaSenshu) aoSenshu = false;
+      if (akaSenshu) {
+        aoSenshu = false;
+        triggerScoreBanner("aka", "KEUNGGULAN", "SENSHU", 1300);
+      } else {
+        dismissScoreBanner();
+      }
     } else {
       aoSenshu = !aoSenshu;
-      if (aoSenshu) akaSenshu = false;
+      if (aoSenshu) {
+        akaSenshu = false;
+        triggerScoreBanner("ao", "KEUNGGULAN", "SENSHU", 1300);
+      } else {
+        dismissScoreBanner();
+      }
     }
-    autoSuggestKumiteWinner();
-    broadcastLiveState();
   }
 
   function togglePenalty(side: "aka" | "ao", code: "c1" | "c2" | "c3" | "hc" | "h") {
+    const isNowActive = side === "aka" ? !akaPenalties[code] : !aoPenalties[code];
     if (side === "aka") {
-      akaPenalties[code] = !akaPenalties[code];
-      if (code === "h" && akaPenalties[code]) {
-        matchWinner = "2";
-      }
+      akaPenalties[code] = isNowActive;
     } else {
-      aoPenalties[code] = !aoPenalties[code];
-      if (code === "h" && aoPenalties[code]) {
-        matchWinner = "1";
-      }
+      aoPenalties[code] = isNowActive;
     }
-    broadcastLiveState();
-  }
 
-  function autoSuggestKumiteWinner() {
-    if (akaScore > aoScore) {
-      matchWinner = "1";
-    } else if (aoScore > akaScore) {
-      matchWinner = "2";
-    } else if (akaSenshu) {
-      matchWinner = "1";
-    } else if (aoSenshu) {
-      matchWinner = "2";
+    if (isNowActive) {
+      let critTitle = "C1";
+      if (code === "c2") critTitle = "C2";
+      else if (code === "c3") critTitle = "C3";
+      else if (code === "hc") critTitle = "HANSOKU CHUI";
+      else if (code === "h") critTitle = "HANSOKU";
+      triggerScoreBanner(side, "PELANGGARAN", critTitle, 1500);
+    } else {
+      dismissScoreBanner();
     }
   }
 
@@ -693,6 +724,15 @@
       teamAoPoints: teamMatchInfo?.team_ao_points || 0,
       activeBoutRound: teamMatchInfo?.active_bout_round || match.urutan || 1,
       totalBouts: teamMatchInfo?.bouts.length || 0,
+      activeBanner: activeBanner
+        ? {
+            id: activeBanner.id,
+            side: activeBanner.side,
+            title: activeBanner.title,
+            subtitle: activeBanner.subtitle,
+            durationMs: activeBanner.durationMs,
+          }
+        : null,
     };
 
     emit("tatami_live_state", $state.snapshot(payload)).catch((err) => {
@@ -821,11 +861,18 @@
     }).catch(() => {});
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Escape closes activeJudgePicker
-      if (e.key === "Escape" && activeJudgePicker !== null) {
-        e.preventDefault();
-        activeJudgePicker = null;
-        return;
+      // Escape closes activeJudgePicker or active scoreboard banner
+      if (e.key === "Escape") {
+        if (activeJudgePicker !== null) {
+          e.preventDefault();
+          activeJudgePicker = null;
+          return;
+        }
+        if (activeBanner !== null) {
+          e.preventDefault();
+          dismissScoreBanner();
+          return;
+        }
       }
       // Spacebar for Timer Start/Stop
       if (e.code === "Space" && !(e.target instanceof HTMLInputElement)) {
@@ -1686,6 +1733,16 @@
           >
             Reset
           </button>
+
+          {#if activeBanner}
+            <button
+              type="button"
+              onclick={dismissScoreBanner}
+              class="w-full mt-2 py-1.5 px-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-lg transition uppercase tracking-wider animate-pulse shadow-lg flex items-center justify-center gap-1.5"
+            >
+              <span>Tutup Banner Score (Esc)</span>
+            </button>
+          {/if}
         </div>
 
         {#if teamMatchInfo?.is_team_match}
