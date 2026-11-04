@@ -28,6 +28,35 @@
   let currentBanner = $state<ScoreboardBannerData | null>(null);
   let bannerDismissTimer: any = null;
 
+  // Video Review (VR) Subsystem Overlay state
+  interface ScoreboardVrChallenge {
+    side: "aka" | "ao";
+    reason: string;
+    status: "in_progress" | "accepted" | "rejected";
+  }
+  let activeVrChallenge = $state<ScoreboardVrChallenge | null>(null);
+  let vrChimeTimer: any = null;
+
+  function playVrSoundCue() {
+    try {
+      if (typeof window === "undefined") return;
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.25);
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.45);
+    } catch {}
+  }
+
   // Team Kumite (Kumite Beregu) state
   let isTeamMatch = $state(false);
   let teamAkaName = $state("");
@@ -216,6 +245,22 @@
         }
       }
     }
+
+    if (data.vrChallenge !== undefined) {
+      if (data.vrChallenge && data.vrChallenge.status === "in_progress") {
+        if (!activeVrChallenge || activeVrChallenge.side !== data.vrChallenge.side) {
+          playVrSoundCue();
+        }
+        activeVrChallenge = data.vrChallenge;
+      } else if (data.vrChallenge && (data.vrChallenge.status === "accepted" || data.vrChallenge.status === "rejected")) {
+        activeVrChallenge = data.vrChallenge;
+        setTimeout(() => {
+          activeVrChallenge = null;
+        }, 3500);
+      } else {
+        activeVrChallenge = null;
+      }
+    }
   }
 
   let unlistenSync: (() => void) | null = null;
@@ -234,12 +279,23 @@
       }
     }
     setupIpc();
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== "undefined") {
+      bc = new BroadcastChannel("ambrilindo_live_sync");
+      bc.onmessage = (event) => {
+        if (event.data) {
+          applyLiveState(event.data);
+        }
+      };
+    }
   });
 
   onDestroy(() => {
     if (unlistenSync) unlistenSync();
     if (animFrameId !== null) cancelAnimationFrame(animFrameId);
     if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
+    if (vrChimeTimer) clearTimeout(vrChimeTimer);
   });
 </script>
 
@@ -529,6 +585,51 @@
       {/if}
     </div>
   </footer>
+
+  <!-- ==================== VIDEO REVIEW (VR) CHALLENGE FULLSCREEN OVERLAY ==================== -->
+  {#if activeVrChallenge}
+    <div class="fixed inset-0 z-50 flex items-center justify-center p-8 bg-black/85 backdrop-blur-md animate-in fade-in duration-200 font-sans select-none">
+      <div class="w-full max-w-4xl p-8 rounded-3xl border-4 text-center space-y-6 shadow-2xl transition-all {activeVrChallenge.status === 'accepted' ? 'bg-emerald-950/90 border-emerald-400 shadow-emerald-500/50' : activeVrChallenge.status === 'rejected' ? 'bg-rose-950/90 border-rose-500 shadow-rose-500/50' : (activeVrChallenge.side === 'aka' ? 'bg-red-950/90 border-red-500 shadow-red-500/50' : 'bg-blue-950/90 border-blue-500 shadow-blue-500/50')}">
+        
+        <!-- Header Pill -->
+        <div class="inline-flex items-center gap-3 px-6 py-2 rounded-full uppercase tracking-widest text-sm font-mono font-black text-white shadow-lg {activeVrChallenge.side === 'aka' ? 'bg-red-600' : 'bg-blue-600'}">
+          <span class="w-3 h-3 rounded-full bg-white animate-ping"></span>
+          <span>VIDEO REVIEW (VR) CHALLENGE IN PROGRESS</span>
+        </div>
+
+        <!-- Corner Combatant Tag -->
+        <div class="space-y-2">
+          <div class="text-5xl font-black uppercase tracking-tight text-white font-mono">
+            {activeVrChallenge.side === 'aka' ? 'SUDUT MERAH (AKA)' : 'SUDUT BIRU (AO)'}
+          </div>
+          <div class="text-2xl font-bold {activeVrChallenge.side === 'aka' ? 'text-red-300' : 'text-blue-300'}">
+            {activeVrChallenge.side === 'aka' ? akaName : aoName}
+          </div>
+        </div>
+
+        <!-- Challenge Reason Box -->
+        <div class="bg-black/60 border-2 border-white/20 rounded-2xl p-6 space-y-1">
+          <div class="text-xs font-mono font-bold text-amber-400 uppercase tracking-widest">
+            PERMOHONAN TINJAUAN:
+          </div>
+          <div class="text-3xl font-black text-white uppercase tracking-wide">
+            {activeVrChallenge.reason}
+          </div>
+        </div>
+
+        <!-- Decision Status -->
+        <div class="text-sm font-mono uppercase tracking-wider text-zinc-300">
+          {#if activeVrChallenge.status === 'in_progress'}
+            <span class="animate-pulse text-amber-300 font-bold">● SEDANG DITINJAU OLEH MEJA WASIT UTAMA ●</span>
+          {:else if activeVrChallenge.status === 'accepted'}
+            <span class="text-emerald-400 font-black text-2xl">✓ CHALLENGE DITERIMA (SUCCESS)</span>
+          {:else}
+            <span class="text-rose-400 font-black text-2xl">✕ CHALLENGE DITOLAK (UNSUCCESSFUL)</span>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>

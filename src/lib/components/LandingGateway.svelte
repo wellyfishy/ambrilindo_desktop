@@ -134,6 +134,39 @@
         </svg>
       </a>
       <a
+        href="/coach-supervisor/1"
+        class="h-8 px-3 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 whitespace-nowrap"
+        title="Panel Pengawas Pelatih Video Review"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+        <span>Coach VR</span>
+      </a>
+      <a
+        href="/wasit-vr/1"
+        class="h-8 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-amber-500/40 whitespace-nowrap"
+        title="Layar Meja Wasit Video Review"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+        <span>Wasit VR</span>
+      </a>
+
+      <a
+        href="/marshalling"
+        class="h-8 px-3 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-purple-500/40 whitespace-nowrap"
+        title="Layar Panggilan Atlet & Antrean Ruang Pemanasan (Warm-up Hall)"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+        <span>Marshalling</span>
+      </a>
+      <a
+        href="/results-booklet"
+        class="h-8 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 whitespace-nowrap"
+        title="Buku Laporan Hasil Pertandingan & Lembar Berita Acara Resmi"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+        <span>Buku Hasil (BA)</span>
+      </a>
+      <a
         href="/jury"
         class="h-8 px-3.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] text-xs font-semibold flex items-center transition-colors motion-reduce:transition-none outline-none focus-visible:ring-2 focus-visible:ring-white/20 whitespace-nowrap"
       >

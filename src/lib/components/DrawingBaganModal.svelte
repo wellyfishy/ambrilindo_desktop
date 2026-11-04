@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "$lib/api_client";
   import type { DrawingCategoryInfo, DrawingSummary } from "$lib/types";
+  import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
 
   interface Props {
     eventId: number;
@@ -17,6 +18,9 @@
   let isExecuting = $state(false);
   let executionError = $state<string | null>(null);
 
+  // BOB Modal State
+  let showBobModal = $state(false);
+
   // Selections
   let selectedCategoryIds = $state<number[]>([]);
   let vrCategoryIds = $state<number[]>([]);
@@ -27,9 +31,25 @@
   let showDeleteConfirm = $state(false);
   let confirmDeleteChecked = $state(false);
   let isDeleting = $state(false);
+  let isCreatingRoundRobin = $state<number | null>(null);
 
   // Result dialog
   let summaryResult = $state<DrawingSummary | null>(null);
+
+  async function handleCreateRoundRobin(catId: number) {
+    isCreatingRoundRobin = catId;
+    executionError = null;
+    try {
+      await invoke("create_round_robin_bagan", { eventId, nomorTandingId: catId });
+      await loadCategories();
+      alert("Bagan Round-Robin berhasil dibuat!");
+      onComplete();
+    } catch (err: any) {
+      executionError = typeof err === "string" ? err : err.message || "Gagal membuat bagan round-robin.";
+    } finally {
+      isCreatingRoundRobin = null;
+    }
+  }
 
   async function loadCategories() {
     isLoading = true;
@@ -310,9 +330,11 @@
             {:else}
               {#each filteredCategories as cat}
                 {@const isSelected = selectedCategoryIds.includes(cat.id)}
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabindex="0"
                   onclick={() => toggleCategory(cat.id)}
+                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCategory(cat.id); } }}
                   class="w-full flex items-center justify-between p-2.5 rounded-xl border transition text-left cursor-pointer {isSelected ? 'bg-white/[0.04] border-white/20' : 'bg-[#181a20]/40 border-white/[0.04] hover:border-white/[0.08]'}"
                 >
                   <div class="flex items-center space-x-3 truncate">
@@ -349,6 +371,21 @@
                       {cat.athlete_count} ATLET
                     </span>
 
+                    {#if cat.athlete_count >= 2 && cat.athlete_count <= 5 && cat.bagan_count === 0}
+                      <button
+                        type="button"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          handleCreateRoundRobin(cat.id);
+                        }}
+                        disabled={isCreatingRoundRobin === cat.id}
+                        class="px-2 py-0.5 rounded bg-indigo-500/20 hover:bg-indigo-500/35 text-indigo-300 border border-indigo-500/40 text-[10px] font-bold font-mono transition flex items-center gap-1 active:scale-95 disabled:opacity-50"
+                        title="Buat bagan sistem kompetisi penuh Round-Robin untuk kategori kecil ini"
+                      >
+                        <span>{isCreatingRoundRobin === cat.id ? "Membuat..." : "+ Round-Robin"}</span>
+                      </button>
+                    {/if}
+
                     {#if cat.bagan_count > 0}
                       <span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                         ADA {cat.bagan_count} BAGAN
@@ -359,7 +396,7 @@
                       </span>
                     {/if}
                   </div>
-                </button>
+                </div>
               {/each}
             {/if}
           </div>
@@ -477,15 +514,29 @@
 
       <!-- Modal Footer -->
       <div class="px-6 py-4 border-t border-white/[0.08] flex items-center justify-between shrink-0 bg-[#181a20]">
-        <!-- Delete All Brackets Button -->
-        <button
-          type="button"
-          onclick={() => showDeleteConfirm = true}
-          disabled={isExecuting || isDeleting}
-          class="px-3.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-xl text-xs font-medium font-mono transition disabled:opacity-50"
-        >
-          HAPUS SEMUA BAGAN
-        </button>
+        <div class="flex items-center space-x-2">
+          <!-- Delete All Brackets Button -->
+          <button
+            type="button"
+            onclick={() => showDeleteConfirm = true}
+            disabled={isExecuting || isDeleting}
+            class="px-3.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-xl text-xs font-medium font-mono transition disabled:opacity-50"
+          >
+            HAPUS SEMUA BAGAN
+          </button>
+
+          <!-- Create BOB Bracket Button -->
+          <button
+            type="button"
+            onclick={() => (showBobModal = true)}
+            disabled={isExecuting || isDeleting}
+            class="px-3.5 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold font-mono transition flex items-center space-x-1.5 active:scale-95"
+            title="Himpun para juara 1 (peraih emas) ke dalam bagan Best of the Best (BOB)"
+          >
+            <span>🏆</span>
+            <span>BAGAN BOB</span>
+          </button>
+        </div>
 
         <div class="flex items-center space-x-3">
           <button
@@ -580,3 +631,16 @@
     </div>
   </div>
 {/if}
+
+<!-- Best of Best (BOB) Drawing Modal -->
+<BobDrawingModal
+  {eventId}
+  isOpen={showBobModal}
+  onClose={() => (showBobModal = false)}
+  onSuccess={(result) => {
+    showBobModal = false;
+    alert(`Bagan Best of the Best (BOB) '${result.nama_bob}' berhasil dibuat dengan ${result.athlete_count} juara!`);
+    onComplete();
+    onClose();
+  }}
+/>

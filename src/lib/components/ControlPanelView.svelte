@@ -79,6 +79,51 @@
   let hasVr2 = $state<boolean>(false);
   let isHantei = $state<boolean>(false);
 
+  // Active Video Review (VR) Challenge state
+  interface VrChallengeData {
+    side: "aka" | "ao";
+    reason: string;
+    timestamp: number;
+    status: "in_progress" | "accepted" | "rejected";
+  }
+  let activeVrChallenge = $state<VrChallengeData | null>(null);
+
+  async function resolveVrChallengeLocally(decision: "accepted" | "rejected" | "cancelled") {
+    if (!activeVrChallenge) return;
+    const side = activeVrChallenge.side;
+    if (decision === "rejected") {
+      if (side === "aka") hasVr1 = true;
+      if (side === "ao") hasVr2 = true;
+    }
+    const resolvedPayload = {
+      type: "vr_challenge_resolved",
+      tatami: activeTatami,
+      side,
+      decision,
+      timestamp: Date.now(),
+    };
+    if (liveBroadcastChannel) {
+      liveBroadcastChannel.postMessage(resolvedPayload);
+    }
+    try {
+      await fetch("/api/vr/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tatami: activeTatami, side, decision }),
+      });
+    } catch {}
+
+    activeVrChallenge = {
+      ...activeVrChallenge,
+      status: decision === "accepted" ? "accepted" : "rejected",
+    };
+    broadcastLiveState();
+    setTimeout(() => {
+      activeVrChallenge = null;
+      broadcastLiveState();
+    }, 3500);
+  }
+
   // Reactive Sync when match prop changes (switching bouts in team kumite)
   let lastLoadedMatchId = $state<number | null>(null);
 
@@ -396,6 +441,14 @@
       isTimerRunning = false;
     }
     broadcastLiveState();
+  }
+
+  function pauseTimer() {
+    if (isTimerRunning) {
+      if (animFrameId) cancelAnimationFrame(animFrameId);
+      isTimerRunning = false;
+      broadcastLiveState();
+    }
   }
 
   function toggleTimer() {
@@ -733,6 +786,7 @@
             durationMs: activeBanner.durationMs,
           }
         : null,
+      vrChallenge: activeVrChallenge,
     };
 
     emit("tatami_live_state", $state.snapshot(payload)).catch((err) => {
@@ -817,6 +871,43 @@
       broadcastLiveState();
     }, 100);
 
+    if (typeof BroadcastChannel !== "undefined") {
+      liveBroadcastChannel = new BroadcastChannel("ambrilindo_live_sync");
+      liveBroadcastChannel.onmessage = (event) => {
+        const data = event.data;
+        if (!data) return;
+        if (data.tatami && data.tatami != activeTatami) return;
+        if (data.type === "vr_challenge_started") {
+          if (isTimerRunning) {
+            pauseTimer();
+          }
+          activeVrChallenge = {
+            side: data.side,
+            reason: data.reason || "Video Review Challenge",
+            timestamp: data.timestamp || Date.now(),
+            status: "in_progress",
+          };
+          broadcastLiveState();
+        } else if (data.type === "vr_challenge_resolved") {
+          if (data.decision === "rejected") {
+            if (data.side === "aka") hasVr1 = true;
+            if (data.side === "ao") hasVr2 = true;
+          }
+          activeVrChallenge = {
+            side: data.side,
+            reason: activeVrChallenge?.reason || "Video Review Challenge",
+            timestamp: Date.now(),
+            status: data.decision === "accepted" ? "accepted" : "rejected",
+          };
+          broadcastLiveState();
+          setTimeout(() => {
+            activeVrChallenge = null;
+            broadcastLiveState();
+          }, 3500);
+        }
+      };
+    }
+
     // Listen for requests from newly opened scoreboard windows
     let unlistenRequest: (() => void) | undefined;
     listen("request_tatami_state", (event: any) => {
@@ -855,6 +946,33 @@
           kataAoName = String(data.kata_ao);
         }
         broadcastLiveState();
+      } else if (data.type === "vr_challenge_started") {
+        if (isTimerRunning) {
+          pauseTimer();
+        }
+        activeVrChallenge = {
+          side: data.side,
+          reason: data.reason || "Video Review Challenge",
+          timestamp: data.timestamp || Date.now(),
+          status: "in_progress",
+        };
+        broadcastLiveState();
+      } else if (data.type === "vr_challenge_resolved") {
+        if (data.decision === "rejected") {
+          if (data.side === "aka") hasVr1 = true;
+          if (data.side === "ao") hasVr2 = true;
+        }
+        activeVrChallenge = {
+          side: data.side,
+          reason: activeVrChallenge?.reason || "Video Review Challenge",
+          timestamp: Date.now(),
+          status: data.decision === "accepted" ? "accepted" : "rejected",
+        };
+        broadcastLiveState();
+        setTimeout(() => {
+          activeVrChallenge = null;
+          broadcastLiveState();
+        }, 3500);
       }
     }).then((unsub) => {
       unlistenRemote = unsub;
@@ -995,6 +1113,59 @@
       </div>
     </div>
   </div>
+
+  <!-- ==================== VIDEO REVIEW (VR) CHALLENGE NOTIFICATION ==================== -->
+  {#if activeVrChallenge}
+    <div class="rounded-xl border p-3 flex items-center justify-between gap-4 animate-pulse shadow-lg shrink-0 {activeVrChallenge.status === 'accepted' ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200' : activeVrChallenge.status === 'rejected' ? 'bg-rose-950/80 border-rose-500 text-rose-200' : (activeVrChallenge.side === 'aka' ? 'bg-red-950/80 border-red-500 text-white' : 'bg-blue-950/80 border-blue-500 text-white')}">
+      <div class="flex items-center gap-3 min-w-0">
+        <span class="w-3.5 h-3.5 rounded-full {activeVrChallenge.side === 'aka' ? 'bg-red-500' : 'bg-blue-500'} animate-ping shrink-0"></span>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-black uppercase {activeVrChallenge.side === 'aka' ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}">
+              CHALLENGE VR: {activeVrChallenge.side.toUpperCase()}
+            </span>
+            <span class="text-xs font-black truncate">{activeVrChallenge.reason}</span>
+          </div>
+          <span class="text-[10px] opacity-90 font-mono block mt-0.5">
+            {#if activeVrChallenge.status === 'in_progress'}
+              Permohonan Video Review dari Pelatih sedang ditinjau meja wasit...
+            {:else if activeVrChallenge.status === 'accepted'}
+              ✓ CHALLENGE DITERIMA OLEH WASIT (Kartu Pelatih Tetap Aktif)
+            {:else}
+              ✕ CHALLENGE DITOLAK OLEH WASIT (Kartu Pelatih Hangus)
+            {/if}
+          </span>
+        </div>
+      </div>
+
+      <!-- Quick Resolution Action Buttons -->
+      {#if activeVrChallenge.status === 'in_progress'}
+        <div class="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onclick={() => resolveVrChallengeLocally("accepted")}
+            class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1 active:scale-95 shadow-sm"
+          >
+            ✓ Terima (Accept)
+          </button>
+          <button
+            type="button"
+            onclick={() => resolveVrChallengeLocally("rejected")}
+            class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1 active:scale-95 shadow-sm"
+          >
+            ✕ Tolak (Reject)
+          </button>
+          <button
+            type="button"
+            onclick={() => resolveVrChallengeLocally("cancelled")}
+            class="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-semibold transition active:scale-95"
+          >
+            Batal
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <!-- ==================== TEAM KUMITE (KUMITE BEREGU) HUB ==================== -->
   {#if teamMatchInfo && teamMatchInfo.is_team_match}

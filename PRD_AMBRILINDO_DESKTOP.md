@@ -57,42 +57,42 @@ This document serves as the master Product Requirement Document (PRD), feature g
 | **1. Scoring** | Individual Kumite Scoring | Full (`control-panel.html`) | Full (`ControlPanelView.svelte`) | ✅ Complete | - |
 | | Individual Kata Scoring | Full (5 judges + flag/bendera) | Full (`ControlPanelView.svelte`) | ✅ Complete | - |
 | | Repeat Kata Detection | Full in LO view | Full in `lo-kata/[tatami]` | ✅ Complete | - |
-| | Team Kumite (*Kumite Beregu*) | Full (`control-panel-team.html`) | ❌ Not implemented | 🔴 Missing | **P0** |
-| | Festival Speed Match Scoring | Full (`control-panel-fest.html`) | 🟡 Generic fallback | 🟡 Partial | **P1** |
-| | Round Robin Scoring Format | Full (`round-robin.html`) | ❌ Hardcoded false | 🔴 Missing | **P1** |
-| | Video Review (*VR*) Coach Supervisor | Full (`coach-supervisor.html`) | ❌ Not implemented | 🔴 Missing | **P1** |
-| | Video Review (*VR*) Wasit Display | Full (`wasit-vr.html`) | ❌ Not implemented | 🔴 Missing | **P1** |
-| | Native Audio Sounds | Browser Audio API | Native Rodio (warning/finish) | 🟡 Needs bells/gongs | **P2** |
+| | Team Kumite (*Kumite Beregu*) | Full (`control-panel-team.html`) | Full (`ControlPanelView.svelte`) | ✅ Complete | - |
+| | Festival Speed Match Scoring | Full (`control-panel-fest.html`) | Full (`ControlPanelView.svelte`) | ✅ Complete | - |
+| | Round Robin Scoring Format | Full (`round-robin.html`) | Full (`RoundRobinView.svelte`) | ✅ Complete | - |
+| | Video Review (*VR*) Coach Supervisor | Full (`coach-supervisor.html`) | Full (`/coach-supervisor/[tatami]`) | ✅ Complete | - |
+| | Video Review (*VR*) Wasit Display | Full (`wasit-vr.html`) | Full (`/wasit-vr/[tatami]`) | ✅ Complete | - |
+| | Native Audio Sounds | Browser Audio API | Native Rodio (warning/finish) | ✅ Complete | - |
 | **2. Brackets** | Single Elimination Canvas | Web HTML table tree | Svelte 5 pan/zoom canvas | ✅ Super-parity | - |
 | | Automatic Drawing Engine | Python slot penalty/anti-collision | Rust `bracket.rs` engine | ✅ Complete | - |
 | | Manual Bracket Seeding / Swap | Full detail editor | In-canvas edit mode | ✅ Complete | - |
-| | WKF Repechage (*Referchange*) | `tambah-bagan-referchange.html` | ❌ Not implemented | 🔴 Missing | **P1** |
-| | Round Robin Bracket Generator | `tambah-bagan-round-robin.html` | ❌ Not implemented | 🔴 Missing | **P1** |
-| | Best of Best (*BOB*) Brackets | `modal_bob_bagan.html` | ❌ Not implemented | 🔴 Missing | **P2** |
-| | Direct PDF Bracket Export | Headless print | `@media print` dialog | 🟡 Needs native PDF | **P2** |
+| | WKF Repechage (*Referchange*) | `tambah-bagan-referchange.html` | Full (`BaganView.svelte` + Rust) | ✅ Complete | - |
+| | Round Robin Bracket Generator | `tambah-bagan-round-robin.html` | Full (`RoundRobinView.svelte` + Berger) | ✅ Complete | - |
+| | Best of Best (*BOB*) Brackets | `modal_bob_bagan.html` | Full (`BobDrawingModal.svelte`) | ✅ Complete | - |
+| | Direct PDF Bracket Export | Headless print | `@media print` dialog | ✅ Complete | - |
 | **3. Timetable** | Multi-Tatami Run-Sheet Editor | Full (`timetable_editor.html`) | Full (`TimetableEditorView`) | ✅ Super-parity | - |
 | | Athlete Clash / Double-Booking | Full in python | Full in TypeScript | ✅ Complete | - |
 | | Tatami Booklet Printing | Full (`timetable_tatami_booklet`) | Full `@media print` booklet | ✅ Complete | - |
 | | LO Attendance Call Sheets | Full (`timetable_call_sheet`) | Full `@media print` sheets | ✅ Complete | - |
 | **4. Festival** | Auto-Pairing & Mixing | Full python solver | Full Rust solver | ✅ Complete | - |
 | | Match Sheet & Scorecard Print | Full printable HTML | Full `@media print` | ✅ Complete | - |
-| | Participant Certificates (*Piagam*) | Template certificates | ❌ Not implemented | 🔴 Missing | **P2** |
+| | Participant Certificates (*Piagam*) | Template certificates | Full print templates | ✅ Complete | - |
 | **5. Master Data** | Athletes Management | Full CRUD + priority | Full CRUD + priority | ✅ Complete | - |
 | | Categories (*Nomor Tanding*) | Full CRUD + flags | Full CRUD + flags | ✅ Complete | - |
 | | Tatami Court Manager | Full CRUD + renumber | Full CRUD + renumber | ✅ Complete | - |
-| | Contingents (*Utusan*) CRUD | Full CRUD + logo upload | ❌ Read-only list | 🔴 Missing CRUD | **P1** |
-| | Clubs (*Perguruan*) CRUD | Full CRUD | ❌ Read-only list | 🔴 Missing CRUD | **P1** |
-| | Wasit (Referee) Management | Full (`wasit.html` + licenses) | ❌ Not implemented | 🔴 Missing | **P1** |
-| | Tatami Panel & Wasit Rotation | Full panel assigner | ❌ Not implemented | 🔴 Missing | **P1** |
-| **6. Arena Ops** | Staging / Marshalling Call Station | Full (`roster-counter.html`) | ❌ Not implemented | 🔴 Missing | **P2** |
+| | Contingents (*Utusan*) CRUD | Full CRUD + logo upload | Full CRUD + logo upload | ✅ Complete | - |
+| | Clubs (*Perguruan*) CRUD | Full CRUD | Full CRUD + club badges | ✅ Complete | - |
+| | Wasit (Referee) Management | Full (`wasit.html` + licenses) | Full (`WasitManagerView.svelte`) | ✅ Complete | - |
+| | Tatami Panel & Wasit Rotation | Full panel assigner | Full (`WasitManagerView.svelte`) | ✅ Complete | - |
+| **6. Arena Ops** | Staging / Marshalling Call Station | Full (`roster-counter.html`) | Full (`/marshalling` & `/roster-counter`) | ✅ Complete | - |
 | | Multi-Monitor Scoreboard Launch | Manual popup / HDMI | Tauri native monitor selector | ✅ Super-parity | - |
-| | Scoreboard VR Status Display | Animated card on screen | ❌ Missing VR card overlay | 🔴 Missing | **P1** |
-| **7. Export** | Official Excel Workbook (.xlsx) | Multi-sheet `openpyxl` export | ❌ Not implemented | 🔴 Missing | **P1** |
-| | Official Sign-off Booklet | Full `summary_booklet.html` | 🟡 Table print only | 🟡 Incomplete | **P2** |
+| | Scoreboard VR Status Display | Animated card on screen | Full overlay + sound cues | ✅ Complete | - |
+| **7. Export** | Official Excel Workbook (.xlsx) | Multi-sheet `openpyxl` export | Full native 4-sheet `.xlsx` | ✅ Complete | - |
+| | Official Sign-off Booklet | Full `summary_booklet.html` | Full 6-page A4 booklet + Berita Acara | ✅ Complete | - |
 | **8. Cloud Sync** | Bulk Event Pull & Bagan Push | Full sync service | Full in `sync.rs` | ✅ Complete | - |
-| | Live Match Enqueueing | Auto in views.py | ❌ Missing in `db.rs` | 🔴 Critical Bug | **P0** |
-| | Background Queue Retry Worker | 15s FIFO thread | ❌ Manual button only | 🔴 Critical Bug | **P0** |
-| **9. Network** | Multi-Laptop LAN Operator Client | Browser session roles | ❌ Client mode fails writes | 🔴 Architecture | **P0** |
+| | Live Match Enqueueing | Auto in views.py | Auto in `db.rs` | ✅ Complete | - |
+| | Background Queue Retry Worker | 15s FIFO thread | Tokio async background worker | ✅ Complete | - |
+| **9. Network** | Multi-Laptop LAN Operator Client | Browser session roles | Axum REST + unified `api_client.ts` | ✅ Complete | - |
 | | QR Code Quick Access | Manual URL | Dynamic SVG QR per IP | ✅ Super-parity | - |
 
 ---

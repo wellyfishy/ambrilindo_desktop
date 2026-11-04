@@ -10,8 +10,14 @@
     PodiumAthlete,
     EnrichedAtletItem,
     UpdateMatchAthletesInput,
+    RepechageInfo,
+    RepechageResult,
+    RoundRobinData,
+    RoundRobinAthleteStanding,
+    RoundRobinMatrixCell,
   } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
+  import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
 
   interface Props {
     baganId: number;
@@ -57,6 +63,64 @@
   let categoryAthletes = $state<EnrichedAtletItem[]>([]);
 
   let dbPodium = $state<BaganPodium | null>(null);
+
+  // WKF Repechage state
+  let repechageInfo = $state<RepechageInfo | null>(null);
+  let isGeneratingRepechage = $state(false);
+  let isRepechageBagan = $derived(
+    displayBaganName.toUpperCase().includes("REFERCHANGE") || displayBaganName.toUpperCase().includes("REPECHAGE")
+  );
+
+  // Round-Robin Tournament state
+  let roundRobinData = $state<RoundRobinData | null>(null);
+  let isRoundRobin = $derived(
+    !!currentBaganInfo?.round_robin ||
+    displayBaganName.toUpperCase().includes("ROUND-ROBIN") ||
+    displayBaganName.toUpperCase().includes("ROUND ROBIN")
+  );
+
+  // Best of the Best (BOB) state
+  let showBobModal = $state(false);
+  let isBobBagan = $derived(
+    !!currentBaganInfo?.is_bob ||
+    displayBaganName.toUpperCase().includes("BEST OF THE BEST") ||
+    displayBaganName.toUpperCase().includes("BOB")
+  );
+
+  async function loadRoundRobinData() {
+    if (!baganId) return;
+    try {
+      const data = await invoke<RoundRobinData>("get_round_robin_data", { baganId });
+      roundRobinData = data;
+    } catch {
+      roundRobinData = null;
+    }
+  }
+
+  async function loadRepechageInfo() {
+    if (!baganId) return;
+    try {
+      const info = await invoke<RepechageInfo>("get_repechage_info", { baganId });
+      repechageInfo = info;
+    } catch (err) {
+      console.error("Gagal memuat info repechage:", err);
+    }
+  }
+
+  async function handleGenerateRepechage() {
+    if (!baganId) return;
+    isGeneratingRepechage = true;
+    try {
+      const res = await invoke<RepechageResult>("generate_repechage_bracket", { mainBaganId: baganId });
+      await loadRepechageInfo();
+      if (onBaganUpdated) onBaganUpdated();
+      alert(res.message);
+    } catch (err: any) {
+      alert(typeof err === "string" ? err : err.message || "Gagal membuat bagan referchange.");
+    } finally {
+      isGeneratingRepechage = false;
+    }
+  }
 
   async function handleSaveMatchResult(input: SaveMatchInput) {
     try {
@@ -373,6 +437,8 @@
         if (b) currentBaganInfo = b;
       } catch {}
       await loadPodiumData();
+      await loadRepechageInfo();
+      await loadRoundRobinData();
     } catch (err) {
       console.error("Gagal memuat detail bagan:", err);
       // Fallback mock data matching tournament Kata Kadet Putra for test & dev environments
@@ -485,6 +551,10 @@
   });
 
   function getRoundBadge(roundNum: number, totalElimRounds: number): string {
+    if (isRepechageBagan) {
+      if (roundNum === totalElimRounds) return "BR";
+      return `R${roundNum}`;
+    }
     if (poolCount === 2 && !isFinalBagan) {
       if (roundNum === 4) return "SF";
       if (roundNum === 3) return "R3";
@@ -504,6 +574,10 @@
   }
 
   function getRoundTitle(roundNum: number, totalElimRounds: number): string {
+    if (isRepechageBagan) {
+      if (roundNum === totalElimRounds) return "FINAL REPECHAGE (JUARA 3)";
+      return `BABAK ${roundNum} REPECHAGE`;
+    }
     if (poolCount === 2 && !isFinalBagan) {
       if (roundNum === 4) return "SEMI FINAL";
       if (roundNum === 3) return "BABAK 8 BESAR";
@@ -718,6 +792,19 @@
     const list: ConnectorLine[] = [];
     if (elimRounds.length < 2) return list;
 
+    if (isRepechageBagan) {
+      // Linear orthogonal 1-to-1 connectors between sequential repechage rounds
+      // Round 1 (x: 242 -> 274) into Round 2
+      list.push({ x1: 242, y1: 159, x2: 274, y2: 159 }); // Pool A linear line
+      list.push({ x1: 242, y1: 487, x2: 274, y2: 487 }); // Pool B linear line
+      if (elimRounds.length >= 3) {
+        // Round 2 (x: 516 -> 548) into Round 3
+        list.push({ x1: 516, y1: 159, x2: 548, y2: 159 });
+        list.push({ x1: 516, y1: 487, x2: 548, y2: 487 });
+      }
+      return list;
+    }
+
     const addFork = (xFrom: number, xTo: number, yA: number, yB: number, yOut: number) => {
       const xMid = Math.round((xFrom + xTo) / 2);
       list.push({ x1: xFrom, y1: yA, x2: xMid, y2: yA });
@@ -922,6 +1009,68 @@
         <span>Cetak (A4)</span>
       </button>
 
+      <!-- Round Robin or Repechage Actions -->
+      {#if isRoundRobin}
+        <div class="px-2.5 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[11px] font-bold flex items-center gap-1.5 shadow-xs">
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+          <span>ROUND-ROBIN (BERGER)</span>
+        </div>
+      {:else if !isRepechageBagan}
+        {#if repechageInfo?.repechage_bagan_id}
+          <button
+            type="button"
+            onclick={() => {
+              if (repechageInfo?.repechage_bagan_id) {
+                baganId = repechageInfo.repechage_bagan_id;
+                baganName = repechageInfo.repechage_bagan_name || "BAGAN REFERCHANGE";
+                loadBracketData();
+              }
+            }}
+            class="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-xs font-semibold rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+            title="Buka bagan repechage perebutan Juara 3 Bersama"
+          >
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>Bagan Referchange</span>
+          </button>
+        {:else if repechageInfo?.can_generate}
+          <button
+            type="button"
+            onclick={handleGenerateRepechage}
+            disabled={isGeneratingRepechage}
+            class="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95 disabled:opacity-50"
+            title="Otomatis telusuri atlet yang kalah dari kedua finalis untuk memperebutkan Juara 3 Bersama"
+          >
+            <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+            <span>{isGeneratingRepechage ? "Membuat..." : "+ Buat Referchange"}</span>
+          </button>
+        {/if}
+      {:else}
+        <div class="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[11px] font-bold flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+          <span>WKF REPECHAGE (JUARA 3A & 3B)</span>
+        </div>
+      {/if}
+
+      {#if isBobBagan}
+        <div class="px-2.5 py-1 rounded-lg bg-gradient-to-r from-amber-500/25 to-yellow-500/25 border border-amber-500/50 text-amber-300 text-[11px] font-black tracking-wide flex items-center gap-1.5 shadow-sm">
+          <span>👑</span>
+          <span>BEST OF THE BEST (BOB)</span>
+        </div>
+      {/if}
+
+      <!-- Drawing BOB Modal Button -->
+      <button
+        type="button"
+        onclick={() => (showBobModal = true)}
+        class="px-3 py-1.5 bg-gradient-to-r from-amber-500/15 to-yellow-500/15 hover:from-amber-500/25 hover:to-yellow-500/25 text-amber-300 border border-amber-500/40 text-xs font-semibold rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+        title="Buka dialog drawing Best of the Best (BOB)"
+      >
+        <span>🏆</span>
+        <span>Drawing BOB</span>
+      </button>
+
       {#if !isEditMode}
         <!-- Edit Mode Button -->
         <button
@@ -1027,6 +1176,326 @@
       <div class="h-64 flex items-center justify-center text-sm {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} font-medium">
         Memuat struktur bagan turnamen...
       </div>
+    {:else if isRoundRobin && roundRobinData}
+      <!-- Round-Robin Tournament Manager View -->
+      <div class="round-robin-container w-full min-h-full p-4 space-y-6">
+        <!-- Header Card -->
+        <div class="rounded-xl border p-4 {isDarkMode ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'} flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xs">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                SISTEM ROUND-ROBIN (BERGER)
+              </span>
+              {#if roundRobinData.is_completed}
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  KOMPETISI SELESAI (PODIUM SAH)
+                </span>
+              {:else}
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                  PERTANDINGAN BERJALAN
+                </span>
+              {/if}
+            </div>
+            <h2 class="text-base font-black mt-1 {isDarkMode ? 'text-white' : 'text-slate-900'}">
+              {roundRobinData.nomor_tanding_name || displayBaganName}
+            </h2>
+            <p class="text-xs {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+              {roundRobinData.athletes.length} Atlet • {roundRobinData.total_matches} Total Pertandingan
+            </p>
+          </div>
+
+          <!-- Progress Meter -->
+          <div class="w-full md:w-64 space-y-1.5">
+            <div class="flex items-center justify-between text-xs font-mono">
+              <span class="{isDarkMode ? 'text-zinc-400' : 'text-slate-600'}">Progres Partai</span>
+              <span class="font-bold {isDarkMode ? 'text-white' : 'text-slate-800'}">
+                {roundRobinData.finished_matches} / {roundRobinData.total_matches} ({roundRobinData.total_matches > 0 ? Math.round((roundRobinData.finished_matches / roundRobinData.total_matches) * 100) : 0}%)
+              </span>
+            </div>
+            <div class="w-full h-2 rounded-full overflow-hidden {isDarkMode ? 'bg-zinc-800' : 'bg-slate-200'}">
+              <div
+                class="h-full bg-linear-to-r from-amber-500 to-emerald-500 transition-all duration-300"
+                style="width: {roundRobinData.total_matches > 0 ? (roundRobinData.finished_matches / roundRobinData.total_matches * 100) : 0}%;"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Podium Leaderboard (Juara 1, 2, 3A, 3B) -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <!-- Gold -->
+          <div class="rounded-xl border p-3 flex items-center space-x-3 {isDarkMode ? 'bg-[#181a20] border-amber-500/30' : 'bg-amber-50/70 border-amber-200'} shadow-xs">
+            <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center font-black text-sm shrink-0">
+              🥇 1
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-[10px] font-bold text-amber-500 uppercase tracking-wider">JUARA 1 (EMAS)</div>
+              <div class="text-xs font-bold truncate {isDarkMode ? 'text-white' : 'text-slate-900'}">
+                {roundRobinData.standings[0]?.athlete_name || "—"}
+              </div>
+              <div class="text-[10px] truncate {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                {roundRobinData.standings[0]?.utusan_name || "—"}
+              </div>
+            </div>
+          </div>
+
+          <!-- Silver -->
+          <div class="rounded-xl border p-3 flex items-center space-x-3 {isDarkMode ? 'bg-[#181a20] border-zinc-400/30' : 'bg-slate-50 border-slate-300'} shadow-xs">
+            <div class="w-10 h-10 rounded-xl bg-zinc-500/20 text-zinc-300 border border-zinc-400/30 flex items-center justify-center font-black text-sm shrink-0">
+              🥈 2
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-[10px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-600'} uppercase tracking-wider">JUARA 2 (PERAK)</div>
+              <div class="text-xs font-bold truncate {isDarkMode ? 'text-white' : 'text-slate-900'}">
+                {roundRobinData.standings[1]?.athlete_name || "—"}
+              </div>
+              <div class="text-[10px] truncate {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                {roundRobinData.standings[1]?.utusan_name || "—"}
+              </div>
+            </div>
+          </div>
+
+          <!-- Bronze 3A -->
+          <div class="rounded-xl border p-3 flex items-center space-x-3 {isDarkMode ? 'bg-[#181a20] border-amber-700/30' : 'bg-orange-50/60 border-orange-200'} shadow-xs">
+            <div class="w-10 h-10 rounded-xl bg-amber-700/20 text-amber-600 border border-amber-700/30 flex items-center justify-center font-black text-sm shrink-0">
+              🥉 3A
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-[10px] font-bold text-amber-600 uppercase tracking-wider">JUARA 3 BERSAMA</div>
+              <div class="text-xs font-bold truncate {isDarkMode ? 'text-white' : 'text-slate-900'}">
+                {roundRobinData.standings[2]?.athlete_name || "—"}
+              </div>
+              <div class="text-[10px] truncate {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                {roundRobinData.standings[2]?.utusan_name || "—"}
+              </div>
+            </div>
+          </div>
+
+          <!-- Bronze 3B -->
+          <div class="rounded-xl border p-3 flex items-center space-x-3 {isDarkMode ? 'bg-[#181a20] border-amber-700/30' : 'bg-orange-50/60 border-orange-200'} shadow-xs">
+            <div class="w-10 h-10 rounded-xl bg-amber-700/20 text-amber-600 border border-amber-700/30 flex items-center justify-center font-black text-sm shrink-0">
+              🥉 3B
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-[10px] font-bold text-amber-600 uppercase tracking-wider">JUARA 3 BERSAMA</div>
+              <div class="text-xs font-bold truncate {isDarkMode ? 'text-white' : 'text-slate-900'}">
+                {roundRobinData.standings[3]?.athlete_name || "—"}
+              </div>
+              <div class="text-[10px] truncate {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                {roundRobinData.standings[3]?.utusan_name || "—"}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Standings Table & Cross-Table Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <!-- Standings Table (7 cols) -->
+          <div class="lg:col-span-7 rounded-xl border overflow-hidden {isDarkMode ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'} shadow-xs flex flex-col">
+            <div class="px-4 py-3 border-b {isDarkMode ? 'border-white/10 bg-white/[0.02]' : 'border-slate-200 bg-slate-50'} flex items-center justify-between">
+              <h3 class="text-xs font-black uppercase tracking-wider font-mono {isDarkMode ? 'text-white' : 'text-slate-800'}">
+                KLASEMEN SEMENTARA / STANDINGS
+              </h3>
+              <span class="text-[10px] font-mono {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                3 Poin / Menang • 1 Poin / Seri
+              </span>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="text-[10px] uppercase font-mono font-bold {isDarkMode ? 'bg-black/30 text-zinc-400 border-b border-white/5' : 'bg-slate-100 text-slate-600 border-b border-slate-200'}">
+                  <tr>
+                    <th class="py-2.5 px-3 text-center w-10">Pos</th>
+                    <th class="py-2.5 px-3">Atlet / Kontingen</th>
+                    <th class="py-2.5 px-2 text-center">M</th>
+                    <th class="py-2.5 px-2 text-center text-emerald-500">W</th>
+                    <th class="py-2.5 px-2 text-center text-amber-500">D</th>
+                    <th class="py-2.5 px-2 text-center text-rose-500">L</th>
+                    <th class="py-2.5 px-2 text-center font-mono">PF</th>
+                    <th class="py-2.5 px-2 text-center font-mono">PA</th>
+                    <th class="py-2.5 px-2 text-center font-mono">+/-</th>
+                    <th class="py-2.5 px-3 text-center font-mono font-bold text-amber-400">PTS</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y {isDarkMode ? 'divide-white/5' : 'divide-slate-100'}">
+                  {#each roundRobinData.standings as s}
+                    <tr class="transition {isDarkMode ? 'hover:bg-white/[0.03]' : 'hover:bg-slate-50/80'} {s.rank === 1 ? (isDarkMode ? 'bg-amber-500/5' : 'bg-amber-50/40') : ''}">
+                      <td class="py-2.5 px-3 text-center font-mono font-bold">
+                        {#if s.rank === 1}
+                          <span class="text-amber-400">🥇 1</span>
+                        {:else if s.rank === 2}
+                          <span class="text-zinc-300">🥈 2</span>
+                        {:else if s.rank === 3}
+                          <span class="text-amber-600">🥉 3</span>
+                        {:else}
+                          <span class="{isDarkMode ? 'text-zinc-500' : 'text-slate-400'}">{s.rank}</span>
+                        {/if}
+                      </td>
+                      <td class="py-2.5 px-3">
+                        <div class="font-bold {isDarkMode ? 'text-white' : 'text-slate-900'}">{s.athlete_name}</div>
+                        <div class="text-[10px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} truncate">
+                          {s.utusan_name || s.perguruan_name || "—"}
+                        </div>
+                      </td>
+                      <td class="py-2.5 px-2 text-center font-mono {isDarkMode ? 'text-zinc-300' : 'text-slate-700'}">{s.played}</td>
+                      <td class="py-2.5 px-2 text-center font-mono font-bold text-emerald-500">{s.won}</td>
+                      <td class="py-2.5 px-2 text-center font-mono font-bold text-amber-500">{s.drawn}</td>
+                      <td class="py-2.5 px-2 text-center font-mono font-bold text-rose-500">{s.lost}</td>
+                      <td class="py-2.5 px-2 text-center font-mono">{s.points_for}</td>
+                      <td class="py-2.5 px-2 text-center font-mono">{s.points_against}</td>
+                      <td class="py-2.5 px-2 text-center font-mono font-semibold {s.points_diff > 0 ? 'text-emerald-400' : s.points_diff < 0 ? 'text-rose-400' : (isDarkMode ? 'text-zinc-400' : 'text-slate-500')}">
+                        {s.points_diff > 0 ? `+${s.points_diff}` : s.points_diff}
+                      </td>
+                      <td class="py-2.5 px-3 text-center font-mono font-black text-sm {isDarkMode ? 'text-amber-400 bg-amber-500/10' : 'text-amber-700 bg-amber-100/50'}">
+                        {s.standings_points}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Cross-Table Matrix (5 cols) -->
+          <div class="lg:col-span-5 rounded-xl border overflow-hidden {isDarkMode ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'} shadow-xs flex flex-col">
+            <div class="px-4 py-3 border-b {isDarkMode ? 'border-white/10 bg-white/[0.02]' : 'border-slate-200 bg-slate-50'} flex items-center justify-between">
+              <h3 class="text-xs font-black uppercase tracking-wider font-mono {isDarkMode ? 'text-white' : 'text-slate-800'}">
+                MATRIKS SKOR CROSS-TABLE
+              </h3>
+              <span class="text-[10px] font-mono {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                Klik sel untuk skor
+              </span>
+            </div>
+            <div class="p-3 overflow-x-auto">
+              <table class="w-full text-center text-[11px] border-collapse">
+                <thead>
+                  <tr>
+                    <th class="p-2 border {isDarkMode ? 'border-white/10 text-zinc-400' : 'border-slate-200 text-slate-500'} text-left text-[10px] font-mono uppercase">Atlet</th>
+                    {#each roundRobinData.standings as s}
+                      <th class="p-2 border {isDarkMode ? 'border-white/10' : 'border-slate-200'} font-mono text-[10px] font-bold max-w-[60px] truncate" title={s.athlete_name}>
+                        #{s.rank}
+                      </th>
+                    {/each}
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each roundRobinData.matrix_rows as row, rIdx}
+                    {@const standing = roundRobinData.standings[rIdx]}
+                    <tr>
+                      <td class="p-2 border {isDarkMode ? 'border-white/10' : 'border-slate-200'} text-left font-bold text-xs max-w-[120px] truncate" title={standing?.athlete_name}>
+                        <span class="font-mono text-[10px] text-amber-500 mr-1">#{standing?.rank}</span>
+                        {standing?.athlete_name.split(" ")[0]}
+                      </td>
+                      {#each row as cell}
+                        {#if cell.is_self}
+                          <td class="p-2 border {isDarkMode ? 'border-white/10 bg-zinc-800/80 text-zinc-600' : 'border-slate-200 bg-slate-200 text-slate-400'} font-black text-sm select-none">
+                            ✕
+                          </td>
+                        {:else if cell.match_id}
+                          {@const matchItem = matches.find((m: DetailBaganItem) => m.id === cell.match_id)}
+                          <td
+                            class="p-1 border {isDarkMode ? 'border-white/10' : 'border-slate-200'} cursor-pointer hover:ring-2 hover:ring-amber-400 transition"
+                            onclick={() => {
+                              if (matchItem) {
+                                activeMatchForControl = matchItem;
+                              }
+                            }}
+                          >
+                            {#if cell.is_finished}
+                              <div class="px-1.5 py-1 rounded font-mono font-bold text-[11px] flex items-center justify-center gap-1 {cell.row_result === 'W' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : cell.row_result === 'L' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'}">
+                                <span>{cell.row_result}</span>
+                                <span>{cell.row_score || 0}-{cell.col_score || 0}</span>
+                              </div>
+                            {:else}
+                              <div class="px-1 py-1 rounded font-mono text-[10px] {isDarkMode ? 'bg-white/[0.04] text-zinc-400 hover:bg-white/[0.08]' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">
+                                R{cell.round}-M{cell.urutan}
+                              </div>
+                            {/if}
+                          </td>
+                        {:else}
+                          <td class="p-2 border {isDarkMode ? 'border-white/10 text-zinc-600' : 'border-slate-200 text-slate-400'} font-mono text-[10px]">—</td>
+                        {/if}
+                      {/each}
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Match Schedule List (Round by Round) -->
+        <div class="rounded-xl border overflow-hidden {isDarkMode ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'} shadow-xs p-4">
+          <div class="flex items-center justify-between pb-3 mb-4 border-b {isDarkMode ? 'border-white/10' : 'border-slate-200'}">
+            <div>
+              <h3 class="text-xs font-black uppercase tracking-wider font-mono {isDarkMode ? 'text-white' : 'text-slate-800'}">
+                JADWAL DAN HASIL PERTANDINGAN
+              </h3>
+              <p class="text-[10px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                Urutan partai putaran Round-Robin
+              </p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {#each matches as m}
+              <div
+                role="button"
+                tabindex="0"
+                class="rounded-xl border p-3 flex flex-col justify-between transition hover:shadow-md cursor-pointer {isDarkMode ? 'bg-[#14161b] border-white/10 hover:border-amber-500/40' : 'bg-slate-50 border-slate-200 hover:border-amber-400'}"
+                onclick={() => { activeMatchForControl = m; }}
+                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activeMatchForControl = m; } }}
+              >
+                <div class="flex items-center justify-between text-[10px] font-mono mb-2 pb-1 border-b {isDarkMode ? 'border-white/5 text-zinc-400' : 'border-slate-200 text-slate-500'}">
+                  <span class="font-bold text-amber-500">Ronde {m.round} • Partai #{m.urutan}</span>
+                  {#if m.selesai}
+                    <span class="px-1.5 py-0.5 rounded font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                      Selesai
+                    </span>
+                  {:else if m.assigned_tatami_id}
+                    <span class="px-1.5 py-0.5 rounded font-bold uppercase bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                      Tatami {m.assigned_tatami_id}
+                    </span>
+                  {:else}
+                    <span class="px-1.5 py-0.5 rounded uppercase {isDarkMode ? 'bg-zinc-800 text-zinc-400' : 'bg-slate-200 text-slate-600'}">
+                      Antrean
+                    </span>
+                  {/if}
+                </div>
+
+                <!-- Aka vs Ao -->
+                <div class="space-y-1.5 text-xs">
+                  <!-- Aka -->
+                  <div class="flex items-center justify-between p-1.5 rounded {m.pemenang === '1' ? (isDarkMode ? 'bg-red-500/20 border border-red-500/40 font-bold' : 'bg-red-100 border border-red-300 font-bold') : (isDarkMode ? 'bg-white/[0.02]' : 'bg-white')}">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <span class="w-2 h-2 rounded-full bg-red-500 shrink-0"></span>
+                      <span class="truncate {isDarkMode ? 'text-zinc-200' : 'text-slate-800'}">{m.atlet1_nama || `Atlet #${m.atlet1_id}`}</span>
+                    </div>
+                    <span class="font-mono font-black text-sm px-1.5">{m.score1 ?? "-"}</span>
+                  </div>
+
+                  <!-- Ao -->
+                  <div class="flex items-center justify-between p-1.5 rounded {m.pemenang === '2' ? (isDarkMode ? 'bg-blue-500/20 border border-blue-500/40 font-bold' : 'bg-blue-100 border border-blue-300 font-bold') : (isDarkMode ? 'bg-white/[0.02]' : 'bg-white')}">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>
+                      <span class="truncate {isDarkMode ? 'text-zinc-200' : 'text-slate-800'}">{m.atlet2_nama || `Atlet #${m.atlet2_id}`}</span>
+                    </div>
+                    <span class="font-mono font-black text-sm px-1.5">{m.score2 ?? "-"}</span>
+                  </div>
+                </div>
+
+                <div class="mt-3 pt-2 border-t {isDarkMode ? 'border-white/5' : 'border-slate-200'} flex items-center justify-between text-[10px]">
+                  <span class="{isDarkMode ? 'text-zinc-500' : 'text-slate-400'} font-mono">{m.kode || `P-${m.id}`}</span>
+                  <span class="font-bold text-amber-500 hover:underline flex items-center gap-0.5">
+                    Buka Skor →
+                  </span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        </div>
+      </div>
     {:else if elimRounds.length === 0}
       <div class="h-64 flex flex-col items-center justify-center text-center">
         <p class="text-sm font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'}">Belum ada partai untuk bagan ini</p>
@@ -1098,7 +1567,11 @@
                           <!-- Match Card Header -->
                           <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
                             <span class="flex items-center space-x-1">
-                              {#if roundNum === 4}
+                              {#if isRepechageBagan}
+                                <span class="font-black {match.urutan === 1 ? 'text-amber-400' : 'text-blue-400'}">
+                                  {match.urutan === 1 ? 'POOL A' : 'POOL B'} • {roundNum === elimRounds.length ? 'PERUNGGU' : `M${match.urutan || slotNum}`}
+                                </span>
+                              {:else if roundNum === 4}
                                 <span class="final-title {isDarkMode ? 'text-amber-300' : 'text-amber-800'} font-black flex items-center gap-1">
                                   <svg class="w-2.5 h-2.5 fill-current shrink-0" viewBox="0 0 24 24">
                                     <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
@@ -1465,6 +1938,20 @@
   </div>
 </div>
 {/if}
+
+<!-- Best of the Best (BOB) Drawing Modal -->
+<BobDrawingModal
+  eventId={currentBaganInfo?.event_id || 1}
+  isOpen={showBobModal}
+  onClose={() => (showBobModal = false)}
+  onSuccess={(result) => {
+    showBobModal = false;
+    baganId = result.bagan_id;
+    baganName = result.nama_bob;
+    if (onBaganUpdated) onBaganUpdated();
+    loadBracketData();
+  }}
+/>
 
 <style>
   @media print {

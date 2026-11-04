@@ -228,12 +228,96 @@ pub struct Wasit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnrichedWasit {
+    pub id: i64,
+    pub event_id: i64,
+    pub nama_wasit: String,
+    pub perguruan_id: Option<i64>,
+    pub nama_perguruan: Option<String>,
+    pub kab_kota: Option<String>,
+    pub lisensi: Option<String>,
+    pub no_lisensi: Option<String>,
+    pub is_active: bool,
+    pub assigned_tatami_id: Option<i64>,
+    pub assigned_tatami_number: Option<i32>,
+    pub assigned_posisi: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct WasitTatami {
     pub id: i64,
     pub event_id: i64,
     pub tatami_id: i64,
     pub wasit_id: i64,
     pub posisi: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnrichedWasitTatami {
+    pub id: i64,
+    pub event_id: i64,
+    pub tatami_id: i64,
+    pub tatami_number: Option<i32>,
+    pub wasit_id: i64,
+    pub nama_wasit: String,
+    pub lisensi: Option<String>,
+    pub no_lisensi: Option<String>,
+    pub perguruan_id: Option<i64>,
+    pub nama_perguruan: Option<String>,
+    pub kab_kota: Option<String>,
+    pub posisi: String,
+    pub assigned_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasitConflict {
+    pub wasit_id: i64,
+    pub nama_wasit: String,
+    pub posisi: String,
+    pub conflict_type: String, // "perguruan" | "kontingen_daerah"
+    pub reason: String,
+    pub detail_bagan_id: Option<i64>,
+    pub match_kode: Option<String>,
+    pub athlete_side: String, // "AKA" | "AO"
+    pub athlete_name: String,
+    pub conflicting_value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TatamiPanelOverview {
+    pub tatami_id: i64,
+    pub tatami_number: i32,
+    pub active_match: Option<EnrichedDetailBagan>,
+    pub category_name: Option<String>,
+    pub assignments: Vec<EnrichedWasitTatami>,
+    pub conflicts: Vec<WasitConflict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveWasitInput {
+    pub id: Option<i64>,
+    pub event_id: i64,
+    pub nama_wasit: String,
+    pub perguruan_id: Option<i64>,
+    pub kab_kota: Option<String>,
+    pub lisensi: Option<String>,
+    pub no_lisensi: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignWasitTatamiInput {
+    pub event_id: i64,
+    pub tatami_id: i64,
+    pub wasit_id: i64,
+    pub posisi: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoAssignPanelInput {
+    pub event_id: i64,
+    pub tatami_id: i64,
+    pub wasit_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -739,6 +823,217 @@ pub struct AssignBoutAthletesInput {
     pub ao_atlet_id: Option<i64>,
     pub aka_custom_name: Option<String>,
     pub ao_custom_name: Option<String>,
+}
+
+
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepechageInfo {
+    pub main_bagan_id: i64,
+    pub is_finalists_ready: bool,
+    pub finalist1_id: Option<i64>,
+    pub finalist1_name: Option<String>,
+    pub finalist2_id: Option<i64>,
+    pub finalist2_name: Option<String>,
+    pub pool_a_losers: Vec<String>,
+    pub pool_b_losers: Vec<String>,
+    pub repechage_bagan_id: Option<i64>,
+    pub repechage_bagan_name: Option<String>,
+    pub can_generate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepechageResult {
+    pub repechage_bagan_id: i64,
+    pub nama_bagan: String,
+    pub matches_created: usize,
+    pub pool_a_count: usize,
+    pub pool_b_count: usize,
+    pub message: String,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundRobinAthleteStanding {
+    pub athlete_id: i64,
+    pub athlete_name: String,
+    pub utusan_name: String,
+    pub perguruan_name: String,
+    pub logo: Option<String>,
+    pub played: i32,
+    pub won: i32,
+    pub lost: i32,
+    pub drawn: i32,
+    pub points_for: i32,
+    pub points_against: i32,
+    pub points_diff: i32,
+    pub standings_points: f32,
+    pub rank: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundRobinMatrixCell {
+    pub match_id: Option<i64>,
+    pub round: i32,
+    pub urutan: i32,
+    pub row_athlete_id: i64,
+    pub col_athlete_id: i64,
+    pub is_self: bool,
+    pub is_finished: bool,
+    pub winner_id: Option<i64>,
+    pub row_score: Option<String>,
+    pub col_score: Option<String>,
+    pub row_result: Option<String>,
+    pub assigned_tatami_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundRobinData {
+    pub bagan_id: i64,
+    pub nama_bagan: String,
+    pub nomor_tanding_id: Option<i64>,
+    pub nomor_tanding_name: Option<String>,
+    pub athletes: Vec<EnrichedAtlet>,
+    pub standings: Vec<RoundRobinAthleteStanding>,
+    pub matrix_rows: Vec<Vec<RoundRobinMatrixCell>>,
+    pub total_matches: usize,
+    pub finished_matches: usize,
+    pub is_completed: bool,
+    pub podium: BaganPodium,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarshallingMatchItem {
+    pub match_id: i64,
+    pub bagan_id: Option<i64>,
+    pub category_name: String,
+    pub round: i32,
+    pub urutan: i32,
+    pub kode: Option<String>,
+    pub atlet1_nama: String,
+    pub atlet1_kontingen: String,
+    pub atlet1_perguruan: Option<String>,
+    pub atlet2_nama: String,
+    pub atlet2_kontingen: String,
+    pub atlet2_perguruan: Option<String>,
+    pub status: String, // "LIVE" | "CALL_1" | "CALL_2" | "PREPARE"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TatamiQueue {
+    pub tatami_id: i64,
+    pub tatami_number: i32,
+    pub current_match: Option<MarshallingMatchItem>,
+    pub next_match: Option<MarshallingMatchItem>,
+    pub upcoming_matches: Vec<MarshallingMatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UrgentCall {
+    pub id: String,
+    pub tatami_number: i32,
+    pub athlete_name: String,
+    pub contingent: String,
+    pub message: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarshallingOverview {
+    pub event_name: String,
+    pub tatamis: Vec<TatamiQueue>,
+    pub active_announcement: Option<UrgentCall>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmitUrgentCallInput {
+    pub tatami_number: i32,
+    pub athlete_name: String,
+    pub contingent: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResultsBookletEventInfo {
+    pub nama_event: String,
+    pub tanggal: String,
+    pub tempat: String,
+    pub nama_organisasi: String,
+    pub logo: Option<String>,
+    pub alamat: Option<String>,
+    pub kontak: Option<String>,
+    pub kota: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResultsBookletBeritaAcara {
+    pub nomor_surat: String,
+    pub hari_tanggal: String,
+    pub total_kontingen: i64,
+    pub total_perguruan: i64,
+    pub total_atlet: i64,
+    pub total_partai: i64,
+    pub partai_selesai: i64,
+    pub catatan_sanksi: String,
+    pub status_pelaksanaan: String,
+    pub tanggal_pengesahan: String,
+    pub kota_pengesahan: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResultsBookletSignatory {
+    pub jabatan: String,
+    pub peran: String,
+    pub nama: String,
+    pub gelar: Option<String>,
+    pub nomor_lisensi: Option<String>,
+    pub instansi: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResultsBookletData {
+    pub event_info: ResultsBookletEventInfo,
+    pub berita_acara: ResultsBookletBeritaAcara,
+    pub signatories: Vec<ResultsBookletSignatory>,
+    pub standings_kontingen: Vec<StandingItem>,
+    pub standings_perguruan: Vec<StandingItem>,
+    pub category_winners: Vec<SummaryBaganItem>,
+    pub referees: Vec<EnrichedWasit>,
+    pub total_gold: i64,
+    pub total_silver: i64,
+    pub total_bronze: i64,
+    pub grand_total: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BobSourceCategory {
+    pub bagan_id: i64,
+    pub nomor_tanding_id: i64,
+    pub nama_bagan: String,
+    pub kode_bagan: String,
+    pub juara_1_id: Option<i64>,
+    pub juara_1_nama: Option<String>,
+    pub juara_1_kontingen: Option<String>,
+    pub juara_1_perguruan: Option<String>,
+    pub is_completed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateBobBaganInput {
+    pub event_id: i64,
+    pub nama_bob: String,
+    pub source_bagan_ids: Vec<i64>,
+    pub shuffle_type: Option<String>, // "kontingen" | "perguruan"
+    pub format_type: Option<String>,  // "elimination" | "round_robin"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BobBaganResult {
+    pub nomor_tanding_id: i64,
+    pub bagan_id: i64,
+    pub athlete_count: usize,
+    pub nama_bob: String,
 }
 
 

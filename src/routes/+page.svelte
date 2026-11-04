@@ -27,6 +27,7 @@
   import NomorTandingView from "$lib/components/NomorTandingView.svelte";
   import TimetableEditorView from "$lib/components/TimetableEditorView.svelte";
   import FestivalRosterView from "$lib/components/FestivalRosterView.svelte";
+  import WasitManagerView from "$lib/components/WasitManagerView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
@@ -546,6 +547,15 @@
           <!-- Festival Roster Maker View -->
           <FestivalRosterView
             eventId={selectedEventId || 1}
+            onShowToast={showToast}
+          />
+        {:else if activeChannel.type === "wasit"}
+          <!-- Referee & Tatami Panel Assigner View -->
+          <WasitManagerView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            {tatamis}
+            hostAddress={hostUrl}
             onShowToast={showToast}
           />
         {/if}

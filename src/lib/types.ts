@@ -1,7 +1,7 @@
 export type AppMode = 'landing' | 'solo' | 'host' | 'client';
 
 export interface ActiveChannel {
-  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival';
+  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival' | 'wasit';
   id: number | string;
   name: string;
   subtitle?: string;
@@ -677,3 +677,277 @@ export interface AssignBoutAthletesInput {
   aka_custom_name?: string | null;
   ao_custom_name?: string | null;
 }
+
+export interface RepechageInfo {
+  main_bagan_id: number;
+  is_finalists_ready: boolean;
+  finalist1_id?: number | null;
+  finalist1_name?: string | null;
+  finalist2_id?: number | null;
+  finalist2_name?: string | null;
+  pool_a_losers: string[];
+  pool_b_losers: string[];
+  repechage_bagan_id?: number | null;
+  repechage_bagan_name?: string | null;
+  can_generate: boolean;
+}
+
+export interface RepechageResult {
+  repechage_bagan_id: number;
+  nama_bagan: string;
+  matches_created: number;
+  pool_a_count: number;
+  pool_b_count: number;
+  message: string;
+}
+
+// --- ROUND ROBIN TOURNAMENT TYPES ---
+
+export interface RoundRobinAthleteStanding {
+  athlete_id: number;
+  athlete_name: string;
+  utusan_name: string;
+  perguruan_name: string;
+  logo: string | null;
+  played: number;
+  won: number;
+  lost: number;
+  drawn: number;
+  points_for: number;
+  points_against: number;
+  points_diff: number;
+  standings_points: number;
+  rank: number;
+}
+
+export interface RoundRobinMatrixCell {
+  match_id: number | null;
+  round: number;
+  urutan: number;
+  row_athlete_id: number;
+  col_athlete_id: number;
+  is_self: boolean;
+  is_finished: boolean;
+  winner_id: number | null;
+  row_score: string | null;
+  col_score: string | null;
+  row_result: string | null;
+  assigned_tatami_id: number | null;
+}
+
+export interface RoundRobinData {
+  bagan_id: number;
+  nama_bagan: string;
+  nomor_tanding_id: number | null;
+  nomor_tanding_name: string | null;
+  athletes: EnrichedAtletItem[];
+  standings: RoundRobinAthleteStanding[];
+  matrix_rows: RoundRobinMatrixCell[][];
+  total_matches: number;
+  finished_matches: number;
+  is_completed: boolean;
+  podium: BaganPodium;
+}
+
+export interface WasitItem {
+  id: number;
+  event_id: number;
+  nama_wasit: string;
+  perguruan_id: number | null;
+  nama_perguruan: string | null;
+  kab_kota: string | null;
+  lisensi: string | null;
+  no_lisensi: string | null;
+  is_active: boolean;
+  assigned_tatami_id: number | null;
+  assigned_tatami_number: number | null;
+  assigned_posisi: string | null;
+}
+
+export interface WasitTatamiAssignment {
+  id: number;
+  event_id: number;
+  tatami_id: number;
+  tatami_number: number | null;
+  wasit_id: number;
+  nama_wasit: string;
+  lisensi: string | null;
+  no_lisensi: string | null;
+  perguruan_id: number | null;
+  nama_perguruan: string | null;
+  kab_kota: string | null;
+  posisi: string;
+  assigned_at: string | null;
+}
+
+export interface WasitConflict {
+  wasit_id: number;
+  nama_wasit: string;
+  posisi: string;
+  conflict_type: 'perguruan' | 'kontingen_daerah';
+  reason: string;
+  detail_bagan_id: number | null;
+  match_kode: string | null;
+  athlete_side: 'AKA' | 'AO';
+  athlete_name: string;
+  conflicting_value: string;
+}
+
+export interface TatamiPanelOverview {
+  tatami_id: number;
+  tatami_number: number;
+  active_match: DetailBaganItem | null;
+  category_name: string | null;
+  assignments: WasitTatamiAssignment[];
+  conflicts: WasitConflict[];
+}
+
+export interface SaveWasitPayload {
+  id?: number | null;
+  event_id: number;
+  nama_wasit: string;
+  perguruan_id?: number | null;
+  kab_kota?: string | null;
+  lisensi?: string | null;
+  no_lisensi?: string | null;
+  is_active: boolean;
+}
+
+export interface AssignWasitPayload {
+  event_id: number;
+  tatami_id: number;
+  wasit_id: number;
+  posisi: string;
+}
+
+export interface AutoAssignPanelPayload {
+  event_id: number;
+  tatami_id: number;
+  wasit_ids: number[];
+}
+
+export interface MarshallingMatchItem {
+  match_id: number;
+  bagan_id: number | null;
+  category_name: string;
+  round: number;
+  urutan: number;
+  kode: string | null;
+  atlet1_nama: string;
+  atlet1_kontingen: string;
+  atlet1_perguruan: string | null;
+  atlet2_nama: string;
+  atlet2_kontingen: string;
+  atlet2_perguruan: string | null;
+  status: 'LIVE' | 'CALL_1' | 'CALL_2' | 'PREPARE';
+}
+
+export interface TatamiQueue {
+  tatami_id: number;
+  tatami_number: number;
+  current_match: MarshallingMatchItem | null;
+  next_match: MarshallingMatchItem | null;
+  upcoming_matches: MarshallingMatchItem[];
+}
+
+export interface UrgentCall {
+  id: string;
+  tatami_number: number;
+  athlete_name: string;
+  contingent: string;
+  message: string;
+  timestamp: string;
+}
+
+export interface MarshallingOverview {
+  event_name: string;
+  tatamis: TatamiQueue[];
+  active_announcement: UrgentCall | null;
+}
+
+export interface SubmitUrgentCallPayload {
+  tatami_number: number;
+  athlete_name: string;
+  contingent?: string | null;
+  message: string;
+}
+
+export interface ResultsBookletEventInfo {
+  nama_event: string;
+  tanggal: string;
+  tempat: string;
+  nama_organisasi: string;
+  logo: string | null;
+  alamat: string | null;
+  kontak: string | null;
+  kota: string;
+}
+
+export interface ResultsBookletBeritaAcara {
+  nomor_surat: string;
+  hari_tanggal: string;
+  total_kontingen: number;
+  total_perguruan: number;
+  total_atlet: number;
+  total_partai: number;
+  partai_selesai: number;
+  catatan_sanksi: string;
+  status_pelaksanaan: string;
+  tanggal_pengesahan: string;
+  kota_pengesahan: string;
+}
+
+export interface ResultsBookletSignatory {
+  jabatan: string;
+  peran: string;
+  nama: string;
+  gelar: string | null;
+  nomor_lisensi: string | null;
+  instansi: string | null;
+}
+
+export interface ResultsBookletData {
+  event_info: ResultsBookletEventInfo;
+  berita_acara: ResultsBookletBeritaAcara;
+  signatories: ResultsBookletSignatory[];
+  standings_kontingen: StandingItem[];
+  standings_perguruan: StandingItem[];
+  category_winners: SummaryBaganItem[];
+  referees: WasitItem[];
+  total_gold: number;
+  total_silver: number;
+  total_bronze: number;
+  grand_total: number;
+}
+
+export interface BobSourceCategory {
+  bagan_id: number;
+  nomor_tanding_id: number;
+  nama_bagan: string;
+  kode_bagan: string;
+  juara_1_id: number | null;
+  juara_1_nama: string | null;
+  juara_1_kontingen: string | null;
+  juara_1_perguruan: string | null;
+  is_completed: boolean;
+}
+
+export interface CreateBobBaganPayload {
+  event_id: number;
+  nama_bob: string;
+  source_bagan_ids: number[];
+  shuffle_type?: 'kontingen' | 'perguruan';
+  format_type?: 'elimination' | 'round_robin';
+}
+
+export interface BobBaganResult {
+  nomor_tanding_id: number;
+  bagan_id: number;
+  athlete_count: number;
+  nama_bob: string;
+}
+
+
+
+
+

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Quadrant {
@@ -809,6 +810,155 @@ pub fn build_bracket_in_memory(
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepechageMatchInput {
+    pub round: i32,
+    pub urutan: i32, // 1 for Pool A, 2 for Pool B
+    pub atlet1_id: Option<i64>,
+    pub atlet2_id: Option<i64>,
+    pub pool_label: String, // "Pool A" (Bronze 3A) or "Pool B" (Bronze 3B)
+    pub is_medal_match: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepechagePlan {
+    pub matches: Vec<RepechageMatchInput>,
+    pub direct_bronze_a: Option<i64>,
+    pub direct_bronze_b: Option<i64>,
+}
+
+/// Generates a standardized WKF repechage plan for two pools (Pool A and Pool B).
+/// `pool_a_losers` and `pool_b_losers` are ordered sequentially by round (earliest defeated -> latest/semifinalist defeated).
+///
+/// In WKF rules:
+/// - If K == 0 losers: No repechage for this pool.
+/// - If K == 1 loser: That athlete directly receives the Bronze Medal (no match needed).
+/// - If K == 2 losers: 1 match (R2 loser vs Semifinalist), winner wins Bronze.
+/// - If K >= 3 losers: Cascade matches starting from (R1 loser vs R2 loser), advancing winner to fight next round loser.
+pub fn build_wkf_repechage_plan(
+    pool_a_losers: &[i64],
+    pool_b_losers: &[i64],
+) -> RepechagePlan {
+    let mut matches = Vec::new();
+
+    // Helper to generate cascade matches for a single pool (urutan: 1 for Pool A, 2 for Pool B)
+    fn generate_pool_cascade(
+        losers: &[i64],
+        urutan: i32,
+        pool_label: &str,
+    ) -> (Vec<RepechageMatchInput>, Option<i64>) {
+        if losers.is_empty() {
+            return (Vec::new(), None);
+        }
+        if losers.len() == 1 {
+            return (Vec::new(), Some(losers[0]));
+        }
+
+        let mut pool_matches = Vec::new();
+        let total_rounds = (losers.len() - 1) as i32;
+
+        // Round 1: first two defeated athletes fight
+        pool_matches.push(RepechageMatchInput {
+            round: 1,
+            urutan,
+            atlet1_id: Some(losers[0]),
+            atlet2_id: Some(losers[1]),
+            pool_label: pool_label.to_string(),
+            is_medal_match: total_rounds == 1,
+        });
+
+        // Subsequent cascade rounds: winner from previous round faces next defeated athlete
+        for r in 2..=total_rounds {
+            let next_loser_idx = r as usize;
+            pool_matches.push(RepechageMatchInput {
+                round: r,
+                urutan,
+                atlet1_id: None, // Will be filled by the winner of (round: r - 1, urutan)
+                atlet2_id: Some(losers[next_loser_idx]),
+                pool_label: pool_label.to_string(),
+                is_medal_match: r == total_rounds,
+            });
+        }
+
+        (pool_matches, None)
+    }
+
+    let (matches_a, direct_bronze_a) = generate_pool_cascade(pool_a_losers, 1, "Pool A");
+    let (matches_b, direct_bronze_b) = generate_pool_cascade(pool_b_losers, 2, "Pool B");
+
+    matches.extend(matches_a);
+    matches.extend(matches_b);
+
+    // Sort matches by round ASC, urutan ASC
+    matches.sort_by_key(|m| (m.round, m.urutan));
+
+    RepechagePlan {
+        matches,
+        direct_bronze_a,
+        direct_bronze_b,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoundRobinMatchSchedule {
+    pub round: i32,
+    pub urutan: i32,
+    pub atlet1_id: i64,
+    pub atlet2_id: i64,
+}
+
+/// Generates a balanced round-robin tournament schedule using the polygon/circle rotation method.
+/// Ensures every athlete plays every other athlete exactly once.
+/// Distributes matches across (N-1) rounds (if N is even) or N rounds (if N is odd).
+pub fn generate_round_robin_schedule(athlete_ids: &[i64]) -> Vec<RoundRobinMatchSchedule> {
+    let n = athlete_ids.len();
+    if n < 2 {
+        return Vec::new();
+    }
+
+    let mut list = athlete_ids.to_vec();
+    // If odd number of athletes, add a dummy BYE (represented by 0)
+    let is_odd = n % 2 != 0;
+    if is_odd {
+        list.push(0);
+    }
+
+    let total = list.len();
+    let rounds = total - 1;
+    let half = total / 2;
+
+    let mut schedule = Vec::new();
+
+    for r in 0..rounds {
+        let mut urutan_in_round = 1;
+        for i in 0..half {
+            let a = list[i];
+            let b = list[total - 1 - i];
+
+            // Only create match if neither participant is the dummy BYE
+            if a != 0 && b != 0 {
+                // Alternate home/away (aka/ao) so athletes have balanced colors
+                let (aka, ao) = if (r + i) % 2 == 0 { (a, b) } else { (b, a) };
+                schedule.push(RoundRobinMatchSchedule {
+                    round: (r + 1) as i32,
+                    urutan: urutan_in_round,
+                    atlet1_id: aka,
+                    atlet2_id: ao,
+                });
+                urutan_in_round += 1;
+            }
+        }
+
+        // Rotate elements, keeping list[0] fixed in place
+        if total > 1 {
+            let last = list.pop().unwrap();
+            list.insert(1, last);
+        }
+    }
+
+    schedule
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -926,5 +1076,102 @@ mod tests {
         for (_, m) in r1_matches {
             assert!(!(m.atlet1_id.is_some() && m.atlet2_id.is_some()), "Teammates must not face each other in Round 1");
         }
+    }
+
+    #[test]
+    fn test_wkf_repechage_standard_16_bracket() {
+        use super::*;
+
+        // 3 athletes defeated by Finalist 1 (R1, R2, R3/semifinal)
+        let losers_a = vec![101, 102, 103];
+        // 3 athletes defeated by Finalist 2 (R1, R2, R3/semifinal)
+        let losers_b = vec![201, 202, 203];
+
+        let plan = build_wkf_repechage_plan(&losers_a, &losers_b);
+        assert_eq!(plan.direct_bronze_a, None);
+        assert_eq!(plan.direct_bronze_b, None);
+        assert_eq!(plan.matches.len(), 4);
+
+        // Round 1: Pool A match (urutan 1) and Pool B match (urutan 2)
+        let r1_a = plan.matches.iter().find(|m| m.round == 1 && m.urutan == 1).unwrap();
+        assert_eq!(r1_a.atlet1_id, Some(101));
+        assert_eq!(r1_a.atlet2_id, Some(102));
+        assert_eq!(r1_a.is_medal_match, false);
+
+        let r1_b = plan.matches.iter().find(|m| m.round == 1 && m.urutan == 2).unwrap();
+        assert_eq!(r1_b.atlet1_id, Some(201));
+        assert_eq!(r1_b.atlet2_id, Some(202));
+        assert_eq!(r1_b.is_medal_match, false);
+
+        // Round 2 (Final Repechage): Medal matches for Bronze 3A & 3B
+        let r2_a = plan.matches.iter().find(|m| m.round == 2 && m.urutan == 1).unwrap();
+        assert_eq!(r2_a.atlet1_id, None); // to be filled by winner of R1_A
+        assert_eq!(r2_a.atlet2_id, Some(103)); // semifinalist
+        assert_eq!(r2_a.is_medal_match, true);
+
+        let r2_b = plan.matches.iter().find(|m| m.round == 2 && m.urutan == 2).unwrap();
+        assert_eq!(r2_b.atlet1_id, None); // to be filled by winner of R1_B
+        assert_eq!(r2_b.atlet2_id, Some(203)); // semifinalist
+        assert_eq!(r2_b.is_medal_match, true);
+    }
+
+    #[test]
+    fn test_wkf_repechage_with_bye_and_direct_bronze() {
+        use super::*;
+
+        // Pool A: Finalist had BYE in R1, only defeated 2 athletes (R2, R3)
+        let losers_a = vec![102, 103];
+        // Pool B: Only 1 athlete defeated (e.g. small bracket where finalist only fought semifinal)
+        let losers_b = vec![203];
+
+        let plan = build_wkf_repechage_plan(&losers_a, &losers_b);
+        assert_eq!(plan.direct_bronze_a, None);
+        assert_eq!(plan.direct_bronze_b, Some(203)); // Direct Bronze 3B!
+        assert_eq!(plan.matches.len(), 1);
+
+        // Pool A only needs 1 direct medal match
+        let r1_a = &plan.matches[0];
+        assert_eq!(r1_a.round, 1);
+        assert_eq!(r1_a.urutan, 1);
+        assert_eq!(r1_a.atlet1_id, Some(102));
+        assert_eq!(r1_a.atlet2_id, Some(103));
+        assert_eq!(r1_a.is_medal_match, true);
+    }
+
+    #[test]
+    fn test_generate_round_robin_schedule_3_and_4_athletes() {
+        use super::*;
+
+        // 3 athletes: N*(N-1)/2 = 3 matches across 3 rounds
+        let athletes3 = vec![101, 102, 103];
+        let sched3 = generate_round_robin_schedule(&athletes3);
+        assert_eq!(sched3.len(), 3);
+
+        // Verify all 3 unique pairs exist and no self-matches
+        let mut pairs3 = std::collections::HashSet::new();
+        for m in &sched3 {
+            assert_ne!(m.atlet1_id, m.atlet2_id);
+            let mut pair = [m.atlet1_id, m.atlet2_id];
+            pair.sort();
+            pairs3.insert((pair[0], pair[1]));
+        }
+        assert_eq!(pairs3.len(), 3);
+        assert!(pairs3.contains(&(101, 102)));
+        assert!(pairs3.contains(&(101, 103)));
+        assert!(pairs3.contains(&(102, 103)));
+
+        // 4 athletes: 4*3/2 = 6 matches across 3 rounds
+        let athletes4 = vec![1, 2, 3, 4];
+        let sched4 = generate_round_robin_schedule(&athletes4);
+        assert_eq!(sched4.len(), 6);
+
+        let mut pairs4 = std::collections::HashSet::new();
+        for m in &sched4 {
+            assert_ne!(m.atlet1_id, m.atlet2_id);
+            let mut pair = [m.atlet1_id, m.atlet2_id];
+            pair.sort();
+            pairs4.insert((pair[0], pair[1]));
+        }
+        assert_eq!(pairs4.len(), 6);
     }
 }

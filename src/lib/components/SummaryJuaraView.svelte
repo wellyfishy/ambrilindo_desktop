@@ -17,6 +17,32 @@
   let searchQuery = $state("");
   let filterOnlyWithMedals = $state(true);
   let expandedRows = $state<Record<number, boolean>>({});
+  let isExporting = $state(false);
+
+  async function handleExportExcel() {
+    isExporting = true;
+    try {
+      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+        const filePath = await invoke<string>("export_tournament_excel", {
+          eventId,
+          event_id: eventId,
+        });
+        alert(`File Excel multi-sheet berhasil diekspor!\nLokasi file: ${filePath}`);
+      } else {
+        const downloadUrl = `${hostAddress || "http://127.0.0.1:8000"}/api/export-excel/${eventId}`;
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = `Rekap_Kejuaraan_${eventName || "Event"}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+    } catch (e: any) {
+      alert("Gagal mengekspor file Excel: " + (e?.message || e));
+    } finally {
+      isExporting = false;
+    }
+  }
 
   async function loadSummaryData() {
     isLoading = true;
@@ -206,6 +232,30 @@
 
     <!-- Right Actions -->
     <div class="flex items-center space-x-2">
+      <!-- Export Excel Multi-Sheet (.xlsx) -->
+      <button
+        type="button"
+        onclick={handleExportExcel}
+        disabled={isExporting}
+        class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border-emerald-500/40 text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95 disabled:opacity-50"
+        title="Ekspor Seluruh Rekapitulasi Turnamen ke File Excel Multi-Sheet (.xlsx)"
+      >
+        <span>📊</span>
+        <span>{isExporting ? 'Mengekspor...' : 'Ekspor Excel (.xlsx)'}</span>
+      </button>
+
+      <!-- Buku Hasil & Berita Acara Booklet -->
+      <a
+        href="/results-booklet?event_id={eventId}"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="px-3 py-1.5 bg-gradient-to-r from-red-600/20 to-amber-600/20 hover:from-red-600/30 hover:to-amber-600/30 text-amber-300 border-amber-500/40 text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+        title="Buka Buku Hasil Pertandingan & Lembar Pengesahan Berita Acara Lengkap (Sampul, Berita Acara, Klasemen, Juara, Wasit)"
+      >
+        <span>📜</span>
+        <span>Buku Hasil (BA)</span>
+      </a>
+
       <button
         type="button"
         onclick={() => window.print()}

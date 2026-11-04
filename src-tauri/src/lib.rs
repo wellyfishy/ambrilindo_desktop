@@ -1,7 +1,9 @@
 pub mod audio;
 pub mod bracket;
 pub mod db;
+pub mod excel_exporter;
 pub mod models;
+pub mod referee;
 pub mod server;
 pub mod sync;
 
@@ -1286,6 +1288,172 @@ async fn get_tatami_booklet_data(
     db.get_tatami_booklet_data(event_id, day_id, tatami_id).await
 }
 
+#[tauri::command]
+async fn get_wasits(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<models::EnrichedWasit>, String> {
+    let db = state.db.lock().await;
+    db.get_wasits(event_id).await
+}
+
+#[tauri::command]
+async fn save_wasit(
+    input: models::SaveWasitInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<i64, String> {
+    let db = state.db.lock().await;
+    db.save_wasit(input).await
+}
+
+#[tauri::command]
+async fn delete_wasit(
+    wasit_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_wasit(wasit_id).await
+}
+
+#[tauri::command]
+async fn get_tatami_panel_overview(
+    event_id: i64,
+    tatami_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::TatamiPanelOverview, String> {
+    let db = state.db.lock().await;
+    db.get_tatami_panel_overview(event_id, tatami_id).await
+}
+
+#[tauri::command]
+async fn assign_wasit_tatami(
+    input: models::AssignWasitTatamiInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.assign_wasit_tatami(input).await.map(|_| ())
+}
+
+#[tauri::command]
+async fn remove_wasit_tatami(
+    assignment_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.remove_wasit_tatami(assignment_id).await
+}
+
+#[tauri::command]
+async fn clear_tatami_panel(
+    tatami_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.clear_tatami_panel(tatami_id).await
+}
+
+#[tauri::command]
+async fn auto_assign_tatami_panel(
+    input: models::AutoAssignPanelInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.auto_assign_tatami_panel(input).await
+}
+
+#[tauri::command]
+async fn export_tournament_excel(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<String, String> {
+    let db = state.db.lock().await;
+    let data = db.get_tournament_excel_data(event_id).await?;
+    let bytes = crate::excel_exporter::generate_tournament_workbook(&data)
+        .map_err(|e| format!("Gagal membuat workbook Excel: {}", e))?;
+
+    let clean_name: String = data
+        .event_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let file_name = format!("Rekap_Kejuaraan_{}.xlsx", clean_name);
+
+    let downloads_dir = std::env::var("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Downloads"))
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default());
+
+    let file_path = downloads_dir.join(&file_name);
+    std::fs::write(&file_path, bytes)
+        .map_err(|e| format!("Gagal menyimpan file Excel ke {}: {}", file_path.display(), e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn get_marshalling_overview(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::MarshallingOverview, String> {
+    let db = state.db.lock().await;
+    db.get_marshalling_overview(event_id).await
+}
+
+#[tauri::command]
+async fn broadcast_urgent_call(
+    input: models::SubmitUrgentCallInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+
+    let call_payload = serde_json::json!({
+        "type": "urgent_call",
+        "tatami_number": input.tatami_number,
+        "athlete_name": input.athlete_name,
+        "contingent": input.contingent.unwrap_or_else(|| "-".to_string()),
+        "message": input.message,
+        "timestamp": ts,
+    });
+
+    let _ = state.server_broadcast.send(server::ArenaMessage {
+        tatami_pk: input.tatami_number as i64,
+        channel: "marshalling".to_string(),
+        payload: call_payload,
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_results_booklet_data(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::ResultsBookletData, String> {
+    let db = state.db.lock().await;
+    db.get_results_booklet_data(event_id).await
+}
+
+#[tauri::command]
+async fn get_bob_candidates(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<models::BobSourceCategory>, String> {
+    let db = state.db.lock().await;
+    db.get_bob_candidates(event_id).await
+}
+
+#[tauri::command]
+async fn create_bob_bagan(
+    input: models::CreateBobBaganInput,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::BobBaganResult, String> {
+    let db = state.db.lock().await;
+    db.create_bob_bagan(input).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (broadcast_tx, _rx) = broadcast::channel(100);
@@ -1402,7 +1570,21 @@ pub fn run() {
             reset_timetable,
             get_tatami_booklet_data,
             get_kop_surat,
-            save_kop_surat
+            save_kop_surat,
+            get_wasits,
+            save_wasit,
+            delete_wasit,
+            get_tatami_panel_overview,
+            assign_wasit_tatami,
+            remove_wasit_tatami,
+            clear_tatami_panel,
+            auto_assign_tatami_panel,
+            export_tournament_excel,
+            get_marshalling_overview,
+            broadcast_urgent_call,
+            get_results_booklet_data,
+            get_bob_candidates,
+            create_bob_bagan
         ])
         .on_window_event(|window, event| {
             match event {

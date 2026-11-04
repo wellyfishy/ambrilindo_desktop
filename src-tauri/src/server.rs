@@ -328,6 +328,78 @@ async fn save_match_kata_api(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct VrChallengeInput {
+    pub tatami: i64,
+    pub side: String, // "aka" | "ao"
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VrResolveInput {
+    pub tatami: i64,
+    pub side: String, // "aka" | "ao"
+    pub decision: String, // "accepted" | "rejected" | "cancelled"
+}
+
+async fn submit_vr_challenge_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<VrChallengeInput>,
+) -> impl IntoResponse {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let arena_msg = ArenaMessage {
+        tatami_pk: payload.tatami,
+        channel: "vr".into(),
+        payload: serde_json::json!({
+            "type": "vr_challenge_started",
+            "tatami": payload.tatami,
+            "side": payload.side,
+            "reason": payload.reason,
+            "timestamp": now,
+        }),
+    };
+
+    let _ = state.broadcast_tx.send(arena_msg.clone());
+    if let Some(app) = &state.app_handle {
+        let _ = app.emit("tatami_remote_input", &arena_msg);
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+}
+
+async fn resolve_vr_challenge_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<VrResolveInput>,
+) -> impl IntoResponse {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let arena_msg = ArenaMessage {
+        tatami_pk: payload.tatami,
+        channel: "vr".into(),
+        payload: serde_json::json!({
+            "type": "vr_challenge_resolved",
+            "tatami": payload.tatami,
+            "side": payload.side,
+            "decision": payload.decision,
+            "timestamp": now,
+        }),
+    };
+
+    let _ = state.broadcast_tx.send(arena_msg.clone());
+    if let Some(app) = &state.app_handle {
+        let _ = app.emit("tatami_remote_input", &arena_msg);
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SubmitJudgeScoreInput {
     pub tatami: i64,
     pub juri: i32,
@@ -360,7 +432,6 @@ async fn submit_judge_score_api(
 
     (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
 }
-
 
 fn get_i64_val(payload: &serde_json::Value, keys: &[&str]) -> Option<i64> {
     for k in keys {
@@ -646,6 +717,51 @@ async fn get_bagan_podium_api(Path(bagan_id): Path<i64>, State(state): State<Arc
     let db = state.db.lock().await;
     match db.get_bagan_podium(bagan_id).await {
         Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn get_repechage_info_api(Path(bagan_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_repechage_info(bagan_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn generate_repechage_api(State(state): State<Arc<AppState>>, Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    let main_bagan_id = get_i64_val(&payload, &["mainBaganId", "main_bagan_id", "baganId", "bagan_id", "id"]).unwrap_or(0);
+    match db.generate_repechage_bracket(main_bagan_id).await {
+        Ok(v) => {
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("bracket_updated", ());
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn get_round_robin_data_api(Path(bagan_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_round_robin_data(bagan_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn create_round_robin_bagan_api(State(state): State<Arc<AppState>>, Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    let event_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+    let nomor_tanding_id = get_i64_val(&payload, &["nomorTandingId", "nomor_tanding_id", "categoryId", "category_id"]).unwrap_or(0);
+    match db.create_round_robin_bagan(event_id, nomor_tanding_id).await {
+        Ok(v) => {
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("bracket_updated", ());
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
 }
@@ -1313,6 +1429,45 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "get_repechage_info" => {
+            let b_id = get_i64_val(&payload, &["baganId", "bagan_id", "id"]).unwrap_or(0);
+            match db.get_repechage_info(b_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "generate_repechage_bracket" => {
+            let main_bagan_id = get_i64_val(&payload, &["mainBaganId", "main_bagan_id", "baganId", "bagan_id", "id"]).unwrap_or(0);
+            match db.generate_repechage_bracket(main_bagan_id).await {
+                Ok(v) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_round_robin_data" => {
+            let b_id = get_i64_val(&payload, &["baganId", "bagan_id", "id"]).unwrap_or(0);
+            match db.get_round_robin_data(b_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "create_round_robin_bagan" => {
+            let event_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            let nomor_tanding_id = get_i64_val(&payload, &["nomorTandingId", "nomor_tanding_id", "categoryId", "category_id"]).unwrap_or(0);
+            match db.create_round_robin_bagan(event_id, nomor_tanding_id).await {
+                Ok(v) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "get_detail_bagan" => {
             let b_id = get_i64_val(&payload, &["baganId", "bagan_id", "id"]).unwrap_or(0);
             match db.get_detail_bagan(b_id).await {
@@ -1675,6 +1830,154 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "get_wasits" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_wasits(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "save_wasit" => {
+            match serde_json::from_value::<SaveWasitInput>(payload.get("input").unwrap_or(&payload).clone()) {
+                Ok(input) => match db.save_wasit(input).await {
+                    Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response(),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+                },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
+            }
+        },
+        "delete_wasit" => {
+            let wasit_id = get_i64_val(&payload, &["wasitId", "wasit_id", "id"]).unwrap_or(0);
+            match db.delete_wasit(wasit_id).await {
+                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_tatami_panel_overview" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let tatami_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]).unwrap_or(1);
+            match db.get_tatami_panel_overview(ev_id, tatami_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "assign_wasit_tatami" => {
+            match serde_json::from_value::<AssignWasitTatamiInput>(payload.get("input").unwrap_or(&payload).clone()) {
+                Ok(input) => match db.assign_wasit_tatami(input).await {
+                    Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response(),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+                },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
+            }
+        },
+        "remove_wasit_tatami" => {
+            let assign_id = get_i64_val(&payload, &["assignmentId", "assignment_id", "id"]).unwrap_or(0);
+            match db.remove_wasit_tatami(assign_id).await {
+                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "clear_tatami_panel" => {
+            let tatami_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]).unwrap_or(0);
+            match db.clear_tatami_panel(tatami_id).await {
+                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "auto_assign_tatami_panel" => {
+            match serde_json::from_value::<AutoAssignPanelInput>(payload.get("input").unwrap_or(&payload).clone()) {
+                Ok(input) => match db.auto_assign_tatami_panel(input).await {
+                    Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+                },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
+            }
+        },
+        "export_tournament_excel" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_tournament_excel_data(ev_id).await {
+                Ok(data) => match crate::excel_exporter::generate_tournament_workbook(&data) {
+                    Ok(bytes) => {
+                        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                        let clean_name: String = data.event_name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+                        (StatusCode::OK, Json(serde_json::json!({
+                            "status": "success",
+                            "data": {
+                                "base64": b64,
+                                "filename": format!("Rekap_Kejuaraan_{}.xlsx", clean_name),
+                                "size": bytes.len(),
+                            }
+                        }))).into_response()
+                    },
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": format!("Gagal generate excel: {}", e) }))).into_response(),
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_marshalling_overview" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_marshalling_overview(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_results_booklet_data" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_results_booklet_data(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_bob_candidates" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_bob_candidates(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "create_bob_bagan" => {
+            let input_val = payload.get("input").unwrap_or(&payload);
+            match serde_json::from_value::<CreateBobBaganInput>(input_val.clone()) {
+                Ok(input) => match db.create_bob_bagan(input).await {
+                    Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+                },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Payload tidak valid: {}", e) }))).into_response(),
+            }
+        },
+        "broadcast_urgent_call" => {
+            match serde_json::from_value::<SubmitUrgentCallInput>(payload.get("input").unwrap_or(&payload).clone()) {
+                Ok(input) => {
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        .to_string();
+
+                    let call_payload = serde_json::json!({
+                        "type": "urgent_call",
+                        "tatami_number": input.tatami_number,
+                        "athlete_name": input.athlete_name,
+                        "contingent": input.contingent.clone().unwrap_or_else(|| "-".to_string()),
+                        "message": input.message,
+                        "timestamp": ts,
+                    });
+
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: input.tatami_number as i64,
+                        channel: "marshalling".to_string(),
+                        payload: call_payload.clone(),
+                    });
+
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("marshalling_urgent_call", &call_payload);
+                    }
+
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
+            }
+        },
         unknown => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "status": "error", "message": format!("Unknown command: {}", unknown) }))).into_response(),
     }
 }
@@ -1739,6 +2042,209 @@ async fn media_file_api(
     (StatusCode::NOT_FOUND, "Media not found").into_response()
 }
 
+async fn list_wasits_api(
+    State(state): State<Arc<AppState>>,
+    Path(event_id): Path<i64>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_wasits(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn save_wasit_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SaveWasitInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.save_wasit(payload).await {
+        Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct WasitIdPayload {
+    id: i64,
+}
+
+async fn delete_wasit_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<WasitIdPayload>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.delete_wasit(payload.id).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn tatami_panel_overview_api(
+    State(state): State<Arc<AppState>>,
+    Path(tatami_id): Path<i64>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_tatami_panel_overview(1, tatami_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn assign_wasit_tatami_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AssignWasitTatamiInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.assign_wasit_tatami(payload).await {
+        Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn remove_wasit_tatami_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<WasitIdPayload>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.remove_wasit_tatami(payload.id).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ClearPanelPayload {
+    tatami_id: i64,
+}
+
+async fn clear_tatami_panel_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ClearPanelPayload>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.clear_tatami_panel(payload.tatami_id).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn auto_assign_tatami_panel_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AutoAssignPanelInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.auto_assign_tatami_panel(payload).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn export_tournament_excel_api(
+    State(state): State<Arc<AppState>>,
+    Path(event_id): Path<i64>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_tournament_excel_data(event_id).await {
+        Ok(data) => match crate::excel_exporter::generate_tournament_workbook(&data) {
+            Ok(bytes) => {
+                let clean_name: String = data
+                    .event_name
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                let filename = format!("Rekap_Kejuaraan_{}.xlsx", clean_name);
+                (
+                    StatusCode::OK,
+                    [
+                        (axum::http::header::CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                        (axum::http::header::CONTENT_DISPOSITION, &format!("attachment; filename=\"{}\"", filename)),
+                    ],
+                    bytes,
+                ).into_response()
+            },
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate excel: {}", e)).into_response(),
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load tournament data: {}", e)).into_response(),
+    }
+}
+
+async fn get_marshalling_overview_api(
+    State(state): State<Arc<AppState>>,
+    Path(event_id): Path<i64>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_marshalling_overview(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn get_results_booklet_data_api(
+    State(state): State<Arc<AppState>>,
+    Path(event_id): Path<i64>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_results_booklet_data(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn get_bob_candidates_api(
+    State(state): State<Arc<AppState>>,
+    Path(event_id): Path<i64>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_bob_candidates(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn create_bob_bagan_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CreateBobBaganInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.create_bob_bagan(payload).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn submit_urgent_call_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<SubmitUrgentCallInput>,
+) -> impl IntoResponse {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+
+    let call_payload = serde_json::json!({
+        "type": "urgent_call",
+        "tatami_number": payload.tatami_number,
+        "athlete_name": payload.athlete_name,
+        "contingent": payload.contingent.clone().unwrap_or_else(|| "-".to_string()),
+        "message": payload.message,
+        "timestamp": ts,
+    });
+
+    let _ = state.broadcast_tx.send(ArenaMessage {
+        tatami_pk: payload.tatami_number as i64,
+        channel: "marshalling".to_string(),
+        payload: call_payload.clone(),
+    });
+
+    if let Some(app) = &state.app_handle {
+        let _ = app.emit("marshalling_urgent_call", &call_payload);
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+}
+
 pub fn create_router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1762,6 +2268,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/bagans/:event_id", get(list_bagans_api))
         .route("/api/bagan/:bagan_id", get(get_bagan_api))
         .route("/api/bagan-podium/:bagan_id", get(get_bagan_podium_api))
+        .route("/api/bagan/repechage-info/:bagan_id", get(get_repechage_info_api))
+        .route("/api/bagan/generate-repechage", post(generate_repechage_api))
+        .route("/api/bagan/round-robin/:bagan_id", get(get_round_robin_data_api))
+        .route("/api/bagan/create-round-robin", post(create_round_robin_bagan_api))
         .route("/api/detail-bagan/:bagan_id", get(detail_bagan_api))
         .route("/api/bagan/update-details", post(update_bagan_details_api))
         .route("/api/bagan/execute-drawing", post(execute_drawing_bagan_api))
@@ -1820,6 +2330,28 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/festival/save-state", post(save_festival_roster_api))
         .route("/api/festival/auto-pair", post(auto_pair_festival_api))
         .route("/api/festival/mix-categories", post(mix_festival_categories_api))
+        // Video Review (VR) routes
+        .route("/api/vr/challenge", post(submit_vr_challenge_api))
+        .route("/api/vr/resolve", post(resolve_vr_challenge_api))
+        // Wasit / Referee & Panel routes
+        .route("/api/wasits/:event_id", get(list_wasits_api))
+        .route("/api/wasit/save", post(save_wasit_api))
+        .route("/api/wasit/delete", post(delete_wasit_api))
+        .route("/api/tatami-panel/:tatami_id", get(tatami_panel_overview_api))
+        .route("/api/tatami-panel/assign", post(assign_wasit_tatami_api))
+        .route("/api/tatami-panel/remove", post(remove_wasit_tatami_api))
+        .route("/api/tatami-panel/clear", post(clear_tatami_panel_api))
+        .route("/api/tatami-panel/auto-assign", post(auto_assign_tatami_panel_api))
+        // Official Multi-Sheet Excel Exporter
+        .route("/api/export-excel/:event_id", get(export_tournament_excel_api))
+        // Athlete Marshalling & Call Room
+        .route("/api/marshalling/:event_id", get(get_marshalling_overview_api))
+        .route("/api/marshalling/urgent-call", post(submit_urgent_call_api))
+        // Official Results Booklet & Minutes of Meeting (Berita Acara)
+        .route("/api/results-booklet/:event_id", get(get_results_booklet_data_api))
+        // Best of Best (BOB) Division Generator
+        .route("/api/bob/candidates/:event_id", get(get_bob_candidates_api))
+        .route("/api/bob/create", post(create_bob_bagan_api))
         // Universal RPC Dispatcher
         .route("/api/command/:cmd", post(dispatch_command_api))
         // Static and WebSocket

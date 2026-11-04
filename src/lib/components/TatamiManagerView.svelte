@@ -56,7 +56,7 @@
 
   // QR Code Modal State
   let qrModalTatami = $state<TatamiItem | null>(null);
-  let qrRole = $state<"jury" | "lo-kata" | "operator">("jury");
+  let qrRole = $state<"jury" | "lo-kata" | "operator" | "coach-supervisor" | "wasit-vr">("jury");
   let qrSvgContent = $state<string>("");
   let isLoadingQr = $state(false);
   let availableIps = $state<Array<{ name: string; ip: string; is_default: boolean }>>([]);
@@ -339,7 +339,7 @@
   }
 
   // QR Code Access Modal
-  async function openQrModal(tatami: TatamiItem, defaultRole: "jury" | "lo-kata" | "operator" = "jury") {
+  async function openQrModal(tatami: TatamiItem, defaultRole: "jury" | "lo-kata" | "operator" | "coach-supervisor" | "wasit-vr" = "jury") {
     qrModalTatami = tatami;
     qrRole = defaultRole;
     if (!currentQrHost) {
@@ -360,6 +360,10 @@
     let targetUrl = `${baseHost}/jury/${tNum}/`;
     if (qrRole === "lo-kata") {
       targetUrl = `${baseHost}/lo-kata/${tNum}/`;
+    } else if (qrRole === "coach-supervisor") {
+      targetUrl = `${baseHost}/coach-supervisor/${tNum}/`;
+    } else if (qrRole === "wasit-vr") {
+      targetUrl = `${baseHost}/wasit-vr/${tNum}/`;
     } else if (qrRole === "operator") {
       targetUrl = `${baseHost}/control-panel?tatami=${tNum}`;
     }
@@ -387,6 +391,12 @@
     if (qrRole === "lo-kata") {
       targetUrl = `${baseHost}/lo-kata/${tNum}/`;
       label = "LO Kata";
+    } else if (qrRole === "coach-supervisor") {
+      targetUrl = `${baseHost}/coach-supervisor/${tNum}/`;
+      label = "Coach Supervisor (VR)";
+    } else if (qrRole === "wasit-vr") {
+      targetUrl = `${baseHost}/wasit-vr/${tNum}/`;
+      label = "Meja Wasit VR";
     } else if (qrRole === "operator") {
       targetUrl = `${baseHost}/control-panel?tatami=${tNum}`;
       label = "Operator Meja";
@@ -1157,6 +1167,28 @@
               : 'text-zinc-400 hover:text-white'}"
           >
             Meja Tatami
+          </button>
+          <button
+            onclick={() => {
+              qrRole = "coach-supervisor";
+              updateQrCode();
+            }}
+            class="py-1.5 rounded-lg text-xs font-semibold transition-colors {qrRole === 'coach-supervisor'
+              ? 'bg-red-500 text-white shadow-xs font-bold'
+              : 'text-zinc-400 hover:text-white'}"
+          >
+            Coach VR
+          </button>
+          <button
+            onclick={() => {
+              qrRole = "wasit-vr";
+              updateQrCode();
+            }}
+            class="py-1.5 rounded-lg text-xs font-semibold transition-colors col-span-2 {qrRole === 'wasit-vr'
+              ? 'bg-amber-500 text-black shadow-xs font-bold'
+              : 'text-zinc-400 hover:text-white'}"
+          >
+            Meja Wasit VR
           </button>
         </div>
 

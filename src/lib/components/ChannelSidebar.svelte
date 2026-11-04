@@ -590,6 +590,21 @@
             <span class="text-zinc-500 font-mono">#</span>
             <span>data-master</span>
           </button>
+
+          <!-- Wasit & Dewan Juri (Wasit Manager) -->
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "wasit",
+                id: "wasit-manager",
+                name: "wasit-juri",
+                subtitle: "Manajemen Wasit, Penugasan Panel Tatami & Deteksi Bentrok",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'wasit-juri' || activeChannel.type === 'wasit' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>wasit-juri</span>
+          </button>
         </div>
       {/if}
     </div>
