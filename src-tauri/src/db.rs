@@ -178,7 +178,17 @@ impl DatabaseManager {
     pub async fn get_tatamis(&self, event_id: i64) -> Result<Vec<Tatami>, String> {
         let pool = self.get_pool()?;
         sqlx::query_as::<_, Tatami>(
-            "SELECT id, event_id, tatami_number, detail_bagan_id FROM backend_tatami WHERE event_id = ? ORDER BY tatami_number ASC"
+            r#"SELECT 
+                t.id, 
+                t.event_id, 
+                t.tatami_number, 
+                t.detail_bagan_id,
+                b.nama_bagan
+            FROM backend_tatami t
+            LEFT JOIN backend_detailbagan db ON t.detail_bagan_id = db.id
+            LEFT JOIN backend_bagan b ON db.bagan_id = b.id
+            WHERE t.event_id = ? 
+            ORDER BY t.tatami_number ASC"#
         )
         .bind(event_id)
         .fetch_all(pool)
@@ -203,6 +213,7 @@ impl DatabaseManager {
             event_id: Some(event_id),
             tatami_number: Some(tatami_number),
             detail_bagan_id: None,
+            nama_bagan: None,
         })
     }
 
@@ -2404,16 +2415,27 @@ impl DatabaseManager {
             }
 
             let athletes: Vec<AthleteInput> = raw_atlets.into_iter().map(|a| {
-                let group_key = if shuffle_type == "perguruan" {
-                    a.perguruan_id.map(|id| format!("P_{}", id)).unwrap_or_else(|| format!("A_{}", a.id))
-                } else {
-                    a.utusan_id.map(|id| format!("U_{}", id)).unwrap_or_else(|| format!("A_{}", a.id))
+                let (group_key, secondary_key) = match shuffle_type {
+                    "perguruan" => (
+                        a.perguruan_id.map(|id| format!("P_{}", id)).unwrap_or_else(|| format!("A_{}", a.id)),
+                        None
+                    ),
+                    "kontingen" => (
+                        a.utusan_id.map(|id| format!("U_{}", id)).unwrap_or_else(|| format!("A_{}", a.id)),
+                        None
+                    ),
+                    _ => (
+                        // WKF & FORKI Default ("both"): Primary contingent, secondary perguruan
+                        a.utusan_id.map(|id| format!("U_{}", id)).unwrap_or_else(|| format!("A_{}", a.id)),
+                        a.perguruan_id.map(|id| format!("P_{}", id)),
+                    ),
                 };
                 AthleteInput {
                     id: a.id,
                     name: a.nama_atlet.unwrap_or_default(),
                     is_priority: a.is_priority,
                     group_key,
+                    secondary_key,
                 }
             }).collect();
 
@@ -5498,6 +5520,7 @@ impl DatabaseManager {
                 tatami_number: Some(1),
                 detail_bagan_id: None,
                 event_id: Some(event_id),
+                nama_bagan: None,
             }]
         } else {
             tatamis
@@ -7676,6 +7699,7 @@ impl DatabaseManager {
                     name: nama,
                     is_priority: priority,
                     group_key,
+                    secondary_key: None,
                 });
                 athlete_count += 1;
             }
@@ -7788,8 +7812,41 @@ impl DatabaseManager {
             nama_bob: nama_bob.to_string(),
         })
     }
+    /// Performs an atomic, self-contained backup of the active SQLite database using VACUUM INTO.
+    pub async fn backup_database(&self, custom_path: Option<String>) -> Result<String, String> {
+        let pool = self.get_pool()?;
+        let active_path = self.active_db_path.as_ref().ok_or("Path database aktif tidak diketahui.")?;
 
+        let backup_path = if let Some(p) = custom_path {
+            PathBuf::from(p)
+        } else {
+            let parent = active_path.parent().unwrap_or_else(|| Path::new("."));
+            let backup_dir = parent.join("backups");
+            if !backup_dir.exists() {
+                let _ = std::fs::create_dir_all(&backup_dir);
+            }
+            let epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            backup_dir.join(format!("ambrilindo_backup_{}.sqlite3", epoch))
+        };
 
+        let backup_str = backup_path.to_string_lossy().to_string();
+
+        // Checkpoint WAL to flush outstanding write transactions
+        let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(pool).await;
+
+        let escaped = backup_str.replace('\'', "''");
+        let query_str = format!("VACUUM INTO '{}'", escaped);
+        sqlx::query(&query_str)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal mencadangkan database: {}", e))?;
+
+        info!("Cadangan database berhasil dibuat di: {}", backup_str);
+        Ok(backup_str)
+    }
 
 }
 

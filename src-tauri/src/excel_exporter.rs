@@ -589,10 +589,10 @@ mod tests {
         assert_eq!(input.source_bagan_ids.len(), 4);
 
         let athletes = vec![
-            AthleteInput { id: 1, name: "Ahmad".to_string(), is_priority: false, group_key: "U_1".to_string() },
-            AthleteInput { id: 2, name: "Budi".to_string(), is_priority: false, group_key: "U_2".to_string() },
-            AthleteInput { id: 3, name: "Chandra".to_string(), is_priority: false, group_key: "U_3".to_string() },
-            AthleteInput { id: 4, name: "Doni".to_string(), is_priority: false, group_key: "U_4".to_string() },
+            AthleteInput { id: 1, name: "Ahmad".to_string(), is_priority: false, group_key: "U_1".to_string(), secondary_key: None },
+            AthleteInput { id: 2, name: "Budi".to_string(), is_priority: false, group_key: "U_2".to_string(), secondary_key: None },
+            AthleteInput { id: 3, name: "Chandra".to_string(), is_priority: false, group_key: "U_3".to_string(), secondary_key: None },
+            AthleteInput { id: 4, name: "Doni".to_string(), is_priority: false, group_key: "U_4".to_string(), secondary_key: None },
         ];
         let bracket = build_bracket_in_memory(&athletes, 1, false);
         assert!(bracket.matches.contains_key(&1));

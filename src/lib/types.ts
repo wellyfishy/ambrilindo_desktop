@@ -1,7 +1,7 @@
 export type AppMode = 'landing' | 'solo' | 'host' | 'client';
 
 export interface ActiveChannel {
-  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival' | 'wasit';
+  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'perguruan' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival' | 'wasit';
   id: number | string;
   name: string;
   subtitle?: string;
@@ -11,6 +11,15 @@ export interface NetworkInterfaceInfo {
   name: string;
   ip: string;
   is_default: boolean;
+}
+
+export interface IpAvailabilityInfo {
+  ip: string;
+  name: string;
+  status: "available" | "occupied" | "active_event" | "current_host" | string;
+  event_name: string | null;
+  is_default: boolean;
+  is_current_host?: boolean;
 }
 
 export interface NetworkInfo {
@@ -59,6 +68,7 @@ export interface TatamiItem {
   event_id: number | null;
   tatami_number: number | null;
   detail_bagan_id: number | null;
+  nama_bagan?: string | null;
 }
 
 export interface BaganItem {

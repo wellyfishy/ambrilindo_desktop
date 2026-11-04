@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { invoke } from "$lib/api_client";
-  import { listen } from "@tauri-apps/api/event";
   import type { TatamiItem } from "$lib/types";
 
   interface Props {
@@ -9,7 +8,6 @@
     tatamis: TatamiItem[];
     hostAddress: string;
     onRefreshTatamis: () => void;
-    onOpenMonitorPicker: (tatamiNum: number) => void;
     onShowToast?: (msg: string) => void;
   }
 
@@ -18,24 +16,17 @@
     tatamis,
     hostAddress,
     onRefreshTatamis,
-    onOpenMonitorPicker,
     onShowToast,
   }: Props = $props();
 
   // Filter & Search State
   let searchKeyword = $state("");
-  let selectedStatusFilter = $state<"all" | "live" | "ready" | "scoreboard_on" | "scoreboard_off">("all");
+  let selectedStatusFilter = $state<"all" | "live" | "ready">("all");
   let selectedSort = $state<"tatami_asc" | "tatami_desc" | "live_first">("tatami_asc");
-
-  // Selection & Bulk State
-  let selectedIds = $state<Set<number>>(new Set());
 
   // Pagination State
   let currentPage = $state(1);
   let pageSize = $state(50);
-
-  // Scoreboard Tracking State
-  let runningScoreboards = $state<number[]>([]);
 
   // Modals State
   let isAddingModal = $state(false);
@@ -51,9 +42,6 @@
   let tatamiToDelete = $state<TatamiItem | null>(null);
   let isDeleting = $state(false);
 
-  let batchDeleteModalOpen = $state(false);
-  let isBatchDeleting = $state(false);
-
   // QR Code Modal State
   let qrModalTatami = $state<TatamiItem | null>(null);
   let qrRole = $state<"jury" | "lo-kata" | "operator" | "coach-supervisor" | "wasit-vr">("jury");
@@ -65,6 +53,7 @@
   // Toast Notification State
   let toastMsg = $state<string | null>(null);
   let toastTimer: any = null;
+  let syncInterval: any = null;
 
   function showToast(msg: string) {
     toastMsg = msg;
@@ -78,11 +67,11 @@
   // Fallback Mock Tatamis for browser dev/testing
   function getMockTatamis(): TatamiItem[] {
     return [
-      { id: 1, event_id: eventId, tatami_number: 1, detail_bagan_id: 104 },
-      { id: 2, event_id: eventId, tatami_number: 2, detail_bagan_id: null },
-      { id: 3, event_id: eventId, tatami_number: 3, detail_bagan_id: null },
-      { id: 4, event_id: eventId, tatami_number: 4, detail_bagan_id: 208 },
-      { id: 5, event_id: eventId, tatami_number: 5, detail_bagan_id: null },
+      { id: 1, event_id: eventId, tatami_number: 1, detail_bagan_id: 104, nama_bagan: "KATA PERORANGAN PUTRA" },
+      { id: 2, event_id: eventId, tatami_number: 2, detail_bagan_id: null, nama_bagan: null },
+      { id: 3, event_id: eventId, tatami_number: 3, detail_bagan_id: null, nama_bagan: null },
+      { id: 4, event_id: eventId, tatami_number: 4, detail_bagan_id: 208, nama_bagan: "KUMITE -67KG SENIOR PUTRA" },
+      { id: 5, event_id: eventId, tatami_number: 5, detail_bagan_id: null, nama_bagan: null },
     ];
   }
 
@@ -101,9 +90,6 @@
   let totalTatamis = $derived(effectiveTatamis.length);
   let activeMatchesCount = $derived(effectiveTatamis.filter((t) => t.detail_bagan_id !== null).length);
   let readyCount = $derived(Math.max(0, totalTatamis - activeMatchesCount));
-  let scoreboardOnCount = $derived(
-    effectiveTatamis.filter((t) => runningScoreboards.includes(t.tatami_number ?? 1)).length
-  );
 
   // Filtered and Sorted Tatamis
   let filteredTatamis = $derived.by(() => {
@@ -114,10 +100,6 @@
       result = result.filter((t) => t.detail_bagan_id !== null);
     } else if (selectedStatusFilter === "ready") {
       result = result.filter((t) => t.detail_bagan_id === null);
-    } else if (selectedStatusFilter === "scoreboard_on") {
-      result = result.filter((t) => runningScoreboards.includes(t.tatami_number ?? 1));
-    } else if (selectedStatusFilter === "scoreboard_off") {
-      result = result.filter((t) => !runningScoreboards.includes(t.tatami_number ?? 1));
     }
 
     // Search Keyword
@@ -125,11 +107,11 @@
       const q = searchKeyword.toLowerCase().trim();
       result = result.filter((t) => {
         const tNumStr = (t.tatami_number ?? "").toString();
-        const partaiStr = t.detail_bagan_id ? `partai ${t.detail_bagan_id} #${t.detail_bagan_id}` : "";
+        const baganStr = t.nama_bagan || (t.detail_bagan_id ? `partai ${t.detail_bagan_id} #${t.detail_bagan_id}` : "");
         return (
           tNumStr.includes(q) ||
           `tatami ${tNumStr}`.includes(q) ||
-          partaiStr.toLowerCase().includes(q)
+          baganStr.toLowerCase().includes(q)
         );
       });
     }
@@ -156,105 +138,6 @@
   let paginatedTatamis = $derived(
     filteredTatamis.slice((currentPage - 1) * pageSize, currentPage * pageSize)
   );
-
-  // Scoreboard Process Tracking
-  async function refreshRunningScoreboards() {
-    try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        runningScoreboards = await invoke<number[]>("get_running_scoreboards");
-      }
-    } catch (_) {}
-  }
-
-  async function handleStopScoreboard(tatamiNum: number) {
-    try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        await invoke("close_scoreboard", { tatamiNumber: tatamiNum });
-      }
-      runningScoreboards = runningScoreboards.filter((num) => num !== tatamiNum);
-      showToast(`Scoreboard Tatami ${tatamiNum} berhasil ditutup.`);
-      await refreshRunningScoreboards();
-    } catch (err: any) {
-      showToast(`Gagal menutup scoreboard: ${err?.message || err}`);
-    }
-  }
-
-  // Selection handlers
-  function toggleSelectAll() {
-    if (selectedIds.size === paginatedTatamis.length && paginatedTatamis.length > 0) {
-      selectedIds.clear();
-      selectedIds = new Set(selectedIds);
-    } else {
-      paginatedTatamis.forEach((t) => selectedIds.add(t.id));
-      selectedIds = new Set(selectedIds);
-    }
-  }
-
-  function toggleSelect(id: number) {
-    if (selectedIds.has(id)) {
-      selectedIds.delete(id);
-    } else {
-      selectedIds.add(id);
-    }
-    selectedIds = new Set(selectedIds);
-  }
-
-  // Bulk Actions
-  async function handleBulkStopScoreboard() {
-    const selectedTatamis = effectiveTatamis.filter((t) => selectedIds.has(t.id));
-    const activeRunning = selectedTatamis.filter((t) => runningScoreboards.includes(t.tatami_number ?? 1));
-
-    if (activeRunning.length === 0) {
-      showToast("Tidak ada tatami terpilih dengan scoreboard yang sedang aktif.");
-      return;
-    }
-
-    for (const t of activeRunning) {
-      const tNum = t.tatami_number ?? 1;
-      await handleStopScoreboard(tNum);
-    }
-    showToast(`${activeRunning.length} layar scoreboard berhasil dihentikan.`);
-  }
-
-  async function handleBulkStartScoreboard() {
-    const selectedTatamis = effectiveTatamis.filter((t) => selectedIds.has(t.id));
-    const inactive = selectedTatamis.filter((t) => !runningScoreboards.includes(t.tatami_number ?? 1));
-
-    if (inactive.length === 0) {
-      showToast("Semua tatami terpilih sudah memiliki scoreboard aktif.");
-      return;
-    }
-
-    // Open monitor picker for the first selected inactive tatami
-    const firstNum = inactive[0].tatami_number ?? 1;
-    onOpenMonitorPicker(firstNum);
-    showToast(`Membuka konfigurasi proyeksi untuk Tatami ${firstNum}`);
-  }
-
-  function openBatchDeleteModal() {
-    batchDeleteModalOpen = true;
-  }
-
-  async function handleConfirmBatchDelete() {
-    isBatchDeleting = true;
-    try {
-      const idsToDelete = Array.from(selectedIds);
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        for (const tid of idsToDelete) {
-          await invoke("delete_tatami", { tatamiId: tid });
-        }
-      }
-      selectedIds.clear();
-      selectedIds = new Set();
-      batchDeleteModalOpen = false;
-      onRefreshTatamis();
-      showToast(`${idsToDelete.length} tatami berhasil dihapus.`);
-    } catch (err: any) {
-      showToast(`Gagal menghapus tatami: ${err?.message || err}`);
-    } finally {
-      isBatchDeleting = false;
-    }
-  }
 
   // Create Tatami Modal
   function openAddModal() {
@@ -406,16 +289,18 @@
   }
 
   onMount(() => {
-    refreshRunningScoreboards();
-    let unlisten: any;
-    listen("scoreboard_status_changed", () => {
-      refreshRunningScoreboards();
-    }).then((u) => (unlisten = u));
+    // Initial fetch
+    onRefreshTatamis();
 
-    return () => {
-      if (unlisten) unlisten();
-      if (toastTimer) clearTimeout(toastTimer);
-    };
+    // Real-time synchronization: Auto-refresh tatami state every 3 seconds
+    syncInterval = setInterval(() => {
+      onRefreshTatamis();
+    }, 3000);
+  });
+
+  onDestroy(() => {
+    if (syncInterval) clearInterval(syncInterval);
+    if (toastTimer) clearTimeout(toastTimer);
   });
 </script>
 
@@ -440,47 +325,32 @@
         </span>
       </div>
       <p class="text-xs text-zinc-400 mt-1 font-normal">
-        Alokasi arena pertandingan dan kendali proyeksi scoreboard
+        Alokasi arena pertandingan dan tautan akses venue (Scoreboard TV, Operator Meja, dan Juri)
       </p>
     </div>
 
-    <!-- Actions -->
+    <!-- Actions (No manual refresh button needed, realtime sync active) -->
     <div class="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
       <button
-        onclick={() => {
-          onRefreshTatamis();
-          refreshRunningScoreboards();
-          showToast("Data tatami diperbarui");
-        }}
-        title="Muat ulang status tatami & scoreboard"
-        class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] hover:bg-white/[0.08] hover:text-white font-semibold text-xs rounded-xl transition-colors flex items-center space-x-1.5 active:scale-95"
-      >
-        <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-        </svg>
-        <span>Refresh</span>
-      </button>
-
-      <button
         onclick={openAddModal}
-        class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors active:scale-[0.98] flex items-center space-x-2"
+        class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors active:scale-[0.98] flex items-center space-x-2 cursor-pointer"
       >
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
         </svg>
-        <span>+ Tambah Tatami</span>
+        <span>Tambah Tatami</span>
       </button>
     </div>
   </div>
 
-  <!-- KPI Stats Cards (5-Column Responsive Strip) -->
-  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 my-4 shrink-0">
+  <!-- KPI Stats Cards (4-Column Clean Grid) -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 my-4 shrink-0">
     <!-- 1. Total Tatami -->
     <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TOTAL TATAMI</span>
+      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TOTAL ARENA</span>
       <div class="flex items-baseline justify-between mt-2">
         <span class="text-2xl font-black font-mono text-white tabular-nums">{totalTatamis}</span>
-        <span class="text-[10px] font-mono text-zinc-500">arena</span>
+        <span class="text-[10px] font-mono text-zinc-500">tatami</span>
       </div>
     </div>
 
@@ -489,12 +359,12 @@
       <div class="flex items-center justify-between">
         <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TATAMI LIVE</span>
         {#if activeMatchesCount > 0}
-          <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
         {/if}
       </div>
       <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-white tabular-nums">{activeMatchesCount}</span>
-        <span class="text-[10px] font-mono text-zinc-500">partai</span>
+        <span class="text-2xl font-black font-mono text-amber-400 tabular-nums">{activeMatchesCount}</span>
+        <span class="text-[10px] font-mono text-zinc-500">partai aktif</span>
       </div>
     </div>
 
@@ -502,30 +372,16 @@
     <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
       <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">STANDBY / READY</span>
       <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-white tabular-nums">{readyCount}</span>
+        <span class="text-2xl font-black font-mono text-emerald-400 tabular-nums">{readyCount}</span>
         <span class="text-[10px] font-mono text-zinc-500">siap tanding</span>
       </div>
     </div>
 
-    <!-- 4. Scoreboard Proyeksi -->
+    <!-- 4. Status Server Host LAN -->
     <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <div class="flex items-center justify-between">
-        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">SCOREBOARD PROYEKSI</span>
-        {#if scoreboardOnCount > 0}
-          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-        {/if}
-      </div>
+      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">HUB SERVER LAN</span>
       <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-white tabular-nums">{scoreboardOnCount}</span>
-        <span class="text-[10px] font-mono text-zinc-500">layar aktif</span>
-      </div>
-    </div>
-
-    <!-- 5. Status Server Host LAN -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">SERVER LAN HOST</span>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-white tabular-nums">{hostAddress ? 'ONLINE' : 'LOKAL'}</span>
+        <span class="text-xl sm:text-2xl font-black font-mono text-white truncate">{hostAddress ? 'ONLINE' : 'LOKAL'}</span>
         <span class="text-[10px] font-mono text-zinc-500">port 8000</span>
       </div>
     </div>
@@ -540,7 +396,7 @@
           selectedStatusFilter = 'all';
           currentPage = 1;
         }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'all'
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {selectedStatusFilter === 'all'
           ? 'bg-white text-black border-white shadow-sm'
           : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
       >
@@ -552,8 +408,8 @@
           selectedStatusFilter = 'live';
           currentPage = 1;
         }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'live'
-          ? 'bg-white text-black border-white shadow-sm'
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {selectedStatusFilter === 'live'
+          ? 'bg-amber-400 text-black border-amber-400 shadow-sm font-bold'
           : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
       >
         Live ({activeMatchesCount})
@@ -564,35 +420,11 @@
           selectedStatusFilter = 'ready';
           currentPage = 1;
         }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'ready'
-          ? 'bg-white text-black border-white shadow-sm'
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {selectedStatusFilter === 'ready'
+          ? 'bg-emerald-400 text-black border-emerald-400 shadow-sm font-bold'
           : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
       >
         Standby ({readyCount})
-      </button>
-
-      <button
-        onclick={() => {
-          selectedStatusFilter = 'scoreboard_on';
-          currentPage = 1;
-        }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'scoreboard_on'
-          ? 'bg-white text-black border-white shadow-sm'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Scoreboard Aktif ({scoreboardOnCount})
-      </button>
-
-      <button
-        onclick={() => {
-          selectedStatusFilter = 'scoreboard_off';
-          currentPage = 1;
-        }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border {selectedStatusFilter === 'scoreboard_off'
-          ? 'bg-white text-black border-white shadow-sm'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Scoreboard Inaktif ({Math.max(0, totalTatamis - scoreboardOnCount)})
       </button>
     </div>
 
@@ -633,7 +465,7 @@
           <button
             onclick={() => (searchKeyword = "")}
             aria-label="Hapus pencarian"
-            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white text-xs"
+            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white text-xs cursor-pointer"
           >
             ✕
           </button>
@@ -642,141 +474,72 @@
     </div>
   </div>
 
-  <!-- Bulk Action Floating Bar -->
-  {#if selectedIds.size > 0}
-    <div class="bg-[#181a20] border border-white/20 rounded-xl px-4 py-2 mb-3 flex items-center justify-between shadow-lg shrink-0">
-      <div class="flex items-center space-x-2 text-xs">
-        <span class="w-1.5 h-1.5 rounded-full bg-white"></span>
-        <span class="font-bold text-white tabular-nums">{selectedIds.size} tatami terpilih</span>
-      </div>
-
-      <div class="flex items-center space-x-2">
-        <button
-          onclick={handleBulkStartScoreboard}
-          class="h-7 px-3 bg-white/[0.08] hover:bg-white text-zinc-200 hover:text-black font-semibold text-xs rounded-lg border border-white/[0.1] transition-colors active:scale-95"
-        >
-          Buka Scoreboard
-        </button>
-
-        <button
-          onclick={handleBulkStopScoreboard}
-          class="h-7 px-3 bg-white/[0.08] hover:bg-white text-zinc-200 hover:text-black font-semibold text-xs rounded-lg border border-white/[0.1] transition-colors active:scale-95"
-        >
-          Hentikan Scoreboard
-        </button>
-
-        <button
-          onclick={openBatchDeleteModal}
-          class="h-7 px-3 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-lg transition-colors active:scale-95 shadow-sm"
-        >
-          Hapus Terpilih ({selectedIds.size})
-        </button>
-
-        <button
-          onclick={() => {
-            selectedIds.clear();
-            selectedIds = new Set(selectedIds);
-          }}
-          class="h-7 px-2.5 text-zinc-400 hover:text-white text-xs font-semibold transition-colors"
-        >
-          Batal
-        </button>
-      </div>
-    </div>
-  {/if}
-
-  <!-- Data Table Container -->
+  <!-- Data Table Container (Clean 5-Column Layout) -->
   <div class="flex-1 overflow-y-auto min-h-0 rounded-2xl border border-white/[0.08] bg-[#181a20] shadow-lg flex flex-col">
     <table class="w-full text-left text-xs border-collapse">
       <thead class="bg-[#111215] text-zinc-400 font-mono text-[11px] uppercase tracking-wider sticky top-0 z-10 border-b border-white/[0.08]">
         <tr>
-          <th class="w-10 px-4 py-3 text-center">
-            <input
-              type="checkbox"
-              aria-label="Pilih semua tatami di halaman ini"
-              checked={paginatedTatamis.length > 0 && selectedIds.size === paginatedTatamis.length}
-              onchange={toggleSelectAll}
-              class="rounded border-white/20 bg-black/40 text-white focus:ring-0 cursor-pointer"
-            />
-          </th>
           <th class="w-12 px-3 py-3 font-bold text-center">NO</th>
-          <th class="px-4 py-3 font-bold">NOMOR TATAMI</th>
-          <th class="px-4 py-3 font-bold">PARTAI AKTIF</th>
+          <th class="px-4 py-3 font-bold">ARENA TATAMI</th>
+          <th class="px-4 py-3 font-bold">BAGAN AKTIF</th>
           <th class="px-4 py-3 font-bold">STATUS ARENA</th>
-          <th class="px-4 py-3 font-bold">SCOREBOARD PROYEKSI</th>
           <th class="px-4 py-3 font-bold">AKSES VENUE</th>
-          <th class="px-4 py-3 font-bold text-right pr-5">AKSI</th>
+          <th class="w-24 px-4 py-3 font-bold text-center pr-6">AKSI</th>
         </tr>
       </thead>
 
       <tbody class="divide-y divide-white/[0.06] font-medium">
         {#if paginatedTatamis.length === 0}
           <tr>
-            <td colspan="8" class="py-16 text-center text-zinc-500">
+            <td colspan="6" class="py-16 text-center text-zinc-500">
               <div class="flex flex-col items-center justify-center space-y-2">
                 <svg class="w-8 h-8 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                 </svg>
                 <span class="text-xs font-semibold text-zinc-400">Tidak ada data tatami yang sesuai</span>
-                <span class="text-[11px] text-zinc-600">Gunakan tombol "+ Tambah Tatami" di atas untuk menambah arena.</span>
+                <span class="text-[11px] text-zinc-600">Gunakan tombol "Tambah Tatami" di atas untuk menambah arena.</span>
               </div>
             </td>
           </tr>
         {:else}
           {#each paginatedTatamis as tatami, idx}
             {@const tNum = tatami.tatami_number ?? 1}
-            {@const isRunning = runningScoreboards.includes(tNum)}
-            {@const isSelected = selectedIds.has(tatami.id)}
-            <tr class="hover:bg-white/[0.02] transition-colors {isSelected ? 'bg-white/[0.04]' : ''}">
-              <!-- Checkbox -->
-              <td class="px-4 py-3 text-center">
-                <input
-                  type="checkbox"
-                  aria-label={`Pilih Tatami ${tNum}`}
-                  checked={isSelected}
-                  onchange={() => toggleSelect(tatami.id)}
-                  class="rounded border-white/20 bg-black/40 text-white focus:ring-0 cursor-pointer"
-                />
-              </td>
-
+            <tr class="hover:bg-white/[0.02] transition-colors">
               <!-- No -->
               <td class="px-3 py-3 font-mono text-zinc-500 text-center text-[11px] tabular-nums">
                 {(currentPage - 1) * pageSize + idx + 1}
               </td>
 
-              <!-- Tatami Number Badge -->
+              <!-- Tatami Number Badge (Clean, no inline edit icon) -->
               <td class="px-4 py-3">
                 <div class="flex items-center space-x-3">
                   <div class="w-8 h-8 rounded-lg bg-white/[0.04] border border-white/[0.08] font-mono font-bold text-sm flex items-center justify-center text-white shrink-0">
                     {tNum}
                   </div>
                   <div>
-                    <div class="flex items-center space-x-2">
-                      <span class="font-bold text-white text-xs">Tatami {tNum}</span>
-                      <button
-                        onclick={() => openEditModal(tatami)}
-                        title="Ubah nomor tatami"
-                        class="text-zinc-500 hover:text-white transition-colors"
-                      >
-                        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                          <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
-                        </svg>
-                      </button>
-                    </div>
-                    <span class="text-[10px] font-mono text-zinc-500">ID #{tatami.id}</span>
+                    <span class="font-bold text-white text-xs block">Tatami {tNum}</span>
+                    <span class="text-[10px] font-mono text-zinc-500 block">ID #{tatami.id}</span>
                   </div>
                 </div>
               </td>
 
-              <!-- Active Match Detail -->
-              <td class="px-4 py-3 font-mono text-xs">
-                {#if tatami.detail_bagan_id}
-                  <div class="flex items-center space-x-2 text-zinc-200 font-bold">
-                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"></span>
-                    <span class="truncate tabular-nums">Partai #{tatami.detail_bagan_id}</span>
+              <!-- Bagan / Kelas Aktif -->
+              <td class="px-4 py-3">
+                {#if tatami.nama_bagan}
+                  <div class="flex items-center space-x-2 text-white font-bold text-xs truncate max-w-xs xl:max-w-md">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0 animate-pulse"></span>
+                    <span class="truncate uppercase tracking-tight" title={tatami.nama_bagan}>{tatami.nama_bagan}</span>
+                  </div>
+                  {#if tatami.detail_bagan_id}
+                    <span class="text-[10px] font-mono text-zinc-500 pl-4 block tabular-nums">Partai #{tatami.detail_bagan_id}</span>
+                  {/if}
+                {:else if tatami.detail_bagan_id}
+                  <div class="flex items-center space-x-2 text-zinc-200 font-bold text-xs">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0"></span>
+                    <span class="font-mono tabular-nums">Partai #{tatami.detail_bagan_id}</span>
                   </div>
                 {:else}
-                  <span class="text-zinc-500 font-mono text-[11px]">-</span>
+                  <span class="text-zinc-600 font-mono text-[11px]">-</span>
                 {/if}
               </td>
 
@@ -795,53 +558,35 @@
                 {/if}
               </td>
 
-              <!-- Scoreboard Projection -->
+              <!-- Akses Venue (Dedicated Portal Shortcuts) -->
               <td class="px-4 py-3">
                 <div class="flex items-center space-x-2">
-                  {#if isRunning}
-                    <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center space-x-1.5">
-                      <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                      <span>AKTIF</span>
-                    </span>
+                  <!-- Scoreboard TV Display Link -->
+                  <a
+                    href="{hostAddress}/scoreboard?tatami={tNum}"
+                    target="_blank"
+                    class="h-7 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold transition-colors flex items-center space-x-1.5"
+                    title="Buka Scoreboard TV Arena Tatami {tNum} di browser / proyektor"
+                  >
+                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                      <line x1="8" y1="21" x2="16" y2="21"/>
+                      <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    <span>Scoreboard</span>
+                  </a>
 
-                    <button
-                      type="button"
-                      onclick={() => handleStopScoreboard(tNum)}
-                      class="h-6 px-2 rounded-lg bg-white/[0.06] hover:bg-rose-500/20 text-zinc-300 hover:text-rose-400 border border-white/[0.1] hover:border-rose-500/30 text-[11px] font-semibold transition-colors flex items-center space-x-1"
-                      title="Hentikan & Tutup Scoreboard Tatami {tNum}"
-                    >
-                      <span class="w-1.5 h-1.5 bg-rose-400 rounded-xs"></span>
-                      <span>Tutup</span>
-                    </button>
-                  {:else}
-                    <button
-                      onclick={() => onOpenMonitorPicker(tNum)}
-                      class="h-6 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] text-[11px] font-semibold transition-colors flex items-center space-x-1.5"
-                      title="Buka proyeksi monitor fullscreen untuk Tatami {tNum}"
-                    >
-                      <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                        <line x1="8" y1="21" x2="16" y2="21"/>
-                        <line x1="12" y1="17" x2="12" y2="21"/>
-                      </svg>
-                      <span>Proyeksikan Layar</span>
-                    </button>
-                  {/if}
-                </div>
-              </td>
-
-              <!-- Venue & Web Access -->
-              <td class="px-4 py-3">
-                <div class="flex items-center space-x-1.5">
+                  <!-- Operator Meja Link -->
                   <a
                     href="{hostAddress}/tatami-{tNum}/"
                     target="_blank"
                     class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] text-[11px] font-semibold transition-colors flex items-center"
-                    title="Buka web operator meja tatami di browser"
+                    title="Buka panel operator meja tatami di browser"
                   >
                     Operator
                   </a>
 
+                  <!-- Juri Link -->
                   <a
                     href="{hostAddress}/jury/{tNum}/"
                     target="_blank"
@@ -851,10 +596,12 @@
                     Juri
                   </a>
 
+                  <!-- QR Code Button -->
                   <button
                     onclick={() => openQrModal(tatami, "jury")}
-                    class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] transition-colors flex items-center justify-center"
+                    class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/[0.08] hover:border-white/20 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
                     title="Pindai QR code untuk smartphone/tablet juri & operator"
+                    aria-label="Akses QR Code Tatami"
                   >
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 3.75 9.375v-4.5ZM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 0 1-1.125-1.125v-4.5ZM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 13.5 9.375v-4.5Z" />
@@ -864,23 +611,27 @@
                 </div>
               </td>
 
-              <!-- Actions (Edit & Delete) -->
-              <td class="px-4 py-3 text-right pr-5">
-                <div class="flex items-center justify-end space-x-1">
+              <!-- Aksi (Dedicated Arena Management Actions) -->
+              <td class="w-24 px-4 py-3 text-center pr-6">
+                <div class="flex items-center justify-center space-x-1.5">
+                  <!-- Ubah Nomor Tatami Button -->
                   <button
                     onclick={() => openEditModal(tatami)}
-                    class="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-white/[0.08] transition-colors"
+                    class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-sky-500/15 text-zinc-400 hover:text-sky-300 border border-white/[0.08] hover:border-sky-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
                     title="Ubah nomor tatami"
+                    aria-label="Ubah nomor tatami"
                   >
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                       <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
                     </svg>
                   </button>
 
+                  <!-- Hapus Tatami Button -->
                   <button
                     onclick={() => promptDeleteTatami(tatami)}
-                    class="p-1.5 text-zinc-400 hover:text-rose-400 rounded-lg hover:bg-white/[0.08] transition-colors"
+                    class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 border border-white/[0.08] hover:border-rose-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
                     title={`Hapus Tatami ${tNum}`}
+                    aria-label={`Hapus Tatami ${tNum}`}
                   >
                     <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
@@ -920,7 +671,7 @@
         <button
           onclick={() => (currentPage = Math.max(1, currentPage - 1))}
           disabled={currentPage === 1}
-          class="h-7 px-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          class="h-7 px-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
         >
           ‹
         </button>
@@ -930,7 +681,7 @@
         <button
           onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
           disabled={currentPage >= totalPages}
-          class="h-7 px-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          class="h-7 px-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
         >
           ›
         </button>
@@ -946,7 +697,7 @@
           <h3 class="text-sm font-bold text-white tracking-tight">Tambah Tatami Baru</h3>
           <button
             onclick={() => (isAddingModal = false)}
-            class="text-zinc-500 hover:text-white transition-colors"
+            class="text-zinc-500 hover:text-white transition-colors cursor-pointer"
           >
             ✕
           </button>
@@ -972,14 +723,14 @@
         <div class="flex items-center justify-end space-x-2 pt-2 border-t border-white/[0.08]">
           <button
             onclick={() => (isAddingModal = false)}
-            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
           >
             Batal
           </button>
           <button
             onclick={handleAddTatami}
             disabled={isSubmitting}
-            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50"
+            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50 cursor-pointer"
           >
             {isSubmitting ? "Menyimpan..." : "Simpan Tatami"}
           </button>
@@ -996,7 +747,7 @@
           <h3 class="text-sm font-bold text-white tracking-tight">Ubah Nomor Tatami</h3>
           <button
             onclick={() => (editModalTatami = null)}
-            class="text-zinc-500 hover:text-white transition-colors"
+            class="text-zinc-500 hover:text-white transition-colors cursor-pointer"
           >
             ✕
           </button>
@@ -1022,14 +773,14 @@
         <div class="flex items-center justify-end space-x-2 pt-2 border-t border-white/[0.08]">
           <button
             onclick={() => (editModalTatami = null)}
-            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
           >
             Batal
           </button>
           <button
             onclick={handleSaveEditTatami}
             disabled={isEditing}
-            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50"
+            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50 cursor-pointer"
           >
             {isEditing ? "Menyimpan..." : "Simpan Perubahan"}
           </button>
@@ -1061,55 +812,16 @@
           <button
             onclick={() => (tatamiToDelete = null)}
             disabled={isDeleting}
-            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
           >
             Batal
           </button>
           <button
             onclick={confirmDeleteTatami}
             disabled={isDeleting}
-            class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50 flex items-center space-x-1.5"
+            class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50 flex items-center space-x-1.5 cursor-pointer"
           >
             <span>{isDeleting ? "Menghapus..." : "Hapus Tatami"}</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  <!-- Modal: Konfirmasi Batch Hapus Tatami -->
-  {#if batchDeleteModalOpen}
-    <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs select-none">
-      <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-150">
-        <div class="flex items-center space-x-3">
-          <div class="w-9 h-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 shrink-0">
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
-          </div>
-          <div>
-            <h3 class="text-sm font-bold text-white tracking-tight">Hapus {selectedIds.size} Tatami</h3>
-          </div>
-        </div>
-
-        <p class="text-xs text-zinc-300 leading-relaxed">
-          Apakah Anda yakin ingin menghapus <strong>{selectedIds.size} tatami terpilih</strong>? Tatami yang dihapus tidak dapat dipulihkan kembali.
-        </p>
-
-        <div class="flex items-center justify-end space-x-2 pt-2 border-t border-white/[0.08]">
-          <button
-            onclick={() => (batchDeleteModalOpen = false)}
-            disabled={isBatchDeleting}
-            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
-          >
-            Batal
-          </button>
-          <button
-            onclick={handleConfirmBatchDelete}
-            disabled={isBatchDeleting}
-            class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50 flex items-center space-x-1.5"
-          >
-            <span>{isBatchDeleting ? "Menghapus..." : `Hapus ${selectedIds.size} Tatami`}</span>
           </button>
         </div>
       </div>
@@ -1127,7 +839,7 @@
           <h3 class="text-sm font-bold text-white tracking-tight">Akses Mobile Tatami {tNum}</h3>
           <button
             onclick={() => (qrModalTatami = null)}
-            class="text-zinc-500 hover:text-white transition-colors"
+            class="text-zinc-500 hover:text-white transition-colors cursor-pointer"
           >
             ✕
           </button>
@@ -1140,7 +852,7 @@
               qrRole = "jury";
               updateQrCode();
             }}
-            class="py-1.5 rounded-lg text-xs font-semibold transition-colors {qrRole === 'jury'
+            class="py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {qrRole === 'jury'
               ? 'bg-white text-black shadow-xs font-bold'
               : 'text-zinc-400 hover:text-white'}"
           >
@@ -1151,7 +863,7 @@
               qrRole = "lo-kata";
               updateQrCode();
             }}
-            class="py-1.5 rounded-lg text-xs font-semibold transition-colors {qrRole === 'lo-kata'
+            class="py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {qrRole === 'lo-kata'
               ? 'bg-white text-black shadow-xs font-bold'
               : 'text-zinc-400 hover:text-white'}"
           >
@@ -1162,7 +874,7 @@
               qrRole = "operator";
               updateQrCode();
             }}
-            class="py-1.5 rounded-lg text-xs font-semibold transition-colors {qrRole === 'operator'
+            class="py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {qrRole === 'operator'
               ? 'bg-white text-black shadow-xs font-bold'
               : 'text-zinc-400 hover:text-white'}"
           >
@@ -1173,7 +885,7 @@
               qrRole = "coach-supervisor";
               updateQrCode();
             }}
-            class="py-1.5 rounded-lg text-xs font-semibold transition-colors {qrRole === 'coach-supervisor'
+            class="py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer {qrRole === 'coach-supervisor'
               ? 'bg-red-500 text-white shadow-xs font-bold'
               : 'text-zinc-400 hover:text-white'}"
           >
@@ -1184,7 +896,7 @@
               qrRole = "wasit-vr";
               updateQrCode();
             }}
-            class="py-1.5 rounded-lg text-xs font-semibold transition-colors col-span-2 {qrRole === 'wasit-vr'
+            class="py-1.5 rounded-lg text-xs font-semibold transition-colors col-span-2 cursor-pointer {qrRole === 'wasit-vr'
               ? 'bg-amber-500 text-black shadow-xs font-bold'
               : 'text-zinc-400 hover:text-white'}"
           >
@@ -1253,13 +965,13 @@
           <div class="flex items-center space-x-2">
             <button
               onclick={copyTargetUrl}
-              class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+              class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
             >
               Salin URL
             </button>
             <button
               onclick={() => (qrModalTatami = null)}
-              class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors"
+              class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors cursor-pointer"
             >
               Tutup
             </button>

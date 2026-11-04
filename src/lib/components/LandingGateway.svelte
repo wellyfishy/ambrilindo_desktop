@@ -1,5 +1,7 @@
 <script lang="ts">
-  import type { AppMode, DatabaseSummary, NetworkInfo } from "$lib/types";
+  import { onMount } from "svelte";
+  import { invoke } from "$lib/api_client";
+  import type { AppMode, DatabaseSummary, NetworkInfo, IpAvailabilityInfo } from "$lib/types";
 
   interface Props {
     currentDb: DatabaseSummary | null;
@@ -14,18 +16,91 @@
   let isConnectingHost = $state(false);
   let hostError = $state<string | null>(null);
 
-  // Available IPs for creating a room
-  let availableIps = $derived(networkInfo?.available_ips || []);
-  let selectedHostIp = $state<string>("");
+  // Real-time IP Availability State
+  let ipAvailabilities = $state<IpAvailabilityInfo[]>([]);
+  let isCheckingIps = $state(false);
+  let isStoppingServer = $state(false);
+  let selectedHostIp = $state<string>("0.0.0.0");
 
-  $effect(() => {
-    if (networkInfo?.local_ip && !selectedHostIp) {
-      selectedHostIp = networkInfo.local_ip;
-    }
+  let isOurServerRunning = $derived(
+    ipAvailabilities.some((item) => item.status === "current_host" || item.is_current_host)
+  );
+
+  let detectedActiveEvent = $derived(
+    ipAvailabilities.find((item) => item.status === "active_event" && !item.is_current_host && item.event_name) ||
+    ipAvailabilities.find((item) => item.status === "active_event" && !item.is_current_host)
+  );
+
+  let selectedIpInfo = $derived(
+    ipAvailabilities.find((item) => item.ip === selectedHostIp) || null
+  );
+
+  onMount(async () => {
+    await refreshIpAvailability();
   });
 
-  async function handleJoinHost() {
-    let cleanUrl = hostInputUrl.trim();
+  async function refreshIpAvailability() {
+    isCheckingIps = true;
+    try {
+      const list = await invoke<IpAvailabilityInfo[]>("check_ip_availability");
+      if (Array.isArray(list) && list.length > 0) {
+        ipAvailabilities = list;
+        if (!selectedHostIp || selectedHostIp === "0.0.0.0") {
+          const hasCurrentHost = list.find((i) => i.status === "current_host" || i.is_current_host);
+          if (hasCurrentHost) {
+            // Keep current selection
+          } else {
+            const hasZero = list.find((i) => i.ip === "0.0.0.0");
+            if (hasZero && hasZero.status === "available") {
+              selectedHostIp = "0.0.0.0";
+            } else {
+              const firstAvail = list.find((i) => i.status === "available");
+              if (firstAvail) {
+                selectedHostIp = firstAvail.ip;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Fallback from networkInfo
+      if (networkInfo?.available_ips) {
+        ipAvailabilities = [
+          {
+            ip: "0.0.0.0",
+            name: "Semua Interface (Default)",
+            status: "available",
+            event_name: null,
+            is_default: true,
+          },
+          ...networkInfo.available_ips.map((item) => ({
+            ip: item.ip,
+            name: item.name,
+            status: "available",
+            event_name: null,
+            is_default: item.is_default,
+          })),
+        ];
+      }
+    } finally {
+      isCheckingIps = false;
+    }
+  }
+
+  async function handleStopServer() {
+    isStoppingServer = true;
+    try {
+      await invoke("stop_arena_server");
+      await refreshIpAvailability();
+    } catch (e: any) {
+      alert("Gagal menghentikan server: " + (e?.message || e));
+    } finally {
+      isStoppingServer = false;
+    }
+  }
+
+  async function handleJoinHost(customUrl?: string) {
+    let cleanUrl = (customUrl || hostInputUrl).trim();
     if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
       cleanUrl = "http://" + cleanUrl;
     }
@@ -51,6 +126,10 @@
       isConnectingHost = false;
     }
   }
+
+  function handleStartHost() {
+    onSelectMode("host", undefined, selectedHostIp);
+  }
 </script>
 
 <div class="h-full w-full min-h-screen flex flex-col justify-between p-6 md:p-8 select-none app-frame text-zinc-200 overflow-y-auto font-sans relative">
@@ -66,12 +145,12 @@
       </div>
       <div>
         <div class="flex items-center space-x-2">
-          <h1 class="text-xl font-black text-white tracking-tight">AMBRILINDO</h1>
+          <h1 class="text-xl font-black text-white tracking-tight">AMBRILINDO ARENA</h1>
           <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
             v3.0
           </span>
         </div>
-        <p class="text-xs text-zinc-400 mt-0.5 font-normal">Karate Tournament Operations System</p>
+        <p class="text-xs text-zinc-400 mt-0.5 font-normal">Sistem Manajemen &amp; Scoring Turnamen Karate</p>
       </div>
     </div>
 
@@ -85,7 +164,7 @@
         </svg>
         <div class="text-left leading-tight">
           <div class="flex items-center gap-1.5">
-            <span class="text-[10px] font-bold text-zinc-400">Database aktif</span>
+            <span class="text-[10px] font-bold text-zinc-400">Database Turnamen</span>
             {#if currentDb?.events?.length}
               <span class="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
                 {currentDb.events.length} event
@@ -99,257 +178,278 @@
       </div>
       <button
         onclick={onPickDatabase}
-        class="h-8 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white text-xs font-semibold border border-white/[0.1] transition-colors motion-reduce:transition-none outline-none focus-visible:ring-2 focus-visible:ring-white/30 whitespace-nowrap"
+        class="h-8 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white text-xs font-semibold border border-white/[0.1] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/30 whitespace-nowrap cursor-pointer"
       >
         <span>Ganti</span>
       </button>
     </div>
   </header>
 
-  <!-- Arena Mobile Quick Jump Strip -->
-  <section aria-label="Akses arena cepat" class="w-full max-w-6xl mx-auto my-5 p-3.5 rounded-xl surface-card border border-white/[0.08] shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
-    <div class="flex items-center gap-2.5">
-      <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
-        Venue Mobile
-      </span>
-      <span class="text-xs font-semibold text-zinc-300">Akses Cepat Wasit &amp; LO</span>
-    </div>
-    <div class="flex items-center gap-2 shrink-0 flex-wrap">
-      <a
-        href="/jury/1"
-        class="h-8 px-3.5 rounded-xl bg-white text-black hover:bg-zinc-200 font-bold text-xs flex items-center gap-2 shadow-sm transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-white/40 whitespace-nowrap"
-      >
-        <span>Juri Tatami 1</span>
-        <svg class="w-3.5 h-3.5 text-black" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
-        </svg>
-      </a>
-      <a
-        href="/lo-kata/1"
-        class="h-8 px-3.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.1] text-white border border-white/[0.1] font-semibold text-xs flex items-center gap-2 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-white/30 whitespace-nowrap"
-      >
-        <span>LO Tatami 1</span>
-        <svg class="w-3.5 h-3.5 text-zinc-300" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
-        </svg>
-      </a>
-      <a
-        href="/coach-supervisor/1"
-        class="h-8 px-3 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 whitespace-nowrap"
-        title="Panel Pengawas Pelatih Video Review"
-      >
-        <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
-        <span>Coach VR</span>
-      </a>
-      <a
-        href="/wasit-vr/1"
-        class="h-8 px-3 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-amber-500/40 whitespace-nowrap"
-        title="Layar Meja Wasit Video Review"
-      >
-        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-        <span>Wasit VR</span>
-      </a>
-
-      <a
-        href="/marshalling"
-        class="h-8 px-3 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-purple-500/40 whitespace-nowrap"
-        title="Layar Panggilan Atlet & Antrean Ruang Pemanasan (Warm-up Hall)"
-      >
-        <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-        <span>Marshalling</span>
-      </a>
-      <a
-        href="/results-booklet"
-        class="h-8 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-semibold text-xs flex items-center gap-1.5 transition-colors motion-reduce:transition-none active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 whitespace-nowrap"
-        title="Buku Laporan Hasil Pertandingan & Lembar Berita Acara Resmi"
-      >
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-        <span>Buku Hasil (BA)</span>
-      </a>
-      <a
-        href="/jury"
-        class="h-8 px-3.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] text-xs font-semibold flex items-center transition-colors motion-reduce:transition-none outline-none focus-visible:ring-2 focus-visible:ring-white/20 whitespace-nowrap"
-      >
-        <span>Pilih Tatami…</span>
-      </a>
-    </div>
-  </section>
-
-  <!-- Main Center Options: 3 Operational Command Panels -->
-  <main class="w-full max-w-6xl mx-auto my-auto py-2 shrink-0">
-    <div class="flex items-center justify-between mb-5">
+  <!-- Main 2-Option Command Panels -->
+  <main class="w-full max-w-5xl mx-auto my-auto py-6 shrink-0">
+    <div class="flex items-center justify-between mb-6">
       <div>
         <div class="flex items-center space-x-2">
-          <h2 class="text-xl font-black text-white tracking-tight uppercase">PILIH MODE OPERASI</h2>
+          <h2 class="text-xl font-black text-white tracking-tight uppercase">PILIH PERAN KOMPUTER</h2>
           <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
-            3 mode tersedia
+            2 Pilihan Utama
           </span>
         </div>
-        <p class="text-xs text-zinc-400 mt-1 font-normal">Pilih konfigurasi runtime sesuai posisi workstation di venue turnamen</p>
+        <p class="text-xs text-zinc-400 mt-1 font-normal">
+          Tentukan peran laptop ini di arena pertandingan (Komputer Utama vs Operator Tambahan)
+        </p>
       </div>
 
-      {#if networkInfo?.local_ip}
-        <div class="hidden md:flex items-center gap-2 surface-card border border-white/[0.08] px-3 py-1.5 rounded-lg text-xs text-zinc-300">
-          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-          <span>LAN IP: <span class="font-mono">{networkInfo.local_ip}</span></span>
-        </div>
-      {/if}
+      <button
+        onclick={refreshIpAvailability}
+        disabled={isCheckingIps}
+        class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] text-xs transition"
+        title="Pindai ulang ketersediaan interface IP dan port 8000"
+      >
+        <svg class="w-3.5 h-3.5 {isCheckingIps ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        <span>{isCheckingIps ? "Memindai IP…" : "Refresh Jaringan"}</span>
+      </button>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
-      <!-- Card 1: Mode Offline (Standalone) -->
-      <div class="surface-card border border-white/[0.08] hover:border-white/[0.16] rounded-2xl p-5 flex flex-col justify-between shadow-md transition-colors motion-reduce:transition-none">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
+      <!-- Card 1: Komputer Utama (Server & Operator Cockpit) -->
+      <div class="surface-card border {selectedIpInfo?.status === 'active_event' ? 'border-amber-500/40 ring-1 ring-amber-500/30' : 'border-white/[0.12]'} rounded-2xl p-6 flex flex-col justify-between shadow-xl relative">
         <div>
           <div class="flex items-center justify-between mb-4">
-            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-white/[0.04] text-zinc-400 border border-white/[0.08]">
-              Standalone
+            <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span>OPSI 1 &bull; DIREKOMENDASIKAN</span>
             </span>
+            <span class="text-[10px] font-mono text-zinc-500">Port :8000</span>
           </div>
 
-          <h3 class="text-base font-black text-white tracking-tight">Offline</h3>
+          <h3 class="text-lg font-black text-white tracking-tight">Komputer Utama (Server &amp; Operator)</h3>
+          <p class="text-xs text-zinc-400 mt-1 leading-relaxed">
+            Membuka database master turnamen. Laptop ini berfungsi sebagai server hub LAN sekaligus meja operator scoring, drawing bagan, dan proyektor HDMI.
+          </p>
 
-          <div class="mt-4 space-y-2 text-xs text-zinc-400">
-            <div class="p-2.5 rounded-xl surface-input border border-white/[0.06] space-y-1.5 text-[11px]">
-              <div class="flex items-center justify-between text-zinc-300">
-                <span class="text-zinc-500">Engine</span>
-                <span>SQLite Lokal</span>
-              </div>
-              <div class="flex items-center justify-between text-zinc-300">
-                <span class="text-zinc-500">Jaringan</span>
-                <span>Zero LAN</span>
-              </div>
-              <div class="flex items-center justify-between text-zinc-300">
-                <span class="text-zinc-500">Fungsi</span>
-                <span>Bagan &amp; Scoring 1 PC</span>
-              </div>
+          <!-- IP Availability & Interface Picker -->
+          <div class="mt-5 space-y-2.5">
+            <div class="flex items-center justify-between">
+              <label for="ip-select-group" class="text-[10px] font-bold text-zinc-300 uppercase tracking-wider block">
+                Pilih IP Interface Ruang Pertandingan
+              </label>
+              <span class="text-[10px] text-zinc-500 font-mono">Bind 0.0.0.0</span>
             </div>
+
+            <div id="ip-select-group" class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+              {#each ipAvailabilities as item}
+                <button
+                  type="button"
+                  onclick={() => (selectedHostIp = item.ip)}
+                  class="w-full text-left p-2.5 rounded-xl border transition-all flex items-center justify-between text-xs {selectedHostIp === item.ip
+                    ? 'bg-white/[0.08] border-white/40 ring-1 ring-white/20'
+                    : 'bg-[#121318] hover:bg-white/[0.04] border-white/[0.06] text-zinc-300'}"
+                >
+                  <div class="flex items-center gap-2.5 truncate mr-2">
+                    <span class="w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 border {selectedHostIp === item.ip ? 'border-white bg-white text-black' : 'border-zinc-600'}">
+                      {#if selectedHostIp === item.ip}
+                        <span class="w-1.5 h-1.5 rounded-full bg-black"></span>
+                      {/if}
+                    </span>
+                    <div class="truncate">
+                      <div class="font-mono font-bold text-zinc-100 flex items-center gap-2">
+                        <span>{item.ip}</span>
+                        {#if item.ip === "0.0.0.0"}
+                          <span class="text-[9px] font-sans px-1 rounded bg-white/[0.08] text-zinc-300">Default Semua</span>
+                        {/if}
+                      </div>
+                      <span class="text-[10px] text-zinc-500 truncate block mt-0.5">{item.name}</span>
+                    </div>
+                  </div>
+
+                  <!-- Status Pill -->
+                  <div class="shrink-0">
+                    {#if item.status === "current_host" || item.is_current_host}
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span>Aktif (Server Anda)</span>
+                      </span>
+                    {:else if item.status === "active_event"}
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1" title="Terdeteksi server Ambrilindo lain aktif">
+                        <span>(!)</span>
+                        <span>Event Aktif</span>
+                      </span>
+                    {:else if item.status === "occupied"}
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30 flex items-center gap-1" title="Port 8000 sedang terpakai aplikasi lain">
+                        <span>(!)</span>
+                        <span>Port Sibuk</span>
+                      </span>
+                    {:else}
+                      <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 flex items-center gap-1">
+                        <span>✓</span>
+                        <span>Siap</span>
+                      </span>
+                    {/if}
+                  </div>
+                </button>
+              {/each}
+            </div>
+
+            <!-- Active Status / Collision Warning Banner -->
+            {#if selectedIpInfo?.status === "current_host" || selectedIpInfo?.is_current_host}
+              <div class="p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs mt-3">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-2 font-bold">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>Server Aktif di Laptop Ini</span>
+                  </div>
+                  <span class="text-[10px] font-mono bg-emerald-500/20 px-1.5 py-0.5 rounded text-emerald-200">
+                    Port 8000
+                  </span>
+                </div>
+                <p class="text-[11px] text-zinc-300 mt-1.5 leading-snug">
+                  Room turnamen {selectedIpInfo.event_name ? `"${selectedIpInfo.event_name}"` : ""} sedang aktif melayani koneksi. Anda dapat melanjutkan ke panel kendali atau menghentikan server jika ingin memulai ulang.
+                </p>
+              </div>
+            {:else if selectedIpInfo?.status === "active_event"}
+              <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs mt-3">
+                <div class="flex items-center gap-1.5 font-bold">
+                  <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                  <span>Peringatan Tabrakan Host:</span>
+                </div>
+                <p class="text-[11px] text-zinc-300 mt-1 leading-snug">
+                  Terdeteksi server turnamen lain aktif di jaringan ini ({selectedIpInfo.event_name ? `"${selectedIpInfo.event_name}"` : selectedIpInfo.ip}).
+                  Jika Anda ingin bergabung ke turnamen tersebut, gunakan opsi <b>Operator Tambahan</b> di sebelah kanan.
+                </p>
+              </div>
+            {/if}
           </div>
         </div>
 
-        <button
-          onclick={() => onSelectMode('solo')}
-          class="mt-6 h-10 w-full bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors motion-reduce:transition-none active:scale-[0.99] outline-none focus-visible:ring-2 focus-visible:ring-white/30 whitespace-nowrap"
-        >
-          <span>Masuk Mode Offline</span>
-        </button>
+        <div class="mt-6 space-y-2">
+          <button
+            onclick={handleStartHost}
+            class="h-11 w-full bg-white text-black hover:bg-zinc-200 font-black text-xs rounded-xl shadow-lg transition-all active:scale-[0.99] outline-none focus-visible:ring-2 focus-visible:ring-white/50 cursor-pointer flex items-center justify-center gap-2"
+          >
+            {#if isOurServerRunning}
+              <span>Lanjutkan Mengelola Turnamen</span>
+              <svg class="w-4 h-4 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+              </svg>
+            {:else}
+              <span>Mulai Sebagai Komputer Utama</span>
+              <svg class="w-4 h-4 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+              </svg>
+            {/if}
+          </button>
+
+          {#if isOurServerRunning}
+            <button
+              type="button"
+              onclick={handleStopServer}
+              disabled={isStoppingServer}
+              class="w-full py-2 rounded-xl text-xs font-semibold text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/25 transition cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <span>{isStoppingServer ? "Menghentikan Server…" : "Hentikan Server & Tutup Room"}</span>
+            </button>
+          {/if}
+        </div>
       </div>
 
-      <!-- Card 2: Gabung Room (LAN Client) -->
-      <div class="surface-card border border-white/[0.08] hover:border-white/[0.16] rounded-2xl p-5 flex flex-col justify-between shadow-md transition-colors motion-reduce:transition-none">
+      <!-- Card 2: Operator Tambahan (Gabung LAN Client) -->
+      <div class="surface-card border border-white/[0.12] rounded-2xl p-6 flex flex-col justify-between shadow-xl relative">
         <div>
           <div class="flex items-center justify-between mb-4">
-            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-white/[0.04] text-zinc-400 border border-white/[0.08]">
-              Client LAN
+            <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+              OPSI 2 &bull; LAPTOP KEDUA / TATAMI 2-6
             </span>
+            <span class="text-[10px] font-mono text-zinc-500">Client Mode</span>
           </div>
 
-          <h3 class="text-base font-black text-white tracking-tight">Gabung Room</h3>
+          <h3 class="text-lg font-black text-white tracking-tight">Operator Tambahan (Gabung LAN)</h3>
+          <p class="text-xs text-zinc-400 mt-1 leading-relaxed">
+            Terhubung ke Komputer Utama di venue turnamen. Cocok untuk laptop operator Tatami 2, Tatami 3, meja pendaftaran, atau sekretariat pertandingan.
+          </p>
 
-          <div class="mt-4 space-y-2">
-            <label for="host-ip-input" class="text-[10px] font-bold text-zinc-400 block">
-              URL Host Server
+          <!-- Quick Join Banner if another host was probed -->
+          {#if detectedActiveEvent}
+            <div class="mt-5 p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/30 text-blue-300 text-xs">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-1.5 font-bold">
+                  <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+                  <span>Server Turnamen Terdeteksi!</span>
+                </div>
+                <span class="text-[10px] font-mono bg-blue-500/20 px-1.5 py-0.5 rounded text-blue-200">
+                  {detectedActiveEvent.ip}
+                </span>
+              </div>
+              <p class="text-[11px] text-zinc-300 mt-1">
+                {detectedActiveEvent.event_name ? `Event: ${detectedActiveEvent.event_name}` : "Ambrilindo Arena Host Siap"}
+              </p>
+              <button
+                type="button"
+                onclick={() => handleJoinHost(`http://${detectedActiveEvent.ip}:8000`)}
+                disabled={isConnectingHost}
+                class="mt-2.5 w-full py-2 rounded-lg bg-blue-500 hover:bg-blue-400 text-white font-bold text-xs shadow-md transition cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <span>⚡ Gabung Cepat ke Server Ini</span>
+              </button>
+            </div>
+          {/if}
+
+          <!-- Manual Host Input -->
+          <div class="mt-5 space-y-2">
+            <label for="host-ip-input" class="text-[10px] font-bold text-zinc-300 uppercase tracking-wider block">
+              Alamat Host Server Manual
             </label>
-            <input
-              id="host-ip-input"
-              type="text"
-              bind:value={hostInputUrl}
-              placeholder="http://192.168.1.5:8000"
-              class="w-full surface-input border border-white/[0.1] focus:border-white text-white text-xs font-mono px-3.5 py-2 rounded-xl outline-none transition-colors motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-white/30"
-            />
+            <div class="relative">
+              <input
+                id="host-ip-input"
+                type="text"
+                bind:value={hostInputUrl}
+                placeholder="http://192.168.1.5:8000"
+                class="w-full surface-input border border-white/[0.12] focus:border-white text-white text-xs font-mono px-3.5 py-2.5 rounded-xl outline-none transition"
+              />
+            </div>
             {#if hostError}
               <p role="alert" class="text-[11px] text-rose-400 font-mono mt-1 break-all">{hostError}</p>
             {/if}
+            <p class="text-[11px] text-zinc-500">
+              Ketik alamat IP laptop Komputer Utama yang tertera pada layar laptop 1 atau scan QR.
+            </p>
           </div>
         </div>
 
         <button
-          onclick={handleJoinHost}
+          onclick={() => handleJoinHost()}
           disabled={isConnectingHost}
-          class="mt-6 h-10 w-full bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors motion-reduce:transition-none active:scale-[0.99] disabled:opacity-40 outline-none focus-visible:ring-2 focus-visible:ring-white/30 whitespace-nowrap"
+          class="mt-6 h-11 w-full bg-white/[0.06] hover:bg-white/[0.1] text-white font-bold text-xs rounded-xl border border-white/[0.12] transition-all active:scale-[0.99] disabled:opacity-40 cursor-pointer flex items-center justify-center gap-2"
         >
-          <span>{isConnectingHost ? "Menghubungkan…" : "Hubungkan ke Host"}</span>
-        </button>
-      </div>
-
-      <!-- Card 3: Buat Room (LAN Host Server) -->
-      <div class="surface-card border border-white/[0.08] hover:border-white/[0.16] rounded-2xl p-5 flex flex-col justify-between shadow-md transition-colors motion-reduce:transition-none">
-        <div>
-          <div class="flex items-center justify-between mb-4">
-            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              Host Server :8000
-            </span>
-          </div>
-
-          <h3 class="text-base font-black text-white tracking-tight">Buat Room</h3>
-
-          <!-- IP Address Selector -->
-          <div class="mt-4 space-y-2">
-            <label for="host-ip-select" class="text-[10px] font-bold text-zinc-400 block">
-              IP Interface Jaringan
-            </label>
-            {#if availableIps.length > 1}
-              <div class="relative">
-                <select
-                  id="host-ip-select"
-                  bind:value={selectedHostIp}
-                  class="w-full surface-input border border-white/[0.1] hover:border-white/20 focus:border-white text-white text-xs font-mono px-3.5 py-2 pr-8 rounded-xl outline-none transition-colors motion-reduce:transition-none appearance-none cursor-pointer focus-visible:ring-2 focus-visible:ring-white/30"
-                >
-                  {#each availableIps as item}
-                    <option value={item.ip} class="text-white py-1">
-                      {item.ip} ({item.name})
-                    </option>
-                  {/each}
-                </select>
-                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-zinc-400">
-                  <svg class="w-3.5 h-3.5" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </div>
-              </div>
-            {:else if availableIps.length === 1}
-              <div class="px-3.5 py-2 surface-input border border-white/[0.08] rounded-xl text-xs font-mono text-zinc-300 flex items-center justify-between">
-                <span>{availableIps[0].ip}</span>
-                <span class="text-[10px] text-zinc-500 font-sans">{availableIps[0].name}</span>
-              </div>
-            {:else}
-              <input
-                id="host-ip-select"
-                type="text"
-                bind:value={selectedHostIp}
-                placeholder="192.168.1.1"
-                class="w-full surface-input border border-white/[0.1] focus:border-white text-white text-xs font-mono px-3.5 py-2 rounded-xl outline-none transition-colors motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-white/30"
-              />
-            {/if}
-          </div>
-        </div>
-
-        <button
-          onclick={() => onSelectMode('host', undefined, selectedHostIp)}
-          class="mt-6 h-10 w-full bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors motion-reduce:transition-none active:scale-[0.99] outline-none focus-visible:ring-2 focus-visible:ring-white/50 whitespace-nowrap"
-        >
-          <span>Buat Room &amp; Mulai Host</span>
+          <span>{isConnectingHost ? "Menghubungkan ke Host…" : "Hubungkan ke Host Server"}</span>
+          <svg class="w-4 h-4 text-zinc-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+          </svg>
         </button>
       </div>
     </div>
   </main>
 
   <!-- Bottom Operational Status Footer -->
-  <footer class="w-full max-w-6xl mx-auto pt-4 border-t border-white/[0.08] flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-zinc-400 shrink-0">
+  <footer class="w-full max-w-5xl mx-auto pt-4 border-t border-white/[0.08] flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-zinc-400 shrink-0">
     <div class="flex items-center space-x-3">
       <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
-      <span class="text-[11px] text-zinc-300">Server LAN Standby</span>
+      <span class="text-[11px] text-zinc-300">Siap Operasional Venue</span>
       <span class="text-zinc-600 font-mono">/</span>
-      <span class="text-[11px] text-zinc-400">Database SQLite Siap</span>
+      <span class="text-[11px] text-zinc-400">Database SQLite Terintegrasi</span>
     </div>
-    <span class="text-[11px] text-zinc-500">Ambrilindo Desktop v3.0</span>
+    <span class="text-[11px] text-zinc-500">Ambrilindo Desktop v3.0 &bull; FORKI &amp; WKF Tournament System</span>
   </footer>
 </div>
 
 <style>
   :root {
-    --bg-app: #14161b;
-    --bg-card: #181a20;
-    --bg-input: #111215;
+    --bg-app: #101217;
+    --bg-card: #15181f;
+    --bg-input: #0e0f14;
     --text-app: #f4f4f5;
   }
   .app-frame {
@@ -363,8 +463,5 @@
   .surface-input {
     background-color: var(--bg-input);
     color: var(--text-app);
-  }
-  button {
-    white-space: nowrap;
   }
 </style>

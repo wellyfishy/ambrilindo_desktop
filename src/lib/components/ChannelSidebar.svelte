@@ -59,6 +59,19 @@
   let scoreboardFlyoutPos = $state<{ top: number; left: number }>({ top: 0, left: 330 });
   let closeMenuTimer: any = null;
 
+  function portal(node: HTMLElement) {
+    if (typeof document !== "undefined") {
+      document.body.appendChild(node);
+    }
+    return {
+      destroy() {
+        if (node.parentNode) {
+          node.parentNode.removeChild(node);
+        }
+      },
+    };
+  }
+
   function scheduleCloseMenu() {
     if (closeMenuTimer) clearTimeout(closeMenuTimer);
     closeMenuTimer = setTimeout(() => {
@@ -225,7 +238,7 @@
 
 <aside
   style="width: {sidebarWidth}px;"
-  class="no-print bg-[#111216] flex flex-col justify-between shrink-0 select-none z-10 border-r border-white/[0.08] font-sans relative"
+  class="no-print bg-[#111216] flex flex-col justify-between shrink-0 select-none z-30 border-r border-white/[0.08] font-sans relative"
 >
   <!-- Top Tournament Event Header -->
   <div class="h-14 border-b border-white/[0.08] px-4 flex items-center justify-between shadow-sm">
@@ -286,19 +299,34 @@
             <span>data-atlet</span>
           </button>
 
-          <!-- Kontingen & Perguruan -->
+          <!-- Kontingen -->
           <button
             onclick={() =>
               onSelectChannel({
                 type: "contingent",
                 id: "contingents",
-                name: "kontingen-perguruan",
-                subtitle: "Master Data Kontingen & Perguruan Silat / Karate",
+                name: "kontingen",
+                subtitle: "Master Data Kontingen & Logo Official",
               })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'kontingen-perguruan' || activeChannel.type === 'contingent' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'kontingen' || (activeChannel.type === 'contingent' && activeChannel.name !== 'perguruan') ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
           >
             <span class="text-zinc-500 font-mono">#</span>
-            <span>kontingen-perguruan</span>
+            <span>kontingen</span>
+          </button>
+
+          <!-- Perguruan -->
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "perguruan",
+                id: "perguruans",
+                name: "perguruan",
+                subtitle: "Master Data Perguruan Karate FORKI",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'perguruan' || activeChannel.type === 'perguruan' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>perguruan</span>
           </button>
 
           <!-- Nomor Tanding -->
@@ -357,12 +385,13 @@
             <!-- Flyout Menu Popover (Fixed to viewport with anti-flicker bridge) -->
             {#if isScoreboardMenuOpen}
               <div
+                use:portal
                 role="region"
                 aria-label="Menu Pilihan Tatami dan Monitor"
                 style="top: {scoreboardFlyoutPos.top}px; left: {scoreboardFlyoutPos.left}px;"
                 onmouseenter={cancelCloseMenu}
                 onmouseleave={scheduleCloseMenu}
-                class="fixed z-50 bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-64 text-xs animate-in fade-in zoom-in-95 duration-100 before:content-[''] before:absolute before:-left-3 before:top-0 before:w-4 before:h-full"
+                class="fixed z-[9999] bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-2xl p-2 w-64 text-xs animate-in fade-in zoom-in-95 duration-100 before:content-[''] before:absolute before:-left-3 before:top-0 before:w-4 before:h-full"
               >
                 {#if activeRole === "admin_utama"}
                   <div class="px-2 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-500 border-b border-[#2b2d31] mb-1 flex items-center justify-between">
@@ -516,6 +545,23 @@
             <span class="text-zinc-500 font-mono">#</span>
             <span>summary-juara</span>
           </button>
+
+          <!-- Buku Hasil Resmi & Berita Acara -->
+          <a
+            href="/results-booklet?event_id={activeEvent?.id || 1}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-amber-300/80 hover:text-amber-300 hover:bg-amber-500/[0.08] transition group"
+            title="Buka Buku Hasil Kejuaraan & Berita Acara Resmi siap cetak (A4 / PDF)"
+          >
+            <div class="flex items-center space-x-2 truncate">
+              <span class="text-amber-400 font-mono text-[11px]">📜</span>
+              <span class="truncate">buku-hasil-turnamen</span>
+            </div>
+            <svg class="w-3 h-3 text-amber-400/60 group-hover:text-amber-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+          </a>
         </div>
       {/if}
     </div>

@@ -114,6 +114,15 @@
     };
   });
 
+  function formatLogoUrl(logo: string | null | undefined): string {
+    if (!logo) return "/img/idn-flag.png";
+    if (logo.startsWith("http://") || logo.startsWith("https://") || logo.startsWith("data:")) {
+      return logo;
+    }
+    const clean = logo.replace(/^[/\\]+/, "");
+    return `/media/${clean}`;
+  }
+
   function runScoreboardTimerLoop() {
     if (!isTimerRunning) return;
     const now = performance.now();
@@ -365,7 +374,7 @@
         <!-- Contingent / Club Logo Frame -->
         <div class="sb-logo-frame">
           <img
-            src={akaLogo || "/img/idn-flag.png"}
+            src={formatLogoUrl(akaLogo)}
             alt="Logo AKA"
             class="sb-logo-media"
             onerror={(e) => { (e.currentTarget as HTMLImageElement).src = "/img/idn-flag.png"; }}
@@ -441,7 +450,7 @@
         <!-- Contingent / Club Logo Frame -->
         <div class="sb-logo-frame">
           <img
-            src={aoLogo || "/img/idn-flag.png"}
+            src={formatLogoUrl(aoLogo)}
             alt="Logo AO"
             class="sb-logo-media"
             onerror={(e) => { (e.currentTarget as HTMLImageElement).src = "/img/idn-flag.png"; }}

@@ -19,6 +19,7 @@
   let totalAthletes = $state(0);
   let totalCategories = $state(0);
   let totalContingents = $state(0);
+  let totalPerguruans = $state(0);
 
   // Modal Confirmations
   let showDeleteBagansModal = $state(false);
@@ -32,6 +33,41 @@
   let showResetAllModal = $state(false);
   let confirmResetAllChecked = $state(false);
   let isResettingAll = $state(false);
+  let isBackingUpQuick = $state(false);
+  let isBackingUpCustom = $state(false);
+  let lastBackupPath = $state<string | null>(null);
+
+  async function handleQuickBackup() {
+    isBackingUpQuick = true;
+    errorMessage = null;
+    try {
+      const path = await invoke<string>("backup_database");
+      lastBackupPath = path;
+      const filename = path.split(/[\\/]/).pop() || path;
+      onShowToast(`Cadangan database berhasil dibuat: ${filename}`);
+    } catch (err: any) {
+      errorMessage = typeof err === "string" ? err : err?.message || "Gagal mencadangkan database.";
+    } finally {
+      isBackingUpQuick = false;
+    }
+  }
+
+  async function handleCustomBackup() {
+    isBackingUpCustom = true;
+    errorMessage = null;
+    try {
+      const savedPath = await invoke<string | null>("backup_database_to_file");
+      if (savedPath) {
+        lastBackupPath = savedPath;
+        const filename = savedPath.split(/[\\/]/).pop() || savedPath;
+        onShowToast(`Cadangan tersimpan di: ${filename}`);
+      }
+    } catch (err: any) {
+      errorMessage = typeof err === "string" ? err : err?.message || "Gagal menyimpan cadangan.";
+    } finally {
+      isBackingUpCustom = false;
+    }
+  }
 
   let errorMessage = $state<string | null>(null);
 
@@ -39,17 +75,19 @@
     isLoading = true;
     errorMessage = null;
     try {
-      const [baganList, athleteList, categoryList, contingentList] = await Promise.all([
+      const [baganList, athleteList, categoryList, contingentList, perguruanList] = await Promise.all([
         invoke<BaganItem[]>("get_bagans", { eventId }).catch(() => []),
         invoke<any[]>("get_athletes", { eventId }).catch(() => []),
         invoke<any[]>("get_categories", { eventId }).catch(() => []),
         invoke<any[]>("get_contingents", { eventId }).catch(() => []),
+        invoke<any[]>("get_perguruans", { eventId }).catch(() => []),
       ]);
 
       totalBagans = baganList.length;
       totalAthletes = athleteList.length;
       totalCategories = categoryList.length;
       totalContingents = contingentList.length;
+      totalPerguruans = (perguruanList || []).length;
     } catch (err: any) {
       errorMessage = typeof err === "string" ? err : err?.message || "Gagal memuat ringkasan data master.";
     } finally {
@@ -276,6 +314,29 @@
         </svg>
       </div>
     </div>
+
+    <!-- Card 5: Perguruan Karate FORKI -->
+    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3.5 flex items-center justify-between hover:border-white/[0.15] transition shadow-xs">
+      <div>
+        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Perguruan Karate</span>
+        <div class="flex items-baseline space-x-1.5 mt-1">
+          <span class="text-2xl font-black font-mono text-white">
+            {#if isLoading}
+              <span class="text-zinc-600 text-lg">...</span>
+            {:else}
+              {totalPerguruans}
+            {/if}
+          </span>
+          <span class="text-xs text-zinc-500 font-medium">FORKI</span>
+        </div>
+        <p class="text-[11px] text-zinc-500 mt-1">Aliran & perguruan</p>
+      </div>
+      <div class="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+        </svg>
+      </div>
+    </div>
   </div>
 
   <!-- Section 2: Akses Cepat Data Master (Navigation Cards) -->
@@ -287,7 +348,7 @@
       <span class="text-[11px] text-zinc-500">Akses langsung ke channel entitas</span>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
       <!-- Nav Card 1: Data Atlet -->
       <button
         type="button"
@@ -320,6 +381,82 @@
         </div>
         <div class="mt-3 pt-3 border-t border-white/[0.06] flex items-center text-[11px] font-medium text-sky-400 group-hover:text-sky-300 space-x-1">
           <span>Buka Data Atlet</span>
+          <svg class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </button>
+
+      <!-- Nav Card: Kontingen & Utusan -->
+      <button
+        type="button"
+        onclick={() =>
+          onNavigate({
+            type: "contingent",
+            id: "contingents",
+            name: "kontingen",
+            subtitle: "Master Data Kontingen & Logo Official",
+          })}
+        class="bg-[#181a20] border border-white/[0.08] hover:border-white/[0.2] p-4 rounded-xl text-left transition group active:scale-[0.99] flex flex-col justify-between"
+      >
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+              </svg>
+            </div>
+            <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+              {totalContingents} Utusan
+            </span>
+          </div>
+          <h3 class="text-xs font-bold text-white group-hover:text-purple-300 transition">
+            Kontingen & Utusan
+          </h3>
+          <p class="text-[11px] text-zinc-400 mt-1 leading-relaxed">
+            Kelola kontingen dojo/daerah, unggah logo official untuk scoring board & bagan.
+          </p>
+        </div>
+        <div class="mt-3 pt-3 border-t border-white/[0.06] flex items-center text-[11px] font-medium text-purple-400 group-hover:text-purple-300 space-x-1">
+          <span>Buka Kontingen</span>
+          <svg class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </button>
+
+      <!-- Nav Card: Perguruan Karate FORKI -->
+      <button
+        type="button"
+        onclick={() =>
+          onNavigate({
+            type: "perguruan",
+            id: "perguruans",
+            name: "perguruan",
+            subtitle: "Master Data Perguruan Karate FORKI",
+          })}
+        class="bg-[#181a20] border border-white/[0.08] hover:border-white/[0.2] p-4 rounded-xl text-left transition group active:scale-[0.99] flex flex-col justify-between"
+      >
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
+            </div>
+            <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              {totalPerguruans} FORKI
+            </span>
+          </div>
+          <h3 class="text-xs font-bold text-white group-hover:text-amber-300 transition">
+            Perguruan Karate (FORKI)
+          </h3>
+          <p class="text-[11px] text-zinc-400 mt-1 leading-relaxed">
+            Daftar perguruan karate FORKI (INKAI, LEMKARI, KKI, INKANAS, dll.) dan afiliasi atlet.
+          </p>
+        </div>
+        <div class="mt-3 pt-3 border-t border-white/[0.06] flex items-center text-[11px] font-medium text-amber-400 group-hover:text-amber-300 space-x-1">
+          <span>Buka Perguruan</span>
           <svg class="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
           </svg>
@@ -402,6 +539,81 @@
         </div>
       </button>
     </div>
+  </div>
+
+  <!-- Section: Cadangan & Keamanan Database -->
+  <div class="rounded-2xl border border-emerald-500/20 bg-emerald-950/10 p-5 sm:p-6 shadow-xl relative overflow-hidden">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div class="flex items-start space-x-3.5">
+        <div class="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0 mt-0.5">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <h2 class="text-sm sm:text-base font-bold text-white tracking-wide">Pencadangan Database Turnamen (.sqlite3)</h2>
+            <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              Snapshot Mandiri
+            </span>
+          </div>
+          <p class="text-xs text-zinc-400 mt-1 leading-relaxed max-w-2xl">
+            Duplikasi seluruh data pertandingan, skor, bagan, dan atlet ke file SQLite terpisah dengan proteksi WAL checkpoint. Lindungi turnamen dari risiko kehilangan data akibat laptop mati atau force close.
+          </p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2.5 shrink-0 flex-wrap">
+        <!-- 1-Click Quick Backup -->
+        <button
+          type="button"
+          onclick={handleQuickBackup}
+          disabled={isBackingUpQuick || isBackingUpCustom}
+          class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-2 shadow-lg active:scale-95 disabled:opacity-50 cursor-pointer"
+          title="Buat snapshot instan dengan timestamp ke folder backups"
+        >
+          {#if isBackingUpQuick}
+            <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            <span>Mencadangkan...</span>
+          {:else}
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span>Cadangkan Cepat (1-Klik)</span>
+          {/if}
+        </button>
+
+        <!-- Custom Destination / Save As -->
+        <button
+          type="button"
+          onclick={handleCustomBackup}
+          disabled={isBackingUpQuick || isBackingUpCustom}
+          class="px-3.5 py-2.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-zinc-300 hover:text-white border border-white/10 text-xs font-semibold transition flex items-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
+          title="Simpan cadangan ke lokasi tertentu, misal Flashdisk USB"
+        >
+          {#if isBackingUpCustom}
+            <span>Menyimpan...</span>
+          {:else}
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+            </svg>
+            <span>Pilih Lokasi Simpan...</span>
+          {/if}
+        </button>
+      </div>
+    </div>
+
+    {#if lastBackupPath}
+      <div class="mt-3 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-center gap-2 font-mono">
+        <svg class="w-4 h-4 shrink-0 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+        </svg>
+        <span class="truncate">Snapshot tersimpan: {lastBackupPath}</span>
+      </div>
+    {/if}
   </div>
 
   <!-- Section 3: Danger Zone / Reset & Pembersihan Data -->

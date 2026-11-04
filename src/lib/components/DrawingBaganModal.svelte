@@ -24,7 +24,7 @@
   // Selections
   let selectedCategoryIds = $state<number[]>([]);
   let vrCategoryIds = $state<number[]>([]);
-  let shuffleType = $state<"perguruan" | "kontingen">("perguruan");
+  let shuffleType = $state<"both" | "kontingen" | "perguruan">("both");
   let searchQuery = $state("");
 
   // Delete all modal state
@@ -467,43 +467,71 @@
 
         <!-- SECTION 3: Tipe Pemisahan (Shuffle Type) -->
         <div class="p-4 bg-[#181a20] border border-white/[0.08] rounded-xl space-y-3">
-          <span class="text-xs font-mono font-bold text-white uppercase tracking-wider block">
-            3. METODE PEMISAHAN ANTI-TABRAKAN
-          </span>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-mono font-bold text-white uppercase tracking-wider block">
+              3. METODE PEMISAHAN ANTI-TABRAKAN
+            </span>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-bold">
+              STANDAR WKF / FORKI
+            </span>
+          </div>
 
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <label
-              class="flex items-start space-x-3 p-3 rounded-xl border transition cursor-pointer {shuffleType === 'perguruan' ? 'bg-white/[0.04] border-white/20' : 'bg-black/20 border-white/[0.06]'}"
+              class="flex items-start space-x-3 p-3 rounded-xl border transition cursor-pointer {shuffleType === 'both' ? 'bg-blue-500/[0.08] border-blue-500/40 ring-1 ring-blue-500/20' : 'bg-black/20 border-white/[0.06] hover:bg-white/[0.02]'}"
             >
               <input
                 type="radio"
                 name="shuffleType"
-                value="perguruan"
+                value="both"
                 bind:group={shuffleType}
-                class="mt-0.5 text-blue-500 focus:ring-0"
+                class="mt-0.5 text-blue-500 focus:ring-0 cursor-pointer"
               />
               <div>
-                <span class="text-xs font-bold text-white block">Pemisahan Perguruan</span>
-                <span class="text-[11px] text-zinc-400 block mt-0.5">
-                  Atlet satu perguruan/dojang dipisah sejauh mungkin di pohon eliminasi (paruh &amp; kuadran berbeda).
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span class="text-xs font-bold text-white block">Kontingen &amp; Perguruan</span>
+                  <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    REKOMENDASI
+                  </span>
+                </div>
+                <span class="text-[11px] text-zinc-400 block mt-1 leading-relaxed">
+                  Pemisahan dua lapis: atlet satu kontingen dan satu perguruan dipisah ke pool &amp; paruh eliminasi yang berbeda.
                 </span>
               </div>
             </label>
 
             <label
-              class="flex items-start space-x-3 p-3 rounded-xl border transition cursor-pointer {shuffleType === 'kontingen' ? 'bg-white/[0.04] border-white/20' : 'bg-black/20 border-white/[0.06]'}"
+              class="flex items-start space-x-3 p-3 rounded-xl border transition cursor-pointer {shuffleType === 'kontingen' ? 'bg-white/[0.04] border-white/20' : 'bg-black/20 border-white/[0.06] hover:bg-white/[0.02]'}"
             >
               <input
                 type="radio"
                 name="shuffleType"
                 value="kontingen"
                 bind:group={shuffleType}
-                class="mt-0.5 text-blue-500 focus:ring-0"
+                class="mt-0.5 text-blue-500 focus:ring-0 cursor-pointer"
               />
               <div>
-                <span class="text-xs font-bold text-white block">Pemisahan Kontingen / Utusan</span>
-                <span class="text-[11px] text-zinc-400 block mt-0.5">
-                  Atlet satu kontingen/daerah dipisah sejauh mungkin di pohon eliminasi.
+                <span class="text-xs font-bold text-white block">Pemisahan Kontingen</span>
+                <span class="text-[11px] text-zinc-400 block mt-1 leading-relaxed">
+                  Atlet satu kontingen/daerah pendaftaran dipisah sejauh mungkin di bagan.
+                </span>
+              </div>
+            </label>
+
+            <label
+              class="flex items-start space-x-3 p-3 rounded-xl border transition cursor-pointer {shuffleType === 'perguruan' ? 'bg-white/[0.04] border-white/20' : 'bg-black/20 border-white/[0.06] hover:bg-white/[0.02]'}"
+            >
+              <input
+                type="radio"
+                name="shuffleType"
+                value="perguruan"
+                bind:group={shuffleType}
+                class="mt-0.5 text-blue-500 focus:ring-0 cursor-pointer"
+              />
+              <div>
+                <span class="text-xs font-bold text-white block">Pemisahan Perguruan</span>
+                <span class="text-[11px] text-zinc-400 block mt-1 leading-relaxed">
+                  Pemisahan berdasarkan perguruan FORKI (Inkai, KKI, Lemkari, dll).
                 </span>
               </div>
             </label>

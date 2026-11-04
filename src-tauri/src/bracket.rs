@@ -210,6 +210,7 @@ pub struct AthleteInput {
     pub name: String,
     pub is_priority: bool,
     pub group_key: String, // club or contingent identifier
+    pub secondary_key: Option<String>, // optional second layer (e.g. perguruan FORKI)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -335,7 +336,7 @@ pub fn split_athletes_into_pools(
                 for p in 0..num_pools {
                     let cap = target_counts[p] as isize - pools_atlets[p].len() as isize;
                     if cap > 0 {
-                        let same_del = pools_atlets[p].iter().filter(|x| x.group_key == a.group_key).count();
+                        let same_del = pools_atlets[p].iter().filter(|x| (x.group_key == a.group_key && !x.group_key.is_empty()) || (x.secondary_key.is_some() && x.secondary_key == a.secondary_key)).count();
                         pool_capacities.push((same_del, -cap, rng.gen_range(0.0..1.0), p));
                     }
                 }
@@ -478,7 +479,8 @@ pub fn build_bracket_in_memory(
                     let empty_group = Vec::new();
                     let group_prev = placed_by_group.get(&a.group_key).unwrap_or(&empty_group);
                     let p_del: u64 = group_prev.iter().map(|prev_s| slot_penalty(s, prev_s)).sum();
-                    let p = 2 * p_prio + p_del;
+                    let p_sec: u64 = if let Some(sec) = &a.secondary_key { placed_by_group.get(sec).unwrap_or(&empty_group).iter().map(|prev_s| slot_penalty(s, prev_s)).sum() } else { 0 };
+                    let p = 2 * p_prio + p_del + (p_sec / 2);
                     if p < best_p {
                         best_p = p;
                         candidates = vec![*s];
@@ -499,6 +501,7 @@ pub fn build_bracket_in_memory(
                 assignment.insert(a.id, chosen);
                 placed_priority_slots.push(chosen);
                 placed_by_group.entry(a.group_key.clone()).or_default().push(chosen);
+                if let Some(sec) = &a.secondary_key { placed_by_group.entry(sec.clone()).or_default().push(chosen); }
                 trial_score = trial_score.saturating_add(best_p);
                 if max_bye == 0 {
                     trial_score = trial_score.saturating_add(500_000);
@@ -528,7 +531,9 @@ pub fn build_bracket_in_memory(
                     for s in &available {
                         let empty_group = Vec::new();
                         let group_prev = placed_by_group.get(&gid).unwrap_or(&empty_group);
-                        let p: u64 = group_prev.iter().map(|prev_s| slot_penalty(s, prev_s)).sum();
+                        let p_pri: u64 = group_prev.iter().map(|prev_s| slot_penalty(s, prev_s)).sum();
+                        let p_sec: u64 = if let Some(sec) = &a.secondary_key { placed_by_group.get(sec).unwrap_or(&empty_group).iter().map(|prev_s| slot_penalty(s, prev_s)).sum() } else { 0 };
+                        let p = p_pri + (p_sec / 2);
                         if p < best_p {
                             best_p = p;
                             candidates = vec![*s];
@@ -548,6 +553,7 @@ pub fn build_bracket_in_memory(
                     }
                     assignment.insert(a.id, chosen);
                     placed_by_group.entry(gid.clone()).or_default().push(chosen);
+                    if let Some(sec) = &a.secondary_key { placed_by_group.entry(sec.clone()).or_default().push(chosen); }
                     trial_score = trial_score.saturating_add(best_p);
                 }
             }
@@ -596,7 +602,7 @@ pub fn build_bracket_in_memory(
             if let Some(m) = r1_map.get(&u) {
                 if let (Some(id1), Some(id2)) = (m.atlet1_id, m.atlet2_id) {
                     if let (Some(a1), Some(a2)) = (athlete_map.get(&id1), athlete_map.get(&id2)) {
-                        if a1.group_key == a2.group_key {
+                        if a1.group_key == a2.group_key || (a1.secondary_key.is_some() && a1.secondary_key == a2.secondary_key) {
                             collision_count += 1;
                         }
                     }
@@ -1001,6 +1007,7 @@ mod tests {
                 name: format!("Athlete {}", i),
                 is_priority: i <= 2,
                 group_key: format!("Club {}", i % 3),
+                secondary_key: None,
             })
             .collect();
 
@@ -1026,6 +1033,7 @@ mod tests {
                 name: format!("Athlete {}", i),
                 is_priority: false,
                 group_key: format!("Club {}", i % 4),
+                secondary_key: None,
             })
             .collect();
 
@@ -1048,6 +1056,7 @@ mod tests {
             name: "Sole Competitor".into(),
             is_priority: true,
             group_key: "Solo".into(),
+            secondary_key: None,
         }];
 
         let result = build_bracket_in_memory(&athletes, 1, false);
@@ -1064,8 +1073,8 @@ mod tests {
     #[test]
     fn test_build_bracket_two_teammates_opposite_halves() {
         let athletes = vec![
-            AthleteInput { id: 1, name: "Teammate 1".into(), is_priority: false, group_key: "KlubA".into() },
-            AthleteInput { id: 2, name: "Teammate 2".into(), is_priority: false, group_key: "KlubA".into() },
+            AthleteInput { id: 1, name: "Teammate 1".into(), is_priority: false, group_key: "KlubA".into(), secondary_key: None },
+            AthleteInput { id: 2, name: "Teammate 2".into(), is_priority: false, group_key: "KlubA".into(), secondary_key: None },
         ];
 
         let result = build_bracket_in_memory(&athletes, 1, false);
@@ -1173,5 +1182,53 @@ mod tests {
             pairs4.insert((pair[0], pair[1]));
         }
         assert_eq!(pairs4.len(), 6);
+    }
+    #[test]
+    fn test_dual_anti_bentrok_contingent_and_perguruan() {
+        use super::*;
+
+        let athletes = vec![
+            AthleteInput {
+                id: 1,
+                name: "Athlete 1 (Utusan 1, Inkai)".into(),
+                is_priority: false,
+                group_key: "U_1".into(),
+                secondary_key: Some("P_Inkai".into()),
+            },
+            AthleteInput {
+                id: 2,
+                name: "Athlete 2 (Utusan 1, Lemkari)".into(),
+                is_priority: false,
+                group_key: "U_1".into(), // Same Utusan as 1
+                secondary_key: Some("P_Lemkari".into()),
+            },
+            AthleteInput {
+                id: 3,
+                name: "Athlete 3 (Utusan 2, Inkai)".into(),
+                is_priority: false,
+                group_key: "U_2".into(),
+                secondary_key: Some("P_Inkai".into()), // Same Perguruan as 1
+            },
+            AthleteInput {
+                id: 4,
+                name: "Athlete 4 (Utusan 3, KKI)".into(),
+                is_priority: false,
+                group_key: "U_3".into(),
+                secondary_key: Some("P_KKI".into()),
+            },
+        ];
+
+        let result = build_bracket_in_memory(&athletes, 1, false);
+        assert_eq!(result.collision_count, 0, "No contingent or perguruan collisions should occur in Round 1");
+
+        // Verify round 1 matchups: Athlete 1 must NOT be paired with Athlete 2 or Athlete 3
+        let r1 = result.matches.get(&1).unwrap();
+        for (_, m) in r1 {
+            if let (Some(a1), Some(a2)) = (m.atlet1_id, m.atlet2_id) {
+                let pair = (a1.min(a2), a1.max(a2));
+                assert_ne!(pair, (1, 2), "Athlete 1 & 2 share same Utusan and must not fight in Round 1");
+                assert_ne!(pair, (1, 3), "Athlete 1 & 3 share same Perguruan and must not fight in Round 1");
+            }
+        }
     }
 }

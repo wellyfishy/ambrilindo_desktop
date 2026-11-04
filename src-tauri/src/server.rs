@@ -50,6 +50,16 @@ pub struct NetworkInterfaceInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpAvailabilityInfo {
+    pub ip: String,
+    pub name: String,
+    pub status: String, // "available", "occupied", "active_event", "current_host"
+    pub event_name: Option<String>,
+    pub is_default: bool,
+    pub is_current_host: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkInfo {
     pub port: u16,
     pub local_ip: String,
@@ -148,6 +158,139 @@ pub fn get_network_info() -> NetworkInfo {
     get_network_info_with_ip(None)
 }
 
+static SHUTDOWN_TX: Mutex<Option<tokio::sync::oneshot::Sender<()>>> = Mutex::const_new(None);
+
+pub async fn stop_server() -> Result<(), String> {
+    let mut lock = SHUTDOWN_TX.lock().await;
+    if let Some(tx) = lock.take() {
+        let _ = tx.send(());
+        info!("Arena server graceful shutdown signal sent");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    Ok(())
+}
+
+pub async fn check_ip_availability(is_our_server_running: bool) -> Vec<IpAvailabilityInfo> {
+    let mut results = Vec::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(350))
+        .build()
+        .unwrap_or_default();
+
+    // Query active event name from local server if our server is running or reachable
+    let mut local_active_event: Option<String> = None;
+    let local_probe = format!("http://127.0.0.1:{}/api/events", DEFAULT_PORT);
+    if let Ok(ev_resp) = client.get(&local_probe).send().await {
+        if let Ok(ev_json) = ev_resp.json::<serde_json::Value>().await {
+            if let Some(arr) = ev_json.get("data").and_then(|d| d.as_array()) {
+                if let Some(first_ev) = arr.first() {
+                    if let Some(name) = first_ev.get("nama_event").and_then(|n| n.as_str()) {
+                        local_active_event = Some(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 1. Check 0.0.0.0 (All Interfaces)
+    let (zero_status, zero_is_curr) = if is_our_server_running {
+        ("current_host".to_string(), true)
+    } else {
+        match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", DEFAULT_PORT)).await {
+            Ok(_) => ("available".to_string(), false),
+            Err(_) => {
+                if local_active_event.is_some() {
+                    ("active_event".to_string(), false)
+                } else {
+                    ("occupied".to_string(), false)
+                }
+            }
+        }
+    };
+
+    results.push(IpAvailabilityInfo {
+        ip: "0.0.0.0".to_string(),
+        name: "Semua Interface Jaringan (Default)".to_string(),
+        status: zero_status,
+        event_name: local_active_event.clone(),
+        is_default: true,
+        is_current_host: zero_is_curr,
+    });
+
+    // 2. Check each local IP
+    let available_ips = get_available_ips();
+    for iface in available_ips {
+        if iface.ip == "127.0.0.1" || iface.ip == "0.0.0.0" {
+            continue;
+        }
+
+        let mut status = "available".to_string();
+        let mut event_name = None;
+        let mut is_curr = false;
+
+        if is_our_server_running {
+            // Server this app is running binds 0.0.0.0:8000, so it answers on this interface
+            status = "current_host".to_string();
+            event_name = local_active_event.clone();
+            is_curr = true;
+        } else {
+            // Try HTTP probe first to see if another Ambrilindo server is already active on this IP
+            let probe_url = format!("http://{}:{}/api/health", iface.ip, DEFAULT_PORT);
+            if let Ok(resp) = client.get(&probe_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(health) = resp.json::<HealthStatus>().await {
+                        if health.status == "ok" {
+                            status = "active_event".to_string();
+                            // Query active event name
+                            let events_url = format!("http://{}:{}/api/events", iface.ip, DEFAULT_PORT);
+                            if let Ok(ev_resp) = client.get(&events_url).send().await {
+                                if let Ok(ev_json) = ev_resp.json::<serde_json::Value>().await {
+                                    if let Some(arr) = ev_json.get("data").and_then(|d| d.as_array()) {
+                                        if let Some(first_ev) = arr.first() {
+                                            if let Some(name) = first_ev.get("nama_event").and_then(|n| n.as_str()) {
+                                                event_name = Some(name.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If not responding via HTTP, test socket bind
+            if status != "active_event" {
+                let addr = format!("{}:{}", iface.ip, DEFAULT_PORT);
+                match tokio::net::TcpListener::bind(&addr).await {
+                    Ok(_) => {
+                        status = "available".to_string();
+                    }
+                    Err(_) => {
+                        status = "occupied".to_string();
+                    }
+                }
+            }
+        }
+
+        results.push(IpAvailabilityInfo {
+            ip: iface.ip.clone(),
+            name: iface.name.clone(),
+            status,
+            event_name,
+            is_default: iface.is_default,
+            is_current_host: is_curr,
+        });
+    }
+
+    results
+}
+
+async fn ip_availability_api() -> impl IntoResponse {
+    let list = check_ip_availability(true).await;
+    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": list })))
+}
+
 async fn health_check() -> Json<HealthStatus> {
     Json(HealthStatus {
         status: "ok".into(),
@@ -207,7 +350,7 @@ async fn handle_socket(
             // Broadcast outbound message to client
             broadcast_result = rx.recv() => {
                 if let Ok(msg) = broadcast_result {
-                    if msg.tatami_pk == tatami_pk {
+                    if msg.tatami_pk == tatami_pk || msg.tatami_pk == 0 {
                         let text = serde_json::to_string(&msg.payload).unwrap_or_default();
                         if socket.send(Message::Text(text.into())).await.is_err() {
                             break;
@@ -1172,7 +1315,17 @@ async fn create_contingent_api(
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.create_contingent(payload.event_id, payload.nama_utusan, payload.logo).await {
-        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Ok(v) => {
+            let _ = state.broadcast_tx.send(ArenaMessage {
+                tatami_pk: 0,
+                channel: "master-data".into(),
+                payload: serde_json::json!({ "type": "contingent_updated", "event_id": payload.event_id }),
+            });
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "contingent_updated", "event_id": payload.event_id }));
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
 }
@@ -1183,7 +1336,17 @@ async fn update_contingent_api(
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.update_contingent(payload.id, payload.nama_utusan, payload.logo).await {
-        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Ok(v) => {
+            let _ = state.broadcast_tx.send(ArenaMessage {
+                tatami_pk: 0,
+                channel: "master-data".into(),
+                payload: serde_json::json!({ "type": "contingent_updated" }),
+            });
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "contingent_updated" }));
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
 }
@@ -1194,7 +1357,17 @@ async fn delete_contingent_api(
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.delete_contingent(payload.id).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Ok(()) => {
+            let _ = state.broadcast_tx.send(ArenaMessage {
+                tatami_pk: 0,
+                channel: "master-data".into(),
+                payload: serde_json::json!({ "type": "contingent_updated" }),
+            });
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "contingent_updated" }));
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
 }
@@ -1213,7 +1386,17 @@ async fn create_perguruan_api(
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.create_perguruan(payload.event_id, payload.nama_perguruan).await {
-        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Ok(v) => {
+            let _ = state.broadcast_tx.send(ArenaMessage {
+                tatami_pk: 0,
+                channel: "master-data".into(),
+                payload: serde_json::json!({ "type": "perguruan_updated", "event_id": payload.event_id }),
+            });
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "perguruan_updated", "event_id": payload.event_id }));
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
 }
@@ -1224,7 +1407,17 @@ async fn update_perguruan_api(
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.update_perguruan(payload.id, payload.nama_perguruan).await {
-        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Ok(v) => {
+            let _ = state.broadcast_tx.send(ArenaMessage {
+                tatami_pk: 0,
+                channel: "master-data".into(),
+                payload: serde_json::json!({ "type": "perguruan_updated" }),
+            });
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "perguruan_updated" }));
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
 }
@@ -1235,7 +1428,17 @@ async fn delete_perguruan_api(
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.delete_perguruan(payload.id).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+        Ok(()) => {
+            let _ = state.broadcast_tx.send(ArenaMessage {
+                tatami_pk: 0,
+                channel: "master-data".into(),
+                payload: serde_json::json!({ "type": "perguruan_updated" }),
+            });
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "perguruan_updated" }));
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+        },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
 }
@@ -1258,6 +1461,16 @@ async fn dispatch_command_api(
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
     match cmd.as_str() {
+        "check_ip_availability" => {
+            let list = check_ip_availability(true).await;
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": list }))).into_response()
+        },
+        "stop_arena_server" => {
+            match stop_server().await {
+                Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "get_events" => match db.get_events().await {
             Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -1600,7 +1813,17 @@ async fn dispatch_command_api(
             let nama = get_str_val(&payload, &["namaUtusan", "nama_utusan", "nama"]).unwrap_or_default();
             let logo = get_str_val(&payload, &["logo"]);
             match db.create_contingent(ev_id, nama, logo).await {
-                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Ok(v) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "master-data".into(),
+                        payload: serde_json::json!({ "type": "contingent_updated", "event_id": ev_id }),
+                    });
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "contingent_updated", "event_id": ev_id }));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
@@ -1609,14 +1832,34 @@ async fn dispatch_command_api(
             let nama = get_str_val(&payload, &["namaUtusan", "nama_utusan", "nama"]).unwrap_or_default();
             let logo = get_str_val(&payload, &["logo"]);
             match db.update_contingent(id, nama, logo).await {
-                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Ok(v) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "master-data".into(),
+                        payload: serde_json::json!({ "type": "contingent_updated" }),
+                    });
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "contingent_updated" }));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "delete_contingent" => {
             let id = get_i64_val(&payload, &["id"]).unwrap_or(0);
             match db.delete_contingent(id).await {
-                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Ok(()) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "master-data".into(),
+                        payload: serde_json::json!({ "type": "contingent_updated" }),
+                    });
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "contingent_updated" }));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
@@ -1631,7 +1874,17 @@ async fn dispatch_command_api(
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             let nama = get_str_val(&payload, &["namaPerguruan", "nama_perguruan", "nama"]).unwrap_or_default();
             match db.create_perguruan(ev_id, nama).await {
-                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Ok(v) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "master-data".into(),
+                        payload: serde_json::json!({ "type": "perguruan_updated", "event_id": ev_id }),
+                    });
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "perguruan_updated", "event_id": ev_id }));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
@@ -1639,14 +1892,34 @@ async fn dispatch_command_api(
             let id = get_i64_val(&payload, &["id"]).unwrap_or(0);
             let nama = get_str_val(&payload, &["namaPerguruan", "nama_perguruan", "nama"]).unwrap_or_default();
             match db.update_perguruan(id, nama).await {
-                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Ok(v) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "master-data".into(),
+                        payload: serde_json::json!({ "type": "perguruan_updated" }),
+                    });
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "perguruan_updated" }));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "delete_perguruan" => {
             let id = get_i64_val(&payload, &["id"]).unwrap_or(0);
             match db.delete_perguruan(id).await {
-                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Ok(()) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "master-data".into(),
+                        payload: serde_json::json!({ "type": "perguruan_updated" }),
+                    });
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("master_data_updated", &serde_json::json!({ "type": "perguruan_updated" }));
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
@@ -2254,6 +2527,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/api/health", get(health_check))
         .route("/api/network-info", get(network_info_handler))
+        .route("/api/network/ip-availability", get(ip_availability_api))
         // Event routes
         .route("/api/events", get(list_events_api))
         .route("/api/events/create", post(create_event_api))
@@ -2384,7 +2658,7 @@ pub async fn start_server(
         Ok(l) => l,
         Err(e) => {
             let err_msg = format!(
-                "Room tidak dapat dimulai — Port {} sedang digunakan oleh aplikasi lain ({})",
+                "Room tidak dapat dimulai â€” Port {} sedang digunakan oleh aplikasi lain ({})",
                 DEFAULT_PORT, e
             );
             error!("{}", err_msg);
@@ -2401,9 +2675,19 @@ pub async fn start_server(
         DEFAULT_PORT
     );
 
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    {
+        let mut lock = SHUTDOWN_TX.lock().await;
+        *lock = Some(tx);
+    }
+
     let app = create_router(state);
     let handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+            let _ = rx.await;
+            info!("Arena Axum server received graceful shutdown signal");
+        });
+        if let Err(e) = server.await {
             error!("Server error: {}", e);
         }
     });

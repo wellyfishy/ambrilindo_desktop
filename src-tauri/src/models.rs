@@ -182,6 +182,8 @@ pub struct Tatami {
     pub event_id: Option<i64>,
     pub tatami_number: Option<i32>,
     pub detail_bagan_id: Option<i64>,
+    #[sqlx(default)]
+    pub nama_bagan: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

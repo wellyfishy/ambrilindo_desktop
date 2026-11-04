@@ -51,13 +51,32 @@ fn get_network_info() -> NetworkInfo {
 }
 
 #[tauri::command]
+async fn check_ip_availability(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<server::IpAvailabilityInfo>, String> {
+    let is_running = *state.server_running.lock().await;
+    Ok(server::check_ip_availability(is_running).await)
+}
+
+#[tauri::command]
+async fn stop_arena_server(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    server::stop_server().await?;
+    let mut running = state.server_running.lock().await;
+    *running = false;
+    Ok(())
+}
+
+#[tauri::command]
 async fn start_arena_server(
     app: tauri::AppHandle,
+    selected_ip: Option<String>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<NetworkInfo, String> {
     let mut running = state.server_running.lock().await;
     if *running {
-        return Ok(server::get_network_info());
+        return Ok(server::get_network_info_with_ip(selected_ip.as_deref()));
     }
 
     let app_state = Arc::new(server::AppState {
@@ -68,7 +87,7 @@ async fn start_arena_server(
 
     server::start_server(app_state).await?;
     *running = true;
-    Ok(server::get_network_info())
+    Ok(server::get_network_info_with_ip(selected_ip.as_deref()))
 }
 
 #[tauri::command]
@@ -112,6 +131,51 @@ async fn pick_and_mount_database(
         media_path: media_path_str,
         events,
     }))
+}
+
+
+#[tauri::command]
+async fn backup_database(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<String, String> {
+    let db = state.db.lock().await;
+    db.backup_database(None).await
+}
+
+#[tauri::command]
+async fn backup_database_to_file(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let default_name = format!(
+        "ambrilindo_backup_{}.sqlite3",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
+
+    let file = app
+        .dialog()
+        .file()
+        .add_filter("SQLite Database", &["sqlite3", "db", "sqlite"])
+        .set_file_name(&default_name)
+        .blocking_save_file();
+
+    let Some(file_path) = file else {
+        return Ok(None);
+    };
+
+    let dest = file_path.as_path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    if dest.is_empty() {
+        return Ok(None);
+    }
+
+    let db = state.db.lock().await;
+    let saved = db.backup_database(Some(dest)).await?;
+    Ok(Some(saved))
 }
 
 #[tauri::command]
@@ -661,10 +725,18 @@ async fn create_contingent(
     event_id: i64,
     nama_utusan: String,
     logo: Option<String>,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<EnrichedUtusan, String> {
     let db = state.db.lock().await;
-    db.create_contingent(event_id, nama_utusan, logo).await
+    let res = db.create_contingent(event_id, nama_utusan, logo).await?;
+    let _ = state.server_broadcast.send(server::ArenaMessage {
+        tatami_pk: 0,
+        channel: "master-data".into(),
+        payload: serde_json::json!({ "type": "contingent_updated", "event_id": event_id }),
+    });
+    let _ = app.emit("master_data_updated", serde_json::json!({ "type": "contingent_updated", "event_id": event_id }));
+    Ok(res)
 }
 
 #[tauri::command]
@@ -672,19 +744,35 @@ async fn update_contingent(
     id: i64,
     nama_utusan: String,
     logo: Option<String>,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<EnrichedUtusan, String> {
     let db = state.db.lock().await;
-    db.update_contingent(id, nama_utusan, logo).await
+    let res = db.update_contingent(id, nama_utusan, logo).await?;
+    let _ = state.server_broadcast.send(server::ArenaMessage {
+        tatami_pk: 0,
+        channel: "master-data".into(),
+        payload: serde_json::json!({ "type": "contingent_updated" }),
+    });
+    let _ = app.emit("master_data_updated", serde_json::json!({ "type": "contingent_updated" }));
+    Ok(res)
 }
 
 #[tauri::command]
 async fn delete_contingent(
     id: i64,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.delete_contingent(id).await
+    db.delete_contingent(id).await?;
+    let _ = state.server_broadcast.send(server::ArenaMessage {
+        tatami_pk: 0,
+        channel: "master-data".into(),
+        payload: serde_json::json!({ "type": "contingent_updated" }),
+    });
+    let _ = app.emit("master_data_updated", serde_json::json!({ "type": "contingent_updated" }));
+    Ok(())
 }
 
 #[tauri::command]
@@ -700,29 +788,53 @@ async fn get_enriched_perguruans(
 async fn create_perguruan(
     event_id: i64,
     nama_perguruan: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<EnrichedPerguruan, String> {
     let db = state.db.lock().await;
-    db.create_perguruan(event_id, nama_perguruan).await
+    let res = db.create_perguruan(event_id, nama_perguruan).await?;
+    let _ = state.server_broadcast.send(server::ArenaMessage {
+        tatami_pk: 0,
+        channel: "master-data".into(),
+        payload: serde_json::json!({ "type": "perguruan_updated", "event_id": event_id }),
+    });
+    let _ = app.emit("master_data_updated", serde_json::json!({ "type": "perguruan_updated", "event_id": event_id }));
+    Ok(res)
 }
 
 #[tauri::command]
 async fn update_perguruan(
     id: i64,
     nama_perguruan: String,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<EnrichedPerguruan, String> {
     let db = state.db.lock().await;
-    db.update_perguruan(id, nama_perguruan).await
+    let res = db.update_perguruan(id, nama_perguruan).await?;
+    let _ = state.server_broadcast.send(server::ArenaMessage {
+        tatami_pk: 0,
+        channel: "master-data".into(),
+        payload: serde_json::json!({ "type": "perguruan_updated" }),
+    });
+    let _ = app.emit("master_data_updated", serde_json::json!({ "type": "perguruan_updated" }));
+    Ok(res)
 }
 
 #[tauri::command]
 async fn delete_perguruan(
     id: i64,
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.delete_perguruan(id).await
+    db.delete_perguruan(id).await?;
+    let _ = state.server_broadcast.send(server::ArenaMessage {
+        tatami_pk: 0,
+        channel: "master-data".into(),
+        payload: serde_json::json!({ "type": "perguruan_updated" }),
+    });
+    let _ = app.emit("master_data_updated", serde_json::json!({ "type": "perguruan_updated" }));
+    Ok(())
 }
 
 #[tauri::command]
@@ -1477,11 +1589,15 @@ pub fn run() {
         .manage(desktop_state)
         .invoke_handler(tauri::generate_handler![
             get_network_info,
+            check_ip_availability,
             start_arena_server,
+            stop_arena_server,
             get_server_status,
             pick_and_mount_database,
             mount_database_path,
             auto_mount_default_database,
+            backup_database,
+            backup_database_to_file,
             get_events,
             create_event,
             get_tatamis,

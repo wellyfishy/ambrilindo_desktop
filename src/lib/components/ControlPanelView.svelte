@@ -3,6 +3,7 @@
   import { emit, listen } from "@tauri-apps/api/event";
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput } from "$lib/types";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
+  import ServerStatusBadge from "$lib/components/ServerStatusBadge.svelte";
 
   interface Props {
     match: DetailBaganItem;
@@ -1105,9 +1106,10 @@
       {/if}
     </div>
 
-    <!-- Active Indicator -->
-    <div class="flex items-center space-x-2">
-      <div class="flex items-center space-x-1.5 text-xs font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
+    <!-- Active & Server Status Indicator (Clickable Server Control Modal) -->
+    <div class="flex items-center space-x-2.5">
+      <ServerStatusBadge {eventName} />
+      <div class="hidden sm:flex items-center space-x-1.5 text-xs font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 rounded-xl">
         <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
         <span>Control Panel Aktif</span>
       </div>

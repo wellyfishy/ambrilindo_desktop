@@ -28,15 +28,19 @@
   import TimetableEditorView from "$lib/components/TimetableEditorView.svelte";
   import FestivalRosterView from "$lib/components/FestivalRosterView.svelte";
   import WasitManagerView from "$lib/components/WasitManagerView.svelte";
+  import ContingentManagerView from "$lib/components/ContingentManagerView.svelte";
+  import PerguruanManagerView from "$lib/components/PerguruanManagerView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
   import AddEventModal from "$lib/components/AddEventModal.svelte";
   import DrawingBaganModal from "$lib/components/DrawingBaganModal.svelte";
+  import VenueWebPortal from "$lib/components/VenueWebPortal.svelte";
 
   // Application Flow State
   let appMode = $state<AppMode>("landing");
   let hostUrl = $state<string>("http://127.0.0.1:8000");
+  let isBrowserClient = $state(false);
 
   // Discord Shell Active State
   let activeRole = $state<string>("admin_utama");
@@ -70,6 +74,13 @@
   let addEventModal = $state(false);
   let isCreatingEvent = $state(false);
   let drawingModal = $state(false);
+
+  function handleServerStopped() {
+    isServerRunning = false;
+    appMode = "solo";
+    setConnectionConfig("solo");
+    showToast("Server Host LAN dinonaktifkan. Beralih ke Mode Offline.");
+  }
 
   // Toast State
   let toastMessage = $state<string | null>(null);
@@ -357,46 +368,70 @@
     databaseSummary?.events.find((e) => e.id === selectedEventId) ?? null
   );
 
+  let isSessionLoaded = $state(false);
+
   onMount(async () => {
+    isBrowserClient = typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__;
     try {
       networkInfo = await invoke<NetworkInfo>("get_network_info");
     } catch (_) {}
     await autoMountDefaultDb();
 
-    // Restore previous session if user was working in solo or host mode
+    // 1. Authoritative check: Is the arena server already running in Rust process?
+    let serverRunning = false;
     try {
-      const savedMode = sessionStorage.getItem("ambrilindo_app_mode") as AppMode | null;
-      const savedHost = sessionStorage.getItem("ambrilindo_host_url");
+      serverRunning = await invoke<boolean>("get_server_status");
+    } catch (_) {}
+
+    if (serverRunning) {
+      appMode = "host";
+      isServerRunning = true;
+      if (networkInfo?.server_url) {
+        hostUrl = networkInfo.server_url;
+      }
+      setConnectionConfig("host", hostUrl);
+      showToast("Melanjutkan sesi server host aktif");
+    } else {
+      // 2. Restore previous session if working in solo or client mode
+      try {
+        const savedMode = sessionStorage.getItem("ambrilindo_app_mode") as AppMode | null;
+        const savedHost = sessionStorage.getItem("ambrilindo_host_url");
+        if (savedHost) {
+          hostUrl = savedHost;
+        }
+        if (savedMode && savedMode !== "landing") {
+          setConnectionConfig(savedMode, hostUrl);
+          appMode = savedMode;
+        }
+      } catch (_) {}
+    }
+
+    try {
       const savedEventId = sessionStorage.getItem("ambrilindo_event_id");
       const savedChannel = sessionStorage.getItem("ambrilindo_active_channel");
       const savedRole = sessionStorage.getItem("ambrilindo_active_role");
 
-      if (savedHost) {
-        hostUrl = savedHost;
+      if (savedEventId) {
+        const eid = parseInt(savedEventId, 10);
+        if (!isNaN(eid)) {
+          await selectEvent(eid);
+        }
       }
-
-      if (savedMode && savedMode !== "landing") {
-        setConnectionConfig(savedMode, hostUrl);
-        appMode = savedMode;
-        if (savedEventId) {
-          const eid = parseInt(savedEventId, 10);
-          if (!isNaN(eid)) {
-            await selectEvent(eid);
-          }
-        }
-        if (savedChannel) {
-          try {
-            activeChannel = JSON.parse(savedChannel);
-          } catch (_) {}
-        }
-        if (savedRole) {
-          activeRole = savedRole;
-        }
+      if (savedChannel) {
+        try {
+          activeChannel = JSON.parse(savedChannel);
+        } catch (_) {}
+      }
+      if (savedRole) {
+        activeRole = savedRole;
       }
     } catch (_) {}
+
+    isSessionLoaded = true;
   });
 
   $effect(() => {
+    if (!isSessionLoaded) return;
     try {
       sessionStorage.setItem("ambrilindo_app_mode", appMode);
       if (selectedEventId) {
@@ -409,12 +444,15 @@
 </script>
 
 <svelte:head>
-  <title>Ambrilindo — {activeChannel.name}</title>
+  <title>Ambrilindo â€” {activeChannel.name}</title>
 </svelte:head>
 
 <div class="app-shell h-screen w-screen bg-[#0d0e12] text-zinc-200 flex overflow-hidden font-sans select-none">
-  {#if appMode === "landing"}
-    <!-- Mode Picker / Gateway Landing Screen -->
+  {#if isBrowserClient}
+    <!-- Dedicated Web Browser Venue Mobile & Tablet Portal (auth.html inspired) -->
+    <VenueWebPortal />
+  {:else if appMode === "landing"}
+    <!-- Mode Picker / Gateway Landing Screen for Desktop App -->
     <LandingGateway
       currentDb={databaseSummary}
       {networkInfo}
@@ -464,7 +502,12 @@
     <!-- 3. Channel Main Workspace -->
     <div class="workspace-column flex-1 flex flex-col min-w-0 bg-[#14161b] overflow-hidden">
       <!-- Top Navbar (Channel Header) -->
-      <TopNavbar {activeChannel} />
+      <TopNavbar
+        {activeChannel}
+        eventName={activeEvent?.nama_event || ""}
+        onServerStopped={handleServerStopped}
+        onShowToast={showToast}
+      />
 
       <!-- Main Workspace Views -->
       <main class="main-content flex-1 overflow-hidden relative bg-[#14161b]">
@@ -475,7 +518,6 @@
             {tatamis}
             hostAddress={appMode === "host" ? (networkInfo?.server_url || "http://127.0.0.1:8000") : hostUrl}
             onRefreshTatamis={() => selectedEventId && selectEvent(selectedEventId)}
-            onOpenMonitorPicker={(tNum) => openMonitorPicker(tNum)}
             onShowToast={showToast}
           />
         {:else if activeChannel.type === "bagan"}
@@ -495,10 +537,28 @@
             {activeEvent}
             onShowToast={showToast}
           />
-        {:else if activeChannel.type === "roster" || activeChannel.type === "contingent"}
-          <!-- Athletes & Contingents View -->
+        {:else if activeChannel.type === "contingent"}
+          <!-- Contingents & Utusan Management View -->
+          <ContingentManagerView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            hostAddress={hostUrl}
+            onNavigate={(channel) => handleSelectChannel(channel)}
+            onShowToast={showToast}
+          />
+        {:else if activeChannel.type === "perguruan"}
+          <!-- Perguruan Karate Management View -->
+          <PerguruanManagerView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            hostAddress={hostUrl}
+            onNavigate={(channel) => handleSelectChannel(channel)}
+            onShowToast={showToast}
+          />
+        {:else if activeChannel.type === "roster"}
+          <!-- Athletes Roster View -->
           <RosterView
-            viewType={activeChannel.type}
+            viewType="roster"
             eventId={selectedEventId || 1}
             hostAddress={hostUrl}
           />
