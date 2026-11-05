@@ -2413,6 +2413,65 @@ async fn auto_assign_tatami_panel_api(
     }
 }
 
+
+#[derive(serde::Deserialize)]
+pub struct ExportHtmlPdfInput {
+    pub html_content: String,
+    pub filename: Option<String>,
+}
+
+async fn export_html_to_pdf_api(
+    axum::Json(payload): axum::Json<ExportHtmlPdfInput>,
+) -> impl IntoResponse {
+    let edge_paths = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ];
+    let edge_exe = match edge_paths.iter().find(|p| std::path::Path::new(p).exists()) {
+        Some(p) => *p,
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, "Microsoft Edge tidak ditemukan di server host.".to_string()).into_response(),
+    };
+
+    let temp_dir = std::env::temp_dir();
+    let temp_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let temp_html_path = temp_dir.join(format!("ambrilindo_api_booklet_{}.html", temp_id));
+    let temp_pdf_path = temp_dir.join(format!("ambrilindo_api_booklet_{}.pdf", temp_id));
+
+    if let Err(e) = std::fs::write(&temp_html_path, payload.html_content) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write HTML: {}", e)).into_response();
+    }
+
+    let file_url = format!("file:///{}", temp_html_path.to_string_lossy().replace('\\', "/"));
+    let res = tokio::process::Command::new(edge_exe)
+        .arg("--headless")
+        .arg("--disable-gpu")
+        .arg("--no-pdf-header-footer")
+        .arg(format!("--print-to-pdf={}", temp_pdf_path.to_string_lossy()))
+        .arg(&file_url)
+        .output()
+        .await;
+
+    let _ = std::fs::remove_file(&temp_html_path);
+
+    match res {
+        Ok(_) if temp_pdf_path.exists() => {
+            let pdf_bytes = std::fs::read(&temp_pdf_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&temp_pdf_path);
+            let fname = payload.filename.unwrap_or_else(|| "Buku_Hasil_Turnamen.pdf".to_string());
+            (
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/pdf"),
+                    (axum::http::header::CONTENT_DISPOSITION, &format!("attachment; filename=\"{}\"", fname)),
+                ],
+                pdf_bytes,
+            ).into_response()
+        },
+        Ok(out) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Edge failed to generate PDF: {}", String::from_utf8_lossy(&out.stderr))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to spawn Edge: {}", e)).into_response(),
+    }
+}
+
 async fn export_tournament_excel_api(
     State(state): State<Arc<AppState>>,
     Path(event_id): Path<i64>,
@@ -2618,6 +2677,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/tatami-panel/auto-assign", post(auto_assign_tatami_panel_api))
         // Official Multi-Sheet Excel Exporter
         .route("/api/export-excel/:event_id", get(export_tournament_excel_api))
+        .route("/api/export/html-to-pdf", post(export_html_to_pdf_api))
         // Athlete Marshalling & Call Room
         .route("/api/marshalling/:event_id", get(get_marshalling_overview_api))
         .route("/api/marshalling/urgent-call", post(submit_urgent_call_api))

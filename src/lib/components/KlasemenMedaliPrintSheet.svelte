@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { StandingItem } from "$lib/types";
+  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
 
   interface Props {
     standingsKontingen: StandingItem[];
@@ -31,8 +32,8 @@
     pageLabel = "Rekapitulasi Perolehan Medali",
     pageLabelKontingen,
     pageLabelPerguruan,
-    customLogoForki = "/img/forki-logo.png",
-    customLogoAmbrilindo = "/img/ambrilindo-logo.png",
+    customLogoForki = FORKI_LOGO_DATA_URL,
+    customLogoAmbrilindo = AMBRILINDO_LOGO_DATA_URL,
     showBadge = true,
     logoMap = {},
   }: Props = $props();
@@ -76,15 +77,6 @@
   });
 </script>
 
-<svelte:head>
-  <style>
-    @page {
-      size: A4 portrait;
-      margin: 8mm;
-    }
-  </style>
-</svelte:head>
-
 <div class="klasemen-medali-sheet font-sans text-slate-900 bg-white">
   <!-- ================= LEMBAR 1: KLASEMEN KONTINGEN / UTUSAN ================= -->
   <div class="print-page-sheet break-after-page mb-8 print:mb-0">
@@ -98,13 +90,13 @@
                 <img
                   src={customLogoForki}
                   alt="Logo FORKI"
-                  class="h-11 w-auto max-w-[44px] object-contain shrink-0"
+                  class="h-10 w-auto max-w-[40px] max-h-10 object-contain shrink-0" style="max-height: 40px; max-width: 40px; width: auto; height: auto;"
                 />
                 <div class="h-8 w-[1px] bg-slate-300 shrink-0"></div>
                 <img
                   src={customLogoAmbrilindo}
                   alt="Logo Ambrilindo"
-                  class="h-7 w-auto max-w-[110px] object-contain shrink-0"
+                  class="h-7 w-auto max-w-[110px] max-h-7 object-contain shrink-0" style="max-height: 28px; max-width: 110px; width: auto; height: auto;"
                 />
               </div>
 
@@ -183,7 +175,7 @@
                               <img
                                 src={logoMap[k.logo]}
                                 alt=""
-                                class="w-4 h-4 object-contain shrink-0 rounded-xs"
+                                class="w-4 h-4 max-w-4 max-h-4 object-contain shrink-0 rounded-xs" style="width: 16px; height: 16px; max-width: 16px; max-height: 16px; object-fit: contain;" width="16" height="16"
                                 onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                               />
                             {/if}
@@ -239,13 +231,13 @@
                 <img
                   src={customLogoForki}
                   alt="Logo FORKI"
-                  class="h-11 w-auto max-w-[44px] object-contain shrink-0"
+                  class="h-10 w-auto max-w-[40px] max-h-10 object-contain shrink-0" style="max-height: 40px; max-width: 40px; width: auto; height: auto;"
                 />
                 <div class="h-8 w-[1px] bg-slate-300 shrink-0"></div>
                 <img
                   src={customLogoAmbrilindo}
                   alt="Logo Ambrilindo"
-                  class="h-7 w-auto max-w-[110px] object-contain shrink-0"
+                  class="h-7 w-auto max-w-[110px] max-h-7 object-contain shrink-0" style="max-height: 28px; max-width: 110px; width: auto; height: auto;"
                 />
               </div>
 
@@ -324,7 +316,7 @@
                               <img
                                 src={logoMap[p.logo]}
                                 alt=""
-                                class="w-4 h-4 object-contain shrink-0 rounded-xs"
+                                class="w-4 h-4 max-w-4 max-h-4 object-contain shrink-0 rounded-xs" style="width: 16px; height: 16px; max-width: 16px; max-height: 16px; object-fit: contain;" width="16" height="16"
                                 onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                               />
                             {/if}

@@ -1,9 +1,12 @@
 /**
  * Utility to reliably enforce print orientation and margins in Chromium/WebView2.
- * Directly injects a top-level @page rule in document.head before calling window.print().
+ * Supports:
+ * - "combined": Named pages mode supporting both A4 portrait and A4 landscape sheets in the same print job.
+ * - "portrait": Enforces all pages to A4 portrait.
+ * - "landscape": Enforces all pages to A4 landscape.
  */
 export function printWithOrientation(
-  orientation: "portrait" | "landscape" = "portrait",
+  orientation: "combined" | "portrait" | "landscape" = "combined",
   margin: string = "8mm"
 ) {
   if (typeof document !== "undefined") {
@@ -13,7 +16,34 @@ export function printWithOrientation(
       styleEl.id = "print-page-orientation-style";
       document.head.appendChild(styleEl);
     }
-    styleEl.textContent = `@page { size: A4 ${orientation}; margin: ${margin}; }`;
+
+    if (orientation === "combined") {
+      styleEl.textContent = `
+        @page {
+          margin: 0;
+        }
+        @page portrait-sheet {
+          size: A4 portrait;
+          margin: ${margin};
+        }
+        @page landscape-sheet {
+          size: A4 landscape;
+          margin: 6mm;
+        }
+        .booklet-page-portrait {
+          page: portrait-sheet !important;
+          break-after: page !important;
+          page-break-after: always !important;
+        }
+        .booklet-page-landscape {
+          page: landscape-sheet !important;
+          break-after: page !important;
+          page-break-after: always !important;
+        }
+      `;
+    } else {
+      styleEl.textContent = `@page { size: A4 ${orientation}; margin: ${margin}; }`;
+    }
   }
   window.print();
 }

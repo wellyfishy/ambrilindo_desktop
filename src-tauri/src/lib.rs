@@ -1566,6 +1566,96 @@ async fn create_bob_bagan(
     db.create_bob_bagan(input).await
 }
 
+#[tauri::command]
+async fn export_html_to_pdf(
+    app: tauri::AppHandle,
+    html_content: String,
+    suggested_filename: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    // 1. Locate msedge.exe on Windows
+    let edge_paths = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ];
+    let edge_exe = edge_paths
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .ok_or_else(|| "Microsoft Edge tidak ditemukan di sistem ini untuk rendering PDF.".to_string())?;
+
+    // 2. Open Save File dialog
+    let default_name = suggested_filename.unwrap_or_else(|| {
+        format!(
+            "Buku_Hasil_Turnamen_{}.pdf",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        )
+    });
+
+    let file = app
+        .dialog()
+        .file()
+        .add_filter("PDF Document (*.pdf)", &["pdf"])
+        .set_file_name(&default_name)
+        .blocking_save_file();
+
+    let Some(file_path) = file else {
+        return Ok(None);
+    };
+
+    let target_path_buf = file_path.into_path().map_err(|e| e.to_string())?;
+    let target_path = target_path_buf.to_string_lossy().to_string();
+
+    // 3. Create temporary HTML file
+    let temp_dir = std::env::temp_dir();
+    let temp_file_name = format!(
+        "ambrilindo_booklet_{}.html",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let temp_html_path = temp_dir.join(temp_file_name);
+    std::fs::write(&temp_html_path, html_content)
+        .map_err(|e| format!("Gagal menulis temporary HTML: {}", e))?;
+
+    // 4. Ensure target directory exists
+    if let Some(parent) = target_path_buf.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // 5. Run Edge headless print-to-pdf
+    let file_url = format!("file:///{}", temp_html_path.to_string_lossy().replace('\\', "/"));
+    let output = tokio::process::Command::new(edge_exe)
+        .arg("--headless")
+        .arg("--disable-gpu")
+        .arg("--no-pdf-header-footer")
+        .arg(format!("--print-to-pdf={}", target_path))
+        .arg(&file_url)
+        .output()
+        .await
+        .map_err(|e| format!("Gagal menjalankan Edge PDF printer: {}", e))?;
+
+    // 6. Clean up temporary HTML
+    let _ = std::fs::remove_file(&temp_html_path);
+
+    if !target_path_buf.exists() {
+        return Err(format!(
+            "Edge selesai tanpa membuat file PDF. Output: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    // 7. Open file with system default viewer
+    let _ = std::process::Command::new("explorer").arg(&target_path).spawn();
+
+    Ok(Some(target_path))
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (broadcast_tx, _rx) = broadcast::channel(100);
@@ -1700,7 +1790,8 @@ pub fn run() {
             broadcast_urgent_call,
             get_results_booklet_data,
             get_bob_candidates,
-            create_bob_bagan
+            create_bob_bagan,
+            export_html_to_pdf
         ])
         .on_window_event(|window, event| {
             match event {

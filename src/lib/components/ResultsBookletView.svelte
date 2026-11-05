@@ -3,6 +3,7 @@
   import type { ResultsBookletData, ResultsBookletSignatory, TatamiBookletCategory, DetailBaganItem } from "$lib/types";
   import { printWithOrientation } from "$lib/print_helper";
   import { resolveMediaLogos } from "$lib/media_helper";
+  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import DaftarJuaraPrintSheet from "$lib/components/DaftarJuaraPrintSheet.svelte";
   import KlasemenMedaliPrintSheet from "$lib/components/KlasemenMedaliPrintSheet.svelte";
 
@@ -21,9 +22,13 @@
   let logoMap = $state<Record<string, string>>({});
 
   // Print Mode & In-App View Filter state
-  let printMode = $state<"portrait" | "landscape">("portrait");
+  let printMode = $state<"combined" | "portrait" | "landscape">("combined");
   let viewFilter = $state<"all" | "portrait" | "landscape">("all");
+  let zoomLevel = $state<"100" | "85" | "fit">("100");
   let bookletPruneEmptyRounds = $state(true);
+  let isJumpMenuOpen = $state(false);
+  let isExportingPdf = $state(false);
+  let exportSuccessMessage = $state<string | null>(null);
 
   // Editable local overrides for sign-off & header
   let editableOrganisasi = $state("FEDERASI OLAHRAGA KARATE-DO INDONESIA KALIMANTAN TIMUR");
@@ -35,7 +40,16 @@
   let editableCatatanSanksi = $state("");
   let editableSignatories = $state<ResultsBookletSignatory[]>([]);
 
-  $effect(() => {
+  let topKontingen = $derived(bookletData?.standings_kontingen?.[0]);
+  let topPerguruan = $derived(bookletData?.standings_perguruan?.[0]);
+  let totalKategori = $derived(bookletData?.category_winners?.length || 0);
+  let top3Kontingen = $derived(bookletData?.standings_kontingen?.slice(0, 3) || []);
+  let top3Perguruan = $derived(bookletData?.standings_perguruan?.slice(0, 3) || []);
+  let totalMedaliEmas = $derived(bookletData?.standings_kontingen?.reduce((acc, k) => acc + (k.gold || 0), 0) || 0);
+  let totalMedaliPerak = $derived(bookletData?.standings_kontingen?.reduce((acc, k) => acc + (k.silver || 0), 0) || 0);
+  let totalMedaliPerunggu = $derived(bookletData?.standings_kontingen?.reduce((acc, k) => acc + (k.bronze || 0), 0) || 0);
+
+$effect(() => {
     if (eventId) {
       loadData();
     }
@@ -105,6 +119,15 @@
     }
   }
 
+  
+
+  function printCombined() {
+    printMode = "combined";
+    setTimeout(() => {
+      printWithOrientation("combined", "8mm");
+    }, 80);
+  }
+
   function printPortrait() {
     printMode = "portrait";
     setTimeout(() => {
@@ -119,6 +142,197 @@
     }, 80);
   }
 
+  function preparePrintHtml(mode: "combined" | "portrait" | "landscape"): string {
+    const container = document.querySelector(".booklet-workspace-container");
+    if (!container) return "";
+    const cloned = container.cloneNode(true) as HTMLElement;
+    cloned.querySelectorAll(".no-print").forEach((el) => el.remove());
+
+    // In-memory Canvas inliner: ensures any non-data-URL images are serialized to base64
+    if (typeof document !== "undefined") {
+      const origImgs = container.querySelectorAll("img");
+      const cloneImgs = cloned.querySelectorAll("img");
+      for (let i = 0; i < origImgs.length; i++) {
+        const orig = origImgs[i] as HTMLImageElement;
+        const clone = cloneImgs[i] as HTMLImageElement;
+        if (clone && !clone.src.startsWith("data:") && orig.naturalWidth > 0 && orig.naturalHeight > 0) {
+          try {
+            const canvas = document.createElement("canvas");
+            canvas.width = orig.naturalWidth;
+            canvas.height = orig.naturalHeight;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(orig, 0, 0);
+              clone.src = canvas.toDataURL("image/png");
+            }
+          } catch (_) {}
+        }
+      }
+    }
+
+    // Extract compiled CSS rules from document.styleSheets (Tailwind + component styles)
+    let inlinedCss = "";
+    if (typeof document !== "undefined") {
+      try {
+        for (const sheet of Array.from(document.styleSheets)) {
+          try {
+            const rules = sheet.cssRules || sheet.rules;
+            if (!rules) continue;
+            for (const rule of Array.from(rules)) {
+              // Filter out rogue or un-named @page rules that might conflict with our named pages
+              if (rule.type === CSSRule.PAGE_RULE || rule.cssText.startsWith("@page")) {
+                continue;
+              }
+              inlinedCss += rule.cssText + "\n";
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${editableEventName || "Buku Hasil Turnamen"}</title>
+  <style>
+${inlinedCss}
+
+    @page {
+      margin: 0;
+    }
+    @page portrait-sheet {
+      size: A4 portrait;
+      margin: 8mm;
+    }
+    @page landscape-sheet {
+      size: A4 landscape;
+      margin: 6mm;
+    }
+    body {
+      background: #ffffff !important;
+      color: #000000 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    img {
+      max-width: 100%;
+    }
+    .booklet-page {
+      box-shadow: none !important;
+      border: none !important;
+      margin: 0 !important;
+      border-radius: 0 !important;
+      width: 100% !important;
+    }
+    .booklet-page-portrait, .paper-sheet-portrait {
+      page: portrait-sheet !important;
+      break-after: page !important;
+      page-break-after: always !important;
+      width: 100% !important;
+      min-height: 275mm !important;
+      box-shadow: none !important;
+      border: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    .booklet-page-landscape {
+      page: landscape-sheet !important;
+      break-after: page !important;
+      page-break-after: always !important;
+      width: 100% !important;
+      min-height: 195mm !important;
+      box-shadow: none !important;
+      border: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    /* Prevent double page breaks on nested paper-sheet-landscape */
+    .booklet-page-landscape .paper-sheet-landscape {
+      break-after: auto !important;
+      page-break-after: auto !important;
+      width: 100% !important;
+      max-width: 285mm !important;
+      box-shadow: none !important;
+      border: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    ${mode === "portrait" ? ".booklet-section-landscape, .booklet-page-landscape, .paper-sheet-landscape { display: none !important; }" : ""}
+    ${mode === "landscape" ? ".booklet-section-portrait, .booklet-page-portrait, .paper-sheet-portrait { display: none !important; }" : ""}
+  </style>
+</head>
+<body class="bg-white text-black">
+  <main class="booklet-workspace-container ${mode === 'portrait' ? 'is-printing-portrait' : mode === 'landscape' ? 'is-printing-landscape' : 'is-printing-combined'}">
+    ${cloned.innerHTML}
+  </main>
+</body>
+</html>`;
+  }
+
+  async function handleExportPdf() {
+    if (!bookletData) return;
+    isExportingPdf = true;
+    exportSuccessMessage = null;
+
+    try {
+      const mode = viewFilter === "portrait" ? "portrait" : viewFilter === "landscape" ? "landscape" : "combined";
+      const htmlContent = preparePrintHtml(mode);
+      const cleanEventName = (editableEventName || "Turnamen").replace(/[^a-zA-Z0-9]/g, "_");
+      const suggestedFilename = `Buku_Hasil_${cleanEventName}_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+      let isTauri = false;
+      try {
+        isTauri = typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__);
+      } catch (_) {}
+
+      if (isTauri) {
+        const savedPath = await apiCall<string | null>("export_html_to_pdf", {
+          htmlContent,
+          html_content: htmlContent,
+          suggestedFilename,
+          suggested_filename: suggestedFilename,
+        });
+
+        if (savedPath) {
+          exportSuccessMessage = `PDF berhasil disimpan: ${savedPath}`;
+          setTimeout(() => { exportSuccessMessage = null; }, 6000);
+        }
+      } else {
+        const host = hostAddress || getConnectionConfig().hostUrl || window.location.origin;
+        const res = await fetch(`${host.replace(/\/$/, "")}/api/export/html-to-pdf`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ html_content: htmlContent, filename: suggestedFilename }),
+        });
+
+        if (!res.ok) {
+          throw new Error(`Server returned ${res.status}: ${await res.text()}`);
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = suggestedFilename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        exportSuccessMessage = `PDF berhasil diunduh: ${suggestedFilename}`;
+        setTimeout(() => { exportSuccessMessage = null; }, 6000);
+      }
+    } catch (err: any) {
+      console.error("Gagal export PDF:", err);
+      alert("Gagal menyimpan PDF: " + (err?.message || err));
+    } finally {
+      isExportingPdf = false;
+    }
+  }
+
   function scrollToSection(id: string) {
     const el = document.getElementById(id);
     if (el) {
@@ -126,7 +340,7 @@
     }
   }
 
-  // Bracket Helpers for Landscape Attachment
+// Bracket Helpers for Landscape Attachment
   function groupMatchesByRound(matches: DetailBaganItem[], pruneEmpty: boolean = true): Map<number, DetailBaganItem[]> {
     const map = new Map<number, DetailBaganItem[]>();
     const validMatches = matches.filter((m) => !m.round || m.round <= 4);
@@ -184,19 +398,38 @@
   });
 </script>
 
+
+
 <svelte:head>
   <style>
     @page {
+      margin: 0;
+    }
+    @page portrait-sheet {
       size: A4 portrait;
       margin: 8mm;
+    }
+    @page landscape-sheet {
+      size: A4 landscape;
+      margin: 6mm;
+    }
+    .booklet-page-portrait {
+      page: portrait-sheet;
+      break-after: page;
+      page-break-after: always;
+    }
+    .booklet-page-landscape {
+      page: landscape-sheet;
+      break-after: page;
+      page-break-after: always;
     }
   </style>
 </svelte:head>
 
-<div class="h-full flex flex-col bg-[#0b0d13] text-zinc-100 font-sans overflow-hidden select-none print-view-root {printMode === 'portrait' ? 'is-printing-portrait' : 'is-printing-landscape'}">
+<div class="h-full flex flex-col bg-[#0b0d13] text-zinc-100 font-sans overflow-hidden select-none print-view-root {printMode === 'portrait' ? 'is-printing-portrait' : printMode === 'landscape' ? 'is-printing-landscape' : 'is-printing-combined'}">
   <!-- ================= IN-APP STICKY HEADER TOOLBAR ================= -->
   <header class="no-print bg-[#12151d] border-b border-white/[0.08] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-lg z-20">
-    <!-- Left: Identity & Title -->
+    <!-- Left: Identity, Title & Jump Menu -->
     <div class="flex items-center space-x-3 min-w-0">
       <div class="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-400 font-black font-mono text-xs flex items-center justify-center shrink-0">
         BA
@@ -214,77 +447,195 @@
           {editableEventName || 'Memuat event...'} • {editableKota}
         </p>
       </div>
+
+      <!-- Quick Jump Navigator Dropdown -->
+      <div class="relative ml-2">
+        <button
+          type="button"
+          onclick={() => (isJumpMenuOpen = !isJumpMenuOpen)}
+          class="px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] text-zinc-300 text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer"
+        >
+          <span>📑</span>
+          <span>Lompat Halaman</span>
+          <span class="text-[9px] text-zinc-500">▼</span>
+        </button>
+
+        {#if isJumpMenuOpen}
+          <div
+            class="absolute left-0 mt-1 w-64 bg-[#181a22] border border-white/[0.12] rounded-xl shadow-2xl py-1 z-50 text-xs text-zinc-200 divide-y divide-white/[0.06]"
+          >
+            <div class="py-1">
+              <button
+                type="button"
+                onclick={() => { scrollToSection('page-cover'); isJumpMenuOpen = false; }}
+                class="w-full text-left px-3 py-1.5 hover:bg-white/[0.08] flex items-center justify-between cursor-pointer"
+              >
+                <span>Halaman 1: Sampul Depan Resmi</span>
+                <span class="text-[9px] font-mono text-amber-400/80">PORTRAIT</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => { scrollToSection('page-klasemen'); isJumpMenuOpen = false; }}
+                class="w-full text-left px-3 py-1.5 hover:bg-white/[0.08] flex items-center justify-between cursor-pointer"
+              >
+                <span>Halaman 2: Rekapitulasi Medali</span>
+                <span class="text-[9px] font-mono text-amber-400/80">PORTRAIT</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => { scrollToSection('page-daftar-juara'); isJumpMenuOpen = false; }}
+                class="w-full text-left px-3 py-1.5 hover:bg-white/[0.08] flex items-center justify-between cursor-pointer"
+              >
+                <span>Halaman 3: Rekapan Podium Juara</span>
+                <span class="text-[9px] font-mono text-amber-400/80">PORTRAIT</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => { scrollToSection('page-closing'); isJumpMenuOpen = false; }}
+                class="w-full text-left px-3 py-1.5 hover:bg-white/[0.08] flex items-center justify-between cursor-pointer"
+              >
+                <span>Halaman 4: Lembar Penutup Resmi</span>
+                <span class="text-[9px] font-mono text-amber-400/80">PORTRAIT</span>
+              </button>
+            </div>
+            {#if activeBrackets.length > 0}
+              <div class="py-1">
+                <button
+                  type="button"
+                  onclick={() => { scrollToSection('page-bagan-' + activeBrackets[0].category_id); isJumpMenuOpen = false; }}
+                  class="w-full text-left px-3 py-1.5 hover:bg-white/[0.08] flex items-center justify-between cursor-pointer text-sky-300 font-semibold"
+                >
+                  <span>Lampiran Bagan ({activeBrackets.length} Kategori)</span>
+                  <span class="text-[9px] font-mono text-sky-400">LANDSCAPE</span>
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
     </div>
 
-    <!-- Center: View Filter Tabs -->
-    <div class="flex items-center bg-[#181a22] p-1 rounded-xl border border-white/[0.08] text-xs">
-      <button
-        type="button"
-        onclick={() => (viewFilter = "all")}
-        class="px-3 py-1 rounded-lg font-bold transition cursor-pointer {viewFilter === 'all' ? 'bg-white text-slate-950 shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-white/[0.06]'}"
-      >
-        Semua Lembar
-      </button>
-      <button
-        type="button"
-        onclick={() => (viewFilter = "portrait")}
-        class="px-3 py-1 rounded-lg font-bold transition flex items-center space-x-1.5 cursor-pointer {viewFilter === 'portrait' ? 'bg-amber-500 text-slate-950 shadow-sm' : 'text-zinc-400 hover:text-amber-300 hover:bg-white/[0.06]'}"
-        title="Tampilkan hanya lembar dokumen berita acara resmi (A4 Portrait)"
-      >
-        <span>📄</span>
-        <span>Dokumen Hasil (Portrait)</span>
-      </button>
-      <button
-        type="button"
-        onclick={() => (viewFilter = "landscape")}
-        class="px-3 py-1 rounded-lg font-bold transition flex items-center space-x-1.5 cursor-pointer {viewFilter === 'landscape' ? 'bg-sky-500 text-white shadow-sm' : 'text-zinc-400 hover:text-sky-300 hover:bg-white/[0.06]'}"
-        title="Tampilkan hanya lembar lampiran bagan pertandingan (A4 Landscape)"
-      >
-        <span>🌿</span>
-        <span>Lampiran Bagan (Landscape)</span>
-      </button>
+    <!-- Center: View Filter Tabs & Zoom Controls -->
+    <div class="flex items-center space-x-2">
+      <!-- Section Filters -->
+      <div class="flex items-center bg-[#181a22] p-1 rounded-xl border border-white/[0.08] text-xs">
+        <button
+          type="button"
+          onclick={() => (viewFilter = "all")}
+          class="px-3 py-1 rounded-lg font-bold transition cursor-pointer {viewFilter === 'all' ? 'bg-white text-slate-950 shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-white/[0.06]'}"
+          title="Tampilkan seluruh lembar gabungan (Portrait + Landscape berurutan)"
+        >
+          📖 Semua Lembar (Gabungan)
+        </button>
+        <button
+          type="button"
+          onclick={() => (viewFilter = "portrait")}
+          class="px-2.5 py-1 rounded-lg font-bold transition flex items-center space-x-1.5 cursor-pointer {viewFilter === 'portrait' ? 'bg-amber-500 text-slate-950 shadow-sm' : 'text-zinc-400 hover:text-amber-300 hover:bg-white/[0.06]'}"
+          title="Tampilkan hanya lembar dokumen berita acara resmi (A4 Portrait)"
+        >
+          <span>📄</span>
+          <span>Dokumen (Portrait)</span>
+        </button>
+        <button
+          type="button"
+          onclick={() => (viewFilter = "landscape")}
+          class="px-2.5 py-1 rounded-lg font-bold transition flex items-center space-x-1.5 cursor-pointer {viewFilter === 'landscape' ? 'bg-sky-500 text-white shadow-sm' : 'text-zinc-400 hover:text-sky-300 hover:bg-white/[0.06]'}"
+          title="Tampilkan hanya lembar lampiran bagan pertandingan (A4 Landscape)"
+        >
+          <span>🌿</span>
+          <span>Bagan (Landscape)</span>
+        </button>
+      </div>
+
+      <!-- Zoom Level Selector -->
+      <div class="flex items-center bg-[#181a22] p-1 rounded-xl border border-white/[0.08] text-[11px] font-mono text-zinc-400">
+        <button
+          type="button"
+          onclick={() => (zoomLevel = "100")}
+          class="px-2 py-0.5 rounded font-bold transition cursor-pointer {zoomLevel === '100' ? 'bg-white/[0.15] text-white' : 'hover:text-white'}"
+          title="Ukuran Asli 100%"
+        >
+          100%
+        </button>
+        <button
+          type="button"
+          onclick={() => (zoomLevel = "85")}
+          class="px-2 py-0.5 rounded font-bold transition cursor-pointer {zoomLevel === '85' ? 'bg-white/[0.15] text-white' : 'hover:text-white'}"
+          title="Skala Nyaman 85%"
+        >
+          85%
+        </button>
+        <button
+          type="button"
+          onclick={() => (zoomLevel = "fit")}
+          class="px-2 py-0.5 rounded font-bold transition cursor-pointer {zoomLevel === 'fit' ? 'bg-white/[0.15] text-white' : 'hover:text-white'}"
+          title="Sesuaikan Lebar Layar (Fit Width)"
+        >
+          Fit
+        </button>
+      </div>
     </div>
 
-    <!-- Right: Quick Navigation & Action Buttons -->
+    <!-- Right: Edit Toggle, Primary Print & Direct PDF Actions -->
     <div class="flex items-center space-x-2 shrink-0">
       <!-- Edit Mode Toggle -->
       <button
         type="button"
         onclick={() => (isEditing = !isEditing)}
-        class="px-3 py-1.5 rounded-xl text-xs font-semibold border transition flex items-center space-x-1.5 cursor-pointer {isEditing ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-sm' : 'bg-white/[0.05] border-white/[0.1] text-zinc-300 hover:bg-white/[0.08]'}"
+        class="px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition flex items-center space-x-1.5 cursor-pointer {isEditing ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-sm' : 'bg-white/[0.05] border-white/[0.1] text-zinc-300 hover:bg-white/[0.08]'}"
         title="Buka form untuk menyunting pengesahan, kota, dan nomor surat"
       >
         <span>✏️</span>
         <span>{isEditing ? 'Selesai Edit' : 'Edit Pengesahan'}</span>
       </button>
 
-      <!-- PRINT ACTION 1: A4 PORTRAIT (Official Results Document) -->
+      <!-- EXPORT ACTION 1: 1-CLICK SAVE AS PDF (.pdf) -->
       <button
         type="button"
-        onclick={printPortrait}
-        class="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black tracking-wide shadow-md transition flex items-center space-x-1.5 active:scale-95 cursor-pointer"
-        title="Cetak Sampul, Berita Acara, Klasemen, Juara, Wasit & Penutup (Halaman 1–7) dalam format A4 Portrait"
+        onclick={handleExportPdf}
+        disabled={isExportingPdf}
+        class="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-black tracking-wide shadow-md transition flex items-center space-x-1.5 active:scale-95 cursor-pointer"
+        title="Simpan dokumen buku hasil langsung ke file PDF (.pdf) dengan orientasi gabungan Portrait dan Landscape"
+      >
+        {#if isExportingPdf}
+          <svg class="w-3.5 h-3.5 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span>Menyimpan PDF...</span>
+        {:else}
+          <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <span>📥 Simpan PDF (.pdf)</span>
+        {/if}
+      </button>
+
+      <!-- PRINT ACTION: UNIFIED PRINT DIALOG (PORTRAIT + LANDSCAPE) -->
+      <button
+        type="button"
+        onclick={printCombined}
+        class="px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black tracking-wide shadow-md transition flex items-center space-x-1.5 active:scale-95 cursor-pointer"
+        title="Buka dialog cetak Windows / WebView2 untuk mencetak seluruh buku (Portrait & Landscape otomatis)"
       >
         <svg class="w-3.5 h-3.5 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
         </svg>
-        <span>📄 Cetak Buku Hasil (Portrait)</span>
-      </button>
-
-      <!-- PRINT ACTION 2: A4 LANDSCAPE (Tournament Brackets Attachment) -->
-      <button
-        type="button"
-        onclick={printLandscape}
-        class="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs font-black tracking-wide shadow-md transition flex items-center space-x-1.5 active:scale-95 cursor-pointer"
-        title="Cetak Seluruh Lampiran Bagan Pertandingan Pohon dalam format A4 Landscape penuh"
-      >
-        <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
-        </svg>
-        <span>🌿 Cetak Lampiran Bagan (Landscape)</span>
+        <span>🖨️ Cetak Buku (Dialog)</span>
       </button>
     </div>
   </header>
+
+  {#if exportSuccessMessage}
+    <div class="no-print bg-emerald-950/90 border-b border-emerald-500/40 px-4 py-2 flex items-center justify-between text-xs text-emerald-200 shadow-md">
+      <div class="flex items-center space-x-2">
+        <span>✅</span>
+        <span class="font-bold">{exportSuccessMessage}</span>
+      </div>
+      <button type="button" onclick={() => (exportSuccessMessage = null)} class="text-emerald-400 hover:text-white cursor-pointer">✕</button>
+    </div>
+  {/if}
+
 
   <!-- ================= IN-APP DOCUMENT WORKSPACE CANVAS ================= -->
   <div class="flex-1 overflow-y-auto p-4 sm:p-8 bg-[#0b0d13] print:bg-white print:p-0 select-text">
@@ -309,6 +660,7 @@
         </button>
       </div>
     {:else if bookletData}
+      <div class="booklet-zoom-wrapper transition-transform duration-200 {zoomLevel === 'fit' ? 'w-full' : ''}" style="{zoomLevel === '85' ? 'transform: scale(0.85); transform-origin: top center;' : ''}">
       <main class="booklet-workspace-container mx-auto">
 
         <!-- ========================================================================= -->
@@ -319,310 +671,264 @@
 
             <!-- ================= HALAMAN 1: SAMPUL RESMI (A4 PORTRAIT) ================= -->
             <section id="page-cover" class="booklet-page booklet-page-portrait">
-              <div class="paper-sheet paper-sheet-portrait relative">
-                <!-- Outer Official Frame Border -->
-                <div class="h-full border-4 border-slate-900 rounded-sm p-6 flex flex-col justify-between relative bg-white overflow-hidden">
-                  <!-- Decorative Inner Border -->
-                  <div class="absolute inset-2 border border-slate-300 pointer-events-none"></div>
-
-                  <!-- Header Organisasi Resmi -->
-                  <div class="text-center pt-2 relative z-10">
-                    <div class="inline-block px-3 py-1 rounded bg-slate-900 text-amber-400 font-mono text-[10px] font-bold uppercase tracking-widest mb-3">
-                      DOKUMEN RESMI PENGURUS PROVINSI FORKI
-                    </div>
-                    <div class="text-sm sm:text-base font-black text-slate-950 tracking-wider uppercase leading-snug drop-shadow-sm">
-                      {#if isEditing}
-                        <input
-                          type="text"
-                          bind:value={editableOrganisasi}
-                          class="bg-slate-100 text-slate-900 text-center px-3 py-1 rounded border border-amber-500 text-xs w-full max-w-lg font-bold"
-                        />
-                      {:else}
-                        <span>{editableOrganisasi}</span>
-                      {/if}
-                    </div>
-                  </div>
-
-                  <!-- Cluster Logo Header (FORKI, Kejuaraan, & WKF) -->
-                  <div class="flex items-center justify-center space-x-6 py-6 border-y-2 border-slate-900 my-4 bg-slate-50/60 rounded-md">
-                    <img
-                      src="/img/forki-logo.png"
-                      alt="Logo FORKI"
-                      class="h-16 sm:h-20 w-auto object-contain drop-shadow"
-                    />
-                    <div class="h-14 w-[1px] bg-slate-300"></div>
-                    <div class="h-16 sm:h-20 flex items-center justify-center max-w-[140px]">
-                      {#if bookletData.event_info.logo && logoMap[bookletData.event_info.logo]}
-                        <img
-                          src={logoMap[bookletData.event_info.logo]}
-                          alt="Logo Kejuaraan"
-                          class="max-h-full max-w-full object-contain drop-shadow"
-                          onerror={(e) => { (e.currentTarget as HTMLImageElement).src = '/img/forki-logo.png'; }}
-                        />
-                      {:else}
-                        <img
-                          src="/img/forki-logo.png"
-                          alt="Logo FORKI"
-                          class="max-h-full max-w-full object-contain drop-shadow"
-                        />
-                      {/if}
-                    </div>
-                    <div class="h-14 w-[1px] bg-slate-300"></div>
-                    <img
-                      src="/img/cover/wkf_logo.png"
-                      alt="Logo WKF"
-                      class="h-12 sm:h-14 w-auto object-contain drop-shadow opacity-90"
-                      onerror={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                    />
-                  </div>
-
-                  <!-- Central Hero Title Card -->
-                  <div class="text-center my-auto px-4 py-8 bg-slate-950 text-white rounded-lg border-2 border-amber-500 shadow-xl relative">
-                    <div class="inline-block px-3 py-0.5 rounded bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest mb-3">
-                      LAPORAN HASIL PERTANDINGAN & BERITA ACARA
-                    </div>
-                    <h1 class="text-2xl sm:text-3xl font-black text-white tracking-tight uppercase leading-tight mb-4 drop-shadow">
-                      {editableEventName}
-                    </h1>
-                    <div class="h-[1px] w-24 bg-amber-500 mx-auto mb-4"></div>
-                    <div class="space-y-1 text-xs sm:text-sm font-semibold text-zinc-300">
-                      <div>📍 {editableTempat}</div>
-                      <div>📅 {editableTanggal}</div>
-                      <div class="text-amber-400 font-bold uppercase tracking-wider text-[11px] mt-1">
-                        KOTA {editableKota} • PROVINSI KALIMANTAN TIMUR
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Bottom Supported By Bar (No conflict, clean solid patch) -->
-                  <div class="pt-6 border-t-2 border-slate-900 mt-4 flex items-center justify-between text-slate-800 text-xs">
-                    <div class="space-y-0.5">
-                      <div class="font-black text-[11px] uppercase tracking-wider text-slate-900">
-                        AMBRILINDO TOURNAMENT ENGINE
-                      </div>
-                      <div class="text-[9px] text-slate-500 font-mono">
-                        Validasi & Digitalisasi PB / PENGPROV FORKI
-                      </div>
-                    </div>
-
-                    <div class="flex items-center space-x-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-300">
-                      <span class="text-[10px] font-black uppercase tracking-wider text-slate-700">SUPPORTED BY:</span>
-                      <img src="/img/ambrilindo-logo.png" alt="Ambrilindo" class="h-6 object-contain" />
-                    </div>
-                  </div>
-                </div>
+              <div class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                  <span>📄</span> <span>A4 PORTRAIT (210 × 297 mm)</span>
+                </span>
+                <span class="text-zinc-500">Halaman 1 • Sampul Depan Resmi</span>
               </div>
-            </section>
 
-            <!-- ================= HALAMAN 2: BERITA ACARA & PENGESAHAN ================= -->
-            <section id="page-berita-acara" class="booklet-page booklet-page-portrait">
-              <div class="paper-sheet paper-sheet-portrait">
-                <!-- Kop Surat Header -->
-                <div class="border-b-2 border-slate-900 pb-3 mb-5 flex items-center justify-between gap-4">
-                  <div class="flex items-center space-x-4">
-                    <div class="flex items-center space-x-2.5 shrink-0 bg-white p-0.5 rounded">
-                      <img
-                        src="/img/forki-logo.png"
-                        alt="Logo FORKI"
-                        class="w-14 h-14 object-contain shrink-0"
-                      />
-                      <div class="h-10 w-[1px] bg-slate-300"></div>
-                      <img
-                        src="/img/ambrilindo-logo.png"
-                        alt="Logo Ambrilindo"
-                        class="h-8 w-auto max-w-[110px] object-contain shrink-0"
-                      />
-                    </div>
-                    <div>
-                      <h2 class="text-sm sm:text-base font-black tracking-tight text-slate-950 uppercase leading-tight">
-                        {editableOrganisasi}
-                      </h2>
-                      <div class="text-[11px] text-slate-600 font-medium leading-normal">
-                        {#if bookletData.event_info.alamat}
-                          <div>{bookletData.event_info.alamat}</div>
-                        {/if}
-                        {#if bookletData.event_info.kontak}
-                          <div>Kontak / Sekretariat: {bookletData.event_info.kontak}</div>
-                        {/if}
+              <div class="paper-sheet paper-sheet-portrait relative">
+                <!-- Outer Formal Frame with Crisp Dark Double Border Accent -->
+                <div class="h-full border-4 border-slate-900 rounded-xs p-6 sm:p-7 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950">
+                  <!-- Fine Inner Hairline Inset -->
+                  <div class="absolute inset-2 border border-slate-400/80 pointer-events-none"></div>
+
+                  <!-- 1. TOP HEADER: Federation Hierarchy & Dual-Crest Ribbon -->
+                  <div class="relative z-10 text-center">
+                    <!-- Top Institutional Classification -->
+                    <div class="border-b-2 border-slate-900 pb-2.5 mb-3">
+                      <div class="text-[11px] font-black uppercase tracking-[0.25em] text-slate-900 mb-0.5">
+                        PENGURUS PROVINSI FEDERASI OLAHRAGA KARATE-DO INDONESIA
                       </div>
-                    </div>
-                  </div>
-                  <div class="text-right shrink-0">
-                    <span class="inline-block px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-slate-900 text-white">
-                      DOKUMEN RESMI FORKI
-                    </span>
-                  </div>
-                </div>
-
-                <!-- Berita Acara Title -->
-                <div class="text-center mb-5">
-                  <h3 class="text-base font-black text-slate-950 tracking-wider uppercase underline underline-offset-4">
-                    BERITA ACARA PENYELENGGARAAN & PENGESAHAN HASIL AKHIR
-                  </h3>
-                  <div class="text-xs font-mono font-bold text-slate-700 mt-1">
-                    {#if isEditing}
-                      <input
-                        type="text"
-                        bind:value={editableNomorSurat}
-                        class="border border-slate-400 px-2 py-0.5 rounded text-xs text-center w-64"
-                      />
-                    {:else}
-                      <span>Nomor: {editableNomorSurat}</span>
-                    {/if}
-                  </div>
-                </div>
-
-                <!-- Preamble Statement -->
-                <div class="text-xs text-slate-800 leading-relaxed text-justify mb-5 space-y-2">
-                  <p>
-                    Pada hari ini, <strong>{bookletData.berita_acara.hari_tanggal}</strong>, bertempat di <strong>{editableTempat}</strong>, telah diselesaikan seluruh rangkaian pertandingan kejuaraan karate resmi dengan nama kegiatan:
-                  </p>
-                  <p class="text-sm font-black text-center uppercase tracking-wide text-slate-950 py-1 bg-slate-100 rounded border border-slate-300">
-                    {editableEventName}
-                  </p>
-                  <p>
-                    Penyelenggaraan telah berjalan sesuai dengan Ketentuan Pertandingan World Karate Federation (WKF) serta Pedoman Pengurus Besar Federasi Olahraga Karate-Do Indonesia (PB FORKI). Berdasarkan data rekapitulasi digital Ambrilindo Tournament Engine, dilaporkan ringkasan teknis sebagai berikut:
-                  </p>
-                </div>
-
-                <!-- Technical Summary Table -->
-                <div class="mb-5">
-                  <table class="w-full text-xs text-left border border-slate-300">
-                    <thead class="bg-slate-900 text-white text-[11px] uppercase font-bold">
-                      <tr>
-                        <th class="px-3 py-1.5 border-r border-slate-700">Parameter Teknis Pelaksanaan</th>
-                        <th class="px-3 py-1.5 text-center w-28 border-r border-slate-700">Realisasi</th>
-                        <th class="px-3 py-1.5">Keterangan</th>
-                      </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-200">
-                      <tr>
-                        <td class="px-3 py-1.5 font-bold text-slate-800 border-r border-slate-200">Kontingen / Utusan Daerah Terdaftar</td>
-                        <td class="px-3 py-1.5 font-mono font-bold text-center border-r border-slate-200">{bookletData.berita_acara.total_kontingen}</td>
-                        <td class="px-3 py-1.5 text-slate-700">Utusan Daerah & Kontingen Resmi</td>
-                      </tr>
-                      <tr>
-                        <td class="px-3 py-1.5 font-bold text-slate-800 border-r border-slate-200">Perguruan Karate Terdaftar</td>
-                        <td class="px-3 py-1.5 font-mono font-bold text-center border-r border-slate-200">{bookletData.berita_acara.total_perguruan}</td>
-                        <td class="px-3 py-1.5 text-slate-700">Anggota resmi FORKI</td>
-                      </tr>
-                      <tr>
-                        <td class="px-3 py-1.5 font-bold text-slate-800 border-r border-slate-200">Total Atlet Bertanding</td>
-                        <td class="px-3 py-1.5 font-mono font-bold text-center border-r border-slate-200">{bookletData.berita_acara.total_atlet}</td>
-                        <td class="px-3 py-1.5 text-slate-700">Lolos verifikasi administrasi & timbang badan</td>
-                      </tr>
-                      <tr>
-                        <td class="px-3 py-1.5 font-bold text-slate-800 border-r border-slate-200">Partai Pertandingan (Bagan & Pool)</td>
-                        <td class="px-3 py-1.5 font-mono font-bold text-center border-r border-slate-200">{bookletData.berita_acara.partai_selesai} / {bookletData.berita_acara.total_partai}</td>
-                        <td class="px-3 py-1.5 font-bold text-emerald-800">{bookletData.berita_acara.status_pelaksanaan}</td>
-                      </tr>
-                      <tr>
-                        <td class="px-3 py-1.5 font-bold text-slate-800 border-r border-slate-200">Catatan Khusus / Insiden / Protes</td>
-                        <td colspan="2" class="px-3 py-1.5 text-slate-700">
-                          {#if isEditing}
-                            <textarea
-                              bind:value={editableCatatanSanksi}
-                              rows="2"
-                              class="w-full border border-slate-400 p-1 rounded text-xs"
-                            ></textarea>
-                          {:else}
-                            <span>{editableCatatanSanksi}</span>
-                          {/if}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-
-                <!-- Official Ratification Clause -->
-                <div class="text-xs text-slate-800 leading-relaxed text-justify mb-5">
-                  <p>
-                    Dengan ini menyatakan bahwa seluruh perolehan medali, penetapan Juara Bagan/Kategori, dan penetapan Juara Umum Kontingen maupun Perguruan yang tercantum dalam Buku Hasil ini adalah <strong>BENAR, SAH, dan MENGIKAT</strong> sebagai keputusan mutlak yang disahkan bersama oleh Dewan Wasit dan Panitia Pelaksana.
-                  </p>
-                </div>
-
-                <!-- Date & City Line -->
-                <div class="text-right text-xs font-bold text-slate-800 mb-3">
-                  {#if isEditing}
-                    <div class="flex items-center justify-end space-x-2">
-                      <input
-                        type="text"
-                        bind:value={editableKota}
-                        class="border border-slate-400 px-2 py-0.5 rounded text-xs w-32"
-                        placeholder="Kota"
-                      />
-                      <span>,</span>
-                      <input
-                        type="text"
-                        bind:value={bookletData.berita_acara.tanggal_pengesahan}
-                        class="border border-slate-400 px-2 py-0.5 rounded text-xs w-40"
-                        placeholder="Tanggal Pengesahan"
-                      />
-                    </div>
-                  {:else}
-                    <div>{editableKota}, {bookletData.berita_acara.tanggal_pengesahan}</div>
-                  {/if}
-                </div>
-
-                <!-- 4-Box Signatory Grid -->
-                <div class="grid grid-cols-2 gap-4 pt-1">
-                  {#each editableSignatories as sig}
-                    <div class="border border-slate-300 rounded p-3 text-center flex flex-col justify-between min-h-[140px] bg-slate-50/50">
-                      <div>
-                        <div class="text-[11px] font-black uppercase text-slate-900 tracking-tight">
-                          {sig.jabatan}
-                        </div>
-                        <div class="text-[10px] text-slate-600 font-medium">
-                          {sig.peran}
-                        </div>
-                      </div>
-
-                      <!-- Signature Area with Seal Ring -->
-                      <div class="relative py-2 flex items-center justify-center">
-                        <div class="w-14 h-14 rounded-full border border-dashed border-slate-300 text-slate-300 text-[8px] font-bold uppercase flex items-center justify-center select-none opacity-40">
-                          STEMPEL
-                        </div>
-                      </div>
-
-                      <div>
+                      <div class="text-base sm:text-lg font-black text-slate-950 uppercase tracking-wide">
                         {#if isEditing}
                           <input
                             type="text"
-                            bind:value={sig.nama}
-                            class="border border-slate-400 px-2 py-0.5 rounded text-xs text-center font-bold w-full mb-1"
-                            placeholder="Nama Lengkap & Gelar"
-                          />
-                          <input
-                            type="text"
-                            bind:value={sig.nomor_lisensi}
-                            class="border border-slate-400 px-2 py-0.5 rounded text-[10px] text-center w-full"
-                            placeholder="No. Lisensi / NIK"
+                            bind:value={editableOrganisasi}
+                            class="bg-slate-100 text-slate-950 text-center px-2 py-0.5 rounded border-2 border-amber-500 text-xs w-full max-w-md font-black"
                           />
                         {:else}
-                          <div class="text-xs font-black text-slate-950 underline underline-offset-2">
-                            {sig.nama}
-                          </div>
-                          {#if sig.nomor_lisensi}
-                            <div class="text-[10px] font-mono text-slate-600">
-                              {sig.nomor_lisensi}
-                            </div>
-                          {/if}
+                          <span>{editableOrganisasi}</span>
                         {/if}
                       </div>
                     </div>
-                  {/each}
-                </div>
 
-                <!-- Footer Meta -->
-                <div class="mt-6 pt-3 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500 font-mono">
-                  <span>Official Match Result Book • Ambrilindo Tournament Engine</span>
-                  <span>Halaman 2 • Lembar Pengesahan Resmi</span>
+                    <!-- Dual-Crest Ribbon: FORKI Emblem | Official Title Badge | Event Logo -->
+                    <div class="flex items-center justify-between py-2.5 px-6 bg-slate-50 border-2 border-slate-800 rounded-md">
+                      <!-- 1. FORKI Logo -->
+                      <div class="flex flex-col items-center">
+                        <img
+                          src={FORKI_LOGO_DATA_URL}
+                          alt="Logo FORKI"
+                          class="h-14 w-14 object-contain shrink-0"
+                          style="width: 56px; height: 56px; max-width: 56px; max-height: 56px; object-fit: contain;"
+                          width="56"
+                          height="56"
+                        />
+                        <span class="text-[10px] font-black text-slate-900 uppercase tracking-wider mt-1">PB FORKI</span>
+                      </div>
+
+                      <!-- Center Official Designation Crest -->
+                      <div class="flex flex-col items-center px-4 text-center">
+                        <span class="text-[10px] font-black uppercase tracking-widest text-amber-950 bg-amber-400 px-3 py-0.5 rounded shadow-xs mb-1">
+                          DOKUMEN RESMI HASIL KEJUARAAN
+                        </span>
+                        <span class="text-xs font-black text-slate-900 uppercase tracking-wide">
+                          HASIL AKHIR &amp; REKAPITULASI
+                        </span>
+                      </div>
+
+                      <!-- 2. Event Logo -->
+                      <div class="flex flex-col items-center max-w-[140px]">
+                        {#if bookletData.event_info.logo && logoMap[bookletData.event_info.logo]}
+                          <img
+                            src={logoMap[bookletData.event_info.logo]}
+                            alt="Logo Kejuaraan"
+                            class="h-14 w-auto object-contain shrink-0"
+                            style="max-height: 56px; max-width: 130px; width: auto; height: auto; object-fit: contain;"
+                          />
+                        {:else}
+                          <div class="h-14 px-3 flex items-center justify-center border-2 border-dashed border-slate-400 rounded bg-white text-center">
+                            <span class="text-[10px] font-black text-slate-900 uppercase tracking-tight leading-tight">
+                              {editableEventName}
+                            </span>
+                          </div>
+                        {/if}
+                        <span class="text-[10px] font-black text-slate-900 uppercase tracking-wider mt-1">KEJUARAAN</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 2. MAIN CENTER HERO: Title & Championship Identity -->
+                  <div class="relative z-10 text-center my-2.5 py-5 px-4 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 text-white rounded-lg border-2 border-amber-500 shadow-md">
+                    <div class="inline-flex items-center space-x-2 px-3.5 py-0.5 rounded bg-amber-500 text-slate-950 font-black text-[11px] uppercase tracking-widest mb-2.5">
+                      <span>BUKU LAPORAN HASIL PERTANDINGAN RESMI</span>
+                    </div>
+
+                    <h1 class="text-2xl sm:text-3xl font-black text-white tracking-tight uppercase leading-snug drop-shadow-sm px-2">
+                      {editableEventName}
+                    </h1>
+
+                    <div class="h-0.5 w-28 bg-amber-500 mx-auto my-2.5"></div>
+
+                    <p class="text-xs sm:text-sm font-black text-amber-300 tracking-wide uppercase">
+                      LAPORAN AKHIR REKAPITULASI MEDALI, BAGAN, &amp; PENGESAHAN HASIL
+                    </p>
+                  </div>
+
+                  <!-- 3. BRIEFING MATRIX: 4-Cell Structured Information Grid (High Contrast & Bold) -->
+                  <div class="relative z-10 grid grid-cols-2 gap-2.5 text-xs my-2">
+                    <!-- Box 1: Tempat & Arena -->
+                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
+                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
+                        TEMPAT &amp; ARENA PERTANDINGAN
+                      </div>
+                      <div class="font-black text-sm text-slate-950 leading-snug">
+                        {#if isEditing}
+                          <input
+                            type="text"
+                            bind:value={editableTempat}
+                            class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold"
+                          />
+                        {:else}
+                          <span>{editableTempat}</span>
+                        {/if}
+                      </div>
+                      <div class="text-[11px] text-slate-800 font-bold mt-0.5">
+                        Kota {editableKota || 'Samarinda'} • Provinsi Kalimantan Timur
+                      </div>
+                    </div>
+
+                    <!-- Box 2: Waktu & Pelaksanaan -->
+                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
+                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
+                        WAKTU PELAKSANAAN
+                      </div>
+                      <div class="font-black text-sm text-slate-950 leading-snug">
+                        {#if isEditing}
+                          <input
+                            type="text"
+                            bind:value={editableTanggal}
+                            class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold"
+                          />
+                        {:else}
+                          <span>{editableTanggal}</span>
+                        {/if}
+                      </div>
+                      <div class="text-[11px] text-slate-800 font-bold mt-0.5">
+                        Telah Selesai Dilaksanakan Secara Penuh
+                      </div>
+                    </div>
+
+                    <!-- Box 3: Dasar Regulasi & Pengesahan -->
+                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
+                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
+                        REGULASI &amp; PERWASITAN
+                      </div>
+                      <div class="font-black text-sm text-slate-950 leading-snug">
+                        PERATURAN RESMI PB FORKI
+                      </div>
+                      <div class="text-[11px] text-slate-800 font-bold mt-0.5">
+                        Dewan Wasit &amp; Juri Bersertifikasi Resmi
+                      </div>
+                    </div>
+
+                    <!-- Box 4: Nomor Berita Acara -->
+                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
+                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
+                        NOMOR BERITA ACARA PENGESAHAN
+                      </div>
+                      <div class="font-mono font-black text-sm text-slate-950 leading-snug">
+                        {#if isEditing}
+                          <input
+                            type="text"
+                            bind:value={editableNomorSurat}
+                            class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold"
+                          />
+                        {:else}
+                          <span>{editableNomorSurat || 'BA-FORKI/9/2026'}</span>
+                        {/if}
+                      </div>
+                      <div class="text-[11px] text-emerald-800 font-black mt-0.5">
+                        Status: SAH, MENGIKAT &amp; TERVALIDASI
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 4. PARTICIPATION & HIGHEST HONORS ROLL CALL (Executive Summary) -->
+                  <div class="relative z-10 border-2 border-slate-800 rounded-lg bg-slate-50 p-3 my-2">
+                    <!-- 4-Stat Strip -->
+                    <div class="grid grid-cols-4 divide-x-2 divide-slate-300 text-center pb-2.5 mb-2.5 border-b-2 border-slate-300">
+                      <div>
+                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{bookletData.berita_acara.total_kontingen}</div>
+                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Kontingen</div>
+                      </div>
+                      <div>
+                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{bookletData.berita_acara.total_perguruan}</div>
+                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Perguruan</div>
+                      </div>
+                      <div>
+                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{bookletData.berita_acara.total_atlet}</div>
+                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Atlet</div>
+                      </div>
+                      <div>
+                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{totalKategori}</div>
+                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Nomor Tanding</div>
+                      </div>
+                    </div>
+
+                    <!-- Juara Umum Highlights -->
+                    <div class="grid grid-cols-2 gap-2.5 text-xs">
+                      <div class="bg-amber-100 border-2 border-amber-400 rounded-md p-2 flex items-center justify-between">
+                        <div class="min-w-0 pr-1">
+                          <span class="text-[9px] font-black uppercase tracking-wider text-amber-950 block">JUARA UMUM KONTINGEN</span>
+                          <span class="font-black text-xs text-slate-950 truncate block">{topKontingen?.nama || '-'}</span>
+                        </div>
+                        {#if topKontingen}
+                          <div class="text-xs font-mono font-black text-amber-950 shrink-0 bg-amber-300 px-2 py-0.5 rounded border border-amber-500">
+                            {topKontingen.gold}🥇 {topKontingen.silver}🥈 {topKontingen.bronze}🥉
+                          </div>
+                        {/if}
+                      </div>
+
+                      <div class="bg-emerald-100 border-2 border-emerald-400 rounded-md p-2 flex items-center justify-between">
+                        <div class="min-w-0 pr-1">
+                          <span class="text-[9px] font-black uppercase tracking-wider text-emerald-950 block">JUARA UMUM PERGURUAN</span>
+                          <span class="font-black text-xs text-slate-950 truncate block">{topPerguruan?.nama || '-'}</span>
+                        </div>
+                        {#if topPerguruan}
+                          <div class="text-xs font-mono font-black text-emerald-950 shrink-0 bg-emerald-300 px-2 py-0.5 rounded border border-emerald-500">
+                            {topPerguruan.gold}🥇 {topPerguruan.silver}🥈 {topPerguruan.bronze}🥉
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 5. BOTTOM OFFICIAL TECHNOLOGY PARTNER & FOOTER BAR -->
+                  <div class="relative z-10 pt-2.5 border-t-2 border-slate-900 flex items-center justify-between text-slate-950 text-xs">
+                    <div class="space-y-0.5">
+                      <div class="font-black text-xs uppercase tracking-wider text-slate-950">
+                        AMBRILINDO TOURNAMENT ENGINE
+                      </div>
+                      <div class="text-[10px] text-slate-800 font-bold font-mono">
+                        Sistem Digitalisasi &amp; Validasi Resmi PB / PENGPROV FORKI
+                      </div>
+                    </div>
+
+                    <div class="flex items-center space-x-2 bg-white px-3 py-1.5 rounded border-2 border-slate-800 shadow-2xs">
+                      <span class="text-[10px] font-black uppercase tracking-wider text-slate-900">OFFICIAL TECHNOLOGY:</span>
+                      <img
+                        src={AMBRILINDO_LOGO_DATA_URL}
+                        alt="Ambrilindo"
+                        class="h-6 w-auto object-contain shrink-0"
+                        style="max-height: 24px; max-width: 110px; width: auto; height: auto;"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
 
-            <!-- ================= HALAMAN 3-4: KLASEMEN MEDALI (KONTINGEN & PERGURUAN) ================= -->
+<!-- ================= HALAMAN 2: KLASEMEN MEDALI (KONTINGEN & PERGURUAN) ================= -->
             <section id="page-klasemen" class="booklet-page booklet-page-portrait">
+              <div class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                  <span>📄</span> <span>A4 PORTRAIT (210 × 297 mm)</span>
+                </span>
+                <span class="text-zinc-500">Halaman 2 • Rekapitulasi Medali Kontingen & Perguruan</span>
+              </div>
               <div class="paper-sheet paper-sheet-portrait">
                 <KlasemenMedaliPrintSheet
                   standingsKontingen={bookletData.standings_kontingen}
@@ -633,137 +939,211 @@
                   grandTotal={bookletData.grand_total}
                   eventName={editableEventName}
                   subTitle="{editableTempat} • {editableTanggal}"
-                  pageLabelKontingen="Halaman 3 • Rekapitulasi Medali Kontingen"
-                  pageLabelPerguruan="Halaman 4 • Rekapitulasi Medali Perguruan"
+                  pageLabelKontingen="Halaman 2 • Rekapitulasi Medali Kontingen"
+                  pageLabelPerguruan="Halaman 2B • Rekapitulasi Medali Perguruan"
                   {logoMap}
                 />
               </div>
             </section>
 
-            <!-- ================= HALAMAN 5+: DAFTAR JUARA SELURUH KATEGORI ================= -->
+            
+<!-- ================= HALAMAN 3: DAFTAR JUARA SELURUH KATEGORI ================= -->
             <section id="page-daftar-juara" class="booklet-page booklet-page-portrait">
+              <div class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                  <span>📄</span> <span>A4 PORTRAIT (210 × 297 mm)</span>
+                </span>
+                <span class="text-zinc-500">Halaman 3 • Rekapitulasi Juara Seluruh Nomor Pertandingan</span>
+              </div>
               <div class="paper-sheet paper-sheet-portrait">
                 <DaftarJuaraPrintSheet
                   bagans={bookletData.category_winners}
                   eventName={editableEventName}
-                  pageLabel="Halaman 5 • Rekapan Podium Seluruh Kategori"
+                  pageLabel="Halaman 3 • Rekapan Podium Seluruh Kategori"
                   {logoMap}
                 />
               </div>
             </section>
 
-            <!-- ================= HALAMAN 6: DEWAN WASIT & JURI ================= -->
-            <section id="page-wasit" class="booklet-page booklet-page-portrait">
-              <div class="paper-sheet paper-sheet-portrait">
-                <div class="border-b-2 border-slate-900 pb-2 mb-4 flex items-center justify-between">
-                  <div class="flex items-center space-x-3.5 min-w-0">
-                    <div class="flex items-center space-x-2 shrink-0 bg-white p-0.5 rounded">
-                      <img
-                        src="/img/forki-logo.png"
-                        alt="Logo FORKI"
-                        class="h-10 w-auto max-w-[40px] object-contain shrink-0"
-                      />
-                      <div class="h-7 w-[1px] bg-slate-300 shrink-0"></div>
-                      <img
-                        src="/img/ambrilindo-logo.png"
-                        alt="Logo Ambrilindo"
-                        class="h-6 w-auto max-w-[100px] object-contain shrink-0"
-                      />
-                    </div>
-                    <div>
-                      <h3 class="text-sm font-black text-slate-950 uppercase tracking-tight">
-                        DAFTAR DEWAN WASIT & JURI YANG BERTUGAS
-                      </h3>
-                      <p class="text-[11px] text-slate-600 font-medium">
-                        Korps Perwasitan Kejuaraan Karate • FORKI
-                      </p>
-                    </div>
-                  </div>
-                  <span class="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-slate-900 text-white">
-                    DEWAN WASIT
-                  </span>
-                </div>
-
-                {#if bookletData.referees.length === 0}
-                  <div class="p-8 text-center text-slate-400 italic">
-                    Belum ada dewan wasit yang terdaftar dalam sistem.
-                  </div>
-                {:else}
-                  <table class="w-full text-xs text-left border border-slate-300">
-                    <thead class="bg-slate-900 text-white text-[10px] uppercase font-black">
-                      <tr>
-                        <th class="px-2.5 py-1.5 text-center w-10 border-r border-slate-700">No</th>
-                        <th class="px-3 py-1.5 border-r border-slate-700">Nama Lengkap</th>
-                        <th class="px-3 py-1.5 border-r border-slate-700">Lisensi / Tingkatan</th>
-                        <th class="px-3 py-1.5 border-r border-slate-700">Perguruan</th>
-                        <th class="px-3 py-1.5 border-r border-slate-700">Asal Daerah</th>
-                        <th class="px-3 py-1.5 text-center">Penugasan</th>
-                      </tr>
-                    </thead>
-                    <tbody class="divide-y divide-slate-200">
-                      {#each bookletData.referees as ref, idx}
-                        <tr class="hover:bg-slate-50">
-                          <td class="px-2.5 py-1 text-center font-mono border-r border-slate-200">{idx + 1}</td>
-                          <td class="px-3 py-1 font-bold text-slate-900 border-r border-slate-200">{ref.nama_wasit}</td>
-                          <td class="px-3 py-1 text-slate-700 border-r border-slate-200 font-mono text-[11px]">
-                            {ref.lisensi || "-"} {ref.no_lisensi ? `(${ref.no_lisensi})` : ""}
-                          </td>
-                          <td class="px-3 py-1 text-slate-700 border-r border-slate-200">{ref.nama_perguruan || "-"}</td>
-                          <td class="px-3 py-1 text-slate-700 border-r border-slate-200">{ref.kab_kota || "-"}</td>
-                          <td class="px-3 py-1 text-center font-semibold text-emerald-800">
-                            {ref.assigned_tatami_number ? `Tatami ${ref.assigned_tatami_number} (${ref.assigned_posisi || "Juri"})` : "Aktif Bertugas"}
-                          </td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                {/if}
-
-                <div class="mt-8 pt-3 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500 font-mono">
-                  <span>Official Match Result Book • Ambrilindo Tournament Engine</span>
-                  <span>Halaman 6 • Susunan Korps Wasit / Juri</span>
-                </div>
-              </div>
-            </section>
-
-            <!-- ================= HALAMAN 7: LEMBAR PENUTUP RESMI ================= -->
+            
+<!-- ================= HALAMAN 4: LEMBAR PENUTUP RESMI ================= -->
             <section id="page-closing" class="booklet-page booklet-page-portrait">
+              <div class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                  <span>📄</span> <span>A4 PORTRAIT (210 × 297 mm)</span>
+                </span>
+                <span class="text-zinc-500">Halaman 4 • Lembar Penutup &amp; Rekapitulasi Akhir Resmi</span>
+              </div>
               <div class="paper-sheet paper-sheet-portrait">
-                <div class="h-full border-4 border-slate-900 rounded-sm p-6 flex flex-col justify-between relative bg-white overflow-hidden">
-                  <div class="absolute inset-2 border border-slate-300 pointer-events-none"></div>
+                <div class="h-full border-4 border-slate-900 rounded-xs p-6 sm:p-7 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950">
+                  <div class="absolute inset-2 border border-slate-400 pointer-events-none"></div>
 
-                  <!-- Header Penutup -->
-                  <div class="flex items-center justify-between border-b-2 border-slate-900 pb-4 relative z-10">
-                    <div class="flex items-center space-x-3">
-                      <img src="/img/forki-logo.png" alt="Logo FORKI" class="h-10 w-auto object-contain" />
-                      <div class="h-6 w-[1px] bg-slate-300"></div>
-                      <img src="/img/ambrilindo-logo.png" alt="Ambrilindo" class="h-6 object-contain" />
+                  <!-- 1. Header Penutup -->
+                  <div class="flex items-center justify-between border-b-2 border-slate-900 pb-3 relative z-10">
+                    <div class="flex items-center space-x-3.5">
+                      <img src={FORKI_LOGO_DATA_URL} alt="Logo FORKI" class="h-11 w-11 object-contain" width="44" height="44" />
+                      <div class="h-7 w-[2px] bg-slate-400"></div>
+                      <img src={AMBRILINDO_LOGO_DATA_URL} alt="Ambrilindo" class="h-7 w-auto object-contain" />
                     </div>
-                    <span class="text-xs font-mono font-bold tracking-widest text-slate-900 uppercase">
-                      LEMBAR PENUTUP DOKUMEN RESMI
+                    <span class="text-xs font-mono font-black tracking-widest text-white bg-slate-950 px-3 py-1 rounded uppercase">
+                      LEMBAR PENUTUP &amp; REKAPITULASI RESMI
                     </span>
                   </div>
 
-                  <!-- Isi Ucapan Apresiasi -->
-                  <div class="my-auto text-center space-y-4 px-4 py-8 bg-slate-50 border border-slate-200 rounded-lg relative z-10">
-                    <div class="inline-block px-3 py-1 rounded bg-slate-900 text-amber-400 font-mono text-[10px] font-bold uppercase tracking-wider mb-2">
-                      FINAL TOURNAMENT RECAPITULATION
+                  <!-- 2. Pernyataan Penutupan Resmi -->
+                  <div class="text-center space-y-2 px-4 py-3.5 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 text-white rounded-lg border-2 border-amber-500 relative z-10 shadow-sm my-1">
+                    <div class="inline-block px-3 py-0.5 rounded bg-amber-400 text-slate-950 font-mono text-[10px] font-black uppercase tracking-wider">
+                      PERNYATAAN RESMI PENUTUPAN KEJUARAAN
                     </div>
-                    <h2 class="text-2xl sm:text-3xl font-black uppercase tracking-tight text-slate-950">
-                      TERIMA KASIH ATAS PARTISIPASI & SPORTIVITAS
+                    <h2 class="text-xl sm:text-2xl font-black uppercase tracking-tight text-white leading-tight">
+                      TERIMA KASIH ATAS PARTISIPASI &amp; SPORTIVITAS
                     </h2>
-                    <p class="text-xs sm:text-sm text-slate-700 max-w-lg mx-auto leading-relaxed font-medium">
-                      Seluruh data hasil pertandingan, perolehan medali, penetapan juara, dan daftar penugasan wasit/juri dalam dokumen ini telah divalidasi dan ditutup secara resmi melalui sistem <strong>Ambrilindo Tournament Engine</strong>.
+                    <p class="text-xs text-slate-200 max-w-2xl mx-auto leading-relaxed font-medium">
+                      Seluruh rangkaian pertandingan <strong>{editableEventName}</strong> telah selesai diselenggarakan secara penuh sesuai dengan Ketentuan Pertandingan PB FORKI. Seluruh perolehan medali, penetapan juara, dan bagan pertandingan yang tercantum dalam dokumen ini telah divalidasi dan ditutup secara resmi melalui sistem <strong>Ambrilindo Tournament Engine</strong>.
                     </p>
-                    <div class="inline-block px-4 py-1.5 rounded-full bg-slate-200/80 border border-slate-300 text-xs font-mono text-slate-800">
-                      Generated at: {new Date().toLocaleString('id-ID')}
+                  </div>
+
+                  <!-- 3. Podium Kehormatan: Top 3 Juara Umum Kontingen & Perguruan -->
+                  <div class="grid grid-cols-2 gap-3 relative z-10 my-1">
+                    <!-- Column A: Top 3 Kontingen -->
+                    <div class="border-2 border-amber-500 bg-amber-50/60 rounded-lg p-2.5">
+                      <div class="flex items-center justify-between border-b-2 border-amber-400 pb-1 mb-2">
+                        <span class="text-xs font-black uppercase tracking-wider text-amber-950">🏆 TOP 3 JUARA UMUM KONTINGEN</span>
+                        <span class="text-[9px] font-black bg-amber-400 text-amber-950 px-1.5 py-0.2 rounded">RESMI</span>
+                      </div>
+                      <div class="space-y-1.5">
+                        {#if top3Kontingen.length === 0}
+                          <div class="text-center text-xs text-slate-500 italic py-2">Data klasemen belum tersedia</div>
+                        {:else}
+                          {#each top3Kontingen as k, idx}
+                            <div class="flex items-center justify-between p-1.5 rounded {idx === 0 ? 'bg-amber-100 border border-amber-400' : idx === 1 ? 'bg-slate-100 border border-slate-300' : 'bg-orange-50 border border-orange-200'}">
+                              <div class="flex items-center space-x-1.5 min-w-0 pr-1">
+                                <span class="text-xs font-mono font-black {idx === 0 ? 'text-amber-800' : idx === 1 ? 'text-slate-700' : 'text-amber-700'}">#{idx + 1}</span>
+                                <span class="text-xs font-black text-slate-950 truncate block">{k.nama}</span>
+                              </div>
+                              <span class="text-[11px] font-mono font-black text-slate-900 shrink-0 bg-white/80 px-1.5 py-0.5 rounded border border-slate-300">
+                                {k.gold}🥇 {k.silver}🥈 {k.bronze}🥉
+                              </span>
+                            </div>
+                          {/each}
+                        {/if}
+                      </div>
+                    </div>
+
+                    <!-- Column B: Top 3 Perguruan -->
+                    <div class="border-2 border-emerald-500 bg-emerald-50/60 rounded-lg p-2.5">
+                      <div class="flex items-center justify-between border-b-2 border-emerald-400 pb-1 mb-2">
+                        <span class="text-xs font-black uppercase tracking-wider text-emerald-950">🎖️ TOP 3 JUARA UMUM PERGURUAN</span>
+                        <span class="text-[9px] font-black bg-emerald-400 text-emerald-950 px-1.5 py-0.2 rounded">RESMI</span>
+                      </div>
+                      <div class="space-y-1.5">
+                        {#if top3Perguruan.length === 0}
+                          <div class="text-center text-xs text-slate-500 italic py-2">Data perguruan belum tersedia</div>
+                        {:else}
+                          {#each top3Perguruan as p, idx}
+                            <div class="flex items-center justify-between p-1.5 rounded {idx === 0 ? 'bg-emerald-100 border border-emerald-400' : idx === 1 ? 'bg-slate-100 border border-slate-300' : 'bg-orange-50 border border-orange-200'}">
+                              <div class="flex items-center space-x-1.5 min-w-0 pr-1">
+                                <span class="text-xs font-mono font-black {idx === 0 ? 'text-emerald-800' : idx === 1 ? 'text-slate-700' : 'text-emerald-700'}">#{idx + 1}</span>
+                                <span class="text-xs font-black text-slate-950 truncate block">{p.nama}</span>
+                              </div>
+                              <span class="text-[11px] font-mono font-black text-slate-900 shrink-0 bg-white/80 px-1.5 py-0.5 rounded border border-slate-300">
+                                {p.gold}🥇 {p.silver}🥈 {p.bronze}🥉
+                              </span>
+                            </div>
+                          {/each}
+                        {/if}
+                      </div>
                     </div>
                   </div>
 
-                  <!-- Footer Penutup -->
-                  <div class="border-t-2 border-slate-900 pt-4 flex items-center justify-between text-xs text-slate-600 font-mono relative z-10">
-                    <span class="font-bold text-slate-900">AMBRILINDO TOURNAMENT ENGINE</span>
-                    <span>Halaman 7 • Lembar Penutup & Kompilasi Akhir</span>
+                  <!-- 4. Ringkasan Statistik Vital Turnamen -->
+                  <div class="border-2 border-slate-800 rounded-lg bg-slate-50 p-2.5 relative z-10 my-1">
+                    <div class="grid grid-cols-4 divide-x-2 divide-slate-300 text-center">
+                      <div>
+                        <div class="text-lg font-black font-mono text-slate-950">{totalKategori}</div>
+                        <div class="text-[9.5px] uppercase font-black text-slate-800">Nomor Tanding</div>
+                      </div>
+                      <div>
+                        <div class="text-lg font-black font-mono text-slate-950">{bookletData.berita_acara.total_atlet}</div>
+                        <div class="text-[9.5px] uppercase font-black text-slate-800">Atlet Bertanding</div>
+                      </div>
+                      <div>
+                        <div class="text-lg font-black font-mono text-slate-950">{bookletData.berita_acara.total_kontingen} / {bookletData.berita_acara.total_perguruan}</div>
+                        <div class="text-[9.5px] uppercase font-black text-slate-800">Kontingen / Perguruan</div>
+                      </div>
+                      <div>
+                        <div class="text-sm font-black font-mono text-slate-950">{totalMedaliEmas}🥇 {totalMedaliPerak}🥈 {totalMedaliPerunggu}🥉</div>
+                        <div class="text-[9.5px] uppercase font-black text-slate-800">Total Medali Dianugerahkan</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 5. Kolom Pengesahan Tiga Pihak (Signature Block) -->
+                  <div class="border-2 border-slate-800 rounded-lg p-3 bg-white relative z-10 my-1" style="break-inside: avoid; page-break-inside: avoid;">
+                    <div class="text-right text-xs font-bold text-slate-900 mb-2">
+                      Kota {editableKota || 'Samarinda'}, {editableTanggal || 'November 2026'}
+                    </div>
+                    <div class="grid grid-cols-3 gap-3 text-center">
+                      <!-- Signatory 1 -->
+                      <div class="flex flex-col justify-between min-h-[95px]">
+                        <div class="text-[11px] font-black uppercase text-slate-950">
+                          {editableSignatories[0]?.jabatan || 'Ketua Panitia Pelaksana'}
+                        </div>
+                        <div class="text-[10px] text-slate-700 font-semibold">
+                          {editableSignatories[0]?.peran || 'Panitia Penyelenggara'}
+                        </div>
+                        <div class="my-1">
+                          <div class="w-9 h-9 rounded-full border border-dashed border-slate-400 text-slate-400 text-[6.5px] font-bold uppercase flex items-center justify-center mx-auto select-none opacity-40">
+                            STEMPEL
+                          </div>
+                        </div>
+                        <div class="text-xs font-black text-slate-950 underline underline-offset-2">
+                          {editableSignatories[0]?.nama || 'Ketua Panitia'}
+                        </div>
+                      </div>
+
+                      <!-- Signatory 2 -->
+                      <div class="flex flex-col justify-between min-h-[95px]">
+                        <div class="text-[11px] font-black uppercase text-slate-950">
+                          {editableSignatories[1]?.jabatan || 'Technical Delegate'}
+                        </div>
+                        <div class="text-[10px] text-slate-700 font-semibold">
+                          {editableSignatories[1]?.peran || 'Delegasi Teknik FORKI'}
+                        </div>
+                        <div class="my-1">
+                          <div class="w-9 h-9 rounded-full border border-dashed border-slate-400 text-slate-400 text-[6.5px] font-bold uppercase flex items-center justify-center mx-auto select-none opacity-40">
+                            STEMPEL
+                          </div>
+                        </div>
+                        <div class="text-xs font-black text-slate-950 underline underline-offset-2">
+                          {editableSignatories[1]?.nama || 'Technical Delegate'}
+                        </div>
+                      </div>
+
+                      <!-- Signatory 3 -->
+                      <div class="flex flex-col justify-between min-h-[95px]">
+                        <div class="text-[11px] font-black uppercase text-slate-950">
+                          {editableSignatories[2]?.jabatan || 'Ketua Dewan Wasit'}
+                        </div>
+                        <div class="text-[10px] text-slate-700 font-semibold">
+                          {editableSignatories[2]?.peran || 'Dewan Wasit & Juri'}
+                        </div>
+                        <div class="my-1">
+                          <div class="w-9 h-9 rounded-full border border-dashed border-slate-400 text-slate-400 text-[6.5px] font-bold uppercase flex items-center justify-center mx-auto select-none opacity-40">
+                            STEMPEL
+                          </div>
+                        </div>
+                        <div class="text-xs font-black text-slate-950 underline underline-offset-2">
+                          {editableSignatories[2]?.nama || 'Ketua Dewan Wasit'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 6. Footer Penutup & Segel Digital -->
+                  <div class="border-t-2 border-slate-900 pt-3 flex items-center justify-between text-xs text-slate-900 font-mono relative z-10">
+                    <span class="font-black text-slate-950">AMBRILINDO TOURNAMENT ENGINE • DIGITAL RATIFIED</span>
+                    <span class="font-bold text-slate-800">Dokumen Hasil Resmi • Penutup &amp; Kompilasi Akhir</span>
                   </div>
                 </div>
               </div>
@@ -810,27 +1190,33 @@
                 {@const sortedRounds = Array.from(roundMap.keys()).sort((a, b) => a - b)}
                 {@const totalRounds = sortedRounds.length}
                 <section id="page-bagan-{bCat.category_id}" class="booklet-page booklet-page-landscape">
+                  <div class="no-print max-w-[297mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                    <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 font-bold">
+                      <span>🌿</span> <span>A4 LANDSCAPE (297 × 210 mm)</span>
+                    </span>
+                    <span class="text-zinc-500">Lampiran Bagan {bIdx + 1} dari {activeBrackets.length} • {bCat.category_name}</span>
+                  </div>
                   <div class="paper-sheet paper-sheet-landscape">
                     <!-- 1. Header Lembar Bagan -->
                     <div class="border-b-2 border-slate-900 pb-2 mb-3 flex items-center justify-between">
                       <div class="flex items-center space-x-3 min-w-0">
                         <div class="flex items-center space-x-2 shrink-0 bg-white p-0.5 rounded">
                           <img
-                            src="/img/forki-logo.png"
+                            src={FORKI_LOGO_DATA_URL}
                             alt="Logo FORKI"
-                            class="h-8 w-auto object-contain shrink-0"
+                            class="h-7 w-auto max-w-[32px] max-h-7 object-contain shrink-0" style="max-height: 28px; max-width: 32px; width: auto; height: auto;"
                           />
                           <div class="h-6 w-[1px] bg-slate-300 shrink-0"></div>
                           {#if bookletData.event_info.logo && logoMap[bookletData.event_info.logo]}
                             <img
                               src={logoMap[bookletData.event_info.logo]}
                               alt="Logo Event"
-                              class="h-7 w-auto max-w-[80px] object-contain shrink-0"
-                              onerror={(e) => { (e.currentTarget as HTMLImageElement).src = '/img/forki-logo.png'; }}
+                              class="h-7 w-auto max-w-[70px] max-h-7 object-contain shrink-0" style="max-height: 28px; max-width: 70px; width: auto; height: auto;"
+                              onerror={(e) => { (e.currentTarget as HTMLImageElement).src = FORKI_LOGO_DATA_URL; }}
                             />
                           {:else}
                             <img
-                              src="/img/ambrilindo-logo.png"
+                              src={AMBRILINDO_LOGO_DATA_URL}
                               alt="Ambrilindo"
                               class="h-5 w-auto object-contain shrink-0"
                             />
@@ -883,7 +1269,7 @@
                                     <div class="flex items-center space-x-1.5 min-w-0 pr-1">
                                       <span class="w-1.5 h-1.5 rounded-full bg-red-600 shrink-0"></span>
                                       {#if m.atlet1_logo && logoMap[m.atlet1_logo]}
-                                        <img src={logoMap[m.atlet1_logo]} alt="" class="w-3.5 h-3.5 object-contain shrink-0" />
+                                        <img src={logoMap[m.atlet1_logo]} alt="" class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14" />
                                       {/if}
                                       <div class="min-w-0">
                                         <div class="text-[10px] truncate leading-tight {m.pemenang === '1' ? 'text-red-950 font-black' : 'text-slate-800'}">
@@ -905,7 +1291,7 @@
                                     <div class="flex items-center space-x-1.5 min-w-0 pr-1">
                                       <span class="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0"></span>
                                       {#if m.atlet2_logo && logoMap[m.atlet2_logo]}
-                                        <img src={logoMap[m.atlet2_logo]} alt="" class="w-3.5 h-3.5 object-contain shrink-0" />
+                                        <img src={logoMap[m.atlet2_logo]} alt="" class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14" />
                                       {/if}
                                       <div class="min-w-0">
                                         <div class="text-[10px] truncate leading-tight {m.pemenang === '2' ? 'text-blue-950 font-black' : 'text-slate-800'}">
@@ -964,9 +1350,11 @@
         {/if}
 
       </main>
+      </div>
     {/if}
   </div>
 </div>
+
 
 <style>
   /* ==========================================================================
@@ -1035,35 +1423,54 @@
       overflow: visible !important;
     }
 
+    .booklet-zoom-wrapper {
+      transform: none !important;
+    }
+
     .booklet-workspace-container {
       max-width: 100% !important;
       padding: 0 !important;
       margin: 0 !important;
     }
 
-    /* Print Mode 1: PORTRAIT ONLY */
-    .is-printing-portrait .booklet-section-landscape,
-    .is-printing-portrait .booklet-page-landscape,
-    .is-printing-portrait .paper-sheet-landscape {
-      display: none !important;
+    /* Print Mode 0: COMBINED (Default) - Shows both portrait and landscape */
+    .is-printing-combined .booklet-section-portrait {
+      display: block !important;
+    }
+    .is-printing-combined .booklet-page-portrait {
+      display: flex !important;
+      page: portrait-sheet !important;
+      break-after: page !important;
+      page-break-after: always !important;
     }
 
+    .is-printing-combined .booklet-section-landscape {
+      display: block !important;
+    }
+    .is-printing-combined .booklet-page-landscape {
+      display: flex !important;
+      page: landscape-sheet !important;
+      break-after: page !important;
+      page-break-after: always !important;
+    }
+
+    /* Print Mode 1: PORTRAIT ONLY */
+    .is-printing-portrait .booklet-section-landscape,
+    .is-printing-portrait .booklet-page-landscape {
+      display: none !important;
+    }
     .is-printing-portrait .booklet-section-portrait,
-    .is-printing-portrait .booklet-page-portrait,
-    .is-printing-portrait .paper-sheet-portrait {
+    .is-printing-portrait .booklet-page-portrait {
       display: flex !important;
     }
 
     /* Print Mode 2: LANDSCAPE ONLY */
     .is-printing-landscape .booklet-section-portrait,
-    .is-printing-landscape .booklet-page-portrait,
-    .is-printing-landscape .paper-sheet-portrait {
+    .is-printing-landscape .booklet-page-portrait {
       display: none !important;
     }
-
     .is-printing-landscape .booklet-section-landscape,
-    .is-printing-landscape .booklet-page-landscape,
-    .is-printing-landscape .paper-sheet-landscape {
+    .is-printing-landscape .booklet-page-landscape {
       display: flex !important;
     }
 
@@ -1084,19 +1491,20 @@
       border: none !important;
       margin: 0 !important;
       padding: 0 !important;
-      break-after: page !important;
-      page-break-after: always !important;
+      break-after: auto !important;
+      page-break-after: auto !important;
     }
 
     .paper-sheet-landscape {
       width: 100% !important;
+      max-width: 285mm !important;
       min-height: 195mm !important;
       box-shadow: none !important;
       border: none !important;
       margin: 0 !important;
       padding: 0 !important;
-      break-after: page !important;
-      page-break-after: always !important;
+      break-after: auto !important;
+      page-break-after: auto !important;
     }
   }
 </style>

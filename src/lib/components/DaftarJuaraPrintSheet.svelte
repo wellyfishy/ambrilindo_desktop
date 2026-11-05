@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SummaryBaganItem, SummaryBaganWinner } from "$lib/types";
+  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
 
   interface Props {
     bagans: SummaryBaganItem[];
@@ -15,8 +16,8 @@
     bagans = [],
     eventName = "",
     pageLabel = "Daftar Juara Seluruh Nomor Tanding",
-    customLogoForki = "/img/forki-logo.png",
-    customLogoAmbrilindo = "/img/ambrilindo-logo.png",
+    customLogoForki = FORKI_LOGO_DATA_URL,
+    customLogoAmbrilindo = AMBRILINDO_LOGO_DATA_URL,
     showBadge = true,
     logoMap = {},
   }: Props = $props();
@@ -43,15 +44,6 @@
   }
 </script>
 
-<svelte:head>
-  <style>
-    @page {
-      size: A4 portrait;
-      margin: 8mm;
-    }
-  </style>
-</svelte:head>
-
 <div class="daftar-juara-sheet font-sans text-slate-900 bg-white">
   <!-- Semantic Table structure for recurring header/footer on every printed page -->
   <table class="w-full border-collapse border-none">
@@ -66,13 +58,13 @@
                 <img
                   src={customLogoForki}
                   alt="Logo FORKI"
-                  class="h-11 w-auto max-w-[44px] object-contain shrink-0"
+                  class="h-10 w-auto max-w-[40px] max-h-10 object-contain shrink-0" style="max-height: 40px; max-width: 40px; width: auto; height: auto;"
                 />
                 <div class="h-8 w-[1px] bg-slate-300 shrink-0"></div>
                 <img
                   src={customLogoAmbrilindo}
                   alt="Logo Ambrilindo"
-                  class="h-7 w-auto max-w-[110px] object-contain shrink-0"
+                  class="h-7 w-auto max-w-[110px] max-h-7 object-contain shrink-0" style="max-height: 28px; max-width: 110px; width: auto; height: auto;"
                 />
               </div>
 
@@ -118,7 +110,7 @@
                 {@const w3a = cat.winners.find((w) => w.juara === "3a")}
                 {@const w3b = cat.winners.find((w) => w.juara === "3b")}
 
-                <div class="border border-slate-300 rounded p-2.5 bg-slate-50/60 print:bg-white break-inside-avoid">
+                <div class="border border-slate-300 rounded p-2.5 bg-slate-50/60 print:bg-white break-inside-avoid" style="break-inside: avoid; page-break-inside: avoid;">
                   <!-- Header Kategori -->
                   <div class="border-b border-slate-300 pb-1.5 mb-2 flex items-start gap-2 min-h-[26px]">
                     <span class="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-slate-900 text-white shrink-0 mt-0.5">
@@ -140,7 +132,7 @@
                         <img
                           src={logoMap[w1.logo]}
                           alt=""
-                          class="w-3.5 h-3.5 object-contain shrink-0 rounded-xs"
+                          class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0 rounded-xs" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14"
                           onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                         />
                       {/if}
@@ -161,7 +153,7 @@
                         <img
                           src={logoMap[w2.logo]}
                           alt=""
-                          class="w-3.5 h-3.5 object-contain shrink-0 rounded-xs"
+                          class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0 rounded-xs" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14"
                           onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                         />
                       {/if}
@@ -182,7 +174,7 @@
                         <img
                           src={logoMap[w3a.logo]}
                           alt=""
-                          class="w-3.5 h-3.5 object-contain shrink-0 rounded-xs"
+                          class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0 rounded-xs" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14"
                           onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                         />
                       {/if}
@@ -203,7 +195,7 @@
                         <img
                           src={logoMap[w3b.logo]}
                           alt=""
-                          class="w-3.5 h-3.5 object-contain shrink-0 rounded-xs"
+                          class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0 rounded-xs" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14"
                           onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                         />
                       {/if}
