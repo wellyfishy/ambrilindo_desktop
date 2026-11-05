@@ -546,6 +546,7 @@ mod tests {
             standings_kontingen: vec![],
             standings_perguruan: vec![],
             category_winners: vec![],
+            category_brackets: vec![],
             referees: vec![],
             total_gold: 10,
             total_silver: 10,
