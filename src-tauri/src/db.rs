@@ -86,6 +86,7 @@ impl DatabaseManager {
         if let Some(p) = &self.pool {
             let _ = crate::sync::SyncService::ensure_sync_queue_table(p).await;
             Self::ensure_performance_indexes(p).await;
+            Self::auto_heal_legacy_master_data(p).await;
         }
 
         Ok(())
@@ -108,6 +109,21 @@ impl DatabaseManager {
         for q in index_queries {
             let _ = sqlx::query(q).execute(pool).await;
         }
+    }
+
+    /// Auto-heals orphaned/unassigned master data records from older databases or imports
+    async fn auto_heal_legacy_master_data(pool: &Pool<Sqlite>) {
+        let _ = sqlx::query(
+            "UPDATE backend_utusan 
+             SET event_id = (SELECT a.event_id FROM backend_atlet a WHERE a.utusan_id = backend_utusan.id AND a.event_id IS NOT NULL LIMIT 1)
+             WHERE event_id IS NULL AND id IN (SELECT DISTINCT utusan_id FROM backend_atlet WHERE utusan_id IS NOT NULL);"
+        ).execute(pool).await;
+
+        let _ = sqlx::query(
+            "UPDATE backend_perguruan 
+             SET event_id = (SELECT a.event_id FROM backend_atlet a WHERE a.perguruan_id = backend_perguruan.id AND a.event_id IS NOT NULL LIMIT 1)
+             WHERE event_id IS NULL AND id IN (SELECT DISTINCT perguruan_id FROM backend_atlet WHERE perguruan_id IS NOT NULL);"
+        ).execute(pool).await;
     }
 
     pub fn get_pool(&self) -> Result<&Pool<Sqlite>, String> {
@@ -1875,8 +1891,12 @@ impl DatabaseManager {
     pub async fn get_perguruans(&self, event_id: i64) -> Result<Vec<Perguruan>, String> {
         let pool = self.get_pool()?;
         sqlx::query_as::<_, Perguruan>(
-            "SELECT id, event_id, nama_perguruan FROM backend_perguruan WHERE event_id = ? ORDER BY nama_perguruan ASC"
+            "SELECT id, event_id, nama_perguruan FROM backend_perguruan 
+             WHERE event_id = ? 
+                OR id IN (SELECT DISTINCT perguruan_id FROM backend_atlet WHERE event_id = ? AND perguruan_id IS NOT NULL)
+             ORDER BY nama_perguruan ASC"
         )
+        .bind(event_id)
         .bind(event_id)
         .fetch_all(pool)
         .await
@@ -1887,8 +1907,12 @@ impl DatabaseManager {
     pub async fn get_contingents(&self, event_id: i64) -> Result<Vec<Utusan>, String> {
         let pool = self.get_pool()?;
         sqlx::query_as::<_, Utusan>(
-            "SELECT id, event_id, nama_utusan, logo FROM backend_utusan WHERE event_id = ? ORDER BY nama_utusan ASC"
+            "SELECT id, event_id, nama_utusan, logo FROM backend_utusan 
+             WHERE event_id = ? 
+                OR id IN (SELECT DISTINCT utusan_id FROM backend_atlet WHERE event_id = ? AND utusan_id IS NOT NULL)
+             ORDER BY nama_utusan ASC"
         )
+        .bind(event_id)
         .bind(event_id)
         .fetch_all(pool)
         .await
@@ -1901,11 +1925,14 @@ impl DatabaseManager {
         sqlx::query_as::<_, EnrichedUtusan>(
             "SELECT u.id, u.event_id, u.nama_utusan, u.logo, COUNT(a.id) as athlete_count
              FROM backend_utusan u
-             LEFT JOIN backend_atlet a ON a.utusan_id = u.id
+             LEFT JOIN backend_atlet a ON a.utusan_id = u.id AND a.event_id = ?
              WHERE u.event_id = ?
+                OR u.id IN (SELECT DISTINCT utusan_id FROM backend_atlet WHERE event_id = ? AND utusan_id IS NOT NULL)
              GROUP BY u.id, u.event_id, u.nama_utusan, u.logo
              ORDER BY u.nama_utusan ASC"
         )
+        .bind(event_id)
+        .bind(event_id)
         .bind(event_id)
         .fetch_all(pool)
         .await
@@ -2000,11 +2027,14 @@ impl DatabaseManager {
         sqlx::query_as::<_, EnrichedPerguruan>(
             "SELECT p.id, p.event_id, p.nama_perguruan, COUNT(a.id) as athlete_count
              FROM backend_perguruan p
-             LEFT JOIN backend_atlet a ON a.perguruan_id = p.id
+             LEFT JOIN backend_atlet a ON a.perguruan_id = p.id AND a.event_id = ?
              WHERE p.event_id = ?
+                OR p.id IN (SELECT DISTINCT perguruan_id FROM backend_atlet WHERE event_id = ? AND perguruan_id IS NOT NULL)
              GROUP BY p.id, p.event_id, p.nama_perguruan
              ORDER BY p.nama_perguruan ASC"
         )
+        .bind(event_id)
+        .bind(event_id)
         .bind(event_id)
         .fetch_all(pool)
         .await
@@ -3561,8 +3591,14 @@ impl DatabaseManager {
             logo: Option<String>,
         }
         let utusan_rows = sqlx::query_as::<_, UtusanRow>(
-            "SELECT id, nama_utusan, logo FROM backend_utusan WHERE event_id = ? ORDER BY nama_utusan ASC"
+            r#"
+            SELECT u.id, u.nama_utusan, u.logo
+            FROM backend_utusan u
+            WHERE u.event_id = ? OR u.id IN (SELECT DISTINCT utusan_id FROM backend_atlet WHERE event_id = ? AND utusan_id IS NOT NULL)
+            ORDER BY u.nama_utusan ASC
+            "#
         )
+        .bind(event_id)
         .bind(event_id)
         .fetch_all(pool)
         .await
@@ -3575,8 +3611,14 @@ impl DatabaseManager {
             nama_perguruan: Option<String>,
         }
         let perguruan_rows = sqlx::query_as::<_, PerguruanRow>(
-            "SELECT id, nama_perguruan FROM backend_perguruan WHERE event_id = ? ORDER BY nama_perguruan ASC"
+            r#"
+            SELECT p.id, p.nama_perguruan
+            FROM backend_perguruan p
+            WHERE p.event_id = ? OR p.id IN (SELECT DISTINCT perguruan_id FROM backend_atlet WHERE event_id = ? AND perguruan_id IS NOT NULL)
+            ORDER BY p.nama_perguruan ASC
+            "#
         )
+        .bind(event_id)
         .bind(event_id)
         .fetch_all(pool)
         .await
@@ -4098,9 +4140,6 @@ impl DatabaseManager {
             tipe_tanding: Option<String>,
             nomor_tanding_id: Option<i64>,
             pool: Option<i32>,
-            is_bob: Option<bool>,
-            nt_nama: Option<String>,
-            nt_is_bob: Option<bool>,
             juara_1_id: Option<i64>,
             juara_2_id: Option<i64>,
             juara_3a_id: Option<i64>,
@@ -4108,11 +4147,9 @@ impl DatabaseManager {
         }
         let all_raw_bagans = sqlx::query_as::<_, BaganSummaryRow>(
             r#"
-            SELECT b.id, b.nama_bagan, b.kode, b.tipe_tanding, b.nomor_tanding_id, b.pool, b.is_bob,
-                   nt.nama_nomor_tanding AS nt_nama, nt.is_bob AS nt_is_bob,
+            SELECT b.id, b.nama_bagan, b.kode, b.tipe_tanding, b.nomor_tanding_id, b.pool,
                    b.juara_1_id, b.juara_2_id, b.juara_3a_id, b.juara_3b_id
             FROM backend_bagan b
-            LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
             WHERE b.event_id = ?
             ORDER BY CAST(COALESCE(b.kode, '9999') AS INTEGER) ASC, b.id ASC
             "#
@@ -4122,54 +4159,22 @@ impl DatabaseManager {
         .await
         .map_err(|e| format!("Gagal memuat bagan untuk summary: {}", e))?;
 
-        let is_bob = |b_name: &str, nt_name: &str, b_bob: bool, nt_bob: bool| -> bool {
-            if b_bob || nt_bob {
-                return true;
-            }
-            for s in [b_name, nt_name] {
-                let u = s.to_uppercase();
-                if u.contains("BEST OF THE BEST")
-                    || u.contains("(BOB)")
-                    || u.contains(" BOB")
-                    || u.contains("BOB ")
-                    || u == "BOB"
-                {
-                    return true;
-                }
-            }
-            false
-        };
-
-        let is_festival = |b_name: &str, nt_name: &str| -> bool {
-            for s in [b_name, nt_name] {
-                if s.to_uppercase().contains("FESTIVAL") {
-                    return true;
-                }
-            }
-            false
-        };
-
-        let mut non_bob_bagans: Vec<BaganSummaryRow> = Vec::new();
         let mut cat_count_map: HashMap<i64, usize> = HashMap::new();
+        let mut cat_has_final: HashMap<i64, bool> = HashMap::new();
 
-        for b in all_raw_bagans {
-            let b_name = b.nama_bagan.as_deref().unwrap_or_default();
-            let nt_name = b.nt_nama.as_deref().unwrap_or_default();
-            let b_bob = b.is_bob.unwrap_or(false);
-            let nt_bob = b.nt_is_bob.unwrap_or(false);
-
-            if is_bob(b_name, nt_name, b_bob, nt_bob) || is_festival(b_name, nt_name) {
-                continue;
-            }
-
+        for b in &all_raw_bagans {
             if let Some(cat_id) = b.nomor_tanding_id {
                 *cat_count_map.entry(cat_id).or_insert(0) += 1;
+                let b_name = b.nama_bagan.as_deref().unwrap_or_default();
+                let pool_val = b.pool.unwrap_or(1);
+                if pool_val == 0 || b_name.to_uppercase().contains("FINAL") {
+                    cat_has_final.insert(cat_id, true);
+                }
             }
-            non_bob_bagans.push(b);
         }
 
         let mut bagan_rows: Vec<BaganSummaryRow> = Vec::new();
-        for b in non_bob_bagans {
+        for b in all_raw_bagans {
             let b_name = b.nama_bagan.as_deref().unwrap_or_default();
             let pool_val = b.pool.unwrap_or(1);
 
@@ -4178,15 +4183,19 @@ impl DatabaseManager {
             }).unwrap_or(false);
 
             if is_multi {
-                let is_final = pool_val == 0 || b_name.to_uppercase().contains("FINAL");
-                if is_final {
+                let cat_id = b.nomor_tanding_id.unwrap();
+                let has_final = cat_has_final.get(&cat_id).copied().unwrap_or(false);
+                if has_final {
+                    let is_final = pool_val == 0 || b_name.to_uppercase().contains("FINAL");
+                    if is_final {
+                        bagan_rows.push(b);
+                    }
+                } else {
+                    // Multi-pool but no single final bracket (e.g. separate Festival pools): keep all pools!
                     bagan_rows.push(b);
                 }
             } else {
-                let is_pool = b_name.to_uppercase().contains("POOL ") && !b_name.to_uppercase().contains("FINAL");
-                if !is_pool {
-                    bagan_rows.push(b);
-                }
+                bagan_rows.push(b);
             }
         }
 
@@ -7531,6 +7540,33 @@ impl DatabaseManager {
 
         let grand_total = summary_juara.total_gold + summary_juara.total_silver + summary_juara.total_bronze;
 
+        let mut category_brackets: Vec<TatamiBookletCategory> = Vec::new();
+        for (idx, b) in summary_bagan.bagans.iter().enumerate() {
+            let matches = self.get_detail_bagan(b.id).await.unwrap_or_default();
+            let matches_count = matches.len() as i64;
+            let mut athlete_ids = std::collections::HashSet::new();
+            for m in &matches {
+                if let Some(a1) = m.atlet1_id { athlete_ids.insert(a1); }
+                if let Some(a2) = m.atlet2_id { athlete_ids.insert(a2); }
+            }
+            let athletes_count = athlete_ids.len() as i64;
+
+            category_brackets.push(TatamiBookletCategory {
+                match_seq: idx + 1,
+                category_id: b.id,
+                category_name: b.nama_bagan.clone(),
+                discipline: if b.tipe_tanding == "1" { "kata".to_string() } else { "kumite".to_string() },
+                matches_count,
+                athletes_count,
+                bagan_id: Some(b.id),
+                bagan_kode: Some(b.kode.clone()),
+                bagan_nama: Some(b.nama_bagan.clone()),
+                tipe_tanding: Some(b.tipe_tanding.clone()),
+                winners: b.winners.clone(),
+                matches,
+            });
+        }
+
         Ok(ResultsBookletData {
             event_info,
             berita_acara,
@@ -7538,6 +7574,7 @@ impl DatabaseManager {
             standings_kontingen: summary_juara.utusan_standings,
             standings_perguruan: summary_juara.perguruan_standings,
             category_winners: summary_bagan.bagans,
+            category_brackets,
             referees,
             total_gold: summary_juara.total_gold,
             total_silver: summary_juara.total_silver,

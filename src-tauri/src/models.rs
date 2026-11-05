@@ -1001,6 +1001,7 @@ pub struct ResultsBookletData {
     pub standings_kontingen: Vec<StandingItem>,
     pub standings_perguruan: Vec<StandingItem>,
     pub category_winners: Vec<SummaryBaganItem>,
+    pub category_brackets: Vec<TatamiBookletCategory>,
     pub referees: Vec<EnrichedWasit>,
     pub total_gold: i64,
     pub total_silver: i64,

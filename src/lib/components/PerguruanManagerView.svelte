@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke, isClientMode, getConnectionConfig } from "$lib/api_client";
+  import { invoke, getConnectionConfig } from "$lib/api_client";
   import type { EnrichedPerguruanItem, ActiveChannel } from "$lib/types";
 
   interface Props {
@@ -28,6 +28,10 @@
   let filterType = $state<"all" | "has_athletes" | "no_athletes">("all");
   let sortBy = $state<"name_asc" | "name_desc" | "athletes_desc" | "athletes_asc">("name_asc");
 
+  // Pagination State
+  let currentPage = $state(1);
+  let pageSize = $state(50);
+
   // Modals State
   let modalOpen = $state(false);
   let isEditMode = $state(false);
@@ -46,20 +50,17 @@
   let itemToDelete = $state<EnrichedPerguruanItem | null>(null);
   let isDeleting = $state(false);
 
-  // Cloud Pull State
-  let isPullingCloud = $state(false);
-
   // Toast
   let toastMsg = $state<string | null>(null);
   let toastTimer: any = null;
 
   function showToast(msg: string) {
+    if (onShowToast) onShowToast(msg);
     toastMsg = msg;
     if (toastTimer) clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       toastMsg = null;
     }, 3500);
-    onShowToast?.(msg);
   }
 
   // Derived calculations
@@ -83,12 +84,28 @@
     });
   });
 
+  let totalPages = $derived(Math.max(1, Math.ceil(filteredPerguruans.length / pageSize)));
+  let paginatedPerguruans = $derived.by(() => {
+    if (pageSize === -1) return filteredPerguruans;
+    const start = (currentPage - 1) * pageSize;
+    return filteredPerguruans.slice(start, start + pageSize);
+  });
+
+  $effect(() => {
+    // Reset to page 1 whenever filters change
+    if (searchKeyword || filterType || sortBy) {
+      currentPage = 1;
+    }
+  });
+
   let totalPerguruans = $derived(perguruans.length);
   let totalAthletes = $derived(perguruans.reduce((acc, p) => acc + (p.athlete_count || 0), 0));
   let perguruansWithAthletes = $derived(perguruans.filter((p) => (p.athlete_count || 0) > 0).length);
+  let perguruansWithoutAthletes = $derived(perguruans.filter((p) => (p.athlete_count || 0) === 0).length);
 
   // Load Data
   async function loadData() {
+    if (!eventId) return;
     isLoading = true;
     try {
       const data = await invoke<EnrichedPerguruanItem[]>("get_enriched_perguruans", {
@@ -185,27 +202,12 @@
     }
   }
 
-  // Pull Cloud Data
-  async function handlePullCloud() {
-    isPullingCloud = true;
-    try {
-      const res = await invoke<any>("pull_athletes_from_hosted", {
-        eventId,
-        event_id: eventId,
-      });
-      if (res && res.pulled_athletes !== undefined) {
-        showToast(`Sinkronisasi Cloud Berhasil: ${res.pulled_athletes} data diproses.`);
-      } else {
-        showToast("Sinkronisasi cloud selesai.");
-      }
-      await loadData();
-    } catch (err: any) {
-      console.error("Gagal tarik data cloud:", err);
-      showToast(`Sinkronisasi gagal: ${err?.message || err}`);
-    } finally {
-      isPullingCloud = false;
+  // Reactive effect on eventId
+  $effect(() => {
+    if (eventId) {
+      loadData();
     }
-  }
+  });
 
   // Real-time Event Listener & WebSocket
   let unlistenTauri: (() => void) | null = null;
@@ -259,64 +261,39 @@
 <div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
   <!-- Toast Notification -->
   {#if toastMsg}
-    <div class="absolute top-4 right-6 z-50 bg-[#181a20] border border-white/20 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-2xl flex items-center space-x-2 transition-all animate-in fade-in slide-in-from-top-2">
-      <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-      <span>{toastMsg}</span>
+    <div class="absolute top-4 right-6 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
+      <div class="bg-white text-black font-semibold text-xs px-4 py-2.5 rounded-xl shadow-2xl flex items-center space-x-2 border border-zinc-200">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+        <span>{toastMsg}</span>
+      </div>
     </div>
   {/if}
 
   <!-- Header Section -->
-  <div class="flex items-center justify-between pb-4 border-b border-white/[0.08] shrink-0">
+  <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-white/[0.08] gap-4 shrink-0">
     <div>
       <div class="flex items-center space-x-2.5">
-        <div class="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-          </svg>
-        </div>
         <h2 class="text-xl font-black text-white tracking-tight uppercase">
           MANAJEMEN PERGURUAN KARATE (FORKI)
         </h2>
-        <span class="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20 tabular-nums">
+        <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] tabular-nums">
           {totalPerguruans} PERGURUAN
         </span>
       </div>
-      <p class="text-xs text-zinc-400 mt-1">
-        Kelola daftar aliran / perguruan karate FORKI (INKAI, LEMKARI, KKI, INKANAS, ASKI, dll.) dan keanggotaan atlet
+      <p class="text-xs text-zinc-400 mt-1 font-normal">
+        Kelola data perguruan resmi FORKI (INKAI, LEMKARI, KKI, INKANAS, dll.) dan keanggotaan atlet
       </p>
     </div>
 
     <!-- Action Buttons -->
-    <div class="flex items-center space-x-2">
-      <button
-        onclick={handlePullCloud}
-        disabled={isPullingCloud}
-        class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.1] text-xs font-semibold rounded-xl flex items-center space-x-1.5 transition-colors disabled:opacity-50"
-        title="Tarik data perguruan & atlet dari server online Ambrilindo"
-      >
-        <svg class="w-3.5 h-3.5 text-sky-400 {isPullingCloud ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-        </svg>
-        <span>{isPullingCloud ? "Menyinkronkan..." : "Tarik Cloud"}</span>
-      </button>
+    <div class="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
 
       <button
-        onclick={loadData}
-        disabled={isLoading}
-        class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.1] text-xs font-semibold rounded-xl flex items-center space-x-1.5 transition-colors"
-        title="Muat ulang data perguruan dari database lokal"
-      >
-        <svg class="w-3.5 h-3.5 text-zinc-400 {isLoading ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-        <span>Segarkan</span>
-      </button>
-
-      <button
+        type="button"
         onclick={openAddModal}
-        class="h-9 px-3.5 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl flex items-center space-x-1.5 transition-colors shadow-md active:scale-95"
+        class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors flex items-center space-x-1.5 active:scale-95 shadow-md cursor-pointer"
       >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
         </svg>
         <span>Tambah Perguruan</span>
@@ -324,156 +301,158 @@
     </div>
   </div>
 
-  <!-- Metric Statistics Cards -->
+  <!-- Metric Statistics Cards (3-Column Modern Grid) -->
   <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 my-4 shrink-0">
     <!-- Card 1: Total Perguruan -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex items-center justify-between">
-      <div>
-        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Total Perguruan FORKI</span>
-        <div class="flex items-baseline space-x-1.5 mt-0.5">
-          <span class="text-2xl font-black font-mono text-white tabular-nums">{totalPerguruans}</span>
-          <span class="text-xs text-zinc-500 font-medium">Perguruan</span>
-        </div>
-      </div>
-      <div class="w-9 h-9 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center justify-center">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-        </svg>
+    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
+      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TOTAL PERGURUAN FORKI</span>
+      <div class="flex items-baseline justify-between mt-2">
+        <span class="text-2xl font-black font-mono text-white tabular-nums">{totalPerguruans}</span>
+        <span class="text-[10px] font-mono text-zinc-500">perguruan terdaftar</span>
       </div>
     </div>
 
-    <!-- Card 2: Total Atlet Afiliasi -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex items-center justify-between">
-      <div>
-        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Total Atlet Berperguruan</span>
-        <div class="flex items-baseline space-x-1.5 mt-0.5">
-          <span class="text-2xl font-black font-mono text-emerald-400 tabular-nums">{totalAthletes}</span>
-          <span class="text-xs text-zinc-500 font-medium">Atlet Terdaftar</span>
-        </div>
-      </div>
-      <div class="w-9 h-9 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-        </svg>
+    <!-- Card 2: Total Atlet Berperguruan -->
+    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
+      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TOTAL ATLET BERPERGURUAN</span>
+      <div class="flex items-baseline justify-between mt-2">
+        <span class="text-2xl font-black font-mono text-emerald-400 tabular-nums">{totalAthletes}</span>
+        <span class="text-[10px] font-mono text-zinc-500">atlet terafiliasi</span>
       </div>
     </div>
 
     <!-- Card 3: Perguruan Aktif -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex items-center justify-between">
-      <div>
-        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Perguruan Memiliki Atlet</span>
-        <div class="flex items-baseline space-x-1.5 mt-0.5">
-          <span class="text-2xl font-black font-mono text-sky-400 tabular-nums">{perguruansWithAthletes}</span>
-          <span class="text-xs text-zinc-500 font-medium">/ {totalPerguruans} Aktif</span>
-        </div>
-      </div>
-      <div class="w-9 h-9 rounded-lg bg-sky-500/10 text-sky-400 border border-sky-500/20 flex items-center justify-center">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
+    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
+      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">PERGURUAN AKTIF DIIKUTI</span>
+      <div class="flex items-baseline justify-between mt-2">
+        <span class="text-2xl font-black font-mono text-sky-400 tabular-nums">{perguruansWithAthletes}</span>
+        <span class="text-[10px] font-mono text-zinc-500">/ {totalPerguruans} aktif</span>
       </div>
     </div>
   </div>
 
   <!-- Filter & Search Toolbar -->
-  <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 mb-3 shrink-0">
-    <div class="flex items-center space-x-2 flex-1">
-      <!-- Search Input -->
-      <div class="relative flex-1 max-w-md">
-        <svg class="w-4 h-4 text-zinc-400 absolute left-3 top-2.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
-        <input
-          type="text"
-          bind:value={searchKeyword}
-          placeholder="Cari nama perguruan (misal: INKAI, LEMKARI, KKI)..."
-          class="w-full bg-[#181a20] border border-white/[0.08] text-xs text-white rounded-xl pl-9 pr-3 py-2 outline-none focus:border-amber-400/50 transition-colors placeholder:text-zinc-500"
-        />
-        {#if searchKeyword}
-          <button
-            onclick={() => (searchKeyword = "")}
-            class="absolute right-2.5 top-2.5 text-zinc-500 hover:text-white text-xs"
-          >
-            ✕
-          </button>
-        {/if}
-      </div>
-
-      <!-- Quick Filter -->
-      <select
-        bind:value={filterType}
-        class="bg-[#181a20] border border-white/[0.08] text-xs text-zinc-300 rounded-xl px-3 py-2 outline-none focus:border-amber-400/50 transition-colors"
+  <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-3 shrink-0">
+    <!-- Quick Status Pills -->
+    <div class="flex flex-wrap items-center gap-1.5 overflow-x-auto py-0.5">
+      <button
+        onclick={() => (filterType = 'all')}
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {filterType === 'all'
+          ? 'bg-white text-black border-white shadow-xs font-bold'
+          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
       >
-        <option value="all">Semua Perguruan ({perguruans.length})</option>
-        <option value="has_athletes">Dengan Atlet ({perguruansWithAthletes})</option>
-        <option value="no_athletes">Tanpa Atlet ({totalPerguruans - perguruansWithAthletes})</option>
-      </select>
+        Semua ({totalPerguruans})
+      </button>
+      <button
+        onclick={() => (filterType = 'has_athletes')}
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {filterType === 'has_athletes'
+          ? 'bg-emerald-400 text-black border-emerald-400 shadow-xs font-bold'
+          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
+      >
+        Dengan Atlet ({perguruansWithAthletes})
+      </button>
+      <button
+        onclick={() => (filterType = 'no_athletes')}
+        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {filterType === 'no_athletes'
+          ? 'bg-amber-400 text-black border-amber-400 shadow-xs font-bold'
+          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
+      >
+        Tanpa Atlet ({perguruansWithoutAthletes})
+      </button>
     </div>
 
-    <!-- Sort Dropdown -->
-    <div class="flex items-center space-x-2">
-      <span class="text-xs text-zinc-400">Urutkan:</span>
+    <!-- Sort & Search Bar -->
+    <div class="flex items-center space-x-2 shrink-0">
+      <!-- Sort Dropdown -->
       <select
         bind:value={sortBy}
-        class="bg-[#181a20] border border-white/[0.08] text-xs text-zinc-300 rounded-xl px-3 py-2 outline-none focus:border-amber-400/50 transition-colors"
+        class="bg-[#181a20] border border-white/[0.1] text-xs text-zinc-300 rounded-xl px-2.5 py-1.5 outline-none focus:border-white transition-colors cursor-pointer"
       >
         <option value="name_asc">Nama (A - Z)</option>
         <option value="name_desc">Nama (Z - A)</option>
         <option value="athletes_desc">Atlet Terbanyak</option>
         <option value="athletes_asc">Atlet Paling Sedikit</option>
       </select>
+
+      <!-- Search Input -->
+      <div class="relative w-56">
+        <input
+          type="text"
+          bind:value={searchKeyword}
+          placeholder="Cari perguruan..."
+          class="w-full bg-[#181a20] text-xs text-white pl-8 pr-7 py-1.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500"
+        />
+        <svg class="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+        {#if searchKeyword}
+          <button
+            onclick={() => (searchKeyword = "")}
+            aria-label="Hapus pencarian"
+            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white text-xs cursor-pointer"
+          >
+            ✕
+          </button>
+        {/if}
+      </div>
     </div>
   </div>
 
-  <!-- Table Container -->
-  <div class="flex-1 bg-[#181a20] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col shadow-inner">
-    <div class="overflow-y-auto flex-1">
-      <table class="w-full text-left border-collapse text-xs">
-        <thead class="bg-[#111215] sticky top-0 z-10 border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[10px] font-mono">
-          <tr>
-            <th class="py-3 px-4 w-12 text-center">No</th>
-            <th class="py-3 px-4">Nama Perguruan Karate</th>
-            <th class="py-3 px-4 w-36 text-center">Afiliasi Federasi</th>
-            <th class="py-3 px-4 w-36 text-center">Total Atlet</th>
-            <th class="py-3 px-4 w-44 text-right">Aksi</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-white/[0.04]">
-          {#if isLoading && perguruans.length === 0}
+  <!-- Table Container (Clean 5-Column Layout) -->
+  <div class="flex-1 bg-[#181a20] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col shadow-inner min-h-0">
+    {#if isLoading && perguruans.length === 0}
+      <div class="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
+        <svg class="w-8 h-8 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        <p class="text-xs text-zinc-400 font-mono">Memuat data perguruan...</p>
+      </div>
+    {:else if filteredPerguruans.length === 0}
+      <!-- Empty State -->
+      <div class="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
+        <div class="w-12 h-12 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-500">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+        </div>
+        <p class="text-sm font-bold text-white">Tidak Ada Perguruan Ditemukan</p>
+        <p class="text-xs text-zinc-500 max-w-sm text-center">
+          Tidak ada perguruan yang cocok dengan filter atau kata kunci yang dipilih. Coba reset filter atau tambahkan perguruan baru.
+        </p>
+        {#if searchKeyword || filterType !== "all"}
+          <button
+            onclick={() => {
+              searchKeyword = "";
+              filterType = "all";
+            }}
+            class="h-8 px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-xs font-semibold text-zinc-300 hover:text-white transition-colors cursor-pointer"
+          >
+            Reset Semua Filter
+          </button>
+        {/if}
+      </div>
+    {:else}
+      <div class="flex-1 overflow-y-auto min-h-0">
+        <table class="w-full text-left border-collapse text-xs">
+          <thead class="bg-[#111215] sticky top-0 z-10 border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[10px] font-mono">
             <tr>
-              <td colspan="5" class="py-12 text-center text-zinc-500">
-                <div class="flex flex-col items-center justify-center space-y-2">
-                  <svg class="w-6 h-6 animate-spin text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  <span class="text-xs font-medium">Memuat data perguruan...</span>
-                </div>
-              </td>
+              <th class="w-12 px-3 py-3 text-center font-bold">NO</th>
+              <th class="px-4 py-3 font-bold">NAMA PERGURUAN KARATE</th>
+              <th class="w-36 px-4 py-3 text-center font-bold">AFILIASI FEDERASI</th>
+              <th class="w-36 px-4 py-3 text-center font-bold">TOTAL ATLET</th>
+              <th class="w-24 px-4 py-3 text-center pr-6 font-bold">AKSI</th>
             </tr>
-          {:else if filteredPerguruans.length === 0}
-            <tr>
-              <td colspan="5" class="py-12 text-center text-zinc-500">
-                <div class="flex flex-col items-center justify-center space-y-2">
-                  <svg class="w-8 h-8 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <p class="text-xs font-semibold text-zinc-400">Tidak ada perguruan ditemukan</p>
-                  {#if searchKeyword}
-                    <p class="text-[11px] text-zinc-600">Coba ubah kata kunci pencarian Anda</p>
-                  {/if}
-                </div>
-              </td>
-            </tr>
-          {:else}
-            {#each filteredPerguruans as item, idx (item.id)}
+          </thead>
+          <tbody class="divide-y divide-white/[0.04]">
+            {#each paginatedPerguruans as item, idx (item.id)}
               <tr class="hover:bg-white/[0.02] transition-colors group">
                 <!-- No -->
-                <td class="py-3 px-4 text-center font-mono text-zinc-500 text-[11px] tabular-nums">
-                  {idx + 1}
+                <td class="px-3 py-3 text-center font-mono text-zinc-500 text-[11px] tabular-nums">
+                  {(currentPage - 1) * pageSize + idx + 1}
                 </td>
 
                 <!-- Nama Perguruan -->
-                <td class="py-3 px-4">
+                <td class="px-4 py-3">
                   <div class="font-bold text-white uppercase tracking-tight text-xs flex items-center space-x-2">
                     <span>{item.nama_perguruan}</span>
                   </div>
@@ -483,15 +462,15 @@
                 </td>
 
                 <!-- Afiliasi Federasi -->
-                <td class="py-3 px-4 text-center">
-                  <span class="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                <td class="px-4 py-3 text-center">
+                  <span class="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
                     <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
                     <span>FORKI</span>
                   </span>
                 </td>
 
                 <!-- Total Atlet -->
-                <td class="py-3 px-4 text-center">
+                <td class="px-4 py-3 text-center">
                   {#if (item.athlete_count || 0) > 0}
                     <button
                       onclick={() => onNavigate?.({
@@ -500,10 +479,10 @@
                         name: "data-atlet",
                         subtitle: `Daftar Atlet - Perguruan ${item.nama_perguruan}`,
                       })}
-                      class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
-                      title="Lihat atlet pada perguruan ini"
+                      class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all cursor-pointer active:scale-95"
+                      title="Lihat daftar atlet pada perguruan ini"
                     >
-                      <span>{item.athlete_count} Atlet</span>
+                      <span class="tabular-nums">{item.athlete_count} Atlet</span>
                       <svg class="w-3 h-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
                       </svg>
@@ -513,44 +492,81 @@
                   {/if}
                 </td>
 
-                <!-- Aksi -->
-                <td class="py-3 px-4 text-right">
-                  <div class="flex items-center justify-end space-x-1.5">
+                <!-- Actions (Dedicated Edit & Delete Buttons) -->
+                <td class="w-24 px-4 py-3 text-center pr-6">
+                  <div class="flex items-center justify-center space-x-1.5">
+                    <!-- Edit Button -->
                     <button
                       onclick={() => openEditModal(item)}
-                      class="h-7 px-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] rounded-lg text-xs font-medium transition-colors flex items-center space-x-1"
-                      title="Edit Nama Perguruan"
+                      class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-sky-500/15 text-zinc-400 hover:text-sky-300 border border-white/[0.08] hover:border-sky-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
+                      title={`Ubah nama ${item.nama_perguruan}`}
+                      aria-label={`Ubah nama ${item.nama_perguruan}`}
                     >
-                      <svg class="w-3 h-3 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
                       </svg>
-                      <span>Edit</span>
                     </button>
 
+                    <!-- Delete Button -->
                     <button
                       onclick={() => openDeleteModal(item)}
-                      class="h-7 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg text-xs font-medium transition-colors flex items-center space-x-1"
-                      title="Hapus Perguruan"
+                      class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 border border-white/[0.08] hover:border-rose-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
+                      title={`Hapus ${item.nama_perguruan}`}
+                      aria-label={`Hapus ${item.nama_perguruan}`}
                     >
-                      <svg class="w-3 h-3 text-rose-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
                       </svg>
-                      <span>Hapus</span>
                     </button>
                   </div>
                 </td>
               </tr>
             {/each}
-          {/if}
-        </tbody>
-      </table>
-    </div>
+          </tbody>
+        </table>
+      </div>
 
-    <!-- Table Footer Info -->
-    <div class="px-4 py-2.5 bg-[#111215] border-t border-white/[0.08] flex items-center justify-between text-xs text-zinc-500 shrink-0">
-      <span>Menampilkan {filteredPerguruans.length} dari {totalPerguruans} perguruan</span>
-      <span class="font-mono text-[11px] text-zinc-600">Realtime LAN Sync Active • Event #{eventId}</span>
-    </div>
+      <!-- Pagination / Footer Info -->
+      <div class="bg-[#111215] border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-xs text-zinc-400 shrink-0 font-sans">
+        <div class="flex items-center space-x-2 tabular-nums">
+          <span>Menampilkan {paginatedPerguruans.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, filteredPerguruans.length)} dari {filteredPerguruans.length} perguruan</span>
+          <span>•</span>
+          <div class="flex items-center space-x-1.5">
+            <span>Per baris:</span>
+            <select
+              bind:value={pageSize}
+              onchange={() => (currentPage = 1)}
+              class="bg-[#181a20] text-zinc-300 text-xs px-2 py-0.5 rounded-lg border border-white/[0.1] outline-none focus:border-white cursor-pointer"
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={-1}>Semua</option>
+            </select>
+          </div>
+        </div>
+
+        {#if pageSize !== -1 && totalPages > 1}
+          <div class="flex items-center space-x-1 font-mono">
+            <button
+              disabled={currentPage <= 1}
+              onclick={() => (currentPage = Math.max(1, currentPage - 1))}
+              class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
+            >
+              ‹
+            </button>
+            <span class="px-2 text-zinc-400 tabular-nums">{currentPage} / {totalPages}</span>
+            <button
+              disabled={currentPage >= totalPages}
+              onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
+              class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
+            >
+              ›
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -563,7 +579,7 @@
         <h3 class="text-sm font-bold text-white tracking-tight flex items-center space-x-2">
           <span>{isEditMode ? "Edit Perguruan Karate" : "Tambah Perguruan Baru"}</span>
         </h3>
-        <button onclick={() => (modalOpen = false)} class="text-zinc-500 hover:text-white transition-colors">
+        <button onclick={() => (modalOpen = false)} class="text-zinc-500 hover:text-white transition-colors cursor-pointer">
           ✕
         </button>
       </div>
@@ -586,7 +602,7 @@
             type="text"
             bind:value={formInput.nama_perguruan}
             placeholder="Contoh: INKAI / LEMKARI / KKI / INKANAS"
-            class="w-full bg-[#111215] text-xs font-semibold text-white uppercase px-3 py-2.5 rounded-xl border border-white/[0.1] focus:border-amber-400 outline-none transition-colors"
+            class="w-full bg-[#111215] text-xs font-semibold text-white uppercase px-3 py-2.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors"
           />
           <p class="text-[11px] text-zinc-500 mt-1.5">
             Gunakan nama resmi perguruan karate yang terdaftar di FORKI (Federasi Olahraga Karate-Do Indonesia).
@@ -599,14 +615,14 @@
         <button
           onclick={() => (modalOpen = false)}
           disabled={isSaving}
-          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
         >
           Batal
         </button>
         <button
           onclick={handleSave}
           disabled={isSaving}
-          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50 cursor-pointer"
         >
           {isSaving ? "Menyimpan..." : isEditMode ? "Simpan Perubahan" : "Simpan Perguruan"}
         </button>
@@ -644,14 +660,14 @@
         <button
           onclick={() => { deleteModalOpen = false; itemToDelete = null; }}
           disabled={isDeleting}
-          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors"
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
         >
           Batal
         </button>
         <button
           onclick={confirmDelete}
           disabled={isDeleting}
-          class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50"
+          class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition-colors shadow-md active:scale-95 disabled:opacity-50 cursor-pointer"
         >
           {isDeleting ? "Menghapus..." : "Hapus Perguruan"}
         </button>

@@ -30,6 +30,7 @@
   import WasitManagerView from "$lib/components/WasitManagerView.svelte";
   import ContingentManagerView from "$lib/components/ContingentManagerView.svelte";
   import PerguruanManagerView from "$lib/components/PerguruanManagerView.svelte";
+  import ResultsBookletView from "$lib/components/ResultsBookletView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
@@ -561,6 +562,7 @@
             viewType="roster"
             eventId={selectedEventId || 1}
             hostAddress={hostUrl}
+            onShowToast={showToast}
           />
         {:else if activeChannel.type === "master"}
           <!-- Tournament Data Master & Reset Control View -->
@@ -617,6 +619,13 @@
             {tatamis}
             hostAddress={hostUrl}
             onShowToast={showToast}
+          />
+        {:else if activeChannel.type === "buku_hasil"}
+          <!-- Results Booklet & Official Tournament Book View (In-App) -->
+          <ResultsBookletView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
+            hostAddress={hostUrl}
           />
         {/if}
       </main>

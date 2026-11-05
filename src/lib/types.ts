@@ -1,7 +1,7 @@
 export type AppMode = 'landing' | 'solo' | 'host' | 'client';
 
 export interface ActiveChannel {
-  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'perguruan' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival' | 'wasit';
+  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'perguruan' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival' | 'wasit' | 'buku_hasil';
   id: number | string;
   name: string;
   subtitle?: string;
@@ -923,6 +923,7 @@ export interface ResultsBookletData {
   standings_kontingen: StandingItem[];
   standings_perguruan: StandingItem[];
   category_winners: SummaryBaganItem[];
+  category_brackets?: TatamiBookletCategory[];
   referees: WasitItem[];
   total_gold: number;
   total_silver: number;

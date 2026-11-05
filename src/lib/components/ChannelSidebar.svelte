@@ -546,22 +546,27 @@
             <span>summary-juara</span>
           </button>
 
-          <!-- Buku Hasil Resmi & Berita Acara -->
-          <a
-            href="/results-booklet?event_id={activeEvent?.id || 1}"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-amber-300/80 hover:text-amber-300 hover:bg-amber-500/[0.08] transition group"
-            title="Buka Buku Hasil Kejuaraan & Berita Acara Resmi siap cetak (A4 / PDF)"
+          <!-- Buku Hasil Resmi & Berita Acara (In-App Channel) -->
+          <button
+            type="button"
+            onclick={() =>
+              onSelectChannel({
+                type: "buku_hasil",
+                id: "buku-hasil-turnamen",
+                name: "buku-hasil-turnamen",
+                subtitle: "Buku Hasil Turnamen & Berita Acara Resmi",
+              })}
+            class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer {activeChannel.name === 'buku-hasil-turnamen' ? 'bg-white/[0.08] text-white font-bold' : 'text-amber-300/80 hover:text-amber-300 hover:bg-amber-500/[0.08]'}"
+            title="Buka Buku Hasil Kejuaraan & Berita Acara Resmi di dalam aplikasi"
           >
             <div class="flex items-center space-x-2 truncate">
               <span class="text-amber-400 font-mono text-[11px]">📜</span>
               <span class="truncate">buku-hasil-turnamen</span>
             </div>
-            <svg class="w-3 h-3 text-amber-400/60 group-hover:text-amber-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-            </svg>
-          </a>
+            <span class="text-[10px] font-mono px-1 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+              DOC
+            </span>
+          </button>
         </div>
       {/if}
     </div>

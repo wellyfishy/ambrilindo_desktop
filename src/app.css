@@ -113,10 +113,11 @@ body {
 
 /* ==========================================================================
    Top-Level Print Page Configurations (Must be outside @media print for Chromium)
+   Default: A4 Portrait for all official tournament sheets
    ========================================================================== */
 @page {
-  size: A4 landscape;
-  margin: 0;
+  size: A4 portrait;
+  margin: 8mm;
 }
 
 /* ==========================================================================

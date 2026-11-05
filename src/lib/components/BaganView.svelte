@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { invoke } from "$lib/api_client";
+  import { printWithOrientation } from "$lib/print_helper";
   import { listen } from "@tauri-apps/api/event";
   import type {
     DetailBaganItem,
@@ -999,7 +1000,7 @@
       <!-- Print Button -->
       <button
         type="button"
-        onclick={() => window.print()}
+        onclick={() => printWithOrientation("landscape", "4mm 6mm")}
         class="px-3 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
         title="Cetak format kertas A4 Landscape"
       >
