@@ -415,6 +415,51 @@ ${inlinedCss}
     if (!bookletData?.category_brackets) return [];
     return bookletData.category_brackets.filter((b) => b.matches && b.matches.length > 0);
   });
+  function getFestivalGroups(matches: DetailBaganItem[]) {
+    const groups = [];
+    for (let g = 1; g <= 4; g++) {
+      const semi1 = matches.find((m) => m.round === 1 && m.urutan === 2 * g - 1) || null;
+      const semi2 = matches.find((m) => m.round === 1 && m.urutan === 2 * g) || null;
+      const finalMatch = matches.find((m) => m.round === 2 && m.urutan === g) || null;
+      if (!semi1 && !semi2 && !finalMatch) continue;
+
+      let emas: { name: string; contingent: string; logo: string | null } | null = null;
+      let perak: { name: string; contingent: string; logo: string | null } | null = null;
+      let perunggu1: { name: string; contingent: string; logo: string | null } | null = null;
+      let perunggu2: { name: string; contingent: string; logo: string | null } | null = null;
+
+      if (finalMatch && finalMatch.selesai && finalMatch.pemenang) {
+        if (finalMatch.pemenang === "1") {
+          emas = { name: finalMatch.atlet1_nama || "-", contingent: finalMatch.atlet1_kontingen || "-", logo: finalMatch.atlet1_logo || null };
+          perak = { name: finalMatch.atlet2_nama || "-", contingent: finalMatch.atlet2_kontingen || "-", logo: finalMatch.atlet2_logo || null };
+        } else if (finalMatch.pemenang === "2") {
+          emas = { name: finalMatch.atlet2_nama || "-", contingent: finalMatch.atlet2_kontingen || "-", logo: finalMatch.atlet2_logo || null };
+          perak = { name: finalMatch.atlet1_nama || "-", contingent: finalMatch.atlet1_kontingen || "-", logo: finalMatch.atlet1_logo || null };
+        }
+      }
+
+      if (semi1 && semi1.selesai && semi1.pemenang) {
+        const loserName = semi1.pemenang === "1" ? semi1.atlet2_nama : semi1.atlet1_nama;
+        const loserKont = semi1.pemenang === "1" ? semi1.atlet2_kontingen : semi1.atlet1_kontingen;
+        const loserLogo = semi1.pemenang === "1" ? semi1.atlet2_logo : semi1.atlet1_logo;
+        if (loserName && !loserName.toUpperCase().includes("BYE")) {
+          perunggu1 = { name: loserName, contingent: loserKont || "-", logo: loserLogo || null };
+        }
+      }
+
+      if (semi2 && semi2.selesai && semi2.pemenang) {
+        const loserName = semi2.pemenang === "1" ? semi2.atlet2_nama : semi2.atlet1_nama;
+        const loserKont = semi2.pemenang === "1" ? semi2.atlet2_kontingen : semi2.atlet1_kontingen;
+        const loserLogo = semi2.pemenang === "1" ? semi2.atlet2_logo : semi2.atlet1_logo;
+        if (loserName && !loserName.toUpperCase().includes("BYE")) {
+          perunggu2 = { name: loserName, contingent: loserKont || "-", logo: loserLogo || null };
+        }
+      }
+
+      groups.push({ groupNum: g, semi1, semi2, finalMatch, podium: { emas, perak, perunggu1, perunggu2 } });
+    }
+    return groups;
+  }
 </script>
 
 
@@ -1159,6 +1204,101 @@ ${inlinedCss}
                     </div>
 
                     <!-- 2. Bracket Grid Columns -->
+                    {#if bCat.category_name.toUpperCase().includes("FESTIVAL") || (bCat.bagan_nama && bCat.bagan_nama.toUpperCase().includes("FESTIVAL"))}
+                      {@const festGroups = getFestivalGroups(bCat.matches)}
+                      <!-- Festival 4-Quadrant Grid in Booklet -->
+                      <div class="festival-split-canvas flex-1 border-2 border-slate-900 rounded overflow-hidden my-1 flex flex-col justify-between">
+                        <div class="grid grid-cols-2 divide-x-2 divide-y-2 divide-slate-900 h-full">
+                          {#each [1, 2, 3, 4] as gNum}
+                            {@const fg = festGroups.find((g) => g.groupNum === gNum)}
+                            <div class="p-1.5 flex flex-col justify-between bg-white text-[9px] min-h-[145px]">
+                              <!-- Group Title Bar -->
+                              <div class="flex items-center justify-between pb-0.5 border-b border-slate-800 font-mono font-bold">
+                                <span>GRUP {gNum} (POOL {String.fromCharCode(64 + gNum)})</span>
+                                <span class="text-[7.5px] px-1 rounded {fg?.finalMatch?.selesai ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}">
+                                  {fg?.finalMatch?.selesai ? 'SELESAI' : 'BERJALAN'}
+                                </span>
+                              </div>
+
+                              {#if fg}
+                                <div class="flex items-stretch justify-between gap-2 mt-1 flex-1">
+                                  <!-- Semifinals -->
+                                  <div class="w-[48%] flex flex-col justify-around space-y-1">
+                                    {#if fg.semi1}
+                                      <div class="border border-slate-400 rounded p-1 {fg.semi1.pemenang ? 'bg-slate-50' : ''}">
+                                        <div class="text-[7px] text-slate-500 font-mono flex justify-between">
+                                          <span>SEMI 1</span>
+                                          <span>P-{fg.semi1.id}</span>
+                                        </div>
+                                        <div class="flex justify-between items-center text-[8px] {fg.semi1.pemenang === '1' ? 'font-black bg-amber-100' : ''}">
+                                          <span class="truncate">{fg.semi1.atlet1_nama || 'BYE'}</span>
+                                          <span class="font-mono ml-1">{fg.semi1.score1 ?? '-'}</span>
+                                        </div>
+                                        <div class="flex justify-between items-center text-[8px] {fg.semi1.pemenang === '2' ? 'font-black bg-amber-100' : ''}">
+                                          <span class="truncate">{fg.semi1.atlet2_nama || 'BYE'}</span>
+                                          <span class="font-mono ml-1">{fg.semi1.score2 ?? '-'}</span>
+                                        </div>
+                                      </div>
+                                    {/if}
+                                    {#if fg.semi2}
+                                      <div class="border border-slate-400 rounded p-1 {fg.semi2.pemenang ? 'bg-slate-50' : ''}">
+                                        <div class="text-[7px] text-slate-500 font-mono flex justify-between">
+                                          <span>SEMI 2</span>
+                                          <span>P-{fg.semi2.id}</span>
+                                        </div>
+                                        <div class="flex justify-between items-center text-[8px] {fg.semi2.pemenang === '1' ? 'font-black bg-amber-100' : ''}">
+                                          <span class="truncate">{fg.semi2.atlet1_nama || 'BYE'}</span>
+                                          <span class="font-mono ml-1">{fg.semi2.score1 ?? '-'}</span>
+                                        </div>
+                                        <div class="flex justify-between items-center text-[8px] {fg.semi2.pemenang === '2' ? 'font-black bg-amber-100' : ''}">
+                                          <span class="truncate">{fg.semi2.atlet2_nama || 'BYE'}</span>
+                                          <span class="font-mono ml-1">{fg.semi2.score2 ?? '-'}</span>
+                                        </div>
+                                      </div>
+                                    {/if}
+                                  </div>
+
+                                  <!-- Final & Podium -->
+                                  <div class="w-[50%] flex flex-col justify-between">
+                                    {#if fg.finalMatch}
+                                      <div class="border-1.5 border-amber-600 rounded p-1 bg-amber-50/20">
+                                        <div class="text-[7px] text-amber-900 font-mono font-bold flex justify-between">
+                                          <span>FINAL GRUP {gNum}</span>
+                                          <span>P-{fg.finalMatch.id}</span>
+                                        </div>
+                                        <div class="flex justify-between items-center text-[8px] {fg.finalMatch.pemenang === '1' ? 'font-black bg-amber-200' : ''}">
+                                          <span class="truncate">{fg.finalMatch.atlet1_nama || 'Pemenang S1'}</span>
+                                          <span class="font-mono ml-1">{fg.finalMatch.score1 ?? '-'}</span>
+                                        </div>
+                                        <div class="flex justify-between items-center text-[8px] {fg.finalMatch.pemenang === '2' ? 'font-black bg-amber-200' : ''}">
+                                          <span class="truncate">{fg.finalMatch.atlet2_nama || 'Pemenang S2'}</span>
+                                          <span class="font-mono ml-1">{fg.finalMatch.score2 ?? '-'}</span>
+                                        </div>
+                                      </div>
+                                    {/if}
+
+                                    <!-- Mini Podium Card -->
+                                    <div class="border border-amber-500 rounded bg-white text-[7.5px] overflow-hidden mt-1">
+                                      <div class="bg-amber-100 text-amber-950 font-bold px-1 py-0.2 uppercase text-[7px]">Hasil Juara</div>
+                                      <div class="px-1 py-0.5 divide-y divide-slate-100">
+                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-400 text-black font-bold flex items-center justify-center text-[6px]">1</span><span class="truncate font-bold">{fg.podium.emas?.name || '—'}</span></div>
+                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-slate-300 text-black font-bold flex items-center justify-center text-[6px]">2</span><span class="truncate">{fg.podium.perak?.name || '—'}</span></div>
+                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-700 text-white font-bold flex items-center justify-center text-[6px]">3</span><span class="truncate">{fg.podium.perunggu1?.name || '—'}</span></div>
+                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-700 text-white font-bold flex items-center justify-center text-[6px]">3</span><span class="truncate">{fg.podium.perunggu2?.name || '—'}</span></div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              {:else}
+                                <div class="flex items-center justify-center h-full opacity-30 text-[8px] font-mono">
+                                  [GRUP {gNum} TIDAK DIGUNAKAN]
+                                </div>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
+                    {:else}
                     <div class="bracket-grid-wrapper flex-1 overflow-x-auto py-2">
                       <div class="flex items-stretch space-x-3 min-w-max h-full">
                         {#each sortedRounds as rNum, rIdx}
@@ -1231,6 +1371,8 @@ ${inlinedCss}
                         {/each}
                       </div>
                     </div>
+
+                    {/if}
 
                     <!-- 3. Podium Rekapan Juara Kategori (Jika Ada) -->
                     {#if bCat.winners && bCat.winners.length > 0}

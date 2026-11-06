@@ -1682,199 +1682,347 @@
         </div>
       </div>
     {:else if isFestivalBagan}
-      <!-- Festival 2x2 Grid View (Single A4 Landscape Canvas & Print Sheet) -->
-      <div class="festival-canvas-wrapper w-full min-h-full p-4 space-y-4">
-        <!-- Top Tournament Banner -->
-        <div class="festival-banner rounded-xl border p-3.5 {isDarkMode ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'} flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-xs">
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+      <!-- Snippet: Standard Karate Match Card for Festival -->
+      {#snippet festivalMatchCard(m: DetailBaganItem | null, stageLabel: string, isFinal: boolean = false)}
+        {#if m}
+          <div
+            class="match-card w-full cursor-pointer hover:ring-2 hover:ring-amber-500/80 transition-all {isDarkMode ? 'bg-[#181a20] border-zinc-700 hover:border-zinc-500' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {isFinal ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_12px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-xs') : ''}"
+            onclick={() => openFestScoreModal(m)}
+            role="button"
+            tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
+            title="Klik untuk membuka Skor Cepat / Kontrol Pertandingan"
+          >
+            <!-- Match Card Header Bar -->
+            <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
+              <span class="flex items-center space-x-1">
+                {#if isFinal}
+                  <span class="final-title {isDarkMode ? 'text-amber-300' : 'text-amber-800'} font-black flex items-center gap-1">
+                    <svg class="w-2.5 h-2.5 fill-current shrink-0" viewBox="0 0 24 24">
+                      <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
+                    </svg>
+                    <span>FINAL</span>
+                  </span>
+                {:else}
+                  <span class="font-black">{stageLabel}</span>
+                {/if}
+                <span class="text-zinc-400 font-normal">#{m.urutan || m.id}</span>
+              </span>
+              {#if m.assigned_tatami_id}
+                <span class="text-[7.5px] font-black text-white bg-red-600 px-1 py-0.2 rounded tracking-wide">
+                  LIVE T{m.assigned_tatami_id}
+                </span>
+              {:else if m.selesai}
+                <span class="text-[7.5px] font-black text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-1 rounded">
+                  SELESAI
+                </span>
+              {/if}
+            </div>
+
+            <!-- AKA (Red) Row -->
+            <div class="player-row {m.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative">
+              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+                <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+                  AKA
+                </span>
+                {#if m.atlet1_logo && logoMap[m.atlet1_logo]}
+                  <img
+                    src={logoMap[m.atlet1_logo]}
+                    alt="Logo"
+                    class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
+                  />
+                {/if}
+                <div class="min-w-0 flex-1 leading-tight">
+                  <div class="flex items-center space-x-1 min-w-0">
+                    {#if m.pemenang === '1'}
+                      <span class="text-amber-400 shrink-0" title="Pemenang">
+                        <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                        </svg>
+                      </span>
+                    {/if}
+                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet1_nama ? (isDarkMode ? (m.pemenang === '1' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
+                      {m.atlet1_nama || (m.atlet1_id ? `Atlet #${m.atlet1_id}` : (isFinal ? 'Pemenang Semi 1' : 'BYE'))}
+                    </span>
+                  </div>
+                  <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                    {m.atlet1_kontingen || (m.atlet1_nama ? '-' : '—')}
+                  </div>
+                </div>
+              </div>
+              <div class="shrink-0 flex items-center">
+                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
+                  {m.score1 ?? '-'}
+                </span>
+              </div>
+            </div>
+
+            <!-- AO (Blue) Row -->
+            <div class="player-row {m.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative border-t {isDarkMode ? 'border-zinc-700/60' : 'border-slate-300'}">
+              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+                <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+                  AO
+                </span>
+                {#if m.atlet2_logo && logoMap[m.atlet2_logo]}
+                  <img
+                    src={logoMap[m.atlet2_logo]}
+                    alt="Logo"
+                    class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
+                  />
+                {/if}
+                <div class="min-w-0 flex-1 leading-tight">
+                  <div class="flex items-center space-x-1 min-w-0">
+                    {#if m.pemenang === '2'}
+                      <span class="text-amber-400 shrink-0" title="Pemenang">
+                        <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                        </svg>
+                      </span>
+                    {/if}
+                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet2_nama ? (isDarkMode ? (m.pemenang === '2' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
+                      {m.atlet2_nama || (m.atlet2_id ? `Atlet #${m.atlet2_id}` : (isFinal ? 'Pemenang Semi 2' : 'BYE'))}
+                    </span>
+                  </div>
+                  <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                    {m.atlet2_kontingen || (m.atlet2_nama ? '-' : '—')}
+                  </div>
+                </div>
+              </div>
+              <div class="shrink-0 flex items-center">
+                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
+                  {m.score2 ?? '-'}
+                </span>
+              </div>
+            </div>
+          </div>
+        {:else}
+          <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-zinc-700 text-zinc-400 bg-white/[0.02]' : 'border-slate-400 text-slate-600 bg-white/40'} rounded-md h-[49px] flex items-center justify-center text-[9px] font-mono font-bold">
+            Kosong
+          </div>
+        {/if}
+      {/snippet}
+
+      <!-- Snippet: Group Quadrant View -->
+      {#snippet festivalGroupQuadrant(gNum: number)}
+        {@const group = festivalGroups.find((g) => g.groupNum === gNum)}
+        <div class="group-quadrant flex flex-col justify-between p-2.5 {isDarkMode ? 'bg-[#15171e]' : 'bg-white'} min-h-[300px]">
+          <!-- Quadrant Top Header Bar -->
+          <div class="col-header-line flex items-center justify-between px-2 py-1 border-b-2 {isDarkMode ? 'border-zinc-700 bg-white/[0.02]' : 'border-slate-900 bg-slate-50'} mb-2">
+            <div class="flex items-center space-x-2">
+              <span class="col-header-badge w-5 h-5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[10px] font-black font-mono flex items-center justify-center shrink-0">
+                {gNum}
+              </span>
+              <span class="col-header-title text-[11px] font-black uppercase tracking-tight {isDarkMode ? 'text-white' : 'text-slate-950'}">
+                GRUP {gNum} {gNum === 1 ? '(POOL A)' : gNum === 2 ? '(POOL B)' : gNum === 3 ? '(POOL C)' : '(POOL D)'}
+              </span>
+            </div>
+
+            <div>
+              {#if group?.isCompleted}
+                <span class="px-2 py-0.5 rounded font-mono font-bold text-[8.5px] uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                  <span>🏆</span>
+                  <span>SELESAI (PODIUM SAH)</span>
+                </span>
+              {:else if group}
+                <span class="px-2 py-0.5 rounded font-mono font-bold text-[8.5px] uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span>BERJALAN</span>
+                </span>
+              {/if}
+            </div>
+          </div>
+
+          {#if group}
+            <!-- Bracket Tree Area with SVG Connectors -->
+            <div class="relative flex items-start justify-between gap-5 px-1 py-1 flex-1">
+              <!-- SVG Connector Fork Lines -->
+              <svg class="absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible">
+                <!-- Line from Semi 1 right edge to midpoint -->
+                <line x1="210" y1="45" x2="218" y2="45" stroke={isDarkMode ? "rgba(255,255,255,0.7)" : "#0f172a"} stroke-width="1.6" stroke-linecap="round" class="connector-line" />
+                <!-- Line from Semi 2 right edge to midpoint -->
+                <line x1="210" y1="106" x2="218" y2="106" stroke={isDarkMode ? "rgba(255,255,255,0.7)" : "#0f172a"} stroke-width="1.6" stroke-linecap="round" class="connector-line" />
+                <!-- Vertical bar connecting Semi 1 and Semi 2 -->
+                <line x1="218" y1="45" x2="218" y2="106" stroke={isDarkMode ? "rgba(255,255,255,0.7)" : "#0f172a"} stroke-width="1.6" stroke-linecap="round" class="connector-line" />
+                <!-- Line from vertical bar to Final left edge -->
+                <line x1="218" y1="76" x2="230" y2="76" stroke={isDarkMode ? "rgba(255,255,255,0.7)" : "#0f172a"} stroke-width="1.6" stroke-linecap="round" class="connector-line" />
+              </svg>
+
+              <!-- Column 1: SEMIFINALS (Round 1) -->
+              <div class="w-[210px] shrink-0 flex flex-col relative z-10">
+                <div class="col-header-line h-5 shrink-0 flex items-center justify-center pb-1 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1.5">
+                  <div class="flex items-center justify-center space-x-1.5 text-center w-full">
+                    <span class="col-header-badge w-4 h-4 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[8.5px] font-black font-mono flex items-center justify-center shrink-0">
+                      1
+                    </span>
+                    <span class="col-header-title text-[9.5px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-white' : 'text-slate-950'}">
+                      SEMIFINAL
+                    </span>
+                  </div>
+                </div>
+
+                <div class="space-y-3">
+                  {@render festivalMatchCard(group.matches.semi1, `SEMIFINAL 1`)}
+                  {@render festivalMatchCard(group.matches.semi2, `SEMIFINAL 2`)}
+                </div>
+              </div>
+
+              <!-- Column 2: FINAL & HASIL JUARA (Round 2) -->
+              <div class="w-[230px] shrink-0 flex flex-col relative z-10">
+                <div class="col-header-line h-5 shrink-0 flex items-center justify-center pb-1 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1.5">
+                  <div class="flex items-center justify-center space-x-1.5 text-center w-full">
+                    <span class="col-header-badge w-4 h-4 rounded-full {isDarkMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-amber-400 text-amber-950'} text-[8.5px] font-black flex items-center justify-center shrink-0">
+                      🏆
+                    </span>
+                    <span class="col-header-title text-[9.5px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-amber-300' : 'text-amber-900'}">
+                      PARTAI FINAL
+                    </span>
+                  </div>
+                </div>
+
+                <div class="mt-[30px] mb-2">
+                  {@render festivalMatchCard(group.matches.final, `FINAL GRUP ${gNum}`, true)}
+                </div>
+
+                <!-- Hasil Juara Podium Card -->
+                <div class="podium-card w-full {isDarkMode ? 'bg-[#181a20] border-amber-500/80 shadow-md' : 'bg-white border-amber-500 shadow-xs'} border-2 rounded-lg overflow-hidden mt-2">
+                  <div class="podium-header px-2 py-0.5 {isDarkMode ? 'bg-amber-500/20 border-amber-500/40' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
+                    <div class="flex items-center space-x-1.5">
+                      <span class="{isDarkMode ? 'text-amber-400' : 'text-amber-700'} flex items-center">
+                        <svg class="w-3 h-3 fill-current" viewBox="0 0 24 24">
+                          <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
+                        </svg>
+                      </span>
+                      <span class="text-[9px] font-black {isDarkMode ? 'text-amber-300' : 'text-amber-950'} uppercase tracking-tight">Hasil Juara Grup {gNum}</span>
+                    </div>
+                  </div>
+
+                  <div class="divide-y {isDarkMode ? 'divide-zinc-700/60' : 'divide-slate-200'} text-[8.5px]">
+                    <!-- Juara 1 (Emas) -->
+                    <div class="podium-row px-1.5 py-0.5 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                      <span class="w-3.5 h-3.5 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">1</span>
+                      {#if group.podium.emas?.logo && logoMap[group.podium.emas.logo]}
+                        <img src={logoMap[group.podium.emas.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      {/if}
+                      <div class="min-w-0 flex-1 truncate">
+                        <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{group.podium.emas?.name || '—'}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-800'} truncate leading-tight">{group.podium.emas?.contingent || '—'}</div>
+                      </div>
+                    </div>
+                    <!-- Juara 2 (Perak) -->
+                    <div class="podium-row px-1.5 py-0.5 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                      <span class="w-3.5 h-3.5 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">2</span>
+                      {#if group.podium.perak?.logo && logoMap[group.podium.perak.logo]}
+                        <img src={logoMap[group.podium.perak.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      {/if}
+                      <div class="min-w-0 flex-1 truncate">
+                        <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{group.podium.perak?.name || '—'}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-800'} truncate leading-tight">{group.podium.perak?.contingent || '—'}</div>
+                      </div>
+                    </div>
+                    <!-- Juara 3 (Perunggu 1) -->
+                    <div class="podium-row px-1.5 py-0.5 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                      <span class="w-3.5 h-3.5 rounded-full bg-gradient-to-br from-amber-600 to-amber-700 text-white font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">3</span>
+                      {#if group.podium.perunggu1?.logo && logoMap[group.podium.perunggu1.logo]}
+                        <img src={logoMap[group.podium.perunggu1.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      {/if}
+                      <div class="min-w-0 flex-1 truncate">
+                        <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{group.podium.perunggu1?.name || '—'}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-800'} truncate leading-tight">{group.podium.perunggu1?.contingent || '—'}</div>
+                      </div>
+                    </div>
+                    <!-- Juara 3 (Perunggu 2) -->
+                    <div class="podium-row px-1.5 py-0.5 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
+                      <span class="w-3.5 h-3.5 rounded-full bg-gradient-to-br from-amber-600 to-amber-700 text-white font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">3</span>
+                      {#if group.podium.perunggu2?.logo && logoMap[group.podium.perunggu2.logo]}
+                        <img src={logoMap[group.podium.perunggu2.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      {/if}
+                      <div class="min-w-0 flex-1 truncate">
+                        <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{group.podium.perunggu2?.name || '—'}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-800'} truncate leading-tight">{group.podium.perunggu2?.contingent || '—'}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          {:else}
+            <!-- Empty Quadrant Placeholder -->
+            <div class="flex flex-col items-center justify-center p-6 text-center h-full min-h-[250px] opacity-35">
+              <span class="w-7 h-7 rounded-full border border-dashed border-zinc-500 flex items-center justify-center font-mono font-bold text-xs mb-1.5">
+                {gNum}
+              </span>
+              <span class="text-[11px] font-mono font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} uppercase">
+                [GRUP {gNum} TIDAK DIGUNAKAN]
+              </span>
+              <p class="text-[9.5px] text-zinc-500 mt-0.5 font-medium">Peserta terakomodasi pada grup sebelumnya</p>
+            </div>
+          {/if}
+        </div>
+      {/snippet}
+
+      <!-- Festival 4-Quadrant "Bagan Biasa" Template (Single A4 Landscape Sheet) -->
+      <div class="festival-canvas-wrapper w-full min-h-full p-2 md:p-3 space-y-2">
+        <!-- Top Tournament Bracket Banner (Standard Karate Tournament Banner) -->
+        <div class="bracket-banner relative flex items-center justify-between pb-2 pt-1 border-b-2 {isDarkMode ? 'border-white/[0.15]' : 'border-slate-900'} mb-2 shrink-0">
+          <div class="banner-title-wrapper text-center w-full px-16">
+            <div class="flex items-center justify-center gap-2 mb-0.5">
+              <span class="px-2 py-0.5 rounded text-[9.5px] font-mono font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                 BAGAN FESTIVAL [{currentBaganInfo?.kode || 'F01'}]
               </span>
-              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-zinc-800 text-zinc-300 border border-white/10">
+              <span class="px-2 py-0.5 rounded text-[9.5px] font-mono font-bold uppercase {isDarkMode ? 'bg-zinc-800 text-zinc-300 border border-white/10' : 'bg-slate-200 text-slate-800 border border-slate-300'}">
                 {String(currentBaganInfo?.tipe_tanding) === '1' ? 'KATA' : 'KUMITE'}
               </span>
-              <span class="text-[10px] font-mono text-emerald-400 font-bold">
+              <span class="text-[9.5px] font-mono text-emerald-500 font-bold">
                 {festivalGroups.length} GRUP ({festivalGroups.length * 4} ATLET MAKSIMAL)
               </span>
             </div>
-            <h2 class="text-base font-black mt-1 {isDarkMode ? 'text-white' : 'text-slate-900'} uppercase tracking-wide">
+            <h1 class="text-sm md:text-base font-black {isDarkMode ? 'text-white' : 'text-slate-950'} tracking-tight uppercase leading-tight truncate">
+              {#if currentBaganInfo?.kode || baganInfo?.kode}
+                ({currentBaganInfo?.kode || baganInfo?.kode})
+              {/if}
               {displayBaganName}
-            </h2>
-            <p class="text-xs {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
-              {eventName} • {eventVenue} • {eventDate || '2026'}
+            </h1>
+            <p class="text-[10px] md:text-[11px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
+              <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
+              <span>•</span>
+              <span>{eventVenue}</span>
+              {#if eventDate}
+                <span>•</span>
+                <span>{eventDate}</span>
+              {/if}
             </p>
           </div>
 
-          <div class="flex items-center gap-2 no-print">
+          <div class="banner-info-wrapper absolute right-0 top-1/2 -translate-y-1/2 flex justify-end items-center text-right font-mono no-print z-10 gap-2 pr-1">
             <button
               type="button"
               onclick={() => printWithOrientation('landscape')}
-              class="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs transition flex items-center space-x-1.5 shadow-sm active:scale-95 cursor-pointer"
+              class="px-3 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs transition flex items-center space-x-1.5 shadow-sm active:scale-95 cursor-pointer"
+              title="Cetak format kertas A4 Landscape (1 Lembar Presisi)"
             >
               <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
                 <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
               </svg>
-              <span>Cetak Bagan (1 Lembar A4)</span>
+              <span>Cetak Bagan (A4)</span>
             </button>
           </div>
         </div>
 
-        <!-- 2x2 Grid of Groups -->
-        <div class="festival-grid-container grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {#each festivalGroups as group}
-            <div class="group-card rounded-xl border p-3 flex flex-col justify-between {isDarkMode ? 'bg-[#15171e] border-white/10 hover:border-emerald-500/30' : 'bg-white border-slate-200'} transition shadow-xs">
-              <!-- Group Top Header -->
-              <div class="flex items-center justify-between pb-2 mb-2 border-b {isDarkMode ? 'border-white/5' : 'border-slate-100'}">
-                <div class="flex items-center space-x-2">
-                  <span class="w-6 h-6 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center font-mono font-black text-xs text-emerald-400">
-                    {group.groupNum}
-                  </span>
-                  <span class="text-xs font-black uppercase tracking-wider {isDarkMode ? 'text-white' : 'text-slate-800'}">
-                    GRUP {group.groupNum}
-                  </span>
-                </div>
-
-                {#if group.isCompleted}
-                  <span class="px-2 py-0.5 rounded font-mono font-bold text-[9px] uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                    <span>🏆</span>
-                    <span>SELESAI (PODIUM SAH)</span>
-                  </span>
-                {:else}
-                  <span class="px-2 py-0.5 rounded font-mono font-bold text-[9px] uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                    <span>BERJALAN</span>
-                  </span>
-                {/if}
-              </div>
-
-              <!-- Bracket Area: Semifinals & Final -->
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 my-1 items-center flex-1">
-                <!-- Column 1: Semifinals -->
-                <div class="space-y-2">
-                  <!-- Semi 1 -->
-                  {#if group.matches.semi1}
-                    {@const m = group.matches.semi1}
-                    <div
-                      role="button"
-                      tabindex="0"
-                      onclick={() => openFestScoreModal(m)}
-                      onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
-                      class="match-box rounded-lg border p-1.5 cursor-pointer transition text-left {m.selesai ? (isDarkMode ? 'border-emerald-500/30 bg-emerald-950/10' : 'border-emerald-300 bg-emerald-50/50') : (isDarkMode ? 'border-white/10 bg-black/20 hover:border-emerald-500/40' : 'border-slate-200 bg-slate-50 hover:border-emerald-400')}"
-                    >
-                      <div class="flex items-center justify-between text-[9px] font-mono text-zinc-400 mb-1">
-                        <span class="font-bold text-emerald-400">Semifinal 1</span>
-                        <span>{m.kode || `P-${m.id}`}</span>
-                      </div>
-                      <!-- Aka -->
-                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '1' ? 'bg-red-500/20 text-red-300 font-bold' : 'text-zinc-300'}">
-                        <span class="truncate">{m.atlet1_nama || '— (BYE)'}</span>
-                        <span class="font-mono font-bold ml-1">{m.score1 ?? '-'}</span>
-                      </div>
-                      <!-- Ao -->
-                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '2' ? 'bg-blue-500/20 text-blue-300 font-bold' : 'text-zinc-300'}">
-                        <span class="truncate">{m.atlet2_nama || '— (BYE)'}</span>
-                        <span class="font-mono font-bold ml-1">{m.score2 ?? '-'}</span>
-                      </div>
-                    </div>
-                  {/if}
-
-                  <!-- Semi 2 -->
-                  {#if group.matches.semi2}
-                    {@const m = group.matches.semi2}
-                    <div
-                      role="button"
-                      tabindex="0"
-                      onclick={() => openFestScoreModal(m)}
-                      onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
-                      class="match-box rounded-lg border p-1.5 cursor-pointer transition text-left {m.selesai ? (isDarkMode ? 'border-emerald-500/30 bg-emerald-950/10' : 'border-emerald-300 bg-emerald-50/50') : (isDarkMode ? 'border-white/10 bg-black/20 hover:border-emerald-500/40' : 'border-slate-200 bg-slate-50 hover:border-emerald-400')}"
-                    >
-                      <div class="flex items-center justify-between text-[9px] font-mono text-zinc-400 mb-1">
-                        <span class="font-bold text-emerald-400">Semifinal 2</span>
-                        <span>{m.kode || `P-${m.id}`}</span>
-                      </div>
-                      <!-- Aka -->
-                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '1' ? 'bg-red-500/20 text-red-300 font-bold' : 'text-zinc-300'}">
-                        <span class="truncate">{m.atlet1_nama || '— (BYE)'}</span>
-                        <span class="font-mono font-bold ml-1">{m.score1 ?? '-'}</span>
-                      </div>
-                      <!-- Ao -->
-                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '2' ? 'bg-blue-500/20 text-blue-300 font-bold' : 'text-zinc-300'}">
-                        <span class="truncate">{m.atlet2_nama || '— (BYE)'}</span>
-                        <span class="font-mono font-bold ml-1">{m.score2 ?? '-'}</span>
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-
-                <!-- Column 2: Final Match -->
-                <div>
-                  {#if group.matches.final}
-                    {@const m = group.matches.final}
-                    <div
-                      role="button"
-                      tabindex="0"
-                      onclick={() => openFestScoreModal(m)}
-                      onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
-                      class="match-box rounded-xl border p-2 cursor-pointer transition text-left {m.selesai ? (isDarkMode ? 'border-amber-500/40 bg-amber-950/20' : 'border-amber-400 bg-amber-50') : (isDarkMode ? 'border-amber-500/20 bg-amber-950/10 hover:border-amber-500/50' : 'border-amber-300 bg-amber-50/40 hover:border-amber-500')}"
-                    >
-                      <div class="flex items-center justify-between text-[9px] font-mono text-amber-400 mb-1 font-bold">
-                        <span>FINAL GRUP {group.groupNum} 🏆</span>
-                        <span class="text-zinc-400">{m.kode || `P-${m.id}`}</span>
-                      </div>
-                      <!-- Aka -->
-                      <div class="flex items-center justify-between text-xs py-1 px-1.5 rounded {m.pemenang === '1' ? 'bg-red-500/25 text-red-200 font-black border border-red-500/30' : 'text-zinc-300'}">
-                        <span class="truncate">{m.atlet1_nama || 'Pemenang Semi 1'}</span>
-                        <span class="font-mono font-black ml-1">{m.score1 ?? '-'}</span>
-                      </div>
-                      <!-- Ao -->
-                      <div class="flex items-center justify-between text-xs py-1 px-1.5 rounded mt-1 {m.pemenang === '2' ? 'bg-blue-500/25 text-blue-200 font-black border border-blue-500/30' : 'text-zinc-300'}">
-                        <span class="truncate">{m.atlet2_nama || 'Pemenang Semi 2'}</span>
-                        <span class="font-mono font-black ml-1">{m.score2 ?? '-'}</span>
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              </div>
-
-              <!-- Podium Bar for Group -->
-              <div class="podium-bar mt-2 pt-2 border-t {isDarkMode ? 'border-white/5 bg-black/20' : 'border-slate-100 bg-slate-50'} rounded-lg p-2">
-                <div class="text-[9px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
-                  Hasil Juara Grup {group.groupNum}
-                </div>
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-1 text-[11px]">
-                  <!-- Emas -->
-                  <div class="flex items-center space-x-1 truncate">
-                    <span class="shrink-0">🥇</span>
-                    <span class="truncate font-bold text-amber-300" title={group.podium.emas?.name || '—'}>
-                      {group.podium.emas?.name || '—'}
-                    </span>
-                  </div>
-                  <!-- Perak -->
-                  <div class="flex items-center space-x-1 truncate">
-                    <span class="shrink-0">🥈</span>
-                    <span class="truncate font-semibold text-slate-300" title={group.podium.perak?.name || '—'}>
-                      {group.podium.perak?.name || '—'}
-                    </span>
-                  </div>
-                  <!-- Perunggu 1 -->
-                  <div class="flex items-center space-x-1 truncate">
-                    <span class="shrink-0">🥉</span>
-                    <span class="truncate text-amber-600/90" title={group.podium.perunggu1?.name || '—'}>
-                      {group.podium.perunggu1?.name || '—'}
-                    </span>
-                  </div>
-                  <!-- Perunggu 2 -->
-                  <div class="flex items-center space-x-1 truncate">
-                    <span class="shrink-0">🥉</span>
-                    <span class="truncate text-amber-600/90" title={group.podium.perunggu2?.name || '—'}>
-                      {group.podium.perunggu2?.name || '—'}
-                    </span>
-                  </div>
-                </div>
-              </div>
+        <!-- 4-Quadrant Split Canvas (Divided into 4 Groups / Cross-Divider) -->
+        <div class="festival-split-canvas w-full max-w-[1064px] mx-auto border-2 {isDarkMode ? 'border-zinc-700 bg-[#101216]' : 'border-slate-900 bg-white'} rounded-xl overflow-hidden shadow-xs">
+          <div class="festival-quadrants-grid grid grid-cols-1 xl:grid-cols-2 divide-y-2 xl:divide-y-0 xl:divide-x-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'}">
+            <!-- Left Column: Quadrant 1 (Top-Left) & Quadrant 3 (Bottom-Left) -->
+            <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'}">
+              {@render festivalGroupQuadrant(1)}
+              {@render festivalGroupQuadrant(3)}
             </div>
-          {/each}
+
+            <!-- Right Column: Quadrant 2 (Top-Right) & Quadrant 4 (Bottom-Right) -->
+            <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'}">
+              {@render festivalGroupQuadrant(2)}
+              {@render festivalGroupQuadrant(4)}
+            </div>
+          </div>
         </div>
       </div>
     {:else if elimRounds.length === 0}
@@ -2559,7 +2707,7 @@
       display: block !important;
       z-index: 1 !important;
     }
-    /* Festival Print Layout on A4 Landscape (Single Sheet) */
+    /* Festival Split 4-Quadrant Print Layout on A4 Landscape (Single Sheet) */
     .festival-canvas-wrapper {
       width: 285mm !important;
       max-width: 285mm !important;
@@ -2572,50 +2720,42 @@
       break-inside: avoid !important;
       display: flex !important;
       flex-direction: column !important;
-      justify-content: space-between !important;
       background: #ffffff !important;
       color: #000000 !important;
     }
-    .festival-banner {
-      height: 18mm !important;
-      max-height: 18mm !important;
-      padding: 1.5mm 3mm !important;
-      border: 1px solid #18181b !important;
+    .festival-split-canvas {
+      width: 100% !important;
+      max-width: 285mm !important;
+      height: calc(198mm - 14mm) !important;
+      max-height: calc(198mm - 14mm) !important;
+      border: 2px solid #000000 !important;
       background: #ffffff !important;
-      color: #000000 !important;
+      overflow: hidden !important;
       box-shadow: none !important;
-      margin-bottom: 2mm !important;
+      border-radius: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
     }
-    .festival-grid-container {
+    .festival-quadrants-grid {
       display: grid !important;
       grid-template-columns: 1fr 1fr !important;
       grid-template-rows: 1fr 1fr !important;
-      gap: 2.5mm !important;
-      flex: 1 !important;
-      height: calc(100% - 22mm) !important;
-      max-height: calc(100% - 22mm) !important;
+      height: 100% !important;
       overflow: hidden !important;
+      border-collapse: collapse !important;
     }
-    .group-card {
+    .group-quadrant {
       background: #ffffff !important;
       color: #000000 !important;
-      border: 1.5px solid #18181b !important;
-      padding: 2mm !important;
-      box-shadow: none !important;
+      border: 1px solid #000000 !important;
+      padding: 1.5mm !important;
+      box-sizing: border-box !important;
       overflow: hidden !important;
-    }
-    .match-box {
-      border: 1px solid #71717a !important;
-      background: #fafafa !important;
-      color: #000000 !important;
-      padding: 1mm !important;
-    }
-    .podium-bar {
-      border-top: 1px solid #18181b !important;
-      background: #f4f4f5 !important;
-      color: #000000 !important;
-      padding: 1mm 2mm !important;
-      margin-top: 1mm !important;
+      height: 100% !important;
+      max-height: 100% !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
     }
 
     .bracket-grid {
