@@ -239,6 +239,18 @@ ${inlinedCss}
       margin: 0 !important;
       padding: 0 !important;
     }
+    /* Prevent double page breaks on nested paper-sheet-portrait */
+    .booklet-page-portrait .paper-sheet-portrait {
+      break-after: auto !important;
+      page-break-after: auto !important;
+      min-height: 0 !important;
+      width: 100% !important;
+      max-width: 210mm !important;
+      box-shadow: none !important;
+      border: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
     .booklet-page-landscape {
       page: landscape-sheet !important;
       break-after: page !important;
@@ -671,7 +683,9 @@ ${inlinedCss}
 
             <!-- ================= HALAMAN 1: SAMPUL RESMI (A4 PORTRAIT) ================= -->
             <section id="page-cover" class="booklet-page booklet-page-portrait">
-              <div class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+              <div
+                class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400"
+              >
                 <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
                   <span>📄</span> <span>A4 PORTRAIT (210 × 297 mm)</span>
                 </span>
@@ -680,18 +694,18 @@ ${inlinedCss}
 
               <div class="paper-sheet paper-sheet-portrait relative">
                 <!-- Outer Formal Frame with Crisp Dark Double Border Accent -->
-                <div class="h-full border-4 border-slate-900 rounded-xs p-6 sm:p-7 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950">
+                <div class="h-full border-[5px] border-slate-950 rounded-xs p-8 sm:p-10 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950">
                   <!-- Fine Inner Hairline Inset -->
-                  <div class="absolute inset-2 border border-slate-400/80 pointer-events-none"></div>
+                  <div class="absolute inset-2.5 border-2 border-slate-300 pointer-events-none"></div>
 
-                  <!-- 1. TOP HEADER: Federation Hierarchy & Dual-Crest Ribbon -->
-                  <div class="relative z-10 text-center">
+                  <!-- 1. TOP SECTION: Institution & Clean Dual Logos -->
+                  <div class="relative z-10 text-center space-y-6">
                     <!-- Top Institutional Classification -->
-                    <div class="border-b-2 border-slate-900 pb-2.5 mb-3">
-                      <div class="text-[11px] font-black uppercase tracking-[0.25em] text-slate-900 mb-0.5">
+                    <div class="border-b-2 border-slate-900 pb-3">
+                      <div class="text-xs font-black uppercase tracking-[0.3em] text-slate-700 mb-1">
                         PENGURUS PROVINSI FEDERASI OLAHRAGA KARATE-DO INDONESIA
                       </div>
-                      <div class="text-base sm:text-lg font-black text-slate-950 uppercase tracking-wide">
+                      <div class="text-lg font-black text-slate-950 uppercase tracking-wider">
                         {#if isEditing}
                           <input
                             type="text"
@@ -704,217 +718,118 @@ ${inlinedCss}
                       </div>
                     </div>
 
-                    <!-- Dual-Crest Ribbon: FORKI Emblem | Official Title Badge | Event Logo -->
-                    <div class="flex items-center justify-between py-2.5 px-6 bg-slate-50 border-2 border-slate-800 rounded-md">
-                      <!-- 1. FORKI Logo -->
-                      <div class="flex flex-col items-center">
+                    <!-- Clean Dual Logos (Pure display without redundant bottom text) -->
+                    <div class="flex items-center justify-between px-8 py-2">
+                      <div class="flex items-center justify-center">
                         <img
                           src={FORKI_LOGO_DATA_URL}
                           alt="Logo FORKI"
-                          class="h-14 w-14 object-contain shrink-0"
-                          style="width: 56px; height: 56px; max-width: 56px; max-height: 56px; object-fit: contain;"
-                          width="56"
-                          height="56"
+                          class="h-24 w-24 object-contain shrink-0 drop-shadow-xs"
+                          style="width: 96px; height: 96px; max-width: 96px; max-height: 96px; object-fit: contain;"
+                          width="96"
+                          height="96"
                         />
-                        <span class="text-[10px] font-black text-slate-900 uppercase tracking-wider mt-1">PB FORKI</span>
                       </div>
-
-                      <!-- Center Official Designation Crest -->
-                      <div class="flex flex-col items-center px-4 text-center">
-                        <span class="text-[10px] font-black uppercase tracking-widest text-amber-950 bg-amber-400 px-3 py-0.5 rounded shadow-xs mb-1">
-                          DOKUMEN RESMI HASIL KEJUARAAN
-                        </span>
-                        <span class="text-xs font-black text-slate-900 uppercase tracking-wide">
-                          HASIL AKHIR &amp; REKAPITULASI
-                        </span>
+                      <div class="flex flex-col items-center">
+                        <div class="w-12 h-0.5 bg-amber-500 my-1"></div>
+                        <span class="text-[10px] font-black uppercase tracking-[0.25em] text-slate-400">FORKI</span>
+                        <div class="w-12 h-0.5 bg-amber-500 my-1"></div>
                       </div>
-
-                      <!-- 2. Event Logo -->
-                      <div class="flex flex-col items-center max-w-[140px]">
+                      <div class="flex items-center justify-center">
                         {#if bookletData.event_info.logo && logoMap[bookletData.event_info.logo]}
                           <img
                             src={logoMap[bookletData.event_info.logo]}
                             alt="Logo Kejuaraan"
-                            class="h-14 w-auto object-contain shrink-0"
-                            style="max-height: 56px; max-width: 130px; width: auto; height: auto; object-fit: contain;"
+                            class="h-24 w-auto max-w-[160px] object-contain shrink-0 drop-shadow-xs"
+                            style="max-height: 96px; max-width: 160px; object-fit: contain;"
                           />
                         {:else}
-                          <div class="h-14 px-3 flex items-center justify-center border-2 border-dashed border-slate-400 rounded bg-white text-center">
-                            <span class="text-[10px] font-black text-slate-900 uppercase tracking-tight leading-tight">
+                          <div class="h-24 px-4 flex items-center justify-center border-2 border-slate-900 rounded bg-white text-center shadow-2xs">
+                            <span class="text-xs font-black text-slate-900 uppercase">
                               {editableEventName}
                             </span>
                           </div>
                         {/if}
-                        <span class="text-[10px] font-black text-slate-900 uppercase tracking-wider mt-1">KEJUARAAN</span>
                       </div>
                     </div>
                   </div>
 
-                  <!-- 2. MAIN CENTER HERO: Title & Championship Identity -->
-                  <div class="relative z-10 text-center my-2.5 py-5 px-4 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 text-white rounded-lg border-2 border-amber-500 shadow-md">
-                    <div class="inline-flex items-center space-x-2 px-3.5 py-0.5 rounded bg-amber-500 text-slate-950 font-black text-[11px] uppercase tracking-widest mb-2.5">
-                      <span>BUKU LAPORAN HASIL PERTANDINGAN RESMI</span>
+                  <!-- 2. MAIN CENTER HERO: Pure Championship Title Block -->
+                  <div class="relative z-10 text-center my-auto py-8 px-6 bg-slate-950 text-white rounded-xl border-2 border-amber-500 shadow-xl space-y-4">
+                    <div class="inline-block px-4 py-1 rounded bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-[0.25em] shadow-sm">
+                      BUKU HASIL PERTANDINGAN
                     </div>
-
-                    <h1 class="text-2xl sm:text-3xl font-black text-white tracking-tight uppercase leading-snug drop-shadow-sm px-2">
+                    <h1 class="text-3xl sm:text-4xl font-black text-white tracking-tight uppercase leading-snug drop-shadow-md px-2">
                       {editableEventName}
                     </h1>
-
-                    <div class="h-0.5 w-28 bg-amber-500 mx-auto my-2.5"></div>
-
-                    <p class="text-xs sm:text-sm font-black text-amber-300 tracking-wide uppercase">
-                      LAPORAN AKHIR REKAPITULASI MEDALI, BAGAN, &amp; PENGESAHAN HASIL
+                    <div class="flex items-center justify-center space-x-3 my-2">
+                      <div class="h-0.5 w-16 bg-amber-400"></div>
+                      <span class="text-amber-400 text-sm">◆</span>
+                      <div class="h-0.5 w-16 bg-amber-400"></div>
+                    </div>
+                    <p class="text-sm font-bold text-amber-200 tracking-widest uppercase">
+                      OFFICIAL TOURNAMENT RESULTS BOOK
                     </p>
                   </div>
 
-                  <!-- 3. BRIEFING MATRIX: 4-Cell Structured Information Grid (High Contrast & Bold) -->
-                  <div class="relative z-10 grid grid-cols-2 gap-2.5 text-xs my-2">
-                    <!-- Box 1: Tempat & Arena -->
-                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
-                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
-                        TEMPAT &amp; ARENA PERTANDINGAN
-                      </div>
-                      <div class="font-black text-sm text-slate-950 leading-snug">
-                        {#if isEditing}
-                          <input
-                            type="text"
-                            bind:value={editableTempat}
-                            class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold"
-                          />
-                        {:else}
-                          <span>{editableTempat}</span>
-                        {/if}
-                      </div>
-                      <div class="text-[11px] text-slate-800 font-bold mt-0.5">
-                        Kota {editableKota || 'Samarinda'} • Provinsi Kalimantan Timur
-                      </div>
-                    </div>
-
-                    <!-- Box 2: Waktu & Pelaksanaan -->
-                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
-                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
-                        WAKTU PELAKSANAAN
-                      </div>
-                      <div class="font-black text-sm text-slate-950 leading-snug">
-                        {#if isEditing}
-                          <input
-                            type="text"
-                            bind:value={editableTanggal}
-                            class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold"
-                          />
-                        {:else}
-                          <span>{editableTanggal}</span>
-                        {/if}
-                      </div>
-                      <div class="text-[11px] text-slate-800 font-bold mt-0.5">
-                        Telah Selesai Dilaksanakan Secara Penuh
-                      </div>
-                    </div>
-
-                    <!-- Box 3: Dasar Regulasi & Pengesahan -->
-                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
-                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
-                        REGULASI &amp; PERWASITAN
-                      </div>
-                      <div class="font-black text-sm text-slate-950 leading-snug">
-                        PERATURAN RESMI PB FORKI
-                      </div>
-                      <div class="text-[11px] text-slate-800 font-bold mt-0.5">
-                        Dewan Wasit &amp; Juri Bersertifikasi Resmi
-                      </div>
-                    </div>
-
-                    <!-- Box 4: Nomor Berita Acara -->
-                    <div class="border-2 border-slate-800 rounded p-2.5 bg-slate-50">
-                      <div class="text-[10px] font-black uppercase tracking-wider text-slate-900 mb-0.5">
-                        NOMOR BERITA ACARA PENGESAHAN
-                      </div>
-                      <div class="font-mono font-black text-sm text-slate-950 leading-snug">
-                        {#if isEditing}
-                          <input
-                            type="text"
-                            bind:value={editableNomorSurat}
-                            class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold"
-                          />
-                        {:else}
-                          <span>{editableNomorSurat || 'BA-FORKI/9/2026'}</span>
-                        {/if}
-                      </div>
-                      <div class="text-[11px] text-emerald-800 font-black mt-0.5">
-                        Status: SAH, MENGIKAT &amp; TERVALIDASI
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 4. PARTICIPATION & HIGHEST HONORS ROLL CALL (Executive Summary) -->
-                  <div class="relative z-10 border-2 border-slate-800 rounded-lg bg-slate-50 p-3 my-2">
-                    <!-- 4-Stat Strip -->
-                    <div class="grid grid-cols-4 divide-x-2 divide-slate-300 text-center pb-2.5 mb-2.5 border-b-2 border-slate-300">
+                  <!-- 3. LOWER SECTION: Elegant Event Details & Metadata -->
+                  <div class="relative z-10 text-center space-y-6">
+                    <div class="max-w-xl mx-auto border-2 border-slate-800 rounded-lg p-5 bg-slate-50 space-y-3">
                       <div>
-                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{bookletData.berita_acara.total_kontingen}</div>
-                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Kontingen</div>
-                      </div>
-                      <div>
-                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{bookletData.berita_acara.total_perguruan}</div>
-                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Perguruan</div>
-                      </div>
-                      <div>
-                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{bookletData.berita_acara.total_atlet}</div>
-                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Atlet</div>
-                      </div>
-                      <div>
-                        <div class="text-xl sm:text-2xl font-black font-mono text-slate-950">{totalKategori}</div>
-                        <div class="text-[10px] uppercase font-black text-slate-800 tracking-wider">Nomor Tanding</div>
-                      </div>
-                    </div>
-
-                    <!-- Juara Umum Highlights -->
-                    <div class="grid grid-cols-2 gap-2.5 text-xs">
-                      <div class="bg-amber-100 border-2 border-amber-400 rounded-md p-2 flex items-center justify-between">
-                        <div class="min-w-0 pr-1">
-                          <span class="text-[9px] font-black uppercase tracking-wider text-amber-950 block">JUARA UMUM KONTINGEN</span>
-                          <span class="font-black text-xs text-slate-950 truncate block">{topKontingen?.nama || '-'}</span>
+                        <div class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-0.5">
+                          TEMPAT &amp; ARENA PERTANDINGAN
                         </div>
-                        {#if topKontingen}
-                          <div class="text-xs font-mono font-black text-amber-950 shrink-0 bg-amber-300 px-2 py-0.5 rounded border border-amber-500">
-                            {topKontingen.gold}🥇 {topKontingen.silver}🥈 {topKontingen.bronze}🥉
-                          </div>
-                        {/if}
-                      </div>
-
-                      <div class="bg-emerald-100 border-2 border-emerald-400 rounded-md p-2 flex items-center justify-between">
-                        <div class="min-w-0 pr-1">
-                          <span class="text-[9px] font-black uppercase tracking-wider text-emerald-950 block">JUARA UMUM PERGURUAN</span>
-                          <span class="font-black text-xs text-slate-950 truncate block">{topPerguruan?.nama || '-'}</span>
+                        <div class="text-base font-black text-slate-950 uppercase">
+                          {#if isEditing}
+                            <input
+                              type="text"
+                              bind:value={editableTempat}
+                              class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold text-center"
+                            />
+                          {:else}
+                            <span>{editableTempat}</span>
+                          {/if}
                         </div>
-                        {#if topPerguruan}
-                          <div class="text-xs font-mono font-black text-emerald-950 shrink-0 bg-emerald-300 px-2 py-0.5 rounded border border-emerald-500">
-                            {topPerguruan.gold}🥇 {topPerguruan.silver}🥈 {topPerguruan.bronze}🥉
-                          </div>
-                        {/if}
+                        <div class="text-xs font-bold text-slate-700 mt-0.5">
+                          Kota {editableKota || 'Samarinda'} • Provinsi Kalimantan Timur
+                        </div>
+                      </div>
+                      <div class="border-t border-slate-300 pt-2.5">
+                        <div class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-0.5">
+                          WAKTU PELAKSANAAN
+                        </div>
+                        <div class="text-sm font-black font-mono text-slate-950">
+                          {#if isEditing}
+                            <input
+                              type="text"
+                              bind:value={editableTanggal}
+                              class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold text-center"
+                            />
+                          {:else}
+                            <span>{editableTanggal}</span>
+                          {/if}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <!-- 5. BOTTOM OFFICIAL TECHNOLOGY PARTNER & FOOTER BAR -->
-                  <div class="relative z-10 pt-2.5 border-t-2 border-slate-900 flex items-center justify-between text-slate-950 text-xs">
-                    <div class="space-y-0.5">
-                      <div class="font-black text-xs uppercase tracking-wider text-slate-950">
-                        AMBRILINDO TOURNAMENT ENGINE
+                    <!-- 4. BOTTOM OFFICIAL TECHNOLOGY PARTNER & FOOTER BAR -->
+                    <div class="pt-4 border-t-2 border-slate-900 flex items-center justify-between text-slate-900 text-xs">
+                      <div class="text-left space-y-0.5">
+                        <div class="font-black text-xs uppercase tracking-wider text-slate-950">
+                          AMBRILINDO TOURNAMENT ENGINE
+                        </div>
+                        <div class="text-[10px] text-slate-600 font-bold font-mono">
+                          Sistem Digitalisasi &amp; Validasi Resmi Hasil Pertandingan FORKI
+                        </div>
                       </div>
-                      <div class="text-[10px] text-slate-800 font-bold font-mono">
-                        Sistem Digitalisasi &amp; Validasi Resmi PB / PENGPROV FORKI
+                      <div class="flex items-center space-x-2.5 bg-white px-3 py-1.5 rounded border border-slate-300 shadow-2xs">
+                        <img
+                          src={AMBRILINDO_LOGO_DATA_URL}
+                          alt="Ambrilindo"
+                          class="h-7 w-auto object-contain shrink-0"
+                          style="max-height: 28px; max-width: 120px;"
+                        />
                       </div>
-                    </div>
-
-                    <div class="flex items-center space-x-2 bg-white px-3 py-1.5 rounded border-2 border-slate-800 shadow-2xs">
-                      <span class="text-[10px] font-black uppercase tracking-wider text-slate-900">OFFICIAL TECHNOLOGY:</span>
-                      <img
-                        src={AMBRILINDO_LOGO_DATA_URL}
-                        alt="Ambrilindo"
-                        class="h-6 w-auto object-contain shrink-0"
-                        style="max-height: 24px; max-width: 110px; width: auto; height: auto;"
-                      />
                     </div>
                   </div>
                 </div>
