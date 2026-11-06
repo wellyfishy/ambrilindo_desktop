@@ -2875,17 +2875,40 @@ impl DatabaseManager {
 
             let paired_athletes = helper_pair_festival_athletes_anti_collision(fest_athletes);
 
-            // Chunk into bagans of max 16 athletes (up to 4 groups of 4 per bagan)
-            let chunks: Vec<Vec<FestivalAthlete>> = paired_athletes.chunks(16).map(|c| c.to_vec()).collect();
-            let total_chunks = chunks.len();
+            // Balanced group & bagan distribution (e.g. 6 groups -> 3 in Bagan 1, 3 in Bagan 2, NOT 4-2):
+            let n_total = paired_athletes.len();
+            let total_groups = (n_total + 3) / 4;
+            let total_bagans = (total_groups + 3) / 4;
 
+            // 1. Distribute total_groups evenly across total_bagans (e.g. 6 groups -> [3, 3])
+            let base_groups_per_bagan = total_groups / total_bagans;
+            let rem_groups = total_groups % total_bagans;
+            let mut groups_per_bagan: Vec<usize> = Vec::new();
+            for b in 0..total_bagans {
+                let g_count = base_groups_per_bagan + if b < rem_groups { 1 } else { 0 };
+                groups_per_bagan.push(g_count);
+            }
+
+            // 2. Distribute all n_total athletes evenly across total_groups (each group getting 4 or 3 athletes)
+            let base_athletes_per_group = n_total / total_groups;
+            let rem_athletes = n_total % total_groups;
+            let mut all_groups: Vec<Vec<FestivalAthlete>> = Vec::new();
+            let mut cursor = 0;
+            for g in 0..total_groups {
+                let g_size = base_athletes_per_group + if g < rem_athletes { 1 } else { 0 };
+                all_groups.push(paired_athletes[cursor..cursor + g_size].to_vec());
+                cursor += g_size;
+            }
+
+            // 3. Chunk all_groups into bagans according to groups_per_bagan
+            let mut group_cursor = 0;
             categories_processed += 1;
 
-            for (chunk_idx, chunk_athletes) in chunks.into_iter().enumerate() {
-                let n_chunk = chunk_athletes.len();
-                let num_groups = (n_chunk + 3) / 4; // 1..=4 groups
+            for (chunk_idx, &num_groups) in groups_per_bagan.iter().enumerate() {
+                let group_slices: Vec<Vec<FestivalAthlete>> = all_groups[group_cursor..group_cursor + num_groups].to_vec();
+                group_cursor += num_groups;
 
-                let bagan_title = if total_chunks == 1 {
+                let bagan_title = if total_bagans == 1 {
                     cat_name.clone()
                 } else {
                     format!("{} - Bagan {}", cat_name, chunk_idx + 1)
@@ -2909,18 +2932,6 @@ impl DatabaseManager {
 
                 let bagan_id = bagan_res.last_insert_rowid();
                 bagans_created += 1;
-
-                // Distribute n_chunk athletes across num_groups as evenly as possible (max 4 per group)
-                let base_size = n_chunk / num_groups;
-                let remainder = n_chunk % num_groups;
-                let mut start_idx = 0;
-                let mut group_slices: Vec<Vec<FestivalAthlete>> = Vec::new();
-                for g_idx in 0..num_groups {
-                    let size = base_size + if g_idx < remainder { 1 } else { 0 };
-                    let end_idx = start_idx + size;
-                    group_slices.push(chunk_athletes[start_idx..end_idx].to_vec());
-                    start_idx = end_idx;
-                }
 
                 // For each group g (1..=num_groups): create 3 matches (Semi 1, Semi 2, Final)
                 for (g_idx, g_athletes) in group_slices.into_iter().enumerate() {
@@ -8682,4 +8693,54 @@ mod festival_tests {
         let _ = std::fs::remove_file(&test_db_path);
         println!("test_drawing_and_progression_festival PASSED successfully!");
     }
+    #[tokio::test]
+    async fn test_balanced_festival_drawing_multi_bagan() {
+        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
+        if !original_db.exists() {
+            println!("Skipping test: db.sqlite3 not found at {:?}", original_db);
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir();
+        let test_db_path = temp_dir.join(format!("test_fest_bal_{}.sqlite3", rand::random::<u64>()));
+        std::fs::copy(original_db, &test_db_path).expect("Gagal copy test db");
+
+        let mut db = DatabaseManager::new();
+        db.mount_database(&test_db_path).await.expect("Mount db failed");
+        let pool = db.get_pool().expect("pool failed");
+
+        // Create a synthetic festival category with 22 athletes
+        let cat_res = sqlx::query("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (9, 'FESTIVAL SIMULASI 22 ATLET', 0, 0)")
+            .execute(pool).await.expect("insert cat failed");
+        let test_cat_id = cat_res.last_insert_rowid();
+
+        for i in 1..=22 {
+            let utusan_id = (i % 5) + 1;
+            let perguruan_id = (i % 4) + 1;
+            sqlx::query("INSERT INTO backend_atlet (event_id, nomor_tanding_id, nama_atlet, utusan_id, perguruan_id, is_priority) VALUES (9, ?, ?, ?, ?, 0)")
+                .bind(test_cat_id)
+                .bind(format!("Atlet Festival {:02}", i))
+                .bind(utusan_id)
+                .bind(perguruan_id)
+                .execute(pool).await.expect("insert athlete failed");
+        }
+
+        // Execute drawing for this 22-athlete category
+        let summary = db.execute_drawing_festival_bagan(9, vec![test_cat_id], "both").await.expect("drawing failed");
+        assert_eq!(summary.categories_processed, 1);
+        assert_eq!(summary.bagans_created, 2, "22 atlet harus membentuk 2 bagan");
+        assert_eq!(summary.total_matches, 18, "6 grup * 3 partai = 18 partai");
+
+        // Verify that both bagans have 3 groups each (3-3, NOT 4-2)
+        let bagans = db.get_bagans(9).await.expect("get_bagans failed");
+        let fest_bagans: Vec<_> = bagans.into_iter().filter(|b| b.nomor_tanding_id == Some(test_cat_id)).collect();
+        assert_eq!(fest_bagans.len(), 2);
+        assert_eq!(fest_bagans[0].pool, 3, "Bagan 1 harus memiliki 3 grup (Pool A, B, C)");
+        assert_eq!(fest_bagans[1].pool, 3, "Bagan 2 harus memiliki 3 grup (Pool A, B, C), bukan 2!");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&test_db_path);
+        println!("test_balanced_festival_drawing_multi_bagan PASSED successfully (3-3 balance verified)!");
+    }
+
 }

@@ -1952,61 +1952,57 @@
 
                 <div class="podium-card-wrap flex flex-col justify-between h-[148px] gap-1">
                   <!-- Juara 1 (Emas) -->
-                  <div class="podium-row row-emas px-2 py-1 flex items-center space-x-1.5 rounded border transition {isDarkMode ? 'bg-amber-500/10 border-amber-500/50' : 'bg-[#fffbeb] border-amber-400'}">
-                    <span class="medal-circle medal-emas w-4 h-4 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">1</span>
+                  <div class="podium-row row-emas px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-amber-500/10 border-amber-500/50' : 'bg-[#fffbeb] border-amber-400'}">
+                    <span class="medal-circle medal-emas w-4.5 h-4.5 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">1</span>
                     {#if group.podium.emas?.logo && logoMap[group.podium.emas.logo]}
-                      <img src={logoMap[group.podium.emas.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      <img src={logoMap[group.podium.emas.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
                     {/if}
-                    <div class="min-w-0 flex-1 truncate">
-                      <div class="podium-rank-tag tag-emas text-[6.5px] font-black uppercase tracking-tight {isDarkMode ? 'text-amber-300' : 'text-amber-800'}">JUARA 1 (EMAS)</div>
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[8.5px] leading-tight">{group.podium.emas?.name || '...'}</div>
+                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
+                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.emas?.name || '...'}</div>
                       {#if group.podium.emas?.contingent}
-                        <div class="podium-sub text-[6.5px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight">{group.podium.emas.contingent}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.emas.contingent}</div>
                       {/if}
                     </div>
                   </div>
 
                   <!-- Juara 2 (Perak) -->
-                  <div class="podium-row row-perak px-2 py-1 flex items-center space-x-1.5 rounded border transition {isDarkMode ? 'bg-slate-400/10 border-slate-400/40' : 'bg-[#f8fafc] border-slate-300'}">
-                    <span class="medal-circle medal-perak w-4 h-4 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">2</span>
+                  <div class="podium-row row-perak px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-slate-400/10 border-slate-400/40' : 'bg-[#f8fafc] border-slate-300'}">
+                    <span class="medal-circle medal-perak w-4.5 h-4.5 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">2</span>
                     {#if group.podium.perak?.logo && logoMap[group.podium.perak.logo]}
-                      <img src={logoMap[group.podium.perak.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      <img src={logoMap[group.podium.perak.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
                     {/if}
-                    <div class="min-w-0 flex-1 truncate">
-                      <div class="podium-rank-tag tag-perak text-[6.5px] font-black uppercase tracking-tight {isDarkMode ? 'text-slate-300' : 'text-slate-700'}">JUARA 2 (PERAK)</div>
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[8.5px] leading-tight">{group.podium.perak?.name || '...'}</div>
+                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
+                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.perak?.name || '...'}</div>
                       {#if group.podium.perak?.contingent}
-                        <div class="podium-sub text-[6.5px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight">{group.podium.perak.contingent}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.perak.contingent}</div>
                       {/if}
                     </div>
                   </div>
 
                   <!-- Juara 3 (Perunggu 1) -->
-                  <div class="podium-row row-perunggu px-2 py-1 flex items-center space-x-1.5 rounded border transition {isDarkMode ? 'bg-orange-500/10 border-orange-500/40' : 'bg-[#fff7ed] border-orange-300'}">
-                    <span class="medal-circle medal-perunggu w-4 h-4 rounded-full bg-gradient-to-br from-orange-400 to-amber-700 text-white font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">3</span>
+                  <div class="podium-row row-perunggu px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-orange-500/10 border-orange-500/40' : 'bg-[#fff7ed] border-orange-300'}">
+                    <span class="medal-circle medal-perunggu w-4.5 h-4.5 rounded-full bg-gradient-to-br from-orange-400 to-amber-700 text-white font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">3</span>
                     {#if group.podium.perunggu1?.logo && logoMap[group.podium.perunggu1.logo]}
-                      <img src={logoMap[group.podium.perunggu1.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      <img src={logoMap[group.podium.perunggu1.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
                     {/if}
-                    <div class="min-w-0 flex-1 truncate">
-                      <div class="podium-rank-tag tag-perunggu text-[6.5px] font-black uppercase tracking-tight {isDarkMode ? 'text-orange-400' : 'text-orange-800'}">JUARA 3 BERSAMA</div>
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[8.5px] leading-tight">{group.podium.perunggu1?.name || '...'}</div>
+                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
+                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.perunggu1?.name || '...'}</div>
                       {#if group.podium.perunggu1?.contingent}
-                        <div class="podium-sub text-[6.5px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight">{group.podium.perunggu1.contingent}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.perunggu1.contingent}</div>
                       {/if}
                     </div>
                   </div>
 
                   <!-- Juara 3 (Perunggu 2) -->
-                  <div class="podium-row row-perunggu px-2 py-1 flex items-center space-x-1.5 rounded border transition {isDarkMode ? 'bg-orange-500/10 border-orange-500/40' : 'bg-[#fff7ed] border-orange-300'}">
-                    <span class="medal-circle medal-perunggu w-4 h-4 rounded-full bg-gradient-to-br from-orange-400 to-amber-700 text-white font-black font-mono text-[8px] flex items-center justify-center shrink-0 shadow-xs">3</span>
+                  <div class="podium-row row-perunggu px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-orange-500/10 border-orange-500/40' : 'bg-[#fff7ed] border-orange-300'}">
+                    <span class="medal-circle medal-perunggu w-4.5 h-4.5 rounded-full bg-gradient-to-br from-orange-400 to-amber-700 text-white font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">3</span>
                     {#if group.podium.perunggu2?.logo && logoMap[group.podium.perunggu2.logo]}
-                      <img src={logoMap[group.podium.perunggu2.logo]} alt="Logo" class="podium-dojo-logo w-3 h-3 object-contain shrink-0" />
+                      <img src={logoMap[group.podium.perunggu2.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
                     {/if}
-                    <div class="min-w-0 flex-1 truncate">
-                      <div class="podium-rank-tag tag-perunggu text-[6.5px] font-black uppercase tracking-tight {isDarkMode ? 'text-orange-400' : 'text-orange-800'}">JUARA 3 BERSAMA</div>
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[8.5px] leading-tight">{group.podium.perunggu2?.name || '...'}</div>
+                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
+                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.perunggu2?.name || '...'}</div>
                       {#if group.podium.perunggu2?.contingent}
-                        <div class="podium-sub text-[6.5px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight">{group.podium.perunggu2.contingent}</div>
+                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.perunggu2.contingent}</div>
                       {/if}
                     </div>
                   </div>
@@ -3035,10 +3031,6 @@
       background: #fffbeb !important;
       border: 1.5px solid #b45309 !important;
     }
-    .row-emas .podium-rank-tag {
-      color: #92400e !important;
-      font-weight: 950 !important;
-    }
     .row-emas .medal-circle {
       background: #fde047 !important;
       color: #78350f !important;
@@ -3048,10 +3040,6 @@
       background: #f8fafc !important;
       border: 1.5px solid #475569 !important;
     }
-    .row-perak .podium-rank-tag {
-      color: #1e293b !important;
-      font-weight: 950 !important;
-    }
     .row-perak .medal-circle {
       background: #e2e8f0 !important;
       color: #1e293b !important;
@@ -3060,10 +3048,6 @@
     .row-perunggu {
       background: #fff7ed !important;
       border: 1.5px solid #c2410c !important;
-    }
-    .row-perunggu .podium-rank-tag {
-      color: #9a3412 !important;
-      font-weight: 950 !important;
     }
     .row-perunggu .medal-circle {
       background: #fed7aa !important;
@@ -3196,35 +3180,32 @@
     }
     .podium-row {
       flex: 1 !important;
-      padding: 1.2mm 2mm !important;
+      padding: 1.5mm 2.5mm !important;
       border-radius: 1.5mm !important;
       border: 1.2px solid #000000 !important;
-    }
-    .podium-rank-tag {
-      color: #000000 !important;
-      font-weight: 950 !important;
-      font-size: 6.8pt !important;
-      line-height: 1 !important;
-      margin-bottom: 0.2mm !important;
+      display: flex !important;
+      align-items: center !important;
     }
     .podium-name {
-      font-size: 9.5pt !important;
+      font-size: 10.5pt !important;
       font-weight: 950 !important;
-      line-height: 11pt !important;
+      line-height: 12pt !important;
       color: #000000 !important;
     }
     .podium-sub {
-      font-size: 7.8pt !important;
+      font-size: 8pt !important;
       font-weight: 800 !important;
-      line-height: 9pt !important;
+      line-height: 9.5pt !important;
       color: #334155 !important;
+      margin-top: 0.3mm !important;
     }
     .medal-circle {
-      width: 5mm !important;
-      height: 5mm !important;
-      border: 1px solid #000000 !important;
-      font-size: 8.5pt !important;
+      width: 5.5mm !important;
+      height: 5.5mm !important;
+      border: 1.2px solid #000000 !important;
+      font-size: 9pt !important;
       font-weight: 950 !important;
+      flex-shrink: 0 !important;
     }
 
     /* Hasil Juara Card in Print */
