@@ -2969,7 +2969,8 @@ impl DatabaseManager {
             // Balanced group & bagan distribution (e.g. 6 groups -> 3 in Bagan 1, 3 in Bagan 2, NOT 4-2):
             let n_total = paired_athletes.len();
             let total_groups = (n_total + 3) / 4;
-            let total_bagans = (total_groups + 3) / 4;
+            // Option C: 1 bagan can hold up to 6 groups (up to 24 athletes per single A4 sheet)
+            let total_bagans = (total_groups + 5) / 6;
 
             // 1. Distribute total_groups evenly across total_bagans (e.g. 6 groups -> [3, 3])
             let base_groups_per_bagan = total_groups / total_bagans;
@@ -8819,12 +8820,12 @@ mod festival_tests {
         db.mount_database(&test_db_path).await.expect("Mount db failed");
         let pool = db.get_pool().expect("pool failed");
 
-        // Create a synthetic festival category with 22 athletes
-        let cat_res = sqlx::query("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (9, 'FESTIVAL SIMULASI 22 ATLET', 0, 0)")
+        // Create a synthetic festival category with 28 athletes (7 groups -> 2 bagans: 4 and 3 groups)
+        let cat_res = sqlx::query("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (9, 'FESTIVAL SIMULASI 28 ATLET', 0, 0)")
             .execute(pool).await.expect("insert cat failed");
         let test_cat_id = cat_res.last_insert_rowid();
 
-        for i in 1..=22 {
+        for i in 1..=28 {
             let utusan_id = (i % 5) + 1;
             let perguruan_id = (i % 4) + 1;
             sqlx::query("INSERT INTO backend_atlet (event_id, nomor_tanding_id, nama_atlet, utusan_id, perguruan_id, is_priority) VALUES (9, ?, ?, ?, ?, 0)")
@@ -8835,18 +8836,18 @@ mod festival_tests {
                 .execute(pool).await.expect("insert athlete failed");
         }
 
-        // Execute drawing for this 22-athlete category
+        // Execute drawing for this 28-athlete category (7 groups total -> 2 balanced bagans: 4 and 3 groups)
         let summary = db.execute_drawing_festival_bagan(9, vec![test_cat_id], "both").await.expect("drawing failed");
         assert_eq!(summary.categories_processed, 1);
-        assert_eq!(summary.bagans_created, 2, "22 atlet harus membentuk 2 bagan");
-        assert_eq!(summary.total_matches, 18, "6 grup * 3 partai = 18 partai");
+        assert_eq!(summary.bagans_created, 2, "28 atlet (7 grup) harus membentuk 2 bagan");
+        assert_eq!(summary.total_matches, 21, "7 grup * 3 partai = 21 partai");
 
-        // Verify that both bagans have 3 groups each (3-3, NOT 4-2)
+        // Verify that bagans are balanced (4 groups and 3 groups)
         let bagans = db.get_bagans(9).await.expect("get_bagans failed");
         let fest_bagans: Vec<_> = bagans.into_iter().filter(|b| b.nomor_tanding_id == Some(test_cat_id)).collect();
         assert_eq!(fest_bagans.len(), 2);
-        assert_eq!(fest_bagans[0].pool, 3, "Bagan 1 harus memiliki 3 grup (Pool A, B, C)");
-        assert_eq!(fest_bagans[1].pool, 3, "Bagan 2 harus memiliki 3 grup (Pool A, B, C), bukan 2!");
+        assert_eq!(fest_bagans[0].pool, 4, "Bagan 1 harus memiliki 4 grup (Pool A, B, C, D)");
+        assert_eq!(fest_bagans[1].pool, 3, "Bagan 2 harus memiliki 3 grup (Pool A, B, C)");
 
         // Cleanup
         let _ = std::fs::remove_file(&test_db_path);

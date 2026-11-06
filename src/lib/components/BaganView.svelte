@@ -105,7 +105,7 @@
   });
 
   let festivalGroups = $derived.by(() => {
-    const count = Math.min(4, Math.max(1, festivalGroupCount));
+    const count = Math.min(6, Math.max(1, festivalGroupCount));
     const groups = [];
 
     for (let g = 1; g <= count; g++) {
@@ -1872,7 +1872,7 @@
                 {gNum}
               </span>
               <span class="col-header-title text-[10.5px] font-black uppercase tracking-tight {isDarkMode ? 'text-white' : 'text-slate-950'}">
-                GRUP {gNum} {gNum === 1 ? '(POOL A)' : gNum === 2 ? '(POOL B)' : gNum === 3 ? '(POOL C)' : '(POOL D)'}
+                GRUP {gNum} (POOL {String.fromCharCode(64 + gNum)})
               </span>
             </div>
 
@@ -2034,27 +2034,31 @@
       <!-- Festival "Bagan Biasa" Template (Single A4 Landscape Sheet) -->
       <div class="festival-canvas-wrapper w-full h-full max-w-[1064px] mx-auto p-1 overflow-hidden">
         <div class="festival-split-canvas w-full h-full border-2 {isDarkMode ? 'border-zinc-700 bg-[#101216]' : 'border-slate-900 bg-white'} rounded-lg overflow-hidden shadow-xs flex flex-col">
-          {#if festivalGroups.length === 4}
-            <!-- 4 Groups: 2x2 Balanced Quadrant Grid -->
-            <div class="festival-quadrants-grid grid grid-cols-1 xl:grid-cols-2 divide-y-2 xl:divide-y-0 xl:divide-x-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
-              <!-- Left Column: Quadrant 1 (Top-Left) & Quadrant 3 (Bottom-Left) -->
-              <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col">
-                {@render festivalGroupQuadrant(1, false)}
-                {@render festivalGroupQuadrant(3, false)}
-              </div>
-
-              <!-- Right Column: Quadrant 2 (Top-Right) & Quadrant 4 (Bottom-Right) -->
-              <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col">
-                {@render festivalGroupQuadrant(2, false)}
-                {@render festivalGroupQuadrant(4, false)}
-              </div>
-            </div>
-          {:else}
+          {#if festivalGroups.length <= 3}
             <!-- 1 to 3 Groups: Full-Width Horizontal Bands (Zero Wasted Space, Generous Card Widths) -->
             <div class="festival-bands-grid flex flex-col divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
               {#each festivalGroups as g (g.groupNum)}
                 {@render festivalGroupQuadrant(g.groupNum, true)}
               {/each}
+            </div>
+          {:else}
+            <!-- 4 to 6 Groups: 2-Column Balanced Grid (100% Fill of A4 Landscape Sheet, Zero Empty Space) -->
+            {@const leftGroups = festivalGroups.filter((_, idx) => idx % 2 === 0)}
+            {@const rightGroups = festivalGroups.filter((_, idx) => idx % 2 !== 0)}
+            <div class="festival-quadrants-grid grid grid-cols-1 xl:grid-cols-2 divide-y-2 xl:divide-y-0 xl:divide-x-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
+              <!-- Left Column (Odd Groups: 1, 3, 5) -->
+              <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col flex-1 h-full">
+                {#each leftGroups as g (g.groupNum)}
+                  {@render festivalGroupQuadrant(g.groupNum, false)}
+                {/each}
+              </div>
+
+              <!-- Right Column (Even Groups: 2, 4, 6) -->
+              <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col flex-1 h-full">
+                {#each rightGroups as g (g.groupNum)}
+                  {@render festivalGroupQuadrant(g.groupNum, false)}
+                {/each}
+              </div>
             </div>
           {/if}
         </div>
@@ -2749,8 +2753,8 @@
     .festival-canvas-wrapper {
       width: 287mm !important;
       max-width: 287mm !important;
-      height: 182mm !important;
-      max-height: 182mm !important;
+      height: 184mm !important;
+      max-height: 184mm !important;
       padding: 0 !important;
       margin: 0 !important;
       overflow: hidden !important;
@@ -2777,17 +2781,25 @@
       break-inside: avoid !important;
     }
 
-    /* 4-Quadrant Grid (When exactly 4 Groups exist) */
+    /* 2-Column Grid (When 4 to 6 Groups exist - 100% Vertical Fill) */
     .festival-quadrants-grid {
       display: grid !important;
       grid-template-columns: 1fr 1fr !important;
-      grid-template-rows: 1fr 1fr !important;
       height: 100% !important;
       max-height: 100% !important;
+      flex: 1 !important;
       overflow: hidden !important;
       border-collapse: collapse !important;
       page-break-inside: avoid !important;
       break-inside: avoid !important;
+    }
+    .festival-quadrants-grid > div {
+      display: flex !important;
+      flex-direction: column !important;
+      height: 100% !important;
+      max-height: 100% !important;
+      flex: 1 !important;
+      overflow: hidden !important;
     }
     .group-quadrant {
       background: #ffffff !important;
@@ -2796,8 +2808,8 @@
       padding: 1.5mm 2.5mm !important;
       box-sizing: border-box !important;
       overflow: hidden !important;
-      height: 90.5mm !important;
-      max-height: 90.5mm !important;
+      flex: 1 !important;
+      height: 100% !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
