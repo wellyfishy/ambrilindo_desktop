@@ -3062,14 +3062,14 @@ impl DatabaseManager {
                             .bind(bagan_id).bind(semi1_urutan).bind(g_athletes[0].id).bind(g_athletes[1].id)
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 1: {}", e))?;
 
-                            // Semi 2: Atlet 2 vs BYE (selesai = 1, pemenang = 1)
+                            // Semi 2: Atlet 2 has BYE directly into Final (not a played match, selesai = 0, pemenang = NULL)
                             sqlx::query(
-                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 0, 0, NULL)"
                             )
                             .bind(bagan_id).bind(semi2_urutan).bind(g_athletes[2].id)
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 2 BYE: {}", e))?;
 
-                            // Final: TBD vs Atlet 2 (Atlet 2 seeded directly via BYE)
+                            // Final: TBD vs Atlet 2 (Atlet 2 seeded directly via BYE, waiting for winner of Semi 1)
                             sqlx::query(
                                 "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 2, ?, NULL, ?, 0, 0, 0, 0, 0)"
                             )
@@ -3077,16 +3077,16 @@ impl DatabaseManager {
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan final: {}", e))?;
                         }
                         2 => {
-                            // Semi 1: BYE Atlet 0
+                            // Semi 1: BYE Atlet 0 (selesai = 0, pemenang = NULL)
                             sqlx::query(
-                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 0, 0, NULL)"
                             )
                             .bind(bagan_id).bind(semi1_urutan).bind(g_athletes[0].id)
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 1 BYE: {}", e))?;
 
-                            // Semi 2: BYE Atlet 1
+                            // Semi 2: BYE Atlet 1 (selesai = 0, pemenang = NULL)
                             sqlx::query(
-                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 0, 0, NULL)"
                             )
                             .bind(bagan_id).bind(semi2_urutan).bind(g_athletes[1].id)
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 2 BYE: {}", e))?;
@@ -3099,15 +3099,15 @@ impl DatabaseManager {
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan final 2 atlet: {}", e))?;
                         }
                         1 => {
-                            // Single athlete: automatically gold
+                            // Single athlete: automatically gold in Final
                             sqlx::query(
-                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 0, 0, NULL)"
                             )
                             .bind(bagan_id).bind(semi1_urutan).bind(g_athletes[0].id)
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 1 single: {}", e))?;
 
                             sqlx::query(
-                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, NULL, NULL, 0, 0, 0, 1, 0, NULL)"
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, NULL, NULL, 0, 0, 0, 0, 0, NULL)"
                             )
                             .bind(bagan_id).bind(semi2_urutan)
                             .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 2 single: {}", e))?;
@@ -8779,6 +8779,25 @@ mod festival_tests {
         let bagan_final = db.get_bagan_by_id(fest_bagan.id).await.expect("get bagan failed").unwrap();
         assert_eq!(bagan_final.juara_1_id, Some(winner_semi2));
         assert_eq!(bagan_final.juara_2_id, Some(winner_semi1));
+
+        // 8. Check Group 4 with 3 athletes: Semi 2 MUST NOT be 'selesai' and waiting athlete is seeded in Final
+        let g4_semi1 = matches.iter().find(|m| m.round == Some(1) && m.urutan == Some(7)).expect("g4 semi 1 not found");
+        let g4_semi2 = matches.iter().find(|m| m.round == Some(1) && m.urutan == Some(8)).expect("g4 semi 2 not found");
+        let g4_final = matches.iter().find(|m| m.round == Some(2) && m.urutan == Some(4)).expect("g4 final not found");
+
+        assert!(g4_semi1.atlet1_id.is_some() && g4_semi1.atlet2_id.is_some());
+        assert!(!g4_semi1.selesai, "Semi 1 must not be selesai initially");
+
+        // Semi 2 is a BYE slot: must have selesai = false, pemenang = None, and 3rd athlete is seeded in Final
+        assert!(g4_semi2.atlet1_id.is_some());
+        assert!(g4_semi2.atlet2_id.is_none());
+        assert!(!g4_semi2.selesai, "Semi 2 BYE must NOT be marked selesai");
+        assert!(g4_semi2.pemenang.is_none(), "Semi 2 BYE must NOT have a fake winner");
+
+        // The 3rd athlete must be waiting directly in the Final
+        assert!(g4_final.atlet1_id.is_none(), "Final slot 1 waits for Semi 1 winner");
+        assert_eq!(g4_final.atlet2_id, g4_semi2.atlet1_id, "Final slot 2 holds the waiting 3rd athlete");
+        assert!(!g4_final.selesai, "Final must not be selesai initially");
 
         // Cleanup
         let _ = std::fs::remove_file(&test_db_path);

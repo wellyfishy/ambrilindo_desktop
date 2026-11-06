@@ -205,7 +205,7 @@
   let isSavingFestMatch = $state(false);
 
   function openFestScoreModal(m: DetailBaganItem) {
-    if (!m.atlet1_id && !m.atlet2_id) return;
+    if (!m.atlet1_id || !m.atlet2_id) return;
     festivalScoreModalMatch = m;
     festWinner = m.pemenang || (m.atlet2_id ? "1" : "1");
     festScore1 = m.score1 ?? "0";
@@ -1721,128 +1721,178 @@
       <!-- Snippet: Standard Karate Match Card for Festival -->
       {#snippet festivalMatchCard(m: DetailBaganItem | null, stageLabel: string, isFinal: boolean = false)}
         {#if m}
-          <div
-            class="match-card w-full cursor-pointer hover:ring-2 hover:ring-amber-500/80 transition-all {isDarkMode ? 'bg-[#181a20] border-zinc-700 hover:border-zinc-500' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {isFinal ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_10px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-xs') : ''}"
-            onclick={() => openFestScoreModal(m)}
-            role="button"
-            tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
-            title="Klik untuk membuka Skor Cepat / Kontrol Pertandingan"
-          >
-            <!-- Match Card Header Bar -->
-            <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
-              <span class="flex items-center space-x-1">
-                {#if isFinal}
-                  <span class="final-title {isDarkMode ? 'text-amber-300' : 'text-amber-800'} font-black flex items-center gap-1">
-                    <svg class="w-2.5 h-2.5 fill-current shrink-0" viewBox="0 0 24 24">
-                      <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
-                    </svg>
-                    <span>FINAL</span>
+          {@const isByeSlot = !isFinal && (!m.atlet1_id || !m.atlet2_id)}
+          {#if isByeSlot}
+            {@const byeAthleteNama = m.atlet1_nama || (m.atlet1_id ? `Atlet #${m.atlet1_id}` : (m.atlet2_nama || (m.atlet2_id ? `Atlet #${m.atlet2_id}` : null)))}
+            {@const byeAthleteKontingen = m.atlet1_id ? m.atlet1_kontingen : m.atlet2_kontingen}
+            {@const byeAthleteLogo = m.atlet1_id ? m.atlet1_logo : m.atlet2_logo}
+            <div
+              class="match-card match-card-bye w-full cursor-default border border-dashed rounded-md overflow-hidden shadow-xs relative z-10 {isDarkMode ? 'bg-[#14161b] border-zinc-700/80 text-zinc-300' : 'bg-slate-50/90 border-slate-300 text-slate-800'}"
+              title="Atlet lolos otomatis (BYE) dan langsung menunggu di Partai Final"
+            >
+              <!-- Match Card Header Bar -->
+              <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#0e1014] border-white/[0.08] text-zinc-400' : 'bg-slate-200 border-slate-300 text-slate-700'} border-b text-[8px] font-black font-mono tracking-wider">
+                <span class="flex items-center space-x-1">
+                  <span class="font-bold">{stageLabel}</span>
+                  <span class="text-zinc-500 font-normal">#{m.urutan || m.id}</span>
+                </span>
+                <span class="text-[7.5px] font-black font-mono text-amber-500 dark:text-amber-400 bg-amber-500/15 border border-amber-500/30 px-1 py-0.2 rounded tracking-wide">
+                  BYE
+                </span>
+              </div>
+
+              <!-- BYE Card Body -->
+              <div class="px-2 py-1 flex items-center justify-between min-h-[34px]">
+                <div class="flex items-center space-x-1.5 min-w-0 flex-1">
+                  {#if byeAthleteLogo && logoMap[byeAthleteLogo]}
+                    <img
+                      src={logoMap[byeAthleteLogo]}
+                      alt="Logo"
+                      class="player-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
+                    />
+                  {/if}
+                  <div class="min-w-0 flex-1 leading-tight">
+                    {#if byeAthleteNama}
+                      <div class="player-name-text truncate block text-[8.5px] leading-[11px] font-black {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                        {byeAthleteNama}
+                      </div>
+                      <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[1px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                        <span>⏩</span>
+                        <span>Lolos Otomatis (Menunggu di Final)</span>
+                      </div>
+                    {:else}
+                      <div class="player-name-text text-[8px] font-mono italic text-zinc-500">
+                        BYE • Tanpa Atlet
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            </div>
+          {:else}
+            <div
+              class="match-card w-full cursor-pointer hover:ring-2 hover:ring-amber-500/80 transition-all {isDarkMode ? 'bg-[#181a20] border-zinc-700 hover:border-zinc-500' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {isFinal ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_10px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-xs') : ''}"
+              onclick={() => openFestScoreModal(m)}
+              role="button"
+              tabindex="0"
+              onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
+              title="Klik untuk membuka Skor Cepat / Kontrol Pertandingan"
+            >
+              <!-- Match Card Header Bar -->
+              <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
+                <span class="flex items-center space-x-1">
+                  {#if isFinal}
+                    <span class="final-title {isDarkMode ? 'text-amber-300' : 'text-amber-800'} font-black flex items-center gap-1">
+                      <svg class="w-2.5 h-2.5 fill-current shrink-0" viewBox="0 0 24 24">
+                        <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
+                      </svg>
+                      <span>FINAL</span>
+                    </span>
+                  {:else}
+                    <span class="font-black">{stageLabel}</span>
+                  {/if}
+                  <span class="text-zinc-400 font-normal">#{m.urutan || m.id}</span>
+                </span>
+                {#if m.assigned_tatami_id}
+                  <span class="text-[7.5px] font-black text-white bg-red-600 px-1 py-0.2 rounded tracking-wide">
+                    LIVE T{m.assigned_tatami_id}
                   </span>
-                {:else}
-                  <span class="font-black">{stageLabel}</span>
+                {:else if m.selesai}
+                  <span class="text-[7.5px] font-black text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-1 rounded">
+                    SELESAI
+                  </span>
                 {/if}
-                <span class="text-zinc-400 font-normal">#{m.urutan || m.id}</span>
-              </span>
-              {#if m.assigned_tatami_id}
-                <span class="text-[7.5px] font-black text-white bg-red-600 px-1 py-0.2 rounded tracking-wide">
-                  LIVE T{m.assigned_tatami_id}
-                </span>
-              {:else if m.selesai}
-                <span class="text-[7.5px] font-black text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-1 rounded">
-                  SELESAI
-                </span>
-              {/if}
-            </div>
+              </div>
 
-            <!-- AKA (Red) Row -->
-            <div class="player-row {m.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative">
-              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-                <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
-                  AKA
-                </span>
-                {#if m.atlet1_logo && logoMap[m.atlet1_logo]}
-                  <img
-                    src={logoMap[m.atlet1_logo]}
-                    alt="Logo"
-                    class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
-                  />
-                {/if}
-                <div class="min-w-0 flex-1 leading-tight">
-                  <div class="flex items-center space-x-1 min-w-0">
-                    {#if m.pemenang === '1'}
-                      <span class="text-amber-400 shrink-0" title="Pemenang">
-                        <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
-                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
-                        </svg>
-                      </span>
-                    {/if}
-                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet1_nama ? (isDarkMode ? (m.pemenang === '1' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
-                      {m.atlet1_nama || (m.atlet1_id ? `Atlet #${m.atlet1_id}` : (isFinal ? '...' : 'BYE'))}
-                    </span>
-                  </div>
-                  {#if m.atlet1_nama}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
-                      {m.atlet1_kontingen || '-'}
-                    </div>
-                  {:else if !isFinal}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
-                      —
-                    </div>
+              <!-- AKA (Red) Row -->
+              <div class="player-row {m.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative">
+                <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+                  <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+                    AKA
+                  </span>
+                  {#if m.atlet1_logo && logoMap[m.atlet1_logo]}
+                    <img
+                      src={logoMap[m.atlet1_logo]}
+                      alt="Logo"
+                      class="player-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
+                    />
                   {/if}
+                  <div class="min-w-0 flex-1 leading-tight">
+                    <div class="flex items-center space-x-1 min-w-0">
+                      {#if m.pemenang === '1'}
+                        <span class="text-amber-400 shrink-0" title="Pemenang">
+                          <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                            <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                          </svg>
+                        </span>
+                      {/if}
+                      <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet1_nama ? (isDarkMode ? (m.pemenang === '1' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
+                        {m.atlet1_nama || (m.atlet1_id ? `Atlet #${m.atlet1_id}` : (isFinal ? '...' : 'BYE'))}
+                      </span>
+                    </div>
+                    {#if m.atlet1_nama}
+                      <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                        {m.atlet1_kontingen || '-'}
+                      </div>
+                    {:else if !isFinal}
+                      <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                        —
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+                <div class="shrink-0 flex items-center">
+                  <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
+                    {m.score1 ?? '-'}
+                  </span>
                 </div>
               </div>
-              <div class="shrink-0 flex items-center">
-                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
-                  {m.score1 ?? '-'}
-                </span>
-              </div>
-            </div>
 
-            <!-- AO (Blue) Row -->
-            <div class="player-row {m.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative border-t {isDarkMode ? 'border-zinc-700/60' : 'border-slate-300'}">
-              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-                <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
-                  AO
-                </span>
-                {#if m.atlet2_logo && logoMap[m.atlet2_logo]}
-                  <img
-                    src={logoMap[m.atlet2_logo]}
-                    alt="Logo"
-                    class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
-                  />
-                {/if}
-                <div class="min-w-0 flex-1 leading-tight">
-                  <div class="flex items-center space-x-1 min-w-0">
-                    {#if m.pemenang === '2'}
-                      <span class="text-amber-400 shrink-0" title="Pemenang">
-                        <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
-                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
-                        </svg>
-                      </span>
-                    {/if}
-                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet2_nama ? (isDarkMode ? (m.pemenang === '2' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
-                      {m.atlet2_nama || (m.atlet2_id ? `Atlet #${m.atlet2_id}` : (isFinal ? '...' : 'BYE'))}
-                    </span>
-                  </div>
-                  {#if m.atlet2_nama}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
-                      {m.atlet2_kontingen || '-'}
-                    </div>
-                  {:else if !isFinal}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
-                      —
-                    </div>
+              <!-- AO (Blue) Row -->
+              <div class="player-row {m.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative border-t {isDarkMode ? 'border-zinc-700/60' : 'border-slate-300'}">
+                <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+                  <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+                    AO
+                  </span>
+                  {#if m.atlet2_logo && logoMap[m.atlet2_logo]}
+                    <img
+                      src={logoMap[m.atlet2_logo]}
+                      alt="Logo"
+                      class="player-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
+                    />
                   {/if}
+                  <div class="min-w-0 flex-1 leading-tight">
+                    <div class="flex items-center space-x-1 min-w-0">
+                      {#if m.pemenang === '2'}
+                        <span class="text-amber-400 shrink-0" title="Pemenang">
+                          <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
+                            <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
+                          </svg>
+                        </span>
+                      {/if}
+                      <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet2_nama ? (isDarkMode ? (m.pemenang === '2' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
+                        {m.atlet2_nama || (m.atlet2_id ? `Atlet #${m.atlet2_id}` : (isFinal ? '...' : 'BYE'))}
+                      </span>
+                    </div>
+                    {#if m.atlet2_nama}
+                      <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                        {m.atlet2_kontingen || '-'}
+                      </div>
+                    {:else if !isFinal}
+                      <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                        —
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+                <div class="shrink-0 flex items-center">
+                  <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
+                    {m.score2 ?? '-'}
+                  </span>
                 </div>
               </div>
-              <div class="shrink-0 flex items-center">
-                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
-                  {m.score2 ?? '-'}
-                </span>
-              </div>
             </div>
-          </div>
+          {/if}
         {:else}
           <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-zinc-700 text-zinc-400 bg-white/[0.02]' : 'border-slate-400 text-slate-600 bg-white/40'} rounded-md h-[49px] flex items-center justify-center text-[9px] font-mono font-bold">
             Kosong
@@ -2820,6 +2870,11 @@
       background-color: #ffffff !important;
       border: 1.8px solid #000000 !important;
       box-shadow: none !important;
+    }
+    .match-card-bye {
+      border: 1.5px dashed #475569 !important;
+      background: #f8fafc !important;
+      background-color: #f8fafc !important;
     }
     .card-header-bar {
       background: #e2e8f0 !important;
