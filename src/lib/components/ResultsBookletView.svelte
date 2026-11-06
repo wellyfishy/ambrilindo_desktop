@@ -251,6 +251,13 @@ ${inlinedCss}
       margin: 0 !important;
       padding: 0 !important;
     }
+    /* Full-page sheets (Cover and Lembar Penutup) must fill 280mm exact printable A4 height */
+    .sheet-full-portrait {
+      height: 280mm !important;
+      min-height: 280mm !important;
+      max-height: 280mm !important;
+      box-sizing: border-box !important;
+    }
     .booklet-page-landscape {
       page: landscape-sheet !important;
       break-after: page !important;
@@ -692,13 +699,13 @@ ${inlinedCss}
                 <span class="text-zinc-500">Halaman 1 • Sampul Depan Resmi</span>
               </div>
 
-              <div class="paper-sheet paper-sheet-portrait relative">
-                <!-- Outer Formal Frame with Crisp Dark Double Border Accent -->
-                <div class="h-full border-[5px] border-slate-950 rounded-xs p-8 sm:p-10 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950">
+              <div class="paper-sheet paper-sheet-portrait sheet-full-portrait relative">
+                <!-- Outer Formal Frame with Crisp Dark Double Border Accent (Fills exactly 280mm page height) -->
+                <div class="sheet-full-portrait border-[5px] border-slate-950 rounded-xs p-8 sm:p-10 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950 box-border">
                   <!-- Fine Inner Hairline Inset -->
                   <div class="absolute inset-2.5 border-2 border-slate-300 pointer-events-none"></div>
 
-                  <!-- 1. TOP SECTION: Institution & Clean Dual Logos -->
+                  <!-- 1. TOP SECTION: Institution & Clean Dual Logos (Left & Right only, no middle badge) -->
                   <div class="relative z-10 text-center space-y-6">
                     <!-- Top Institutional Classification -->
                     <div class="border-b-2 border-slate-900 pb-3">
@@ -718,8 +725,8 @@ ${inlinedCss}
                       </div>
                     </div>
 
-                    <!-- Clean Dual Logos (Pure display without redundant bottom text) -->
-                    <div class="flex items-center justify-between px-8 py-2">
+                    <!-- Clean Dual Logos (FORKI left, Event right, balanced with no middle text) -->
+                    <div class="flex items-center justify-between px-10 py-1">
                       <div class="flex items-center justify-center">
                         <img
                           src={FORKI_LOGO_DATA_URL}
@@ -730,22 +737,17 @@ ${inlinedCss}
                           height="96"
                         />
                       </div>
-                      <div class="flex flex-col items-center">
-                        <div class="w-12 h-0.5 bg-amber-500 my-1"></div>
-                        <span class="text-[10px] font-black uppercase tracking-[0.25em] text-slate-400">FORKI</span>
-                        <div class="w-12 h-0.5 bg-amber-500 my-1"></div>
-                      </div>
                       <div class="flex items-center justify-center">
                         {#if bookletData.event_info.logo && logoMap[bookletData.event_info.logo]}
                           <img
                             src={logoMap[bookletData.event_info.logo]}
                             alt="Logo Kejuaraan"
-                            class="h-24 w-auto max-w-[160px] object-contain shrink-0 drop-shadow-xs"
-                            style="max-height: 96px; max-width: 160px; object-fit: contain;"
+                            class="h-24 w-auto max-w-[170px] object-contain shrink-0 drop-shadow-xs"
+                            style="max-height: 96px; max-width: 170px; object-fit: contain;"
                           />
                         {:else}
-                          <div class="h-24 px-4 flex items-center justify-center border-2 border-slate-900 rounded bg-white text-center shadow-2xs">
-                            <span class="text-xs font-black text-slate-900 uppercase">
+                          <div class="h-24 px-5 flex items-center justify-center border-2 border-slate-900 rounded bg-white text-center shadow-2xs">
+                            <span class="text-xs font-black text-slate-950 uppercase">
                               {editableEventName}
                             </span>
                           </div>
@@ -755,7 +757,7 @@ ${inlinedCss}
                   </div>
 
                   <!-- 2. MAIN CENTER HERO: Pure Championship Title Block -->
-                  <div class="relative z-10 text-center my-auto py-8 px-6 bg-slate-950 text-white rounded-xl border-2 border-amber-500 shadow-xl space-y-4">
+                  <div class="relative z-10 text-center my-auto py-10 px-8 bg-slate-950 text-white rounded-xl border-2 border-amber-500 shadow-xl space-y-4">
                     <div class="inline-block px-4 py-1 rounded bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-[0.25em] shadow-sm">
                       BUKU HASIL PERTANDINGAN
                     </div>
@@ -889,8 +891,8 @@ ${inlinedCss}
                 </span>
                 <span class="text-zinc-500">Halaman 4 • Lembar Penutup &amp; Rekapitulasi Akhir Resmi</span>
               </div>
-              <div class="paper-sheet paper-sheet-portrait">
-                <div class="h-full border-4 border-slate-900 rounded-xs p-6 sm:p-7 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950">
+              <div class="paper-sheet paper-sheet-portrait sheet-full-portrait">
+                <div class="sheet-full-portrait border-4 border-slate-900 rounded-xs p-6 sm:p-7 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950 box-border">
                   <div class="absolute inset-2 border border-slate-400 pointer-events-none"></div>
 
                   <!-- 1. Header Penutup -->
@@ -1401,13 +1403,18 @@ ${inlinedCss}
 
     .paper-sheet-portrait {
       width: 100% !important;
-      min-height: 275mm !important;
       box-shadow: none !important;
       border: none !important;
       margin: 0 !important;
       padding: 0 !important;
       break-after: auto !important;
       page-break-after: auto !important;
+    }
+    .sheet-full-portrait {
+      height: 280mm !important;
+      min-height: 280mm !important;
+      max-height: 280mm !important;
+      box-sizing: border-box !important;
     }
 
     .paper-sheet-landscape {

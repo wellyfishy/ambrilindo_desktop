@@ -51,7 +51,7 @@
     <thead class="print-table-header">
       <tr>
         <th class="p-0 border-none font-normal text-left">
-          <div class="border-b-2 border-slate-900 pb-3 mb-4 flex items-center justify-between gap-4">
+          <div class="border-b-2 border-slate-900 pb-2 mb-2.5 flex items-center justify-between gap-4">
             <div class="flex items-center space-x-3.5 min-w-0">
               <!-- Top-Left Official Logo Cluster: FORKI & Ambrilindo -->
               <div class="flex items-center space-x-2.5 shrink-0 bg-white p-0.5 rounded">
@@ -103,16 +103,16 @@
               Belum ada nomor pertandingan yang diselesaikan.
             </div>
           {:else}
-            <div class="grid grid-cols-2 gap-3.5 print:grid-cols-2">
+            <div class="grid grid-cols-2 gap-2.5 print:gap-2 print:grid-cols-2">
               {#each bagans as cat}
                 {@const w1 = cat.winners.find((w) => w.juara === "1")}
                 {@const w2 = cat.winners.find((w) => w.juara === "2")}
                 {@const w3a = cat.winners.find((w) => w.juara === "3a")}
                 {@const w3b = cat.winners.find((w) => w.juara === "3b")}
 
-                <div class="border border-slate-300 rounded p-2.5 bg-slate-50/60 print:bg-white break-inside-avoid" style="break-inside: avoid; page-break-inside: avoid;">
+                <div class="border border-slate-300 rounded p-2 bg-slate-50/60 print:bg-white break-inside-avoid" style="break-inside: avoid; page-break-inside: avoid;">
                   <!-- Header Kategori -->
-                  <div class="border-b border-slate-300 pb-1.5 mb-2 flex items-start gap-2 min-h-[26px]">
+                  <div class="border-b border-slate-300 pb-1 mb-1.5 flex items-start gap-2 min-h-[22px]">
                     <span class="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-slate-900 text-white shrink-0 mt-0.5">
                       {cat.kode}
                     </span>
@@ -122,7 +122,7 @@
                   </div>
 
                   <!-- 4 Podium Rows -->
-                  <div class="space-y-1.5 text-[11px]">
+                  <div class="space-y-1 text-[10.5px]">
                     <!-- Juara 1 -->
                     <div class="flex items-center space-x-1.5">
                       <span class="w-4 h-4 rounded-full bg-amber-400 text-slate-950 font-black text-[9px] flex items-center justify-center shrink-0">
@@ -219,7 +219,7 @@
     <tfoot class="print-table-footer">
       <tr>
         <td class="p-0 border-none">
-          <div class="mt-6 pt-2 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500 font-mono">
+          <div class="mt-2 pt-1.5 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500 font-mono">
             <span>Official Match Result Book • Ambrilindo Tournament Engine</span>
             <span>{pageLabel}</span>
           </div>
