@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/state";
   import { listen, emit } from "@tauri-apps/api/event";
+  import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
 
   // Tatami number from query string, defaults to 1
   let tatamiNumber = $derived(Number(page.url.searchParams.get("tatami") || "1"));
@@ -72,6 +73,41 @@
   // Timer state (with high-precision milliseconds)
   let timerMs = $state(120000);
   let isTimerRunning = $state(false);
+
+  // Alarm threshold options (synced from Control Panel)
+  let alarmSettings = $state({
+    alarm30s: false,
+    alarm15s: true, // Default ON
+    alarm0s: true,  // Default ON
+  });
+  let alarmTriggered30s = false;
+  let alarmTriggered15s = false;
+  let alarmTriggered0s = false;
+
+  function resetScoreboardAlarmFlags() {
+    if (timerMs > 30000) {
+      alarmTriggered30s = false;
+      alarmTriggered15s = false;
+      alarmTriggered0s = false;
+    } else if (timerMs > 15000) {
+      alarmTriggered15s = false;
+      alarmTriggered0s = false;
+    } else if (timerMs > 0) {
+      alarmTriggered0s = false;
+    }
+  }
+
+  function playWarningAlarm(seconds: number = 15) {
+    try {
+      playWarningSound();
+    } catch {}
+  }
+
+  function playEndBuzzer() {
+    try {
+      playFinishSound();
+    } catch {}
+  }
   let animFrameId: number | null = null;
   let lastTickTimestamp: number = 0;
 
@@ -129,7 +165,58 @@
     const delta = now - lastTickTimestamp;
     lastTickTimestamp = now;
 
+    const prevMs = timerMs;
     timerMs = Math.max(0, timerMs - delta);
+
+    // Alarm thresholds checking with auto-rearm if time increases
+    if (alarmSettings.alarm30s && prevMs > 30000 && timerMs <= 30000 && !alarmTriggered30s) {
+      playWarningAlarm(30);
+      alarmTriggered30s = true;
+      currentBanner = {
+        id: Date.now(),
+        side: "aka",
+        title: "PERINGATAN",
+        subtitle: "30 DETIK TERSISA",
+        durationMs: 1800,
+      };
+      if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
+      bannerDismissTimer = setTimeout(() => { currentBanner = null; bannerDismissTimer = null; }, 1800);
+    } else if (timerMs > 30000) {
+      alarmTriggered30s = false;
+    }
+
+    if (alarmSettings.alarm15s && prevMs > 15000 && timerMs <= 15000 && !alarmTriggered15s) {
+      playWarningAlarm(15);
+      alarmTriggered15s = true;
+      currentBanner = {
+        id: Date.now(),
+        side: "aka",
+        title: "ATOSHIBARAKU",
+        subtitle: "15 DETIK TERSISA",
+        durationMs: 1800,
+      };
+      if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
+      bannerDismissTimer = setTimeout(() => { currentBanner = null; bannerDismissTimer = null; }, 1800);
+    } else if (timerMs > 15000) {
+      alarmTriggered15s = false;
+    }
+
+    if (alarmSettings.alarm0s && prevMs > 0 && timerMs <= 0 && !alarmTriggered0s) {
+      playEndBuzzer();
+      alarmTriggered0s = true;
+      currentBanner = {
+        id: Date.now(),
+        side: "aka",
+        title: "WAKTU HABIS",
+        subtitle: "PARTAI SELESAI",
+        durationMs: 2200,
+      };
+      if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
+      bannerDismissTimer = setTimeout(() => { currentBanner = null; bannerDismissTimer = null; }, 2200);
+    } else if (timerMs > 0) {
+      alarmTriggered0s = false;
+    }
+
     if (timerMs <= 0) {
       timerMs = 0;
       isTimerRunning = false;
@@ -168,21 +255,15 @@
     if (data.round) matchRound = data.round;
     if (data.matchNumber !== undefined) matchNumber = String(data.matchNumber);
     if (data.eventName) eventName = data.eventName;
-    
-    if (data.timerMs !== undefined) {
-      if (isTimerRunning) {
-        if (Math.abs(timerMs - data.timerMs) > 150) {
-          timerMs = data.timerMs;
-        }
-      } else {
-        timerMs = data.timerMs;
-      }
-    } else if (data.timerSeconds !== undefined) {
-      if (!isTimerRunning) {
-        timerMs = data.timerSeconds * 1000;
-      }
+    if (data.alarmSettings) {
+      alarmSettings = {
+        alarm30s: data.alarmSettings.alarm30s ?? false,
+        alarm15s: data.alarmSettings.alarm15s ?? true,
+        alarm0s: data.alarmSettings.alarm0s ?? true,
+      };
     }
-
+    
+    // 1. Process running state first so cancelAnimationFrame happens immediately on pause
     if (data.isTimerRunning !== undefined) {
       const wasRunning = isTimerRunning;
       isTimerRunning = data.isTimerRunning;
@@ -192,6 +273,23 @@
       } else if (!isTimerRunning && animFrameId !== null) {
         cancelAnimationFrame(animFrameId);
         animFrameId = null;
+      }
+    }
+
+    // 2. Process timerMs: when paused, always snap immediately to authoritative value
+    if (data.timerMs !== undefined) {
+      if (isTimerRunning) {
+        if (Math.abs(timerMs - data.timerMs) > 150) {
+          timerMs = data.timerMs;
+        }
+      } else {
+        timerMs = data.timerMs;
+      }
+      resetScoreboardAlarmFlags();
+    } else if (data.timerSeconds !== undefined) {
+      if (!isTimerRunning) {
+        timerMs = data.timerSeconds * 1000;
+        resetScoreboardAlarmFlags();
       }
     }
 
@@ -275,6 +373,7 @@
   let unlistenSync: (() => void) | null = null;
 
   onMount(() => {
+    unlockAudio();
     async function setupIpc() {
       try {
         unlistenSync = await listen("tatami_live_state", (event: any) => {
@@ -294,7 +393,13 @@
       bc = new BroadcastChannel("ambrilindo_live_sync");
       bc.onmessage = (event) => {
         if (event.data) {
-          applyLiveState(event.data);
+          if (event.data.type === "manual_buzzer") {
+            if (!event.data.tatami || event.data.tatami == tatamiNumber) {
+              playEndBuzzer();
+            }
+          } else if (!event.data.tatami || event.data.tatami == tatamiNumber) {
+            applyLiveState(event.data);
+          }
         }
       };
     }
@@ -565,7 +670,11 @@
 
     <!-- Center: Giant Digital Timer Display (30m Arena Visibility) -->
     <div class="sb-footer-center">
-      <div class="sb-timer-vault" class:is-running={isTimerRunning}>
+      <div
+        class="sb-timer-vault"
+        class:is-running={isTimerRunning}
+        class:is-warning={isTimerRunning && timerMs <= 15000 && timerMs > 0}
+      >
         <span class="sb-timer-digits">
           {timerFormatted.full}
         </span>
@@ -1243,6 +1352,23 @@
 }
 .sb-timer-vault.is-running .sb-timer-digits {
   color: var(--sb-gold-bright);
+}
+
+.sb-timer-vault.is-warning {
+  border-color: #ef4444 !important;
+  background-color: rgba(239, 68, 68, 0.12) !important;
+  box-shadow: 0 0 40px rgba(239, 68, 68, 0.45) !important;
+}
+.sb-timer-vault.is-warning .sb-timer-digits {
+  color: #ef4444 !important;
+  text-shadow: 0 0 45px rgba(239, 68, 68, 0.95) !important;
+  animation: timerAlert 0.7s infinite alternate;
+}
+
+
+@keyframes timerAlert {
+  from { transform: scale(1); }
+  to { transform: scale(1.03); }
 }
 
 .sb-footer-right {

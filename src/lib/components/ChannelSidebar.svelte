@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import type { ActiveChannel, AppMode, BaganItem, EventItem, TatamiItem } from "$lib/types";
+  import { initLiveSync, getLiveTatamisForBagan, subscribeLiveSync } from "$lib/liveSync";
 
   interface MonitorOption {
     id: number;
@@ -44,6 +45,9 @@
     onOpenDrawingFestivalModal,
     onReturnToLanding,
   }: Props = $props();
+
+  // Live synchronization state version for reactivity
+  let liveSyncVersion = $state(0);
 
   let collapseDashboard = $state(false);
   let collapseRekapan = $state(false);
@@ -145,8 +149,14 @@
       refreshRunningScoreboards();
     }).then((u) => (unlisten = u));
 
+    initLiveSync(hostAddress);
+    const unsubLive = subscribeLiveSync(() => {
+      liveSyncVersion++;
+    });
+
     return () => {
       if (unlisten) unlisten();
+      unsubLive();
       if (closeMenuTimer) clearTimeout(closeMenuTimer);
     };
   });
@@ -703,6 +713,7 @@
               {@const isKata = String(bagan.tipe_tanding) === '1'}
               {@const isActive = activeChannel.type === 'bagan' && activeChannel.id === bagan.id}
               {@const baganCode = bagan.kode || String(bagan.id).padStart(3, '0')}
+              {@const runningTatamis = liveSyncVersion >= 0 ? getLiveTatamisForBagan(bagan.id, tatamis) : []}
               <button
                 onclick={() =>
                   onSelectChannel({
@@ -719,9 +730,21 @@
                   {baganCode}
                 </span>
 
-                <span class="line-clamp-2 leading-snug break-words flex-1 {isActive ? (isKata ? 'text-sky-200' : 'text-amber-200') : (isKata ? 'text-sky-300/70 group-hover:text-sky-200' : 'text-amber-300/70 group-hover:text-amber-200')}">
-                  {bagan.nama_bagan || `bagan-${bagan.id}`}
-                </span>
+                <div class="flex-1 min-w-0">
+                  <span class="line-clamp-2 leading-snug break-words block {isActive ? (isKata ? 'text-sky-200 font-bold' : 'text-amber-200 font-bold') : (isKata ? 'text-sky-300/70 group-hover:text-sky-200' : 'text-amber-300/70 group-hover:text-amber-200')}">
+                    {bagan.nama_bagan || `bagan-${bagan.id}`}
+                  </span>
+                  {#if runningTatamis.length > 0}
+                    <div class="mt-1 flex items-center gap-1.5 flex-wrap">
+                      {#each runningTatamis as tNum}
+                        <span class="inline-flex items-center space-x-1 px-1.5 py-0.2 rounded text-[9px] font-mono font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-xs animate-pulse">
+                          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
+                          <span>T{tNum} RUNNING</span>
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
               </button>
             {/each}
           {:else}
@@ -776,6 +799,7 @@
               {@const isActive = activeChannel.type === 'bagan' && activeChannel.id === bagan.id}
               {@const baganCode = bagan.kode || String(bagan.id).padStart(3, '0')}
               {@const poolCount = bagan.pool || 1}
+              {@const runningTatamis = liveSyncVersion >= 0 ? getLiveTatamisForBagan(bagan.id, tatamis) : []}
               <button
                 onclick={() =>
                   onSelectChannel({
@@ -797,13 +821,21 @@
                   <span class="line-clamp-2 leading-snug break-words block {isActive ? 'text-emerald-200 font-bold' : 'text-emerald-300/80 group-hover:text-emerald-200'}">
                     {bagan.nama_bagan || `festival-${bagan.id}`}
                   </span>
-                  <div class="flex items-center gap-1.5 mt-0.5">
+                  <div class="flex items-center gap-1.5 mt-0.5 flex-wrap">
                     <span class="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                       {poolCount} Grup
                     </span>
                     <span class="text-[9px] font-mono text-zinc-400">
                       {isKata ? 'Kata' : 'Kumite'}
                     </span>
+                    {#if runningTatamis.length > 0}
+                      {#each runningTatamis as tNum}
+                        <span class="inline-flex items-center space-x-1 px-1.5 py-0.2 rounded text-[9px] font-mono font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-xs animate-pulse">
+                          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
+                          <span>T{tNum} RUNNING</span>
+                        </span>
+                      {/each}
+                    {/if}
                   </div>
                 </div>
               </button>

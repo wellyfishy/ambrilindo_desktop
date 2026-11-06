@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "$lib/api_client";
+  import { printWithOrientation } from "$lib/print_helper";
+  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import type {
     FestivalRosterData,
     FestivalRosterState,
@@ -8,6 +10,9 @@
     FestivalCategory,
     FestivalMatch,
     TatamiItem,
+    FestivalBookletData,
+    FestivalBookletCategory,
+    DetailBaganItem,
   } from "$lib/types";
 
   interface Props {
@@ -35,9 +40,76 @@
   let mixDeleteSources = $state(true);
   let isMixing = $state(false);
 
-  // --- Print View State ---
+  // --- Print View State (Table Roster) ---
   let printModalOpen = $state(false);
   let printSelectedTatamiId = $state<number | "all">("all");
+
+  // --- Bagan Booklet Print Modal State (Sampul Resmi + Bagan Festival) ---
+  let baganBookletModalOpen = $state(false);
+  let baganBookletLoading = $state(false);
+  let baganBookletData = $state<FestivalBookletData | null>(null);
+  let baganBookletSelectedTatamiId = $state<number | "all">("all");
+  let sampulDayLabel = $state("DAY 1");
+  let sampulVenue = $state("Gedung Olahraga SMPN & SMAN 1 Samarinda");
+  let sampulDate = $state("Tanggal 3 Oktober 2026");
+  let sampulOrg = $state("FEDERASI OLAHRAGA KARATE-DO INDONESIA PROVINSI KALIMANTAN TIMUR");
+
+  async function openBaganBooklet(tatamiId: number | "all" = "all") {
+    baganBookletSelectedTatamiId = tatamiId;
+    baganBookletLoading = true;
+    baganBookletModalOpen = true;
+    try {
+      const res: FestivalBookletData = await invoke("get_festival_booklet_data", {
+        eventId,
+        tatamiId: tatamiId === "all" ? null : tatamiId,
+      });
+      baganBookletData = res;
+      if (res.venue) sampulVenue = res.venue;
+      if (res.event_date) sampulDate = `Tanggal ${res.event_date}`;
+      if (res.kop_surat?.nama_organisasi) sampulOrg = res.kop_surat.nama_organisasi;
+    } catch (e: any) {
+      console.error("Gagal memuat booklet bagan festival:", e);
+      onShowToast(`Gagal memuat bagan festival: ${e}`, "error");
+    } finally {
+      baganBookletLoading = false;
+    }
+  }
+
+  async function handleFilterBookletTatami(newTatamiId: number | "all") {
+    baganBookletSelectedTatamiId = newTatamiId;
+    await openBaganBooklet(newTatamiId);
+  }
+
+  let coverTatamiTitle = $derived.by(() => {
+    if (baganBookletSelectedTatamiId === "all" || !baganBookletData) {
+      return `${sampulDayLabel} - BAGAN FESTIVAL`;
+    }
+    const t = baganBookletData.tatamis.find((x) => x.id === baganBookletSelectedTatamiId);
+    const num = t?.tatami_number || 1;
+    return `${sampulDayLabel} - TATAMI ${num}`;
+  });
+
+  function getFestivalGroups(cat: FestivalBookletCategory) {
+    const poolCount = Math.min(6, Math.max(1, cat.pool || 1));
+    const groups = [];
+    for (let g = 1; g <= poolCount; g++) {
+      const semi1 = cat.matches.find((m) => m.round === 1 && m.urutan === 2 * g - 1) || null;
+      const semi2 = cat.matches.find((m) => m.round === 1 && m.urutan === 2 * g) || null;
+      const finalMatch = cat.matches.find((m) => m.round === 2 && m.urutan === g) || null;
+      const isCompleted = !!(finalMatch && finalMatch.selesai && finalMatch.pemenang);
+      groups.push({
+        groupNum: g,
+        poolLabel: String.fromCharCode(64 + g),
+        matches: { semi1, semi2, final: finalMatch },
+        isCompleted,
+      });
+    }
+    return groups;
+  }
+
+  function triggerBookletPrint() {
+    printWithOrientation("landscape", "5mm");
+  }
 
   $effect(() => {
     if (eventId) {
@@ -338,7 +410,7 @@
   }
 </script>
 
-<div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
+<div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative festival-editor-main {baganBookletModalOpen || printModalOpen ? 'hidden print:hidden' : 'print:hidden'}">
   <!-- Header Bar -->
   <div class="flex items-center justify-between pb-4 border-b border-white/[0.08] shrink-0">
     <div class="flex items-center space-x-2.5">
@@ -381,11 +453,23 @@
         <span>Mix / Gabung Kelas</span>
       </button>
 
+      <!-- Cetak Bagan Festival (Booklet Lengkap Sampul) -->
+      <button
+        onclick={() => openBaganBooklet("all")}
+        class="h-9 px-3.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-black text-xs rounded-xl shadow-md transition-all active:scale-95 flex items-center space-x-1.5"
+        title="Buka Dokumen Siap Cetak Seluruh Bagan Festival Lengkap Sampul Resmi Landscape"
+      >
+        <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+          <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
+        </svg>
+        <span>Cetak Bagan Festival</span>
+      </button>
+
       <!-- Cetak Roster -->
       <button
         onclick={() => (printModalOpen = true)}
         class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-sky-300 hover:text-white font-semibold text-xs rounded-xl border border-sky-500/20 transition-all flex items-center space-x-1.5"
-        title="Buka Pratinjau Dokumen Siap Cetak Roster Festival"
+        title="Buka Pratinjau Dokumen Siap Cetak Roster Festival (Tabel Run Sheet)"
       >
         <svg class="w-3.5 h-3.5 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
@@ -551,18 +635,32 @@
               </span>
             </div>
 
-            <button
-              onclick={() => {
-                printSelectedTatamiId = sec.tatami_id;
-                printModalOpen = true;
-              }}
-              class="px-2.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] text-sky-300 text-xs font-semibold rounded-lg border border-sky-500/20 transition flex items-center space-x-1"
-            >
-              <svg class="w-3 h-3 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-              </svg>
-              <span>Cetak Tatami {sec.tatami_number}</span>
-            </button>
+            <div class="flex items-center space-x-1.5">
+              <button
+                onclick={() => openBaganBooklet(sec.tatami_id)}
+                class="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-semibold rounded-lg border border-emerald-500/30 transition flex items-center space-x-1"
+                title="Cetak Seluruh Bagan Tatami {sec.tatami_number} Lengkap Sampul Resmi"
+              >
+                <svg class="w-3 h-3 text-emerald-400 fill-current" viewBox="0 0 24 24">
+                  <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
+                </svg>
+                <span>Cetak Bagan T{sec.tatami_number}</span>
+              </button>
+
+              <button
+                onclick={() => {
+                  printSelectedTatamiId = sec.tatami_id;
+                  printModalOpen = true;
+                }}
+                class="px-2.5 py-1 bg-white/[0.04] hover:bg-white/[0.08] text-sky-300 text-xs font-semibold rounded-lg border border-sky-500/20 transition flex items-center space-x-1"
+                title="Cetak Roster Meja Tatami {sec.tatami_number}"
+              >
+                <svg class="w-3 h-3 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                </svg>
+                <span>Roster T{sec.tatami_number}</span>
+              </button>
+            </div>
           </div>
 
           <!-- Category Cards Container -->
@@ -759,7 +857,7 @@
 <!-- MODAL: MIX / GABUNG KELAS FESTIVAL                                       -->
 <!-- ========================================================================= -->
 {#if mixModalOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-100">
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-100 no-print">
     <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl max-w-xl w-full flex flex-col max-h-[85vh]">
       <div class="flex items-center justify-between pb-3 border-b border-white/[0.08] shrink-0">
         <div class="flex items-center space-x-2">
@@ -858,7 +956,7 @@
   {@const printSections = data.sections.filter(
     (s) => printSelectedTatamiId === "all" || s.tatami_id === printSelectedTatamiId
   )}
-  <div class="fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-6 select-text text-black">
+  <div class="fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-6 select-text text-black table-roster-modal-wrapper">
     <!-- Screen-Only Toolbar -->
     <div class="no-print mb-4 pb-3 border-b border-white/10 flex items-center justify-between text-zinc-200 max-w-5xl mx-auto w-full">
       <div class="flex items-center space-x-3">
@@ -982,6 +1080,369 @@
   </div>
 {/if}
 
+
+<!-- ========================================================================= -->
+<!-- MODAL: PRATINJAU DOKUMEN CETAK BAGAN FESTIVAL (LENGKAP SAMPUL RESMI)     -->
+<!-- ========================================================================= -->
+{#if baganBookletModalOpen}
+  <div class="fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-4 md:p-6 select-text text-black booklet-modal-wrapper">
+    <!-- Screen-Only Toolbar -->
+    <div class="no-print mb-4 pb-3 border-b border-white/10 flex flex-wrap items-center justify-between text-zinc-200 max-w-6xl mx-auto w-full gap-3">
+      <div class="flex items-center space-x-3 flex-wrap gap-2">
+        <div class="flex items-center space-x-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <h3 class="text-sm font-black text-white uppercase tracking-tight">Cetak Bagan Festival (Lengkap Sampul)</h3>
+        </div>
+
+        <!-- Filter Tatami -->
+        <select
+          value={baganBookletSelectedTatamiId}
+          onchange={(e) => handleFilterBookletTatami(e.currentTarget.value === "all" ? "all" : Number(e.currentTarget.value))}
+          class="bg-[#181a20] text-xs text-white px-2.5 py-1 rounded-lg border border-white/20 outline-none font-bold cursor-pointer"
+        >
+          <option value="all">Semua Tatami</option>
+          {#if baganBookletData}
+            {#each baganBookletData.tatamis as t}
+              <option value={t.id}>Tatami {t.tatami_number} Saja</option>
+            {/each}
+          {/if}
+        </select>
+      </div>
+
+      <!-- Editable Cover Fields in Toolbar -->
+      <div class="flex items-center space-x-2 flex-wrap gap-2">
+        <div class="flex items-center space-x-1 text-[11px] font-mono text-zinc-400">
+          <span>Hari:</span>
+          <input
+            type="text"
+            bind:value={sampulDayLabel}
+            placeholder="DAY 1"
+            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-20 outline-none uppercase font-bold"
+          />
+        </div>
+
+        <div class="flex items-center space-x-1 text-[11px] font-mono text-zinc-400">
+          <span>Venue:</span>
+          <input
+            type="text"
+            bind:value={sampulVenue}
+            placeholder="Venue Pertandingan"
+            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-52 outline-none"
+          />
+        </div>
+
+        <div class="flex items-center space-x-1 text-[11px] font-mono text-zinc-400">
+          <span>Tanggal:</span>
+          <input
+            type="text"
+            bind:value={sampulDate}
+            placeholder="Tanggal Event"
+            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-36 outline-none"
+          />
+        </div>
+
+        <!-- Print Action -->
+        <button
+          onclick={triggerBookletPrint}
+          disabled={baganBookletLoading || !baganBookletData}
+          class="h-9 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-black text-xs rounded-xl shadow-md flex items-center space-x-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
+        >
+          <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+            <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
+          </svg>
+          <span>Cetak Sekarang (Print / PDF)</span>
+        </button>
+
+        <button
+          onclick={() => (baganBookletModalOpen = false)}
+          class="h-9 px-3.5 bg-white/[0.08] hover:bg-white/[0.15] text-zinc-300 font-semibold text-xs rounded-xl transition cursor-pointer"
+        >
+          Tutup
+        </button>
+      </div>
+    </div>
+
+    <!-- Document Preview Content -->
+    {#if baganBookletLoading}
+      <div class="flex items-center justify-center py-32 text-zinc-400">
+        <div class="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin mr-3"></div>
+        <span class="text-sm font-mono">Menyiapkan seluruh bagan festival & sampul resmi...</span>
+      </div>
+    {:else if baganBookletData}
+      {@const targetCategories = baganBookletData.categories}
+      <div class="booklet-preview-container max-w-6xl mx-auto w-full space-y-8 select-text">
+        <!-- ========================================================================= -->
+        <!-- HALAMAN 1: SAMPUL RESMI TURNAMEN (A4 LANDSCAPE)                          -->
+        <!-- ========================================================================= -->
+        <div class="booklet-page booklet-cover-page">
+          <div class="booklet-page-label-bar no-print">
+            <span>Halaman 1 • Sampul Resmi Bagan Festival ({coverTatamiTitle})</span>
+          </div>
+          <div class="sampul-page-container">
+            <img src="/img/cover/cover_clean_template.png" class="absolute inset-0 w-full h-full object-fill pointer-events-none select-none z-0" alt="Cover" />
+            <!-- Top Ribbon Organization Text -->
+            <div class="sampul-org-bar">
+              {sampulOrg}
+            </div>
+
+            <!-- Event Logo Container -->
+            <div class="sampul-logo-container">
+              <img
+                src={baganBookletData.kop_surat?.logo || "/img/cover/wkf_logo.png"}
+                class="sampul-event-logo"
+                alt="Logo Event"
+                onerror={(e) => { (e.currentTarget as HTMLImageElement).src = '/img/cover/wkf_logo.png'; }}
+              />
+            </div>
+
+            <!-- Main Title Group inside Cover -->
+            <div class="sampul-main-group">
+              <div class="sampul-bagan-label">BAGAN:</div>
+              <div class="sampul-tatami-title">{coverTatamiTitle}</div>
+              <div class="sampul-event-title">{sampulVenue}</div>
+              <div class="sampul-event-dates">{sampulDate}</div>
+            </div>
+
+            <!-- Supported by branding -->
+            <div class="sampul-supported-by">
+              SUPPORTED BY:
+            </div>
+          </div>
+        </div>
+
+        <!-- ========================================================================= -->
+        <!-- HALAMAN 2+: BAGAN PER KATEGORI (A4 LANDSCAPE PRESISI 1 LEMBAR PER KELAS) -->
+        <!-- ========================================================================= -->
+        {#if targetCategories.length === 0}
+          <div class="bg-white p-12 text-center text-zinc-500 rounded-xl">
+            Belum ada bagan festival yang terjadwal untuk filter tatami ini.
+          </div>
+        {:else}
+          {#each targetCategories as cat, cIdx}
+            {@const groups = getFestivalGroups(cat)}
+            <div class="booklet-page booklet-bracket-page">
+              <div class="booklet-page-label-bar no-print">
+                <span>Halaman {cIdx + 2} • Bagan {cIdx + 1}/{targetCategories.length}: [{cat.bagan_kode || 'F'}] {cat.category_name} (Tatami {cat.tatami_number})</span>
+              </div>
+
+              <div class="bracket-page-container print-sheet">
+                <!-- Banner Header -->
+                <div class="bracket-banner">
+                  <div class="banner-left">
+                    <img src={FORKI_LOGO_DATA_URL} alt="FORKI" class="banner-logo" />
+                  </div>
+                  <div class="banner-center">
+                    <h2 class="category-title truncate">
+                      [{cat.bagan_kode || 'FESTIVAL'}] {cat.category_name}
+                    </h2>
+                    <p class="banner-meta">
+                      <span class="festival-type-badge font-mono font-black">{cat.discipline.toUpperCase()}</span>
+                      <span>•</span>
+                      <span class="festival-pool-badge font-black">{cat.pool} POOL / GRUP</span>
+                      <span>•</span>
+                      <span class="festival-count-badge font-bold">{cat.athletes_count} ATLET</span>
+                      <span>•</span>
+                      <span>TATAMI {cat.tatami_number}</span>
+                      <span>•</span>
+                      <span>{sampulVenue}</span>
+                    </p>
+                  </div>
+                  <div class="banner-right">
+                    <img src={AMBRILINDO_LOGO_DATA_URL} alt="Ambrilindo" class="banner-logo" />
+                  </div>
+                </div>
+
+                <!-- Canvas Wrapper -->
+                <div class="festival-canvas-wrapper">
+                  {#if groups.length <= 3}
+                    <!-- 1 - 3 Groups: Horizontal Bands Layout -->
+                    <div class="festival-bands-grid">
+                      {#each groups as grp}
+                        <div class="group-band flex flex-col justify-between p-1.5 bg-white flex-1 overflow-hidden">
+                          <div class="group-header-line flex items-center justify-between px-2 py-0.5 border-b-2 border-slate-900 bg-slate-50 mb-1 h-5 shrink-0">
+                            <div class="flex items-center space-x-1.5">
+                              <span class="group-header-badge w-4 h-4 rounded-full bg-slate-900 text-white text-[9px] font-black font-mono flex items-center justify-center shrink-0">
+                                {grp.groupNum}
+                              </span>
+                              <span class="group-header-title text-[10px] font-black uppercase tracking-tight text-slate-950">
+                                GRUP {grp.groupNum} (POOL {grp.poolLabel})
+                              </span>
+                            </div>
+                            <span class="text-[9px] font-mono font-bold text-slate-600">4 ATLET</span>
+                          </div>
+
+                          <div class="band-grid-2col flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1 min-h-0">
+                            <!-- Semifinals -->
+                            <div class="col-wrap col-semi band-col-semi shrink-0 flex flex-col justify-between min-h-0">
+                              <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
+                                <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-slate-950">SEMIFINAL</span>
+                              </div>
+                              <div class="semi-cards-flex flex flex-col justify-between flex-1 min-h-0 gap-1">
+                                {@render bookletFestivalCard(grp.matches.semi1, 'SEMIFINAL 1')}
+                                {@render bookletFestivalCard(grp.matches.semi2, 'SEMIFINAL 2')}
+                              </div>
+                            </div>
+
+                            <!-- Fork Connector -->
+                            <div class="connector-fork-col band-connector-fork shrink-0 flex flex-col pointer-events-none relative">
+                              <div class="stage-header-spacer h-4 shrink-0 mb-1"></div>
+                              <div class="connector-track-flex flex flex-col justify-between flex-1 min-h-0 relative w-full">
+                                <div class="connector-slot connector-slot-top shrink-0 flex items-center justify-start w-full relative">
+                                  <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
+                                </div>
+                                <div class="connector-spine-track absolute left-1/2 w-1/2 flex items-center pointer-events-none">
+                                  <div class="connector-spine-bar absolute inset-y-0 left-0 border-l-[2px] border-slate-900"></div>
+                                  <div class="connector-arm-right w-[calc(100%+1px)] border-b-[2px] border-amber-600"></div>
+                                </div>
+                                <div class="connector-slot connector-slot-bottom shrink-0 flex items-center justify-start w-full relative">
+                                  <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <!-- Final -->
+                            <div class="col-wrap col-final band-col-final shrink-0 flex flex-col justify-between min-h-0">
+                              <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
+                                <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-amber-700">PARTAI FINAL</span>
+                              </div>
+                              <div class="final-card-flex flex flex-col justify-center flex-1 min-h-0">
+                                {@render bookletFestivalCard(grp.matches.final, 'FINAL JUARA', true)}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                  {:else}
+                    <!-- 4 - 6 Groups: 2-Column Quadrants Grid -->
+                    <div class="festival-quadrants-grid">
+                      {#each [1, 2, 3, 4, 5, 6].slice(0, Math.max(4, groups.length + (groups.length % 2 !== 0 ? 1 : 0))) as gNum}
+                        {@const grp = groups.find((g) => g.groupNum === gNum)}
+                        {#if grp}
+                          <div class="group-quadrant flex flex-col justify-between p-1.5 bg-white flex-1 overflow-hidden border border-slate-200">
+                            <div class="group-header-line flex items-center justify-between px-2 py-0.5 border-b-2 border-slate-900 bg-slate-50 mb-1 h-5 shrink-0">
+                              <div class="flex items-center space-x-1.5">
+                                <span class="group-header-badge w-4 h-4 rounded-full bg-slate-900 text-white text-[9px] font-black font-mono flex items-center justify-center shrink-0">
+                                  {grp.groupNum}
+                                </span>
+                                <span class="group-header-title text-[10px] font-black uppercase tracking-tight text-slate-950">
+                                  GRUP {grp.groupNum} (POOL {grp.poolLabel})
+                                </span>
+                              </div>
+                              <span class="text-[9px] font-mono font-bold text-slate-600">4 ATLET</span>
+                            </div>
+
+                            <div class="quadrant-grid-2col flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1 min-h-0">
+                              <div class="col-wrap col-semi flex-1 shrink-0 flex flex-col justify-between min-h-0">
+                                <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
+                                  <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-slate-950">SEMIFINAL</span>
+                                </div>
+                                <div class="semi-cards-flex flex flex-col justify-between flex-1 min-h-0 gap-1">
+                                  {@render bookletFestivalCard(grp.matches.semi1, 'SEMIFINAL 1')}
+                                  {@render bookletFestivalCard(grp.matches.semi2, 'SEMIFINAL 2')}
+                                </div>
+                              </div>
+
+                              <div class="connector-fork-col quadrant-connector-fork shrink-0 flex flex-col pointer-events-none relative">
+                                <div class="stage-header-spacer h-4 shrink-0 mb-1"></div>
+                                <div class="connector-track-flex flex flex-col justify-between flex-1 min-h-0 relative w-full">
+                                  <div class="connector-slot connector-slot-top shrink-0 flex items-center justify-start w-full relative">
+                                    <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
+                                  </div>
+                                  <div class="connector-spine-track absolute left-1/2 w-1/2 flex items-center pointer-events-none">
+                                    <div class="connector-spine-bar absolute inset-y-0 left-0 border-l-[2px] border-slate-900"></div>
+                                    <div class="connector-arm-right w-[calc(100%+1px)] border-b-[2px] border-amber-600"></div>
+                                  </div>
+                                  <div class="connector-slot connector-slot-bottom shrink-0 flex items-center justify-start w-full relative">
+                                    <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div class="col-wrap col-final flex-1 shrink-0 flex flex-col justify-between min-h-0">
+                                <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
+                                  <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-amber-700">PARTAI FINAL</span>
+                                </div>
+                                <div class="final-card-flex flex flex-col justify-center flex-1 min-h-0">
+                                  {@render bookletFestivalCard(grp.matches.final, 'FINAL JUARA', true)}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        {:else}
+                          <div class="group-quadrant p-1.5 bg-slate-50/50 flex-1 border border-dashed border-slate-300 rounded flex items-center justify-center text-[10px] font-mono text-slate-400">
+                            -
+                          </div>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    {/if}
+  </div>
+{/if}
+
+<!-- Snippet for booklet festival match card -->
+{#snippet bookletFestivalCard(m: DetailBaganItem | null, stageLabel: string, isFinal: boolean = false)}
+  {#if m}
+    <div class="match-card festival-match-card w-full bg-white border border-slate-400 rounded-md overflow-hidden shadow-xs relative {isFinal ? 'border-amber-500' : ''}">
+      <div class="match-card-header px-1.5 py-[1px] bg-slate-100 border-b border-slate-300 flex items-center justify-between text-[7px] font-mono font-bold text-slate-700">
+        <span class="truncate">{stageLabel} {m.kode ? `(${m.kode})` : ''}</span>
+        <span class="tabular-nums">Partai #{m.id}</span>
+      </div>
+
+      <!-- AKA (Red) -->
+      <div class="player-row {m.pemenang === '1' ? 'player-row-winner bg-[#fee2e2] border-l-4 border-red-600' : 'bg-white text-slate-900'} flex items-center justify-between px-1.5 py-[1px] min-h-[17px]">
+        <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+          <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0">AKA</span>
+          <div class="min-w-0 flex-1 leading-tight">
+            <span class="player-name-text truncate block text-[8.5px] font-black text-black">
+              {m.atlet1_nama || (m.atlet1_id ? `Atlet #${m.atlet1_id}` : (isFinal ? '...' : 'BYE'))}
+            </span>
+            <div class="player-sub-text truncate min-w-0 text-[7px] font-bold text-slate-800">
+              {m.atlet1_kontingen || '-'}
+            </div>
+          </div>
+        </div>
+        <div class="shrink-0 flex items-center">
+          <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '1' ? 'bg-[#fde047] border-amber-500 font-black' : 'bg-slate-100 border-slate-400 font-bold'}">
+            {m.score1 ?? '-'}
+          </span>
+        </div>
+      </div>
+
+      <!-- AO (Blue) -->
+      <div class="player-row {m.pemenang === '2' ? 'player-row-winner bg-[#dbeafe] border-l-4 border-blue-600' : 'bg-white text-slate-900'} flex items-center justify-between px-1.5 py-[1px] min-h-[17px] border-t border-slate-200">
+        <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
+          <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0">AO</span>
+          <div class="min-w-0 flex-1 leading-tight">
+            <span class="player-name-text truncate block text-[8.5px] font-black text-black">
+              {m.atlet2_nama || (m.atlet2_id ? `Atlet #${m.atlet2_id}` : (isFinal ? '...' : 'BYE'))}
+            </span>
+            <div class="player-sub-text truncate min-w-0 text-[7px] font-bold text-slate-800">
+              {m.atlet2_kontingen || '-'}
+            </div>
+          </div>
+        </div>
+        <div class="shrink-0 flex items-center">
+          <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '2' ? 'bg-[#fde047] border-amber-500 font-black' : 'bg-slate-100 border-slate-400 font-bold'}">
+            {m.score2 ?? '-'}
+          </span>
+        </div>
+      </div>
+    </div>
+  {:else}
+    <div class="empty-slot festival-empty-slot w-full border border-dashed border-slate-400 text-slate-500 bg-white/40 rounded-md h-[38px] flex items-center justify-center text-[8px] font-mono">
+      Kosong
+    </div>
+  {/if}
+{/snippet}
+
 <style>
   .simple-roster-header {
     display: flex;
@@ -1067,25 +1528,442 @@
     text-align: right;
     margin-top: 4px;
   }
+  .print-page-box {
+    box-shadow: none;
+    max-width: 100%;
+    padding: 0;
+    border: none;
+  }
+
+  /* ========================================================================= */
+  /* BAGAN BOOKLET PRINT ENGINE STYLES (A4 LANDSCAPE + SAMPUL RESMI)           */
+  /* ========================================================================= */
+  .booklet-preview-container {
+    width: 100%;
+    margin: 0 auto;
+  }
+  .booklet-page {
+    position: relative;
+    width: 100%;
+    background: #ffffff;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .booklet-page-label-bar {
+    background: #1e293b;
+    color: #94a3b8;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-family: monospace;
+    font-weight: bold;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Page 1: Sampul */
+  .booklet-cover-page {
+    height: 196mm;
+    max-height: 196mm;
+    min-height: 196mm;
+    background: #111827;
+    box-sizing: border-box;
+  }
+  .sampul-page-container {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    overflow: hidden;
+    background: #111827 url("/img/cover/cover_clean_template.png") no-repeat center center;
+    background-size: 100% 100%;
+    box-sizing: border-box;
+  }
+  .sampul-org-bar {
+    position: absolute;
+    top: 3.2%;
+    height: 9.8%;
+    left: 38%;
+    right: 8%;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    text-align: right;
+    font-family: "Arial Narrow", "Helvetica Neue Condensed", Arial, sans-serif;
+    font-size: 11.5pt;
+    font-weight: 800;
+    color: #ffffff;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    z-index: 10;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sampul-logo-container {
+    position: absolute;
+    top: 15.5%;
+    right: 3.5%;
+    width: 28%;
+    height: 30%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+  }
+  .sampul-event-logo {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.45));
+  }
+  .sampul-main-group {
+    position: absolute;
+    top: 66%;
+    left: 57.5%;
+    width: 39%;
+    transform: translateY(-50%);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+  }
+  .sampul-bagan-label {
+    font-family: 'Roboto', 'Oswald', sans-serif;
+    font-size: 26pt;
+    font-weight: 900;
+    color: #ffffff;
+    letter-spacing: 0.04em;
+    line-height: 1.1;
+    text-transform: uppercase;
+    margin: 0;
+  }
+  .sampul-tatami-title {
+    font-family: 'Roboto', 'Oswald', sans-serif;
+    font-size: 26pt;
+    font-weight: 900;
+    color: #ffffff;
+    letter-spacing: 0.03em;
+    line-height: 1.15;
+    text-transform: uppercase;
+    margin: 0 0 6px 0;
+  }
+  .sampul-event-title {
+    font-family: 'Inter', Arial, sans-serif;
+    font-size: 13.5pt;
+    font-weight: 800;
+    color: #facc15;
+    line-height: 1.25;
+    text-transform: uppercase;
+    margin: 0;
+  }
+  .sampul-event-dates {
+    font-family: 'Inter', Arial, sans-serif;
+    font-size: 11.5pt;
+    font-weight: 700;
+    color: #facc15;
+    line-height: 1.2;
+    margin: 0;
+  }
+  .sampul-supported-by {
+    position: absolute;
+    top: 84.0%;
+    left: 81.0%;
+    font-family: 'Calibri', 'Inter', sans-serif;
+    font-size: 11pt;
+    font-weight: 800;
+    color: #ffffff;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    z-index: 10;
+  }
+
+  /* Page 2+: Bagan Sheets */
+  .booklet-bracket-page {
+    height: 196mm;
+    max-height: 196mm;
+    min-height: 196mm;
+    overflow: hidden;
+    box-sizing: border-box;
+  }
+  .print-sheet {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 2.5mm 3.5mm;
+    background: #ffffff;
+    color: #000000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .bracket-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 15mm;
+    max-height: 15.5mm;
+    margin-bottom: 1.5mm;
+    border-bottom: 2px solid #0f172a;
+    padding-bottom: 1mm;
+    gap: 2mm;
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+  .banner-left, .banner-right {
+    width: 16mm;
+    height: 13mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .banner-logo {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+  .banner-center {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+  }
+  .category-title {
+    font-size: 13.5pt;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    margin: 0;
+    text-transform: uppercase;
+    color: #000000;
+  }
+  .banner-meta {
+    font-size: 7.5pt;
+    font-weight: 700;
+    color: #334155;
+    margin: 0.5mm 0 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5mm;
+    text-transform: uppercase;
+  }
+  .festival-type-badge {
+    background: #f1f5f9;
+    border: 1px solid #94a3b8;
+    padding: 0 1.5mm;
+    border-radius: 1mm;
+    color: #0f172a;
+  }
+  .festival-pool-badge {
+    background: #ecfdf5;
+    border: 1px solid #059669;
+    color: #065f46;
+    padding: 0 1.5mm;
+    border-radius: 1mm;
+  }
+
+  .festival-canvas-wrapper {
+    flex: 1;
+    min-height: 0;
+    height: 174mm;
+    max-height: 174mm;
+    overflow: hidden;
+    box-sizing: border-box;
+  }
+  .festival-bands-grid {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+    gap: 1.5mm;
+  }
+  .festival-quadrants-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    height: 100%;
+    width: 100%;
+    gap: 1.5mm;
+  }
+  .group-band, .group-quadrant {
+    border: 1.2px solid #cbd5e1;
+    border-radius: 1.5mm;
+    box-sizing: border-box;
+  }
+
+  .band-grid-2col, .quadrant-grid-2col {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    width: 100%;
+    height: 100%;
+  }
+  .band-col-semi {
+    width: 48%;
+  }
+  .band-connector-fork {
+    width: 6%;
+  }
+  .band-col-final {
+    width: 44%;
+  }
+  .quadrant-connector-fork {
+    width: 8%;
+  }
+
+  .festival-match-card {
+    height: 18mm !important;
+    min-height: 18mm !important;
+    max-height: 18mm !important;
+    box-sizing: border-box;
+  }
+
+  /* Connector Fork */
+  .connector-track-flex {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  .connector-slot {
+    height: 18mm;
+    box-sizing: border-box;
+  }
+  .connector-spine-track {
+    top: 9mm;
+    bottom: 9mm;
+  }
+  .connector-spine-bar {
+    top: 0;
+    bottom: 0;
+  }
+
   @media print {
     @page {
       size: landscape;
       margin: 5mm;
     }
+
     :global(body) {
       background: #ffffff !important;
       color: #000000 !important;
       margin: 0 !important;
       padding: 0 !important;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
     }
+
+    /* 1. Strictly hide editor and screen-only controls */
+    .festival-editor-main,
     .no-print {
       display: none !important;
     }
+
+    /* 2. De-fix the modal wrappers so they paginate naturally without repeating fixed headers */
+    .booklet-modal-wrapper,
+    .table-roster-modal-wrapper {
+      position: static !important;
+      inset: auto !important;
+      z-index: auto !important;
+      background: transparent !important;
+      background-color: transparent !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      height: auto !important;
+      min-height: auto !important;
+      max-height: none !important;
+      overflow: visible !important;
+      display: block !important;
+      box-shadow: none !important;
+    }
+
     .print-page-box {
       box-shadow: none !important;
       max-width: 100% !important;
       padding: 0 !important;
       border: none !important;
     }
+
+    /* 3. Booklet preview container reset */
+    .booklet-preview-container {
+      max-width: 100% !important;
+      width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      gap: 0 !important;
+      display: block !important;
+    }
+    .booklet-preview-container > * + * {
+      margin-top: 0 !important;
+    }
+
+    /* 4. Individual Booklet Pages (A4 Landscape) */
+    .booklet-page {
+      box-shadow: none !important;
+      border: none !important;
+      border-radius: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 100% !important;
+      height: 196mm !important;
+      max-height: 196mm !important;
+      min-height: 196mm !important;
+      overflow: hidden !important;
+      box-sizing: border-box !important;
+      page-break-after: always !important;
+      break-after: page !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    .booklet-page:last-child {
+      page-break-after: auto !important;
+      break-after: auto !important;
+    }
+
+    /* 5. Cover Page (Page 1) */
+    .booklet-cover-page {
+      height: 196mm !important;
+      max-height: 196mm !important;
+      min-height: 196mm !important;
+      page-break-after: always !important;
+      break-after: page !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+      overflow: hidden !important;
+    }
+
+    /* 6. Bracket Pages (Page 2+) */
+    .booklet-bracket-page {
+      height: 196mm !important;
+      max-height: 196mm !important;
+      min-height: 196mm !important;
+      page-break-after: always !important;
+      break-after: page !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+      overflow: hidden !important;
+    }
+
+    .print-sheet {
+      box-sizing: border-box !important;
+      width: 100% !important;
+      height: 100% !important;
+      padding: 2.5mm 3.5mm !important;
+      background: #ffffff !important;
+      color: #000000 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      overflow: hidden !important;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+
+    .sampul-page-container {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
   }
+
 </style>

@@ -1263,6 +1263,16 @@ async fn get_festival_roster_data(
 }
 
 #[tauri::command]
+async fn get_festival_booklet_data(
+    event_id: i64,
+    tatami_id: Option<i64>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::FestivalBookletData, String> {
+    let db = state.db.lock().await;
+    db.get_festival_booklet_data(event_id, tatami_id).await
+}
+
+#[tauri::command]
 async fn save_festival_roster_state(
     event_id: i64,
     roster_state: models::FestivalRosterState,
@@ -1792,6 +1802,7 @@ pub fn run() {
             clear_all_sync_queue,
             open_festival_control_panel,
             get_festival_roster_data,
+            get_festival_booklet_data,
             save_festival_roster_state,
             auto_pair_festival_category,
             mix_festival_categories,
@@ -1828,15 +1839,71 @@ pub fn run() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                    use tauri::Manager;
+                    let app = window.app_handle();
                     if window.label() == "main" {
-                        use tauri::Manager;
-                        let app = window.app_handle();
                         for (label, win) in app.webview_windows() {
                             if label != "main" {
                                 let _ = win.close();
                             }
                         }
                         app.exit(0);
+                    } else if window.label().starts_with("control-panel-") {
+                        let state = app.state::<DesktopState>();
+                        let label = window.label().to_string();
+                        let match_id_str = label.replace("control-panel-", "");
+                        let match_id = match_id_str.parse::<i64>().unwrap_or(0);
+
+                        let db_arc = state.db.clone();
+                        let server_bcast = state.server_broadcast.clone();
+                        let app_clone = app.clone();
+
+                        tauri::async_runtime::spawn(async move {
+                            let (pool_opt, _path) = {
+                                let db = db_arc.lock().await;
+                                (db.get_pool_cloned(), db.get_active_db_path_cloned())
+                            };
+                            if let Some(pool) = pool_opt {
+                                let tatami_num: Option<i64> = if match_id > 0 {
+                                    sqlx::query_scalar("SELECT tatami_number FROM backend_tatami WHERE detail_bagan_id = ? LIMIT 1")
+                                        .bind(match_id)
+                                        .fetch_optional(&pool)
+                                        .await
+                                        .unwrap_or(None)
+                                } else {
+                                    None
+                                };
+
+                                if match_id > 0 {
+                                    let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id = ?")
+                                        .bind(match_id)
+                                        .execute(&pool)
+                                        .await;
+                                    let _ = sqlx::query("UPDATE backend_detailbagan SET assigned_tatami_id = NULL WHERE id = ? AND selesai = 0")
+                                        .bind(match_id)
+                                        .execute(&pool)
+                                        .await;
+                                }
+
+                                let close_payload = serde_json::json!({
+                                    "tatami": tatami_num.unwrap_or(1),
+                                    "matchId": match_id,
+                                    "isFinished": true,
+                                    "isClosed": true,
+                                    "isTimerRunning": false
+                                });
+                                let _ = app_clone.emit("tatami_live_state", &close_payload);
+                                let _ = app_clone.emit("bracket_updated", serde_json::json!({ "type": "bracket_updated" }));
+                                let _ = server_bcast.send(crate::server::ArenaMessage {
+                                    tatami_pk: 0,
+                                    channel: "bracket".to_string(),
+                                    payload: serde_json::json!({
+                                        "type": "tatami_live_state",
+                                        "payload": close_payload
+                                    }),
+                                });
+                            }
+                        });
                     }
                 }
                 _ => {}

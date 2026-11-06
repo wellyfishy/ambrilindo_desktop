@@ -183,6 +183,8 @@ pub struct Tatami {
     pub tatami_number: Option<i32>,
     pub detail_bagan_id: Option<i64>,
     #[sqlx(default)]
+    pub bagan_id: Option<i64>,
+    #[sqlx(default)]
     pub nama_bagan: Option<String>,
 }
 
@@ -763,6 +765,34 @@ pub struct FestivalRosterData {
 pub struct FestivalRosterState {
     pub tatami_assignments: std::collections::HashMap<String, Vec<i64>>, // tatami_id -> [nt_id]
     pub athlete_pairings: std::collections::HashMap<String, Vec<i64>>,  // nt_id -> [athlete_id]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalBookletCategory {
+    pub category_id: i64,
+    pub category_name: String,
+    pub discipline: String,
+    pub tatami_id: i64,
+    pub tatami_number: i64,
+    pub bagan_id: Option<i64>,
+    pub bagan_kode: Option<String>,
+    pub bagan_nama: Option<String>,
+    pub pool: i64,
+    pub tipe_tanding: Option<String>,
+    pub athletes_count: i64,
+    pub matches: Vec<EnrichedDetailBagan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalBookletData {
+    pub event_id: i64,
+    pub event_name: String,
+    pub venue: Option<String>,
+    pub event_date: Option<String>,
+    pub kop_surat: Option<KopSurat>,
+    pub tatamis: Vec<Tatami>,
+    pub selected_tatami_id: Option<i64>,
+    pub categories: Vec<FestivalBookletCategory>,
 }
 
 // --- TEAM KUMITE (KUMITE BEREGU) MODELS ---

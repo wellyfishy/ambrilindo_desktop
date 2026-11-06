@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "$lib/api_client";
+  import { listen } from "@tauri-apps/api/event";
+  import { initLiveSync, subscribeLiveSync } from "$lib/liveSync";
   import type { TatamiItem } from "$lib/types";
 
   interface Props {
@@ -288,14 +290,44 @@
     showToast(`URL ${label} Tatami ${tNum} disalin!`);
   }
 
+  let unlistenLiveState: any = null;
+  let liveBroadcastChannel: BroadcastChannel | null = null;
+
   onMount(() => {
     // Initial fetch
     onRefreshTatamis();
+
+    initLiveSync(hostAddress);
+    const unsubLive = subscribeLiveSync(() => {
+      onRefreshTatamis();
+    });
+
+    // Instant sync on tatami state events
+    listen("tatami_live_state", () => {
+      onRefreshTatamis();
+    }).then((u) => {
+      unlistenLiveState = u;
+    }).catch(() => {});
+
+    try {
+      if (typeof window !== "undefined" && window.BroadcastChannel) {
+        liveBroadcastChannel = new BroadcastChannel("ambrilindo_live_sync");
+        liveBroadcastChannel.onmessage = () => {
+          onRefreshTatamis();
+        };
+      }
+    } catch (_) {}
 
     // Real-time synchronization: Auto-refresh tatami state every 3 seconds
     syncInterval = setInterval(() => {
       onRefreshTatamis();
     }, 3000);
+
+    return () => {
+      unsubLive();
+      if (unlistenLiveState) unlistenLiveState();
+      if (liveBroadcastChannel) liveBroadcastChannel.close();
+    };
   });
 
   onDestroy(() => {
@@ -412,7 +444,7 @@
           ? 'bg-amber-400 text-black border-amber-400 shadow-sm font-bold'
           : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
       >
-        Live ({activeMatchesCount})
+        Running ({activeMatchesCount})
       </button>
 
       <button
@@ -531,12 +563,16 @@
                     <span class="truncate uppercase tracking-tight" title={tatami.nama_bagan}>{tatami.nama_bagan}</span>
                   </div>
                   {#if tatami.detail_bagan_id}
-                    <span class="text-[10px] font-mono text-zinc-500 pl-4 block tabular-nums">Partai #{tatami.detail_bagan_id}</span>
+                    <div class="flex items-center space-x-1.5 mt-0.5">
+                      <span class="text-[10px] font-mono text-zinc-400 pl-4 block tabular-nums">Partai #{tatami.detail_bagan_id}</span>
+                      <span class="text-[9px] font-mono font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider animate-pulse">Running</span>
+                    </div>
                   {/if}
                 {:else if tatami.detail_bagan_id}
                   <div class="flex items-center space-x-2 text-zinc-200 font-bold text-xs">
-                    <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0"></span>
+                    <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0 animate-pulse"></span>
                     <span class="font-mono tabular-nums">Partai #{tatami.detail_bagan_id}</span>
+                    <span class="text-[9px] font-mono font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider animate-pulse">Running</span>
                   </div>
                 {:else}
                   <span class="text-zinc-600 font-mono text-[11px]">-</span>
@@ -546,9 +582,9 @@
               <!-- Status Arena -->
               <td class="px-4 py-3">
                 {#if tatami.detail_bagan_id}
-                  <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                    <span>LIVE</span>
+                  <span class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded text-[10px] font-mono font-black bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse shadow-xs">
+                    <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+                    <span>MATCH RUNNING</span>
                   </span>
                 {:else}
                   <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-white/[0.04] text-zinc-400 border border-white/[0.08]">

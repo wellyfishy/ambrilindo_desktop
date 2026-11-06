@@ -4,6 +4,8 @@
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput } from "$lib/types";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
   import ServerStatusBadge from "$lib/components/ServerStatusBadge.svelte";
+  import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
+  import { broadcastLiveMatch, initLiveSync } from "$lib/liveSync";
 
   interface Props {
     match: DetailBaganItem;
@@ -44,8 +46,60 @@
   }: Props = $props();
 
   // Automatic Discipline Detection (No manual switching required, with manual override for festival)
-  let isFestival = $derived(match.id === 0 || match.kode === "000" || baganInfo?.kode === "000");
+  let isFestival = $derived(
+    match.id === 0 ||
+    match.kode === "000" ||
+    baganInfo?.kode === "000" ||
+    String(baganInfo?.kode || "").toUpperCase().startsWith("F") ||
+    (baganName || baganInfo?.nama_bagan || "").toUpperCase().includes("FESTIVAL")
+  );
   let manualDiscipline = $state<"kumite" | "kata" | null>(null);
+
+  // Match Alarm Threshold Options (30s, 15s, 0s)
+  let alarm30sEnabled = $state<boolean>(false);
+  let alarm15sEnabled = $state<boolean>(true); // Default ON for karate Atoshibaraku
+  let alarm0sEnabled = $state<boolean>(true);  // Default ON for match finish buzzer
+  let alarmTriggered30s = $state<boolean>(false);
+  let alarmTriggered15s = $state<boolean>(false);
+  let alarmTriggered0s = $state<boolean>(false);
+
+  function resetAlarmTriggerFlags() {
+    if (timerMs > 30000) {
+      alarmTriggered30s = false;
+      alarmTriggered15s = false;
+      alarmTriggered0s = false;
+    } else if (timerMs > 15000) {
+      alarmTriggered15s = false;
+      alarmTriggered0s = false;
+    } else if (timerMs > 0) {
+      alarmTriggered0s = false;
+    }
+  }
+
+  function playWarningChime(seconds: number = 15) {
+    try {
+      playWarningSound();
+    } catch {}
+  }
+
+  function playEndBuzzerSound() {
+    try {
+      playFinishSound();
+    } catch {}
+  }
+
+  function triggerManualBuzzer() {
+    playEndBuzzerSound();
+    const payload = {
+      type: "manual_buzzer",
+      tatami: activeTatami,
+      timestamp: Date.now(),
+    };
+    if (liveBroadcastChannel) {
+      liveBroadcastChannel.postMessage(payload);
+    }
+    emit("tatami_manual_buzzer", payload).catch(() => {});
+  }
   let activeTatami = $state<number>(1);
 
   $effect(() => {
@@ -416,7 +470,30 @@
     const delta = now - lastTickTimestamp;
     lastTickTimestamp = now;
 
+    const prevMs = timerMs;
     timerMs = Math.max(0, timerMs - delta);
+
+    // Alarm thresholds checking with auto-rearm if time increases
+    if (alarm30sEnabled && prevMs > 30000 && timerMs <= 30000 && !alarmTriggered30s) {
+      playWarningChime(30);
+      alarmTriggered30s = true;
+    } else if (timerMs > 30000) {
+      alarmTriggered30s = false;
+    }
+
+    if (alarm15sEnabled && prevMs > 15000 && timerMs <= 15000 && !alarmTriggered15s) {
+      playWarningChime(15);
+      alarmTriggered15s = true;
+    } else if (timerMs > 15000) {
+      alarmTriggered15s = false;
+    }
+
+    if (alarm0sEnabled && prevMs > 0 && timerMs <= 0 && !alarmTriggered0s) {
+      playEndBuzzerSound();
+      alarmTriggered0s = true;
+    } else if (timerMs > 0) {
+      alarmTriggered0s = false;
+    }
 
     // Periodic live sync pulse (every 150ms) to sync scoreboard without flooding IPC
     if (now - lastBroadcastTimestamp > 150) {
@@ -437,6 +514,7 @@
   function selectTimerPreset(seconds: number) {
     selectedPresetSeconds = seconds;
     timerMs = seconds * 1000;
+    resetAlarmTriggerFlags();
     if (isTimerRunning) {
       if (animFrameId) cancelAnimationFrame(animFrameId);
       isTimerRunning = false;
@@ -452,14 +530,23 @@
     }
   }
 
+  let lastToggleTimestamp = 0;
+
   function toggleTimer() {
+    const now = performance.now();
+    if (now - lastToggleTimestamp < 250) {
+      return; // Debounce rapid accidental double-toggle / key-repeat bouncing
+    }
+    lastToggleTimestamp = now;
+
     if (isTimerRunning) {
       if (animFrameId) cancelAnimationFrame(animFrameId);
       isTimerRunning = false;
       broadcastLiveState();
     } else {
       if (timerMs <= 0) {
-        timerMs = selectedPresetSeconds * 1000;
+        // Do not auto-reset or jump to preset when timer is already at 00:00:00
+        return;
       }
       isTimerRunning = true;
       lastTickTimestamp = performance.now();
@@ -475,11 +562,13 @@
       isTimerRunning = false;
     }
     timerMs = selectedPresetSeconds * 1000;
+    resetAlarmTriggerFlags();
     broadcastLiveState();
   }
 
   function adjustTimer(deltaMs: number) {
     timerMs = Math.max(0, timerMs + deltaMs);
+    resetAlarmTriggerFlags();
     broadcastLiveState();
   }
 
@@ -733,6 +822,7 @@
     const payload = {
       tatami: activeTatami,
       matchId: match.id,
+      baganId: match.bagan_id || baganInfo?.id || null,
       eventName: eventName || "",
       category: baganName,
       round: match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`,
@@ -788,21 +878,15 @@
           }
         : null,
       vrChallenge: activeVrChallenge,
+      alarmSettings: {
+        alarm30s: alarm30sEnabled,
+        alarm15s: alarm15sEnabled,
+        alarm0s: alarm0sEnabled,
+      },
     };
 
-    emit("tatami_live_state", $state.snapshot(payload)).catch((err) => {
-      console.warn("Local IPC emit tatami_live_state failed:", err);
-    });
-
-    // BroadcastChannel fallback for multi-window web / dev mode
-    try {
-      if (typeof window !== "undefined" && window.BroadcastChannel) {
-        if (!liveBroadcastChannel) {
-          liveBroadcastChannel = new BroadcastChannel("ambrilindo_live_sync");
-        }
-        liveBroadcastChannel.postMessage($state.snapshot(payload));
-      }
-    } catch (_) {}
+    // Universal broadcast to local IPC, local BroadcastChannel, and LAN WebSocket relay
+    broadcastLiveMatch($state.snapshot(payload));
   }
 
   // ==================== SAVING & EXIT ====================
@@ -814,6 +898,20 @@
       const finalScore1 = isKata ? String(effectiveAkaPoints) : String(akaScore);
       const finalScore2 = isKata ? String(effectiveAoPoints) : String(aoScore);
 
+      // Auto-detect winner if operator did not click winner crown explicitly
+      let effectiveWinner = matchWinner || "";
+      if (!effectiveWinner) {
+        if (isKata) {
+          if (effectiveAkaPoints > effectiveAoPoints) effectiveWinner = "1";
+          else if (effectiveAoPoints > effectiveAkaPoints) effectiveWinner = "2";
+        } else {
+          if (akaScore > aoScore) effectiveWinner = "1";
+          else if (aoScore > akaScore) effectiveWinner = "2";
+          else if (akaSenshu) effectiveWinner = "1";
+          else if (aoSenshu) effectiveWinner = "2";
+        }
+      }
+
       const input: SaveMatchInput = {
         match_id: match.id,
         bagan_id: match.bagan_id || 0,
@@ -821,16 +919,26 @@
         score2: finalScore2,
         scorekecil1: null,
         scorekecil2: null,
-        pemenang: matchWinner || null,
+        pemenang: effectiveWinner || null,
         kata1: kataAkaName || null,
         kata2: kataAoName || null,
         vr1: hasVr1,
         vr2: hasVr2,
         hantei: isHantei,
-        selesai: isMatchFinished || !!matchWinner,
+        selesai: isMatchFinished || !!effectiveWinner,
       };
 
       await onSave(input);
+
+      // Notify ChannelSidebar, TatamiManager, and other LAN laptops that match is finished
+      broadcastLiveMatch({
+        tatami: activeTatami,
+        matchId: match.id,
+        baganId: match.bagan_id || baganInfo?.id || null,
+        isFinished: true,
+        isClosed: true,
+        isTimerRunning: false,
+      });
     } catch (err: any) {
       console.error("Gagal menyimpan hasil partai:", err);
     } finally {
@@ -840,6 +948,8 @@
 
   // Initialize values from match prop
   onMount(() => {
+    unlockAudio();
+    initLiveSync(hostUrl);
     matchWinner = match.pemenang || "";
     isMatchFinished = match.selesai || false;
     hasVr1 = match.vr1 || false;
@@ -980,6 +1090,9 @@
     }).catch(() => {});
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore OS key-repeat to prevent rapid bouncing
+      if (e.repeat) return;
+
       // Escape closes activeJudgePicker or active scoreboard banner
       if (e.key === "Escape") {
         if (activeJudgePicker !== null) {
@@ -994,9 +1107,14 @@
         }
       }
       // Spacebar for Timer Start/Stop
-      if (e.code === "Space" && !(e.target instanceof HTMLInputElement)) {
+      if (e.code === "Space" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
         e.preventDefault();
+        // Blur active element so button native activation doesn't trigger duplicate click
+        if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
         toggleTimer();
+        return;
       }
       // Kumite Hotkeys (1/2/3 for AO, 7/8/9 for AKA)
       if (!isKata && !(e.target instanceof HTMLInputElement)) {
@@ -1015,6 +1133,14 @@
       if (animFrameId) cancelAnimationFrame(animFrameId);
       if (unlistenRequest) unlistenRequest();
       if (unlistenRemote) unlistenRemote();
+      broadcastLiveMatch({
+        tatami: activeTatami,
+        matchId: match.id,
+        baganId: match.bagan_id || baganInfo?.id || null,
+        isFinished: true,
+        isClosed: true,
+        isTimerRunning: false,
+      });
       if (liveBroadcastChannel) liveBroadcastChannel.close();
     };
   });
@@ -1085,7 +1211,7 @@
       <span class="text-zinc-300 font-semibold">MATCH {match.urutan || 1}</span>
       <span class="text-zinc-500">•</span>
       <span class="text-zinc-400">
-        {match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`}
+        {isFestival ? (match.round === 2 ? "PARTAI FINAL" : "SEMIFINAL") : (match.round === 4 ? "PARTAI FINAL" : match.round === 3 ? "SEMIFINAL" : `BABAK ${match.round || 1}`)}
       </span>
       <span class="text-zinc-500">•</span>
       {#if isFestival}
@@ -1108,6 +1234,21 @@
 
     <!-- Active & Server Status Indicator (Clickable Server Control Modal) -->
     <div class="flex items-center space-x-2.5">
+      <button
+        type="button"
+        onclick={() => {
+          if (typeof window !== "undefined") {
+            window.open(`/scoreboard?tatami=${activeTatami}`, `scoreboard_tatami_${activeTatami}`);
+          }
+        }}
+        class="px-2.5 py-1.5 bg-cyan-600/30 hover:bg-cyan-600/50 border border-cyan-500/40 text-cyan-300 hover:text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+        title="Buka / Proyeksikan Scoreboard Tatami {activeTatami} di jendela baru"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+        </svg>
+        <span>Scoreboard T{activeTatami}</span>
+      </button>
       <ServerStatusBadge {eventName} />
       <div class="hidden sm:flex items-center space-x-1.5 text-xs font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 rounded-xl">
         <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -1302,16 +1443,19 @@
               Timer Penampilan Kata
             </span>
             <!-- Digital Clock Display MM:SS.ms -->
-            <div class="bg-[#111216] border border-[#2b2d31] px-4 py-1.5 rounded-lg flex items-baseline space-x-1 shadow-inner">
-              <span class="font-mono font-black text-2xl text-amber-300 tracking-wider">
+            <div class="bg-[#111216] border px-4 py-1.5 rounded-lg flex items-baseline space-x-1 shadow-inner transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.35)] bg-red-950/20' : isTimerRunning ? 'border-amber-500/50' : 'border-[#2b2d31]'}">
+              <span class="font-mono font-black text-2xl tracking-wider transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse drop-shadow-[0_0_10px_rgba(239,68,68,0.6)]' : isTimerRunning ? 'text-amber-300' : 'text-white'}">
                 {timerFormatted.mmss}
               </span>
-              <span class="font-mono text-sm text-amber-400 font-bold">.{timerFormatted.msStr}</span>
+              <span class="font-mono text-sm font-bold transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-400' : isTimerRunning ? 'text-amber-400' : 'text-zinc-400'}">.{timerFormatted.msStr}</span>
             </div>
             <!-- Start/Pause Toggle -->
             <button
               type="button"
-              onclick={toggleTimer}
+              onclick={(e) => {
+                (e.currentTarget as HTMLElement)?.blur();
+                toggleTimer();
+              }}
               class="px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition shadow flex items-center space-x-1.5 {isTimerRunning ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95'}"
             >
               {#if isTimerRunning}
@@ -1363,6 +1507,42 @@
                 {formatPresetLabel(preset)}
               </button>
             {/each}
+          </div>
+
+          <!-- Kata Alarm & Buzzer Options (30s, 15s, 0s) -->
+          <div class="flex items-center justify-between gap-2 bg-[#111216] border border-white/10 rounded-lg p-1.5 text-xs font-mono mt-1.5">
+            <div class="flex items-center space-x-1.5">
+              <span class="text-[10px] text-zinc-400 font-bold uppercase px-1">Alarm:</span>
+              <button
+                type="button"
+                onclick={() => { alarm30sEnabled = !alarm30sEnabled; broadcastLiveState(); }}
+                class="px-2 py-0.5 rounded border text-[10.5px] font-bold transition flex items-center gap-1 {alarm30sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+              >
+                <span>🔔 30s</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => { alarm15sEnabled = !alarm15sEnabled; broadcastLiveState(); }}
+                class="px-2 py-0.5 rounded border text-[10.5px] font-bold transition flex items-center gap-1 {alarm15sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+              >
+                <span>🔔 15s</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => { alarm0sEnabled = !alarm0sEnabled; broadcastLiveState(); }}
+                class="px-2 py-0.5 rounded border text-[10.5px] font-bold transition flex items-center gap-1 {alarm0sEnabled ? 'bg-red-500/25 border-red-500 text-red-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+              >
+                <span>🚨 0s</span>
+              </button>
+            </div>
+            <button
+              type="button"
+              onclick={triggerManualBuzzer}
+              class="px-2.5 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded font-bold transition flex items-center gap-1 active:scale-95"
+              title="Bunyikan klakson arena secara manual"
+            >
+              <span>🔊 Bel Arena</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1861,16 +2041,19 @@
           <span class="text-[10px] font-mono font-bold text-amber-400 uppercase tracking-wider block mb-2">
             Match Timer
           </span>
-          <div class="w-full bg-[#111216] border-2 border-amber-500/70 rounded-xl py-3 px-2 shadow-inner mb-3">
-            <span class="text-4xl md:text-5xl font-mono font-black text-amber-300 tracking-wider">
+          <div class="w-full bg-[#111216] border-2 rounded-xl py-3 px-2 shadow-inner mb-3 transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.4)] bg-red-950/20' : isTimerRunning ? 'border-amber-500/70' : 'border-[#2b2d31]'}">
+            <span class="text-4xl md:text-5xl font-mono font-black tracking-wider transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse drop-shadow-[0_0_15px_rgba(239,68,68,0.85)]' : isTimerRunning ? 'text-amber-300' : 'text-white'}">
               {timerFormatted.mmss}
             </span>
-            <span class="text-sm font-mono font-bold text-amber-400 block mt-0.5">.{timerFormatted.msStr}</span>
+            <span class="text-sm font-mono font-bold block mt-0.5 transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-400' : isTimerRunning ? 'text-amber-400' : 'text-zinc-400'}">.{timerFormatted.msStr}</span>
           </div>
 
           <button
             type="button"
-            onclick={toggleTimer}
+            onclick={(e) => {
+              (e.currentTarget as HTMLElement)?.blur();
+              toggleTimer();
+            }}
             class="w-full py-3 rounded-xl font-mono font-black text-sm uppercase tracking-wider transition shadow-lg active:scale-95 mb-2 flex items-center justify-center space-x-1.5 {isTimerRunning ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}"
           >
             {#if isTimerRunning}
@@ -1906,6 +2089,51 @@
           >
             Reset
           </button>
+
+          <!-- Alarm & Buzzer Options (30s, 15s, 0s) -->
+          <div class="w-full mt-2 p-2 bg-[#111216] border border-white/10 rounded-xl flex flex-col gap-1.5 text-xs font-mono">
+            <div class="flex items-center justify-between text-[10px] text-zinc-400 font-bold uppercase tracking-wider px-0.5">
+              <span>Opsi Alarm:</span>
+              <button
+                type="button"
+                onclick={triggerManualBuzzer}
+                class="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded font-bold transition flex items-center gap-1 active:scale-95"
+                title="Bunyikan klakson arena secara manual"
+              >
+                <span>🔊</span>
+                <span>Bel Arena</span>
+              </button>
+            </div>
+            <div class="grid grid-cols-3 gap-1">
+              <button
+                type="button"
+                onclick={() => { alarm30sEnabled = !alarm30sEnabled; broadcastLiveState(); }}
+                class="py-1 px-1 rounded border text-[10.5px] font-bold transition flex items-center justify-center gap-1 {alarm30sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+                title="Alarm peringatan saat sisa 30 detik"
+              >
+                <span>🔔</span>
+                <span>30s</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => { alarm15sEnabled = !alarm15sEnabled; broadcastLiveState(); }}
+                class="py-1 px-1 rounded border text-[10.5px] font-bold transition flex items-center justify-center gap-1 {alarm15sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+                title="Alarm peringatan saat sisa 15 detik (Atoshibaraku)"
+              >
+                <span>🔔</span>
+                <span>15s</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => { alarm0sEnabled = !alarm0sEnabled; broadcastLiveState(); }}
+                class="py-1 px-1 rounded border text-[10.5px] font-bold transition flex items-center justify-center gap-1 {alarm0sEnabled ? 'bg-red-500/25 border-red-500 text-red-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+                title="Buzzer akhir pertandingan saat 0 detik"
+              >
+                <span>🚨</span>
+                <span>0s</span>
+              </button>
+            </div>
+          </div>
 
           {#if activeBanner}
             <button
@@ -2134,10 +2362,10 @@
         </div>
 
         <!-- Digital Timer Bar -->
-        <div class="bg-[#111216] border border-white/10 rounded-xl px-2.5 py-1 flex items-center justify-between font-mono">
+        <div class="bg-[#111216] border {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'border-red-500/60 bg-red-950/20' : 'border-white/10'} rounded-xl px-2.5 py-1 flex items-center justify-between font-mono transition-colors">
           <div class="flex items-center space-x-1.5">
-            <span class="text-[9px] text-zinc-400 uppercase font-bold">TIMER:</span>
-            <span class="text-xs font-black {isTimerRunning ? 'text-amber-300 drop-shadow-[0_0_8px_rgba(251,191,36,0.85)]' : 'text-white'}">
+            <span class="text-[9px] uppercase font-bold {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-400' : 'text-zinc-400'}">TIMER:</span>
+            <span class="text-xs font-black transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse drop-shadow-[0_0_8px_rgba(239,68,68,0.85)]' : isTimerRunning ? 'text-amber-300 drop-shadow-[0_0_8px_rgba(251,191,36,0.85)]' : 'text-white'}">
               {timerFormatted.full}
             </span>
           </div>
@@ -2167,7 +2395,7 @@
         <span class="text-zinc-500">-</span>
         <span class="font-black text-blue-400">AO {isKata ? boardAoScore : aoScore}</span>
         <span class="text-zinc-500">•</span>
-        <span class="font-bold {isTimerRunning ? 'text-amber-300' : 'text-zinc-300'}">{timerFormatted.mmss}</span>
+        <span class="font-bold transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse' : isTimerRunning ? 'text-amber-300' : 'text-white'}">{timerFormatted.mmss}</span>
       </div>
     {/if}
   </aside>

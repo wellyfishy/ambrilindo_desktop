@@ -332,11 +332,19 @@ async fn handle_socket(
                             let arena_msg = ArenaMessage {
                                 tatami_pk,
                                 channel: channel.clone(),
-                                payload: parsed,
+                                payload: parsed.clone(),
                             };
                             let _ = state.broadcast_tx.send(arena_msg.clone());
                             if let Some(app) = &state.app_handle {
                                 let _ = app.emit("tatami_remote_input", &arena_msg);
+                                if let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str()) {
+                                    if msg_type == "tatami_live_state" {
+                                        let data_payload = parsed.get("payload").unwrap_or(&parsed);
+                                        let _ = app.emit("tatami_live_state", data_payload);
+                                    } else if msg_type == "bracket_updated" {
+                                        let _ = app.emit("bracket_updated", &parsed);
+                                    }
+                                }
                             }
                         }
                     }
@@ -952,6 +960,14 @@ async fn get_timetable_api(Path(event_id): Path<i64>, State(state): State<Arc<Ap
 async fn get_festival_roster_api(Path(event_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.get_festival_roster_data(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn get_festival_booklet_api(Path(event_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_festival_booklet_data(event_id, None).await {
         Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
@@ -2064,6 +2080,14 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "get_festival_booklet_data" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let tatami_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]);
+            match db.get_festival_booklet_data(ev_id, tatami_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "save_festival_roster_state" => {
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             match serde_json::from_value::<FestivalRosterState>(payload.get("state").unwrap_or(&payload).clone()) {
@@ -2737,6 +2761,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/timetable/reset", post(reset_timetable_api))
         // Festival routes
         .route("/api/festival/:event_id", get(get_festival_roster_api))
+        .route("/api/festival-booklet/:event_id", get(get_festival_booklet_api))
         .route("/api/festival/save-state", post(save_festival_roster_api))
         .route("/api/festival/auto-pair", post(auto_pair_festival_api))
         .route("/api/festival/mix-categories", post(mix_festival_categories_api))

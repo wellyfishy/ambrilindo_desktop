@@ -13,6 +13,7 @@ use crate::models::{
     EnrichedPerguruan, EnrichedUtusan,
     EnrichedTimetableCell, EnrichedTimetableDay, EnrichedTimetableRow, Event, FestivalAthlete,
     FestivalCategory, FestivalMatch, FestivalRosterData, FestivalRosterState, FestivalTatamiSection,
+    FestivalBookletCategory, FestivalBookletData,
     KopSurat, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, SaveTimetablePayload,
     StandingItem, SummaryBaganItem, SummaryBaganResult, SummaryBaganWinner, SummaryJuaraResult,
     SummaryWinnerAthlete, Tatami, TatamiBookletCategory, TatamiBookletData, TatamiLiveStatus,
@@ -87,6 +88,9 @@ impl DatabaseManager {
             let _ = crate::sync::SyncService::ensure_sync_queue_table(p).await;
             Self::ensure_performance_indexes(p).await;
             Self::auto_heal_legacy_master_data(p).await;
+            // Reset stale tatami match state on database mount
+            let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL").execute(p).await;
+            let _ = sqlx::query("UPDATE backend_detailbagan SET assigned_tatami_id = NULL WHERE selesai = 1").execute(p).await;
         }
 
         Ok(())
@@ -198,10 +202,11 @@ impl DatabaseManager {
                 t.id, 
                 t.event_id, 
                 t.tatami_number, 
-                t.detail_bagan_id,
-                b.nama_bagan
+                CASE WHEN db.selesai = 0 THEN t.detail_bagan_id ELSE NULL END as detail_bagan_id,
+                CASE WHEN db.selesai = 0 THEN db.bagan_id ELSE NULL END as bagan_id,
+                CASE WHEN db.selesai = 0 THEN b.nama_bagan ELSE NULL END as nama_bagan
             FROM backend_tatami t
-            LEFT JOIN backend_detailbagan db ON t.detail_bagan_id = db.id
+            LEFT JOIN backend_detailbagan db ON t.detail_bagan_id = db.id AND db.selesai = 0
             LEFT JOIN backend_bagan b ON db.bagan_id = b.id
             WHERE t.event_id = ? 
             ORDER BY t.tatami_number ASC"#
@@ -229,6 +234,7 @@ impl DatabaseManager {
             event_id: Some(event_id),
             tatami_number: Some(tatami_number),
             detail_bagan_id: None,
+            bagan_id: None,
             nama_bagan: None,
         })
     }
@@ -3810,6 +3816,14 @@ impl DatabaseManager {
             }
         }
 
+        // Clear tatami active match if match completed
+        if input.selesai {
+            let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id = ?")
+                .bind(input.match_id)
+                .execute(&mut *tx)
+                .await;
+        }
+
         // 4. Enqueue into backend_syncqueue if live sync is enabled for this event
         if let Some(ev_id) = event_id {
             let ev_info: Option<(Option<String>, bool)> = sqlx::query_as(
@@ -6055,6 +6069,7 @@ impl DatabaseManager {
                 id: 1,
                 tatami_number: Some(1),
                 detail_bagan_id: None,
+                bagan_id: None,
                 event_id: Some(event_id),
                 nama_bagan: None,
             }]
@@ -6299,6 +6314,151 @@ impl DatabaseManager {
 
     pub async fn save_festival_roster_state(&self, event_id: i64, state: FestivalRosterState) -> Result<(), String> {
         helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state)
+    }
+
+    /// Memuat data lengkap Booklet Cetak Bagan Festival (Kategori, Detail Bagan Matches per Tatami)
+    pub async fn get_festival_booklet_data(
+        &self,
+        event_id: i64,
+        tatami_id: Option<i64>,
+    ) -> Result<FestivalBookletData, String> {
+        let pool = self.get_pool()?;
+
+        // 1. Get Event Name
+        let event_name: String = sqlx::query_scalar("SELECT nama_event FROM backend_event WHERE id = ?")
+            .bind(event_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| "Turnamen Karate".to_string());
+
+        // 2. Get Kop Surat
+        let kop_surat = self.get_kop_surat(event_id).await.ok().flatten();
+
+        let event_date: Option<String> = sqlx::query_scalar(
+            "SELECT tanggal FROM backend_timetableday WHERE event_id = ? ORDER BY order_index ASC LIMIT 1"
+        )
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+
+        // 3. Get Tatamis
+        let tatamis: Vec<Tatami> = sqlx::query_as(
+            "SELECT id, tatami_number, detail_bagan_id, event_id FROM backend_tatami WHERE event_id = ? ORDER BY tatami_number ASC"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let tatamis = if tatamis.is_empty() {
+            vec![Tatami {
+                id: 1,
+                tatami_number: Some(1),
+                detail_bagan_id: None,
+                bagan_id: None,
+                event_id: Some(event_id),
+                nama_bagan: None,
+            }]
+        } else {
+            tatamis
+        };
+
+        // 4. Load Festival Roster State
+        let state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+
+        // 5. Query All Festival Nomor Tanding
+        let all_festival_nts: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, nama_nomor_tanding FROM backend_nomortanding WHERE event_id = ? AND UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let all_nt_map: HashMap<i64, String> = all_festival_nts.into_iter().collect();
+
+        // Target tatamis to process
+        let target_tatamis: Vec<&Tatami> = if let Some(t_id) = tatami_id {
+            tatamis.iter().filter(|t| t.id == t_id).collect()
+        } else {
+            tatamis.iter().collect()
+        };
+
+        let mut categories_out: Vec<FestivalBookletCategory> = Vec::new();
+
+        for t in target_tatamis {
+            let t_key = t.id.to_string();
+            let cat_ids = state.tatami_assignments.get(&t_key).cloned().unwrap_or_default();
+
+            for cat_id in cat_ids {
+                let cat_name = match all_nt_map.get(&cat_id) {
+                    Some(n) => n.clone(),
+                    None => continue,
+                };
+
+                let discipline = if cat_name.to_lowercase().contains("kata") {
+                    "kata".to_string()
+                } else {
+                    "kumite".to_string()
+                };
+
+                // Query bagan for this category
+                let bagan_opt: Option<(i64, Option<String>, Option<String>, i64, Option<String>)> = sqlx::query_as(
+                    "SELECT id, kode, nama_bagan, pool, tipe_tanding FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ? LIMIT 1"
+                )
+                .bind(event_id)
+                .bind(cat_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+
+                let (bagan_id, bagan_kode, bagan_nama, pool_count, tipe_tanding, matches) = match bagan_opt {
+                    Some((b_id, b_kode, b_nama, b_pool, b_tipe)) => {
+                        let m_list = self.get_detail_bagan(b_id).await.unwrap_or_default();
+                        (Some(b_id), b_kode, b_nama, b_pool, b_tipe, m_list)
+                    }
+                    None => (None, None, None, 1, Some(if discipline == "kata" { "1".to_string() } else { "2".to_string() }), Vec::new()),
+                };
+
+                let athletes_count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM backend_atlet WHERE nomor_tanding_id = ?"
+                )
+                .bind(cat_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0);
+
+                categories_out.push(FestivalBookletCategory {
+                    category_id: cat_id,
+                    category_name: cat_name,
+                    discipline,
+                    tatami_id: t.id,
+                    tatami_number: t.tatami_number.unwrap_or(1) as i64,
+                    bagan_id,
+                    bagan_kode,
+                    bagan_nama,
+                    pool: pool_count,
+                    tipe_tanding,
+                    athletes_count,
+                    matches,
+                });
+            }
+        }
+
+        let venue = kop_surat.as_ref().map(|k| k.alamat.clone()).or(Some("Gedung Olahraga SMPN & SMAN 1 Samarinda".to_string()));
+
+        Ok(FestivalBookletData {
+            event_id,
+            event_name,
+            venue,
+            event_date,
+            kop_surat,
+            tatamis,
+            selected_tatami_id: tatami_id,
+            categories: categories_out,
+        })
     }
 
     pub async fn auto_pair_festival_category(&self, event_id: i64, nomor_tanding_id: Option<i64>) -> Result<FestivalRosterData, String> {

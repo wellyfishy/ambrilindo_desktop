@@ -9,10 +9,6 @@
 
   let matchId = $derived(Number(page.url.searchParams.get("matchId") || "0"));
   let baganId = $derived(Number(page.url.searchParams.get("baganId") || "0"));
-  let isFestival = $derived(
-    page.url.searchParams.get("isFestival") === "true" ||
-    (matchId === 0 && baganId === 0)
-  );
 
   let currentMatch = $state<DetailBaganItem | null>(null);
   let allMatchesInBagan = $state<DetailBaganItem[]>([]);
@@ -24,6 +20,14 @@
   let logoMap = $state<Record<string, string>>({});
   let isLoading = $state<boolean>(true);
   let errorMessage = $state<string | null>(null);
+
+  let isFestival = $derived(
+    (matchId === 0 && baganId === 0) ||
+    page.url.searchParams.get("isFestival") === "true" ||
+    String(baganInfo?.kode || "").toUpperCase().startsWith("F") ||
+    (baganName || baganInfo?.nama_bagan || "").toUpperCase().includes("FESTIVAL")
+  );
+
 
   async function loadMatchData() {
     isLoading = true;
@@ -37,8 +41,8 @@
     const urlTatami = parseInt(page.url.searchParams.get("tatami") || "1", 10);
     tatamiNumber = !isNaN(urlTatami) && urlTatami > 0 ? urlTatami : 1;
 
-    // Handle stateless Festival match (no database required)
-    if (isFestival) {
+    // Handle stateless Festival match (no database required when matchId and baganId are 0)
+    if (matchId === 0 && baganId === 0) {
       const qAka = page.url.searchParams.get("aka") || "Aka Contestant";
       const qAkaClub = page.url.searchParams.get("aka_club") || "None";
       const qAo = page.url.searchParams.get("ao") || "Ao Contestant";
@@ -338,8 +342,8 @@
   }
 
   async function handleSaveMatchResult(input: SaveMatchInput) {
-    if (isFestival) {
-      // Festival matches are stateless (not saved to database)
+    if (matchId === 0 && baganId === 0) {
+      // Adhoc stateless match (not saved to database)
       await handleCloseWindow();
       return;
     }
@@ -353,6 +357,17 @@
         });
       } catch (emitErr) {
         console.warn("Emit bracket_updated failed:", emitErr);
+      }
+      if (typeof window !== "undefined" && (window as any).BroadcastChannel) {
+        try {
+          const bc = new BroadcastChannel("ambrilindo_live_sync");
+          bc.postMessage({
+            type: "bracket_updated",
+            matchId: input.match_id,
+            baganId: input.bagan_id,
+          });
+          bc.close();
+        } catch (_) {}
       }
       if (teamMatchInfo?.is_team_match) {
         // If team match, reload state to update team score and active bout

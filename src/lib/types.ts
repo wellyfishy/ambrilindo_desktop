@@ -68,6 +68,7 @@ export interface TatamiItem {
   event_id: number | null;
   tatami_number: number | null;
   detail_bagan_id: number | null;
+  bagan_id?: number | null;
   nama_bagan?: string | null;
 }
 
@@ -625,6 +626,32 @@ export interface FestivalRosterData {
 export interface FestivalRosterState {
   tatami_assignments: Record<string, number[]>;
   athlete_pairings: Record<string, number[]>;
+}
+
+export interface FestivalBookletCategory {
+  category_id: number;
+  category_name: string;
+  discipline: string;
+  tatami_id: number;
+  tatami_number: number;
+  bagan_id: number | null;
+  bagan_kode: string | null;
+  bagan_nama: string | null;
+  pool: number;
+  tipe_tanding: string | null;
+  athletes_count: number;
+  matches: DetailBaganItem[];
+}
+
+export interface FestivalBookletData {
+  event_id: number;
+  event_name: string;
+  venue?: string | null;
+  event_date?: string | null;
+  kop_surat?: KopSurat | null;
+  tatamis: TatamiItem[];
+  selected_tatami_id?: number | null;
+  categories: FestivalBookletCategory[];
 }
 
 

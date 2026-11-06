@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke, setConnectionConfig } from "$lib/api_client";
+  import { initLiveSync } from "$lib/liveSync";
 
   import type {
     ActiveChannel,
@@ -130,6 +131,7 @@
       appMode = "client";
       hostUrl = remoteUrl;
       setConnectionConfig("client", remoteUrl);
+      initLiveSync(remoteUrl);
       await connectToRemoteHost(remoteUrl);
     }
   }
@@ -383,6 +385,7 @@
 
   onMount(async () => {
     isBrowserClient = typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__;
+    initLiveSync(hostUrl);
     try {
       networkInfo = await invoke<NetworkInfo>("get_network_info");
     } catch (_) {}
@@ -540,6 +543,7 @@
             baganInfo={bagans.find((b) => b.id === (typeof activeChannel.id === "number" ? activeChannel.id : (bagans[0]?.id || 1)))}
             eventName={activeEvent?.nama_event || ""}
             hostUrl={hostUrl}
+            {tatamis}
             onBaganUpdated={() => selectedEventId && selectEvent(selectedEventId)}
           />
         {:else if activeChannel.type === "sync"}
