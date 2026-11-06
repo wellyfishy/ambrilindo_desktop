@@ -1900,11 +1900,11 @@
         {/if}
       {/snippet}
 
-      <!-- Snippet: Group Quadrant View -->
-      {#snippet festivalGroupQuadrant(gNum: number)}
+      <!-- Snippet: Group Quadrant / Band View -->
+      {#snippet festivalGroupQuadrant(gNum: number, isBandLayout: boolean = false)}
         {@const group = festivalGroups.find((g) => g.groupNum === gNum)}
-        <div class="group-quadrant flex flex-col justify-between p-2 {isDarkMode ? 'bg-[#15171e]' : 'bg-white'} flex-1 overflow-hidden">
-          <!-- Quadrant Top Header Bar -->
+        <div class="{isBandLayout ? 'group-band' : 'group-quadrant'} flex flex-col justify-between p-2 {isDarkMode ? 'bg-[#15171e]' : 'bg-white'} flex-1 overflow-hidden">
+          <!-- Quadrant / Band Top Header Bar -->
           <div class="col-header-line flex items-center justify-between px-2 py-0.5 border-b-2 {isDarkMode ? 'border-zinc-700 bg-white/[0.02]' : 'border-slate-900 bg-slate-50'} mb-1.5 h-6 shrink-0">
             <div class="flex items-center space-x-2">
               <span class="col-header-badge w-4 h-4 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[9px] font-black font-mono flex items-center justify-center shrink-0">
@@ -1927,9 +1927,9 @@
 
           {#if group}
             <!-- 3 Balanced Columns (100% Space Utilization: Semifinal -> Final -> Hasil Juara) -->
-            <div class="quadrant-grid-3col flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1">
+            <div class="{isBandLayout ? 'band-grid-3col' : 'quadrant-grid-3col'} flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1">
               <!-- Column 1: SEMIFINALS (Round 1) -->
-              <div class="col-wrap col-semi w-[164px] shrink-0 flex flex-col justify-start">
+              <div class="col-wrap col-semi {isBandLayout ? 'band-col-semi' : 'w-[164px]'} shrink-0 flex flex-col justify-start">
                 <div class="col-header-line h-4.5 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1.5">
                   <div class="flex items-center justify-center space-x-1.5 text-center w-full">
                     <span class="col-header-badge w-3.5 h-3.5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[8px] font-black font-mono flex items-center justify-center shrink-0">
@@ -1941,28 +1941,21 @@
                   </div>
                 </div>
 
-                <div class="semi-cards-flex flex flex-col justify-between h-[148px]">
+                <div class="semi-cards-flex flex flex-col justify-between {isBandLayout ? 'h-full' : 'h-[148px]'}">
                   {@render festivalMatchCard(group.matches.semi1, `SEMIFINAL 1`)}
                   {@render festivalMatchCard(group.matches.semi2, `SEMIFINAL 2`)}
                 </div>
               </div>
 
               <!-- Connector 1: SVG Fork (Semi 1 & 2 -> Final) -->
-              <div class="connector-fork-col w-5 shrink-0 flex items-center justify-center pointer-events-none">
-                <svg viewBox="0 0 20 148" preserveAspectRatio="none" class="w-full h-[148px] overflow-visible">
-                  <!-- Semi 1 Center Line: Y=36 -->
-                  <line x1="0" y1="36" x2="10" y2="36" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="1.8" stroke-linecap="round" class="connector-line" />
-                  <!-- Semi 2 Center Line: Y=112 -->
-                  <line x1="0" y1="112" x2="10" y2="112" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="1.8" stroke-linecap="round" class="connector-line" />
-                  <!-- Vertical Trunk: from 36 to 112 at X=10 -->
-                  <line x1="10" y1="36" x2="10" y2="112" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="1.8" stroke-linecap="round" class="connector-line" />
-                  <!-- Final Stem: from 10 to 20 at Y=74 -->
-                  <line x1="10" y1="74" x2="20" y2="74" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="1.8" stroke-linecap="round" class="connector-line" />
+              <div class="connector-fork-col {isBandLayout ? 'band-connector-fork' : 'w-5'} shrink-0 flex items-center justify-center pointer-events-none">
+                <svg viewBox="0 0 40 100" preserveAspectRatio="none" class="w-full h-full overflow-visible">
+                  <path d="M 0 25 L 20 25 L 20 75 L 0 75 M 20 50 L 40 50" fill="none" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="connector-line" />
                 </svg>
               </div>
 
               <!-- Column 2: PARTAI FINAL (Round 2) -->
-              <div class="col-wrap col-final w-[168px] shrink-0 flex flex-col justify-start">
+              <div class="col-wrap col-final {isBandLayout ? 'band-col-final' : 'w-[168px]'} shrink-0 flex flex-col justify-start">
                 <div class="col-header-line h-4.5 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-amber-500/40' : 'border-amber-600'} mb-1.5">
                   <div class="flex items-center justify-center space-x-1.5 text-center w-full">
                     <span class="col-header-badge w-3.5 h-3.5 rounded-full {isDarkMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-amber-400 text-amber-950'} text-[8px] font-black flex items-center justify-center shrink-0">
@@ -1974,21 +1967,21 @@
                   </div>
                 </div>
 
-                <div class="final-card-centered flex flex-col justify-center h-[148px]">
+                <div class="final-card-centered flex flex-col justify-center {isBandLayout ? 'h-full' : 'h-[148px]'}">
                   {@render festivalMatchCard(group.matches.final, `FINAL GRUP ${gNum}`, true)}
                 </div>
               </div>
 
               <!-- Connector 2: SVG Flow Arrow (Final -> Podium) -->
-              <div class="connector-arrow-col w-4 shrink-0 flex items-center justify-center pointer-events-none">
-                <svg viewBox="0 0 16 148" preserveAspectRatio="none" class="w-full h-[148px] overflow-visible">
-                  <line x1="0" y1="74" x2="10" y2="74" stroke={isDarkMode ? "#f59e0b" : "#d97706"} stroke-width="2" stroke-linecap="round" class="connector-line" />
-                  <polygon points="10,70 16,74 10,78" fill={isDarkMode ? "#f59e0b" : "#d97706"} />
+              <div class="connector-arrow-col {isBandLayout ? 'band-connector-arrow' : 'w-4'} shrink-0 flex items-center justify-center pointer-events-none">
+                <svg viewBox="0 0 30 100" preserveAspectRatio="none" class="w-full h-full overflow-visible">
+                  <line x1="0" y1="50" x2="22" y2="50" stroke={isDarkMode ? "#f59e0b" : "#d97706"} stroke-width="2.5" stroke-linecap="round" class="connector-line" />
+                  <polygon points="20,44 30,50 20,56" fill={isDarkMode ? "#f59e0b" : "#d97706"} class="connector-polygon" />
                 </svg>
               </div>
 
               <!-- Column 3: PODIUM JUARA (Results) -->
-              <div class="col-wrap col-podium flex-1 min-w-0 ml-1 flex flex-col justify-start">
+              <div class="col-wrap col-podium {isBandLayout ? 'band-col-podium' : 'flex-1 min-w-0 ml-1'} flex flex-col justify-start">
                 <div class="col-header-line h-4.5 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-amber-500/40' : 'border-amber-600'} mb-1.5">
                   <div class="flex items-center justify-center space-x-1.5 text-center w-full">
                     <span class="col-header-badge w-3.5 h-3.5 rounded-full {isDarkMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-amber-400 text-amber-950'} text-[8px] font-black flex items-center justify-center shrink-0">
@@ -2000,7 +1993,7 @@
                   </div>
                 </div>
 
-                <div class="podium-card-wrap flex flex-col justify-between h-[148px] gap-1">
+                <div class="podium-card-wrap flex flex-col justify-between {isBandLayout ? 'h-full' : 'h-[148px]'} gap-1">
                   <!-- Juara 1 (Emas) -->
                   <div class="podium-row row-emas px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-amber-500/10 border-amber-500/50' : 'bg-[#fffbeb] border-amber-400'}">
                     <span class="medal-circle medal-emas w-4.5 h-4.5 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">1</span>
@@ -2074,22 +2067,32 @@
         </div>
       {/snippet}
 
-      <!-- Festival 4-Quadrant "Bagan Biasa" Template (Single A4 Landscape Sheet) -->
+      <!-- Festival "Bagan Biasa" Template (Single A4 Landscape Sheet) -->
       <div class="festival-canvas-wrapper w-full h-full max-w-[1064px] mx-auto p-1 overflow-hidden">
         <div class="festival-split-canvas w-full h-full border-2 {isDarkMode ? 'border-zinc-700 bg-[#101216]' : 'border-slate-900 bg-white'} rounded-lg overflow-hidden shadow-xs flex flex-col">
-          <div class="festival-quadrants-grid grid grid-cols-1 xl:grid-cols-2 divide-y-2 xl:divide-y-0 xl:divide-x-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
-            <!-- Left Column: Quadrant 1 (Top-Left) & Quadrant 3 (Bottom-Left) -->
-            <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col">
-              {@render festivalGroupQuadrant(1)}
-              {@render festivalGroupQuadrant(3)}
-            </div>
+          {#if festivalGroups.length === 4}
+            <!-- 4 Groups: 2x2 Balanced Quadrant Grid -->
+            <div class="festival-quadrants-grid grid grid-cols-1 xl:grid-cols-2 divide-y-2 xl:divide-y-0 xl:divide-x-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
+              <!-- Left Column: Quadrant 1 (Top-Left) & Quadrant 3 (Bottom-Left) -->
+              <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col">
+                {@render festivalGroupQuadrant(1, false)}
+                {@render festivalGroupQuadrant(3, false)}
+              </div>
 
-            <!-- Right Column: Quadrant 2 (Top-Right) & Quadrant 4 (Bottom-Right) -->
-            <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col">
-              {@render festivalGroupQuadrant(2)}
-              {@render festivalGroupQuadrant(4)}
+              <!-- Right Column: Quadrant 2 (Top-Right) & Quadrant 4 (Bottom-Right) -->
+              <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col">
+                {@render festivalGroupQuadrant(2, false)}
+                {@render festivalGroupQuadrant(4, false)}
+              </div>
             </div>
-          </div>
+          {:else}
+            <!-- 1 to 3 Groups: Full-Width Horizontal Bands (Zero Wasted Space, Generous Card Widths) -->
+            <div class="festival-bands-grid flex flex-col divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
+              {#each festivalGroups as g (g.groupNum)}
+                {@render festivalGroupQuadrant(g.groupNum, true)}
+              {/each}
+            </div>
+          {/if}
         </div>
       </div>
     {:else if elimRounds.length === 0}
@@ -2778,7 +2781,7 @@
       display: block !important;
       z-index: 1 !important;
     }
-    /* Festival Split 4-Quadrant Print Layout on A4 Landscape (Single Sheet - 100% Fill) */
+    /* Festival Print Canvas & Layout Containers on A4 Landscape (Single Sheet - 100% Fill) */
     .festival-canvas-wrapper {
       width: 287mm !important;
       max-width: 287mm !important;
@@ -2809,6 +2812,8 @@
       page-break-inside: avoid !important;
       break-inside: avoid !important;
     }
+
+    /* 4-Quadrant Grid (When exactly 4 Groups exist) */
     .festival-quadrants-grid {
       display: grid !important;
       grid-template-columns: 1fr 1fr !important;
@@ -2824,7 +2829,7 @@
       background: #ffffff !important;
       color: #000000 !important;
       border: 1px solid #000000 !important;
-      padding: 2mm 3mm !important;
+      padding: 1.5mm 2.5mm !important;
       box-sizing: border-box !important;
       overflow: hidden !important;
       height: 90.5mm !important;
@@ -2834,6 +2839,35 @@
       justify-content: space-between !important;
       page-break-inside: avoid !important;
       break-inside: avoid !important;
+    }
+
+    /* Full-Width Horizontal Bands (When 1, 2, or 3 Groups exist - Zero Wasted Space) */
+    .festival-bands-grid {
+      display: flex !important;
+      flex-direction: column !important;
+      height: 100% !important;
+      max-height: 100% !important;
+      width: 100% !important;
+      overflow: hidden !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    .group-band {
+      flex: 1 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      border-bottom: 2px solid #000000 !important;
+      padding: 1.5mm 3mm !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+      background: #ffffff !important;
+      color: #000000 !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+    }
+    .group-band:last-child {
+      border-bottom: none !important;
     }
 
     .bracket-grid {
@@ -3062,12 +3096,13 @@
       font-weight: 800 !important;
     }
 
-    /* 3-Column Festival Layout in Print (Full Height Stretch & Large Crisp Typography) */
-    .group-quadrant .col-header-line {
-      height: 5.5mm !important;
-      min-height: 5.5mm !important;
-      padding-bottom: 0.8mm !important;
-      margin-bottom: 1.5mm !important;
+    /* Festival Detailed Layout in Print (Shared between 4-Quadrant and Bands) */
+    .group-quadrant .col-header-line,
+    .group-band .col-header-line {
+      height: 5mm !important;
+      min-height: 5mm !important;
+      padding-bottom: 0.5mm !important;
+      margin-bottom: 1.2mm !important;
       border-bottom: 1.5px solid #000000 !important;
       line-height: 1 !important;
     }
@@ -3109,196 +3144,264 @@
       color: #7c2d12 !important;
       border: 1.2px solid #c2410c !important;
     }
+
+    /* 4-Quadrant 3-Column Widths */
     .quadrant-grid-3col {
       display: flex !important;
       flex-direction: row !important;
       align-items: stretch !important;
       justify-content: space-between !important;
-      height: calc(100% - 7mm) !important;
+      height: calc(100% - 6.5mm) !important;
       width: 100% !important;
+      gap: 0 !important;
     }
-    .col-semi {
-      width: 53mm !important;
+    .group-quadrant .col-semi {
+      width: 50mm !important;
       flex-shrink: 0 !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
       height: 100% !important;
     }
-    .col-final {
-      width: 39mm !important;
+    .group-quadrant .connector-fork-col {
+      width: 6mm !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      height: 100% !important;
+    }
+    .group-quadrant .connector-fork-col svg {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .group-quadrant .col-final {
+      width: 44mm !important;
       flex-shrink: 0 !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
       height: 100% !important;
     }
-    .col-podium {
+    .group-quadrant .connector-arrow-col {
+      width: 5mm !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      height: 100% !important;
+    }
+    .group-quadrant .connector-arrow-col svg {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .group-quadrant .col-podium {
       flex: 1 !important;
       min-width: 0 !important;
+      margin-left: 1.5mm !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
+    }
+
+    /* Full-Width Band 3-Column Widths (Spans 100% of Page Width: 287mm) */
+    .band-grid-3col {
+      display: flex !important;
+      flex-direction: row !important;
+      align-items: stretch !important;
+      justify-content: space-between !important;
+      height: calc(100% - 6.5mm) !important;
+      width: 100% !important;
+      gap: 0 !important;
+    }
+    .band-col-semi {
+      width: 82mm !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
+    }
+    .band-connector-fork {
+      width: 10mm !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      height: 100% !important;
+    }
+    .band-connector-fork svg {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .band-col-final {
+      width: 78mm !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
+    }
+    .band-connector-arrow {
+      width: 8mm !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      height: 100% !important;
+    }
+    .band-connector-arrow svg {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .band-col-podium {
+      flex: 1 !important;
+      min-width: 86mm !important;
       margin-left: 2mm !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
       height: 100% !important;
     }
-    .semi-cards-flex {
+
+    /* Cards, Rows, and Badges in Print */
+    .group-quadrant .semi-cards-flex,
+    .group-band .semi-cards-flex {
       flex: 1 !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
       height: 100% !important;
-      gap: 2mm !important;
+      gap: 1.5mm !important;
     }
-    .final-card-centered {
+    .group-quadrant .final-card-centered,
+    .group-band .final-card-centered {
       flex: 1 !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: center !important;
       height: 100% !important;
     }
-    .podium-card-wrap {
+    .group-quadrant .podium-card-wrap,
+    .group-band .podium-card-wrap {
       flex: 1 !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
       height: 100% !important;
-      gap: 1.2mm !important;
+      gap: 1mm !important;
     }
-    .connector-fork-col {
-      width: 3mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      align-items: center !important;
-      height: 100% !important;
-    }
-    .connector-fork-col svg {
-      width: 100% !important;
-      height: 100% !important;
-    }
-    .connector-arrow-col {
-      width: 3mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      align-items: center !important;
-      height: 100% !important;
-    }
-    .connector-arrow-col svg {
-      width: 100% !important;
-      height: 100% !important;
-    }
-    .group-quadrant .match-card {
+
+    .group-quadrant .match-card,
+    .group-band .match-card {
       max-height: 36mm !important;
       flex: 1 !important;
       display: flex !important;
       flex-direction: column !important;
-      border: 1.8px solid #000000 !important;
-      border-radius: 1.5mm !important;
+      border: 1.6px solid #000000 !important;
+      border-radius: 1.2mm !important;
+      overflow: hidden !important;
     }
-    .group-quadrant .card-header-bar {
-      height: 5mm !important;
-      min-height: 5mm !important;
-      font-size: 8pt !important;
+    .group-quadrant .card-header-bar,
+    .group-band .card-header-bar {
+      height: 4.5mm !important;
+      min-height: 4.5mm !important;
+      font-size: 7.5pt !important;
       font-weight: 950 !important;
-      padding: 0 2mm !important;
+      padding: 0 1.5mm !important;
     }
-    .group-quadrant .player-row {
-      min-height: 13.5mm !important;
-      padding: 1.2mm 2mm !important;
+    .group-quadrant .player-row,
+    .group-band .player-row {
+      min-height: 8mm !important;
+      padding: 0.8mm 1.5mm !important;
       flex: 1 !important;
     }
-    .group-quadrant .player-name-text {
-      font-size: 9.2pt !important;
-      line-height: 11pt !important;
+    .group-quadrant .player-name-text,
+    .group-band .player-name-text {
+      font-size: 8.8pt !important;
+      line-height: 10.5pt !important;
       font-weight: 950 !important;
       color: #000000 !important;
       letter-spacing: -0.15px !important;
     }
-    .group-quadrant .player-sub-text {
-      font-size: 8pt !important;
-      line-height: 9pt !important;
+    .group-quadrant .player-sub-text,
+    .group-band .player-sub-text {
+      font-size: 7.2pt !important;
+      line-height: 8.8pt !important;
       font-weight: 800 !important;
       color: #1e293b !important;
       margin-top: 0.3mm !important;
+      padding-bottom: 0.3mm !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
     }
-    .group-quadrant .side-pill-aka, .group-quadrant .side-pill-ao {
-      font-size: 7.5pt !important;
+    .group-quadrant .side-pill-aka,
+    .group-quadrant .side-pill-ao,
+    .group-band .side-pill-aka,
+    .group-band .side-pill-ao {
+      font-size: 7pt !important;
       font-weight: 950 !important;
-      padding: 0.8mm 1.5mm !important;
-      border-radius: 0.8mm !important;
+      padding: 0.5mm 1.2mm !important;
+      border-radius: 0.6mm !important;
     }
-    .group-quadrant .score-box {
-      width: 5.5mm !important;
-      height: 5.5mm !important;
-      font-size: 9.5pt !important;
+    .group-quadrant .score-box,
+    .group-band .score-box {
+      width: 5mm !important;
+      height: 5mm !important;
+      font-size: 8.5pt !important;
       font-weight: 950 !important;
     }
-    .podium-row {
+
+    .group-quadrant .podium-row,
+    .group-band .podium-row {
       flex: 1 !important;
-      padding: 1.5mm 2.5mm !important;
-      border-radius: 1.5mm !important;
+      padding: 0.8mm 2mm !important;
+      border-radius: 1mm !important;
       border: 1.2px solid #000000 !important;
       display: flex !important;
       align-items: center !important;
     }
-    .podium-name {
-      font-size: 10.5pt !important;
+    .group-quadrant .podium-name,
+    .group-band .podium-name {
+      font-size: 9.5pt !important;
       font-weight: 950 !important;
-      line-height: 12pt !important;
+      line-height: 11.5pt !important;
       color: #000000 !important;
     }
-    .podium-sub {
-      font-size: 8pt !important;
+    .group-quadrant .podium-sub,
+    .group-band .podium-sub {
+      font-size: 7.2pt !important;
       font-weight: 800 !important;
-      line-height: 9.5pt !important;
+      line-height: 8.8pt !important;
       color: #334155 !important;
       margin-top: 0.3mm !important;
     }
-    .medal-circle {
-      width: 5.5mm !important;
-      height: 5.5mm !important;
+    .group-quadrant .medal-circle,
+    .group-band .medal-circle {
+      width: 4.8mm !important;
+      height: 4.8mm !important;
       border: 1.2px solid #000000 !important;
-      font-size: 9pt !important;
+      font-size: 8.5pt !important;
       font-weight: 950 !important;
       flex-shrink: 0 !important;
     }
 
-    /* Hasil Juara Card in Print */
-    .podium-card {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      border: 2px solid #000000 !important;
-      box-shadow: none !important;
+    /* Connector SVG Lines in Print */
+    :global(svg line.connector-line),
+    :global(svg path.connector-line) {
+      stroke: #000000 !important;
+      stroke-width: 2.2px !important;
     }
-    .podium-header {
-      background: #fef3c7 !important;
-      background-color: #fef3c7 !important;
-      border-bottom: 1.5px solid #000000 !important;
-      color: #000000 !important;
-      font-weight: 900 !important;
-      padding: 2px 6px !important;
+    .connector-arrow-col :global(svg line.connector-line),
+    .band-connector-arrow :global(svg line.connector-line) {
+      stroke: #d97706 !important;
+      stroke-width: 2.2px !important;
     }
-    .podium-header span {
-      color: #000000 !important;
-      font-weight: 900 !important;
-    }
-    .podium-row {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      border-bottom: 1.2px solid #000000 !important;
-      padding: 1.5px 6px !important;
-    }
-    .podium-name {
-      color: #000000 !important;
-      font-weight: 900 !important;
-      font-size: 10px !important;
-      line-height: 1.15 !important;
-    }
-    .podium-sub {
-      color: #0f172a !important;
-      font-weight: 800 !important;
-      font-size: 8px !important;
-      line-height: 1 !important;
+    :global(svg polygon.connector-polygon),
+    :global(svg polygon) {
+      fill: #d97706 !important;
     }
 
     /* Contingent Dojo Logos in Print */
@@ -3355,5 +3458,55 @@
     max-height: 12px;
     object-fit: contain;
     flex-shrink: 0;
+  }
+
+  /* Screen Classes for Festival Bands */
+  .festival-bands-grid {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+  }
+  .group-band {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 200px;
+  }
+  .band-grid-3col {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex: 1;
+  }
+  .band-col-semi {
+    width: 32%;
+    min-width: 200px;
+    flex-shrink: 0;
+  }
+  .band-connector-fork {
+    width: 32px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .band-col-final {
+    width: 28%;
+    min-width: 180px;
+    flex-shrink: 0;
+  }
+  .band-connector-arrow {
+    width: 24px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .band-col-podium {
+    flex: 1;
+    min-width: 220px;
   }
 </style>
