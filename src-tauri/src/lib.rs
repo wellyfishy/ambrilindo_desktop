@@ -322,6 +322,15 @@ async fn delete_all_bagans(
 }
 
 #[tauri::command]
+async fn delete_all_festival_bagans(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<u64, String> {
+    let db = state.db.lock().await;
+    db.delete_all_festival_bagans(event_id).await
+}
+
+#[tauri::command]
 async fn delete_category_bagans(
     event_id: i64,
     category_id: i64,
@@ -1720,6 +1729,7 @@ pub fn run() {
             execute_drawing_bagan,
             execute_drawing_festival_bagan,
             delete_all_bagans,
+            delete_all_festival_bagans,
             delete_category_bagans,
             delete_all_athletes,
             get_bagans,

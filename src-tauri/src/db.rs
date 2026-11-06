@@ -2299,6 +2299,97 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Deletes all festival brackets and match records for an entire event, leaving regular tournament brackets untouched
+    pub async fn delete_all_festival_bagans(&self, event_id: i64) -> Result<u64, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Unassign tatamis assigned to matches belonging to festival bagans
+        sqlx::query(
+            "UPDATE backend_tatami SET detail_bagan_id = NULL 
+             WHERE detail_bagan_id IN (
+                 SELECT id FROM backend_detailbagan WHERE bagan_id IN (
+                     SELECT id FROM backend_bagan WHERE event_id = ? AND (
+                         UPPER(nama_bagan) LIKE '%FESTIVAL%'
+                         OR UPPER(COALESCE(kode, '')) LIKE 'F%'
+                         OR nomor_tanding_id IN (
+                             SELECT id FROM backend_nomortanding WHERE UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'
+                         )
+                     )
+                 )
+             )"
+        )
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal mereset tatami untuk bagan festival: {}", e))?;
+
+        // 2. Defensive cleanup of team matchups if any
+        let _ = sqlx::query(
+            "DELETE FROM backend_matchup WHERE detail_bagan_id IN (
+                 SELECT id FROM backend_detailbagan WHERE bagan_id IN (
+                     SELECT id FROM backend_bagan WHERE event_id = ? AND (
+                         UPPER(nama_bagan) LIKE '%FESTIVAL%'
+                         OR UPPER(COALESCE(kode, '')) LIKE 'F%'
+                         OR nomor_tanding_id IN (
+                             SELECT id FROM backend_nomortanding WHERE UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'
+                         )
+                     )
+                 )
+             ) OR db_id IN (
+                 SELECT id FROM backend_detailbagan WHERE bagan_id IN (
+                     SELECT id FROM backend_bagan WHERE event_id = ? AND (
+                         UPPER(nama_bagan) LIKE '%FESTIVAL%'
+                         OR UPPER(COALESCE(kode, '')) LIKE 'F%'
+                         OR nomor_tanding_id IN (
+                             SELECT id FROM backend_nomortanding WHERE UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'
+                         )
+                     )
+                 )
+             )"
+        )
+        .bind(event_id)
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await;
+
+        // 3. Delete detail bagans for festival bagans
+        sqlx::query(
+            "DELETE FROM backend_detailbagan WHERE bagan_id IN (
+                 SELECT id FROM backend_bagan WHERE event_id = ? AND (
+                     UPPER(nama_bagan) LIKE '%FESTIVAL%'
+                     OR UPPER(COALESCE(kode, '')) LIKE 'F%'
+                     OR nomor_tanding_id IN (
+                         SELECT id FROM backend_nomortanding WHERE UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'
+                     )
+                 )
+             )"
+        )
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal menghapus detail bagan festival: {}", e))?;
+
+        // 4. Delete festival bagans
+        let res = sqlx::query(
+            "DELETE FROM backend_bagan WHERE event_id = ? AND (
+                 UPPER(nama_bagan) LIKE '%FESTIVAL%'
+                 OR UPPER(COALESCE(kode, '')) LIKE 'F%'
+                 OR nomor_tanding_id IN (
+                     SELECT id FROM backend_nomortanding WHERE UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'
+                 )
+             )"
+        )
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal menghapus bagan festival: {}", e))?;
+
+        let deleted_count = res.rows_affected();
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan perubahan: {}", e))?;
+        Ok(deleted_count)
+    }
+
     /// Deletes all athletes for an entire event, clearing bracket/match references
     pub async fn delete_all_athletes(&self, event_id: i64) -> Result<u64, String> {
         let pool = self.get_pool()?;
@@ -8741,6 +8832,73 @@ mod festival_tests {
         // Cleanup
         let _ = std::fs::remove_file(&test_db_path);
         println!("test_balanced_festival_drawing_multi_bagan PASSED successfully (3-3 balance verified)!");
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_festival_bagans_preserves_regular_bagans() {
+        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
+        if !original_db.exists() {
+            println!("Skipping test: db.sqlite3 not found at {:?}", original_db);
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir();
+        let test_db_path = temp_dir.join(format!("test_del_fest_{}.sqlite3", rand::random::<u64>()));
+        std::fs::copy(original_db, &test_db_path).expect("Gagal copy test db");
+
+        let mut db = DatabaseManager::new();
+        db.mount_database(&test_db_path).await.expect("Mount db failed");
+        let pool = db.get_pool().expect("pool failed");
+
+        // 1. Create a regular/open tournament category & bagan
+        let open_cat = sqlx::query("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (9, 'KUMITE SENIOR -75KG PUTRA (OPEN)', 0, 0)")
+            .execute(pool).await.expect("insert open cat failed");
+        let open_cat_id = open_cat.last_insert_rowid();
+
+        let open_bagan = sqlx::query("INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (9, ?, 'KUMITE SENIOR -75KG PUTRA', 1, 'kumite', 0, 0, 0, 'K01')")
+            .bind(open_cat_id)
+            .execute(pool).await.expect("insert open bagan failed");
+        let open_bagan_id = open_bagan.last_insert_rowid();
+
+        sqlx::query("INSERT INTO backend_detailbagan (bagan_id, round, urutan, vr1, vr2, hantei, selesai, team) VALUES (?, 1, 1, 0, 0, 0, 0, 0)")
+            .bind(open_bagan_id).execute(pool).await.expect("insert open match failed");
+
+        // 2. Create a festival category & 2 festival bagans
+        let fest_cat = sqlx::query("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (9, 'FESTIVAL USIA DINI - KATA PUTRA', 0, 0)")
+            .execute(pool).await.expect("insert fest cat failed");
+        let fest_cat_id = fest_cat.last_insert_rowid();
+
+        let fest_b1 = sqlx::query("INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (9, ?, 'FESTIVAL USIA DINI - Bagan 1', 3, 'kata', 0, 0, 0, 'F01')")
+            .bind(fest_cat_id).execute(pool).await.expect("insert fest bagan 1 failed");
+        let fest_b1_id = fest_b1.last_insert_rowid();
+
+        let fest_b2 = sqlx::query("INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (9, ?, 'FESTIVAL USIA DINI - Bagan 2', 3, 'kata', 0, 0, 0, 'F02')")
+            .bind(fest_cat_id).execute(pool).await.expect("insert fest bagan 2 failed");
+        let fest_b2_id = fest_b2.last_insert_rowid();
+
+        sqlx::query("INSERT INTO backend_detailbagan (bagan_id, round, urutan, vr1, vr2, hantei, selesai, team) VALUES (?, 1, 1, 0, 0, 0, 0, 0)")
+            .bind(fest_b1_id).execute(pool).await.expect("insert fest match 1 failed");
+        sqlx::query("INSERT INTO backend_detailbagan (bagan_id, round, urutan, vr1, vr2, hantei, selesai, team) VALUES (?, 1, 1, 0, 0, 0, 0, 0)")
+            .bind(fest_b2_id).execute(pool).await.expect("insert fest match 2 failed");
+
+        // 3. Execute delete_all_festival_bagans
+        let deleted_count = db.delete_all_festival_bagans(9).await.expect("delete festival failed");
+        assert!(deleted_count >= 2, "Harus menghapus minimal 2 bagan festival yang baru dibuat");
+
+        // 4. Assert: Festival bagans are deleted, but regular open bagan is still present!
+        let all_bagans = db.get_bagans(9).await.expect("get_bagans failed");
+        let remaining_fest: Vec<_> = all_bagans.iter().filter(|b| b.id == fest_b1_id || b.id == fest_b2_id).collect();
+        assert_eq!(remaining_fest.len(), 0, "Semua bagan festival harus terhapus");
+
+        let open_still_exists = all_bagans.iter().any(|b| b.id == open_bagan_id);
+        assert!(open_still_exists, "Bagan prestasi/open TIDAK BOLEH terhapus!");
+
+        let open_matches = db.get_detail_bagan(open_bagan_id).await.expect("get open matches failed");
+        assert_eq!(open_matches.len(), 1, "Partai bagan prestasi/open harus tetap utuh");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&test_db_path);
+        println!("test_delete_all_festival_bagans_preserves_regular_bagans PASSED successfully!");
     }
 
 }

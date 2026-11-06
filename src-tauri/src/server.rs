@@ -1181,6 +1181,22 @@ async fn delete_all_bagans_api(
     }
 }
 
+async fn delete_all_festival_bagans_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EventIdHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.delete_all_festival_bagans(payload.event_id).await {
+        Ok(count) => {
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("bracket_updated", ());
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": count }))).into_response()
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
 async fn delete_all_athletes_api(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EventIdHttpInput>,
@@ -1643,6 +1659,18 @@ async fn dispatch_command_api(
                         let _ = app.emit("bracket_updated", ());
                     }
                     (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "delete_all_festival_bagans" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.delete_all_festival_bagans(ev_id).await {
+                Ok(count) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": count }))).into_response()
                 },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
@@ -2656,6 +2684,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/bagan/execute-drawing", post(execute_drawing_bagan_api))
         .route("/api/bagan/delete-category", post(delete_category_bagans_api))
         .route("/api/bagan/delete-all", post(delete_all_bagans_api))
+        .route("/api/bagan/delete-all-festival", post(delete_all_festival_bagans_api))
         // Athlete routes
         .route("/api/athletes/:event_id", get(list_athletes_api))
         .route("/api/enriched-athletes/:event_id", get(list_enriched_athletes_api))
