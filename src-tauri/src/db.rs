@@ -2177,6 +2177,7 @@ impl DatabaseManager {
             FROM backend_nomortanding nt
             WHERE nt.event_id = ?
               AND (nt.is_bob = 0 OR nt.is_bob IS NULL)
+              AND UPPER(nt.nama_nomor_tanding) NOT LIKE '%FESTIVAL%'
             ORDER BY nt.nama_nomor_tanding ASC
             "#
         )
@@ -2184,6 +2185,67 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat kategori drawing: {}", e))?;
+
+        let res = rows.into_iter().map(|r| {
+            let nama = r.nama_nomor_tanding.unwrap_or_default();
+            let upper = nama.to_uppercase();
+            let is_kumite = upper.contains("KUMITE");
+            let is_beregu = upper.contains("BEREGU");
+            DrawingCategoryInfo {
+                id: r.id,
+                event_id: r.event_id.unwrap_or(event_id),
+                nama_nomor_tanding: nama,
+                athlete_count: r.athlete_count,
+                bagan_count: r.bagan_count,
+                has_vr: r.has_vr,
+                is_kumite,
+                is_beregu,
+            }
+        }).collect();
+
+        Ok(res)
+    }
+
+    /// Fetches all festival categories eligible for festival bracket drawing
+    pub async fn get_drawing_eligible_festival_categories(&self, event_id: i64) -> Result<Vec<DrawingCategoryInfo>, String> {
+        let pool = self.get_pool()?;
+
+        #[derive(sqlx::FromRow)]
+        struct RawCat {
+            id: i64,
+            event_id: Option<i64>,
+            nama_nomor_tanding: Option<String>,
+            has_vr: bool,
+            athlete_count: i64,
+            bagan_count: i64,
+        }
+
+        let rows = sqlx::query_as::<_, RawCat>(
+            r#"
+            SELECT 
+                nt.id,
+                nt.event_id,
+                nt.nama_nomor_tanding,
+                nt.has_vr,
+                (
+                    SELECT COUNT(*) FROM backend_atlet a 
+                    WHERE a.nomor_tanding_id = nt.id 
+                      AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+                ) as athlete_count,
+                (
+                    SELECT COUNT(*) FROM backend_bagan b 
+                    WHERE b.nomor_tanding_id = nt.id
+                ) as bagan_count
+            FROM backend_nomortanding nt
+            WHERE nt.event_id = ?
+              AND UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%'
+            ORDER BY nt.nama_nomor_tanding ASC
+            "#
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat kategori festival drawing: {}", e))?;
 
         let res = rows.into_iter().map(|r| {
             let nama = r.nama_nomor_tanding.unwrap_or_default();
@@ -2685,6 +2747,292 @@ impl DatabaseManager {
         })
     }
 
+    /// Executes drawing for festival categories (4 athletes per group, up to 4 groups per bagan)
+    pub async fn execute_drawing_festival_bagan(
+        &self,
+        event_id: i64,
+        category_ids: Vec<i64>,
+        shuffle_type: &str,
+    ) -> Result<DrawingSummary, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        let mut categories_processed = 0;
+        let mut bagans_created = 0;
+        let mut total_matches = 0;
+        let total_collisions = 0;
+
+        // 1. Clean up previous brackets for selected categories first
+        for &cat_id in &category_ids {
+            sqlx::query(
+                "UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id IN (
+                    SELECT d.id FROM backend_detailbagan d 
+                    JOIN backend_bagan b ON d.bagan_id = b.id 
+                    WHERE b.nomor_tanding_id = ?
+                )"
+            )
+            .bind(cat_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal mereset tatami untuk kategori festival {}: {}", cat_id, e))?;
+
+            sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
+                .bind(cat_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal menghapus detail bagan festival lama: {}", e))?;
+
+            sqlx::query("DELETE FROM backend_bagan WHERE nomor_tanding_id = ?")
+                .bind(cat_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal menghapus bagan festival lama: {}", e))?;
+        }
+
+        // 2. Determine starting festival code number (F01, F02...) for this event
+        let existing_codes: Vec<String> = sqlx::query_scalar(
+            "SELECT kode FROM backend_bagan WHERE event_id = ? AND kode LIKE 'F%'"
+        )
+        .bind(event_id)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_default();
+
+        let mut next_code_num: u32 = existing_codes
+            .iter()
+            .filter_map(|c| c.strip_prefix('F').and_then(|s| s.parse::<u32>().ok()))
+            .max()
+            .unwrap_or(0) + 1;
+
+        // 3. Process each category
+        for cat_id in category_ids {
+            #[derive(sqlx::FromRow)]
+            #[allow(dead_code)]
+            struct CatRow {
+                id: i64,
+                nama_nomor_tanding: Option<String>,
+            }
+
+            let cat = sqlx::query_as::<_, CatRow>(
+                "SELECT id, nama_nomor_tanding FROM backend_nomortanding WHERE id = ?"
+            )
+            .bind(cat_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memuat kategori festival {}: {}", cat_id, e))?;
+
+            let Some(cat) = cat else { continue; };
+            let cat_name = cat.nama_nomor_tanding.unwrap_or_default();
+            if !cat_name.to_uppercase().contains("FESTIVAL") {
+                continue;
+            }
+
+            let is_kumite = cat_name.to_uppercase().contains("KUMITE");
+            let tipe_tanding = if is_kumite { Some("2") } else { Some("1") };
+
+            #[derive(sqlx::FromRow)]
+            #[allow(dead_code)]
+            struct RawAtletFest {
+                id: i64,
+                nama_atlet: Option<String>,
+                utusan_id: Option<i64>,
+                perguruan_id: Option<i64>,
+                nama_utusan: Option<String>,
+                nama_perguruan: Option<String>,
+            }
+
+            let raw_atlets = sqlx::query_as::<_, RawAtletFest>(
+                r#"
+                SELECT a.id, a.nama_atlet, a.utusan_id, a.perguruan_id, u.nama_utusan, p.nama_perguruan
+                FROM backend_atlet a
+                LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                WHERE a.nomor_tanding_id = ?
+                  AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+                ORDER BY a.id ASC
+                "#
+            )
+            .bind(cat_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memuat atlet festival: {}", e))?;
+
+            if raw_atlets.is_empty() {
+                continue;
+            }
+
+            // Convert to FestivalAthlete and run anti-collision pairing
+            let fest_athletes: Vec<FestivalAthlete> = raw_atlets.into_iter().map(|a| FestivalAthlete {
+                id: a.id,
+                nama: a.nama_atlet.unwrap_or_default(),
+                perguruan: a.nama_perguruan.clone().unwrap_or_default(),
+                utusan: match shuffle_type {
+                    "perguruan" => a.nama_perguruan.unwrap_or_default(),
+                    _ => a.nama_utusan.unwrap_or_default(),
+                },
+                jenis_kelamin: String::new(),
+            }).collect();
+
+            let paired_athletes = helper_pair_festival_athletes_anti_collision(fest_athletes);
+
+            // Chunk into bagans of max 16 athletes (up to 4 groups of 4 per bagan)
+            let chunks: Vec<Vec<FestivalAthlete>> = paired_athletes.chunks(16).map(|c| c.to_vec()).collect();
+            let total_chunks = chunks.len();
+
+            categories_processed += 1;
+
+            for (chunk_idx, chunk_athletes) in chunks.into_iter().enumerate() {
+                let n_chunk = chunk_athletes.len();
+                let num_groups = (n_chunk + 3) / 4; // 1..=4 groups
+
+                let bagan_title = if total_chunks == 1 {
+                    cat_name.clone()
+                } else {
+                    format!("{} - Bagan {}", cat_name, chunk_idx + 1)
+                };
+
+                let bagan_code = format!("F{:02}", next_code_num);
+                next_code_num += 1;
+
+                let bagan_res = sqlx::query(
+                    "INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?)"
+                )
+                .bind(event_id)
+                .bind(cat_id)
+                .bind(&bagan_title)
+                .bind(num_groups as i32)
+                .bind(tipe_tanding)
+                .bind(&bagan_code)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal membuat bagan festival: {}", e))?;
+
+                let bagan_id = bagan_res.last_insert_rowid();
+                bagans_created += 1;
+
+                // Distribute n_chunk athletes across num_groups as evenly as possible (max 4 per group)
+                let base_size = n_chunk / num_groups;
+                let remainder = n_chunk % num_groups;
+                let mut start_idx = 0;
+                let mut group_slices: Vec<Vec<FestivalAthlete>> = Vec::new();
+                for g_idx in 0..num_groups {
+                    let size = base_size + if g_idx < remainder { 1 } else { 0 };
+                    let end_idx = start_idx + size;
+                    group_slices.push(chunk_athletes[start_idx..end_idx].to_vec());
+                    start_idx = end_idx;
+                }
+
+                // For each group g (1..=num_groups): create 3 matches (Semi 1, Semi 2, Final)
+                for (g_idx, g_athletes) in group_slices.into_iter().enumerate() {
+                    let g = (g_idx + 1) as i32;
+                    let semi1_urutan = 2 * g - 1;
+                    let semi2_urutan = 2 * g;
+                    let final_urutan = g;
+
+                    match g_athletes.len() {
+                        4 => {
+                            // Semi 1: Atlet 0 vs Atlet 1
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 1, ?, ?, ?, 0, 0, 0, 0, 0)"
+                            )
+                            .bind(bagan_id).bind(semi1_urutan).bind(g_athletes[0].id).bind(g_athletes[1].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 1: {}", e))?;
+
+                            // Semi 2: Atlet 2 vs Atlet 3
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 1, ?, ?, ?, 0, 0, 0, 0, 0)"
+                            )
+                            .bind(bagan_id).bind(semi2_urutan).bind(g_athletes[2].id).bind(g_athletes[3].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 2: {}", e))?;
+
+                            // Final: TBD vs TBD
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 2, ?, NULL, NULL, 0, 0, 0, 0, 0)"
+                            )
+                            .bind(bagan_id).bind(final_urutan)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan final: {}", e))?;
+                        }
+                        3 => {
+                            // Semi 1: Atlet 0 vs Atlet 1
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 1, ?, ?, ?, 0, 0, 0, 0, 0)"
+                            )
+                            .bind(bagan_id).bind(semi1_urutan).bind(g_athletes[0].id).bind(g_athletes[1].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 1: {}", e))?;
+
+                            // Semi 2: Atlet 2 vs BYE (selesai = 1, pemenang = 1)
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                            )
+                            .bind(bagan_id).bind(semi2_urutan).bind(g_athletes[2].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 2 BYE: {}", e))?;
+
+                            // Final: TBD vs Atlet 2 (Atlet 2 seeded directly via BYE)
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 2, ?, NULL, ?, 0, 0, 0, 0, 0)"
+                            )
+                            .bind(bagan_id).bind(final_urutan).bind(g_athletes[2].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan final: {}", e))?;
+                        }
+                        2 => {
+                            // Semi 1: BYE Atlet 0
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                            )
+                            .bind(bagan_id).bind(semi1_urutan).bind(g_athletes[0].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 1 BYE: {}", e))?;
+
+                            // Semi 2: BYE Atlet 1
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                            )
+                            .bind(bagan_id).bind(semi2_urutan).bind(g_athletes[1].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 2 BYE: {}", e))?;
+
+                            // Final: Atlet 0 vs Atlet 1 directly
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 2, ?, ?, ?, 0, 0, 0, 0, 0)"
+                            )
+                            .bind(bagan_id).bind(final_urutan).bind(g_athletes[0].id).bind(g_athletes[1].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan final 2 atlet: {}", e))?;
+                        }
+                        1 => {
+                            // Single athlete: automatically gold
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                            )
+                            .bind(bagan_id).bind(semi1_urutan).bind(g_athletes[0].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 1 single: {}", e))?;
+
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 1, ?, NULL, NULL, 0, 0, 0, 1, 0, NULL)"
+                            )
+                            .bind(bagan_id).bind(semi2_urutan)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan semi 2 single: {}", e))?;
+
+                            sqlx::query(
+                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team, pemenang) VALUES (?, 2, ?, ?, NULL, 0, 0, 0, 1, 0, '1')"
+                            )
+                            .bind(bagan_id).bind(final_urutan).bind(g_athletes[0].id)
+                            .execute(&mut *tx).await.map_err(|e| format!("Gagal simpan final single: {}", e))?;
+                        }
+                        _ => {}
+                    }
+                    total_matches += 3;
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal commit transaksi drawing festival: {}", e))?;
+
+        Ok(DrawingSummary {
+            categories_processed,
+            bagans_created,
+            total_matches,
+            total_collisions,
+        })
+    }
+
     /// Saves a match result in detail_bagan and advances the winner in tournament brackets
     pub async fn save_match_result(&self, input: SaveMatchInput) -> Result<(), String> {
         let pool = self.get_pool()?;
@@ -2713,6 +3061,7 @@ impl DatabaseManager {
         let (bagan_pool, nomor_tanding_id, nama_bagan, event_id, is_round_robin) = bagan_meta.unwrap_or((1, None, None, None, false));
         let nama_bagan_upper = nama_bagan.unwrap_or_default().to_uppercase();
         let is_repechage = nama_bagan_upper.contains("REFERCHANGE") || nama_bagan_upper.contains("REPECHAGE");
+        let is_festival = nama_bagan_upper.contains("FESTIVAL");
         let is_pool_bracket = (bagan_pool == 2 || nama_bagan_upper.contains("POOL A") || nama_bagan_upper.contains("POOL B") || nama_bagan_upper.contains("POOL 1") || nama_bagan_upper.contains("POOL 2")) && !is_repechage;
         let is_pool_a = nama_bagan_upper.contains("POOL A") || nama_bagan_upper.contains("POOL 1");
         let _is_pool_b = nama_bagan_upper.contains("POOL B") || nama_bagan_upper.contains("POOL 2");
@@ -2846,6 +3195,81 @@ impl DatabaseManager {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| format!("Gagal mereset podium round-robin: {}", e))?;
+            }
+        } else if is_festival && !is_team_child_bout {
+            if input.selesai && input.pemenang.is_some() {
+                let pemenang_str = input.pemenang.as_deref().unwrap_or("");
+                let winner_id = match pemenang_str {
+                    "1" => a1_id,
+                    "2" => a2_id,
+                    _ => None,
+                };
+                let loser_id = match pemenang_str {
+                    "1" => a2_id,
+                    "2" => a1_id,
+                    _ => None,
+                };
+
+                if let Some(w_id) = winner_id {
+                    if round_num == 1 {
+                        // Semifinal of group g: advance winner to Final of group g
+                        let group_idx = (urutan_num + 1) / 2;
+                        if urutan_num % 2 == 1 {
+                            // Semi 1 winner goes to Final atlet1
+                            sqlx::query("UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = 2 AND urutan = ?")
+                                .bind(w_id)
+                                .bind(bagan_id)
+                                .bind(group_idx)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(|e| format!("Gagal memajukan pemenang semifinal grup {} ke final: {}", group_idx, e))?;
+                        } else {
+                            // Semi 2 winner goes to Final atlet2
+                            sqlx::query("UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = 2 AND urutan = ?")
+                                .bind(w_id)
+                                .bind(bagan_id)
+                                .bind(group_idx)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(|e| format!("Gagal memajukan pemenang semifinal grup {} ke final: {}", group_idx, e))?;
+                        }
+                    } else if round_num == 2 {
+                        // Final of group g:
+                        if urutan_num == 1 {
+                            let _ = sqlx::query("UPDATE backend_bagan SET juara_1_id = ?, juara_2_id = ? WHERE id = ?")
+                                .bind(w_id)
+                                .bind(loser_id)
+                                .bind(bagan_id)
+                                .execute(&mut *tx)
+                                .await;
+                        }
+                    }
+                }
+            } else if !input.selesai {
+                // Match is re-opened or reset:
+                if round_num == 1 {
+                    let group_idx = (urutan_num + 1) / 2;
+                    if urutan_num % 2 == 1 {
+                        let _ = sqlx::query("UPDATE backend_detailbagan SET atlet1_id = NULL WHERE bagan_id = ? AND round = 2 AND urutan = ? AND selesai = 0")
+                            .bind(bagan_id)
+                            .bind(group_idx)
+                            .execute(&mut *tx)
+                            .await;
+                    } else {
+                        let _ = sqlx::query("UPDATE backend_detailbagan SET atlet2_id = NULL WHERE bagan_id = ? AND round = 2 AND urutan = ? AND selesai = 0")
+                            .bind(bagan_id)
+                            .bind(group_idx)
+                            .execute(&mut *tx)
+                            .await;
+                    }
+                } else if round_num == 2 {
+                    if urutan_num == 1 {
+                        let _ = sqlx::query("UPDATE backend_bagan SET juara_1_id = NULL, juara_2_id = NULL WHERE id = ?")
+                            .bind(bagan_id)
+                            .execute(&mut *tx)
+                            .await;
+                    }
+                }
             }
         } else if !is_team_child_bout {
             if input.selesai && input.pemenang.is_some() {
@@ -8121,4 +8545,141 @@ fn helper_save_festival_roster_state(db_path: Option<&std::path::Path>, event_id
     let path = helper_get_festival_roster_file_path(db_path, event_id);
     let json_str = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
     std::fs::write(&path, json_str).map_err(|e| e.to_string())
+}
+
+
+#[cfg(test)]
+mod festival_tests {
+    #[tokio::test]
+    async fn test_draw_event9_real() {
+        let db_path = std::path::Path::new("../tournament_data/db.sqlite3");
+        if !db_path.exists() { return; }
+
+        let mut db = DatabaseManager::new();
+        db.mount_database(&db_path).await.expect("Mount real db failed");
+
+        // Draw categories 881 (15 athletes), 888 (8 athletes), 904 (4 athletes)
+        let summary = db.execute_drawing_festival_bagan(9, vec![881, 888, 904], "both").await.expect("Real draw failed");
+        println!("Real draw summary: processed={}, bagans={}, matches={}", summary.categories_processed, summary.bagans_created, summary.total_matches);
+    }
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_drawing_and_progression_festival() {
+        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
+        if !original_db.exists() {
+            println!("Skipping test: db.sqlite3 not found at {:?}", original_db);
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir();
+        let test_db_path = temp_dir.join(format!("test_fest_{}.sqlite3", rand::random::<u64>()));
+        std::fs::copy(original_db, &test_db_path).expect("Gagal copy test db");
+
+        let mut db = DatabaseManager::new();
+        db.mount_database(&test_db_path).await.expect("Mount db failed");
+
+        // 1. Test drawing eligible festival categories for Event 9
+        let eligible = db.get_drawing_eligible_festival_categories(9).await.expect("get eligible failed");
+        assert!(!eligible.is_empty(), "Event 9 harus memiliki kategori festival");
+        let cat881 = eligible.iter().find(|c| c.id == 881).expect("Cat 881 tidak ditemukan");
+        assert_eq!(cat881.athlete_count, 15);
+
+        // 2. Execute drawing for Category 881
+        let summary = db.execute_drawing_festival_bagan(9, vec![881], "both").await.expect("drawing failed");
+        assert_eq!(summary.categories_processed, 1);
+        assert_eq!(summary.bagans_created, 1);
+        assert_eq!(summary.total_matches, 12); // 4 groups * 3 matches = 12
+
+        // 3. Fetch the created festival bagan
+        let bagans = db.get_bagans(9).await.expect("get_bagans failed");
+        let fest_bagan = bagans.iter().find(|b| b.nomor_tanding_id == Some(881)).expect("Bagan festival 881 tidak ditemukan");
+        assert_eq!(fest_bagan.pool, 4, "15 atlet harus membentuk 4 grup");
+        assert!(fest_bagan.kode.as_ref().map(|k| k.starts_with('F')).unwrap_or(false));
+
+        // 4. Fetch detail matches
+        let matches = db.get_detail_bagan(fest_bagan.id).await.expect("get_detail_bagan failed");
+        assert_eq!(matches.len(), 12);
+
+        // Check Group 1 (semi 1: round 1 urutan 1, semi 2: round 1 urutan 2, final: round 2 urutan 1)
+        let g1_semi1 = matches.iter().find(|m| m.round == Some(1) && m.urutan == Some(1)).expect("semi 1 not found");
+        let g1_semi2 = matches.iter().find(|m| m.round == Some(1) && m.urutan == Some(2)).expect("semi 2 not found");
+        let g1_final = matches.iter().find(|m| m.round == Some(2) && m.urutan == Some(1)).expect("final not found");
+
+        assert!(g1_semi1.atlet1_id.is_some() && g1_semi1.atlet2_id.is_some());
+        assert!(g1_semi2.atlet1_id.is_some() && g1_semi2.atlet2_id.is_some());
+        assert!(g1_final.atlet1_id.is_none() && g1_final.atlet2_id.is_none());
+
+        // 5. Score Semi 1 (Aka wins) -> check advancement to final slot 1
+        let winner_semi1 = g1_semi1.atlet1_id.unwrap();
+        db.save_match_result(SaveMatchInput {
+            match_id: g1_semi1.id,
+            bagan_id: fest_bagan.id,
+            score1: Some("3".into()),
+            score2: Some("0".into()),
+            scorekecil1: None,
+            scorekecil2: None,
+            pemenang: Some("1".into()),
+            kata1: None,
+            kata2: None,
+            vr1: false,
+            vr2: false,
+            hantei: false,
+            selesai: true,
+        }).await.expect("save semi 1 failed");
+
+        // Verify final match slot 1 has winner_semi1
+        let matches_after_s1 = db.get_detail_bagan(fest_bagan.id).await.expect("get detail failed");
+        let g1_final_after_s1 = matches_after_s1.iter().find(|m| m.round == Some(2) && m.urutan == Some(1)).unwrap();
+        assert_eq!(g1_final_after_s1.atlet1_id, Some(winner_semi1));
+
+        // 6. Score Semi 2 (Ao wins) -> check advancement to final slot 2
+        let winner_semi2 = g1_semi2.atlet2_id.unwrap();
+        db.save_match_result(SaveMatchInput {
+            match_id: g1_semi2.id,
+            bagan_id: fest_bagan.id,
+            score1: Some("1".into()),
+            score2: Some("4".into()),
+            scorekecil1: None,
+            scorekecil2: None,
+            pemenang: Some("2".into()),
+            kata1: None,
+            kata2: None,
+            vr1: false,
+            vr2: false,
+            hantei: false,
+            selesai: true,
+        }).await.expect("save semi 2 failed");
+
+        // Verify final match slot 2 has winner_semi2
+        let matches_after_s2 = db.get_detail_bagan(fest_bagan.id).await.expect("get detail failed");
+        let g1_final_after_s2 = matches_after_s2.iter().find(|m| m.round == Some(2) && m.urutan == Some(1)).unwrap();
+        assert_eq!(g1_final_after_s2.atlet2_id, Some(winner_semi2));
+
+        // 7. Score Final (Ao wins -> winner_semi2 gets Gold, winner_semi1 gets Silver)
+        db.save_match_result(SaveMatchInput {
+            match_id: g1_final_after_s2.id,
+            bagan_id: fest_bagan.id,
+            score1: Some("2".into()),
+            score2: Some("5".into()),
+            scorekecil1: None,
+            scorekecil2: None,
+            pemenang: Some("2".into()),
+            kata1: None,
+            kata2: None,
+            vr1: false,
+            vr2: false,
+            hantei: false,
+            selesai: true,
+        }).await.expect("save final failed");
+
+        let bagan_final = db.get_bagan_by_id(fest_bagan.id).await.expect("get bagan failed").unwrap();
+        assert_eq!(bagan_final.juara_1_id, Some(winner_semi2));
+        assert_eq!(bagan_final.juara_2_id, Some(winner_semi1));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&test_db_path);
+        println!("test_drawing_and_progression_festival PASSED successfully!");
+    }
 }

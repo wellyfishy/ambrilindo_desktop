@@ -962,3 +962,23 @@ export interface BobBaganResult {
 
 
 
+
+export interface FestivalGroupMatch {
+  semi1: DetailBaganItem | null;
+  semi2: DetailBaganItem | null;
+  final: DetailBaganItem | null;
+}
+
+export interface FestivalGroupPodium {
+  emas: PodiumAthlete | null;
+  perak: PodiumAthlete | null;
+  perunggu1: PodiumAthlete | null;
+  perunggu2: PodiumAthlete | null;
+}
+
+export interface FestivalGroupData {
+  groupNum: number;
+  matches: FestivalGroupMatch;
+  podium: FestivalGroupPodium;
+  isCompleted: boolean;
+}

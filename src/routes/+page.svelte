@@ -36,6 +36,7 @@
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
   import AddEventModal from "$lib/components/AddEventModal.svelte";
   import DrawingBaganModal from "$lib/components/DrawingBaganModal.svelte";
+  import DrawingFestivalModal from "$lib/components/DrawingFestivalModal.svelte";
   import VenueWebPortal from "$lib/components/VenueWebPortal.svelte";
 
   // Application Flow State
@@ -75,6 +76,15 @@
   let addEventModal = $state(false);
   let isCreatingEvent = $state(false);
   let drawingModal = $state(false);
+  let drawingFestivalModal = $state(false);
+
+  async function handleDrawingFestivalComplete() {
+    drawingFestivalModal = false;
+    if (selectedEventId) {
+      await selectEvent(selectedEventId);
+    }
+    showToast("Drawing bagan festival berhasil disimpan!");
+  }
 
   function handleServerStopped() {
     isServerRunning = false;
@@ -494,6 +504,7 @@
       onSelectChannel={handleSelectChannel}
       onOpenQrModal={() => (qrModal = true)}
       onOpenDrawingModal={() => (drawingModal = true)}
+      onOpenDrawingFestivalModal={() => (drawingFestivalModal = true)}
       onReturnToLanding={() => {
         appMode = "landing";
         setConnectionConfig("solo");
@@ -676,6 +687,15 @@
       eventName={activeEvent?.nama_event || 'Event'}
       onClose={() => (drawingModal = false)}
       onComplete={handleDrawingComplete}
+    />
+  {/if}
+
+  {#if drawingFestivalModal && selectedEventId}
+    <DrawingFestivalModal
+      eventId={selectedEventId}
+      eventName={activeEvent?.nama_event || 'Event'}
+      onClose={() => (drawingFestivalModal = false)}
+      onComplete={handleDrawingFestivalComplete}
     />
   {/if}
 

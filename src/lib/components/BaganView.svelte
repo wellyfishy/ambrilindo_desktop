@@ -88,6 +88,182 @@
     displayBaganName.toUpperCase().includes("BOB")
   );
 
+  // Festival Tournament state
+  let isFestivalBagan = $derived(
+    displayBaganName.toUpperCase().includes("FESTIVAL")
+  );
+
+  let festivalGroupCount = $derived.by(() => {
+    if (currentBaganInfo?.pool && currentBaganInfo.pool > 0) {
+      return currentBaganInfo.pool;
+    }
+    const maxFinalUrutan = Math.max(...matches.filter((m) => m.round === 2).map((m) => m.urutan ?? 0), 0);
+    if (maxFinalUrutan > 0) return maxFinalUrutan;
+    const maxSemiUrutan = Math.max(...matches.filter((m) => m.round === 1).map((m) => m.urutan ?? 0), 0);
+    if (maxSemiUrutan > 0) return Math.ceil(maxSemiUrutan / 2);
+    return 1;
+  });
+
+  let festivalGroups = $derived.by(() => {
+    const count = Math.min(4, Math.max(1, festivalGroupCount));
+    const groups = [];
+
+    for (let g = 1; g <= count; g++) {
+      const semi1 = matches.find((m) => m.round === 1 && m.urutan === 2 * g - 1) || null;
+      const semi2 = matches.find((m) => m.round === 1 && m.urutan === 2 * g) || null;
+      const finalMatch = matches.find((m) => m.round === 2 && m.urutan === g) || null;
+
+      let emas: PodiumAthlete | null = null;
+      let perak: PodiumAthlete | null = null;
+      let perunggu1: PodiumAthlete | null = null;
+      let perunggu2: PodiumAthlete | null = null;
+
+      if (finalMatch && finalMatch.selesai && finalMatch.pemenang) {
+        if (finalMatch.pemenang === "1") {
+          emas = finalMatch.atlet1_id ? {
+            id: finalMatch.atlet1_id,
+            name: finalMatch.atlet1_nama || `Atlet #${finalMatch.atlet1_id}`,
+            contingent: finalMatch.atlet1_kontingen || "",
+            logo: finalMatch.atlet1_logo || null,
+            is_priority: finalMatch.atlet1_is_priority || false,
+          } : null;
+          perak = finalMatch.atlet2_id ? {
+            id: finalMatch.atlet2_id,
+            name: finalMatch.atlet2_nama || `Atlet #${finalMatch.atlet2_id}`,
+            contingent: finalMatch.atlet2_kontingen || "",
+            logo: finalMatch.atlet2_logo || null,
+            is_priority: finalMatch.atlet2_is_priority || false,
+          } : null;
+        } else if (finalMatch.pemenang === "2") {
+          emas = finalMatch.atlet2_id ? {
+            id: finalMatch.atlet2_id,
+            name: finalMatch.atlet2_nama || `Atlet #${finalMatch.atlet2_id}`,
+            contingent: finalMatch.atlet2_kontingen || "",
+            logo: finalMatch.atlet2_logo || null,
+            is_priority: finalMatch.atlet2_is_priority || false,
+          } : null;
+          perak = finalMatch.atlet1_id ? {
+            id: finalMatch.atlet1_id,
+            name: finalMatch.atlet1_nama || `Atlet #${finalMatch.atlet1_id}`,
+            contingent: finalMatch.atlet1_kontingen || "",
+            logo: finalMatch.atlet1_logo || null,
+            is_priority: finalMatch.atlet1_is_priority || false,
+          } : null;
+        }
+      }
+
+      if (semi1 && semi1.selesai && semi1.pemenang) {
+        const loserId = semi1.pemenang === "1" ? semi1.atlet2_id : semi1.atlet1_id;
+        const loserNama = semi1.pemenang === "1" ? semi1.atlet2_nama : semi1.atlet1_nama;
+        const loserKontingen = semi1.pemenang === "1" ? semi1.atlet2_kontingen : semi1.atlet1_kontingen;
+        const loserLogo = semi1.pemenang === "1" ? semi1.atlet2_logo : semi1.atlet1_logo;
+        if (loserId && loserNama && !loserNama.toUpperCase().includes("BYE")) {
+          perunggu1 = {
+            id: loserId,
+            name: loserNama,
+            contingent: loserKontingen || "",
+            logo: loserLogo || null,
+            is_priority: false,
+          };
+        }
+      }
+
+      if (semi2 && semi2.selesai && semi2.pemenang) {
+        const loserId = semi2.pemenang === "1" ? semi2.atlet2_id : semi2.atlet1_id;
+        const loserNama = semi2.pemenang === "1" ? semi2.atlet2_nama : semi2.atlet1_nama;
+        const loserKontingen = semi2.pemenang === "1" ? semi2.atlet2_kontingen : semi2.atlet1_kontingen;
+        const loserLogo = semi2.pemenang === "1" ? semi2.atlet2_logo : semi2.atlet1_logo;
+        if (loserId && loserNama && !loserNama.toUpperCase().includes("BYE")) {
+          perunggu2 = {
+            id: loserId,
+            name: loserNama,
+            contingent: loserKontingen || "",
+            logo: loserLogo || null,
+            is_priority: false,
+          };
+        }
+      }
+
+      const isCompleted = !!(finalMatch && finalMatch.selesai);
+
+      groups.push({
+        groupNum: g,
+        matches: { semi1, semi2, final: finalMatch },
+        podium: { emas, perak, perunggu1, perunggu2 },
+        isCompleted,
+      });
+    }
+
+    return groups;
+  });
+
+  // Festival Quick Scoring Modal State
+  let festivalScoreModalMatch = $state<DetailBaganItem | null>(null);
+  let festWinner = $state<string>("1");
+  let festScore1 = $state<string>("0");
+  let festScore2 = $state<string>("0");
+  let isSavingFestMatch = $state(false);
+
+  function openFestScoreModal(m: DetailBaganItem) {
+    if (!m.atlet1_id && !m.atlet2_id) return;
+    festivalScoreModalMatch = m;
+    festWinner = m.pemenang || (m.atlet2_id ? "1" : "1");
+    festScore1 = m.score1 ?? "0";
+    festScore2 = m.score2 ?? "0";
+  }
+
+  async function saveFestScore() {
+    if (!festivalScoreModalMatch) return;
+    isSavingFestMatch = true;
+    try {
+      const input: SaveMatchInput = {
+        match_id: festivalScoreModalMatch.id,
+        bagan_id: festivalScoreModalMatch.bagan_id || baganId,
+        score1: festScore1,
+        score2: festScore2,
+        pemenang: festWinner,
+        selesai: true,
+        vr1: false,
+        vr2: false,
+        hantei: false,
+      };
+      await handleSaveMatchResult(input);
+      festivalScoreModalMatch = null;
+      await loadBracketData();
+      onBaganUpdated?.();
+    } catch (err) {
+      console.error("Gagal menyimpan skor festival:", err);
+    } finally {
+      isSavingFestMatch = false;
+    }
+  }
+
+  async function resetFestMatch() {
+    if (!festivalScoreModalMatch) return;
+    isSavingFestMatch = true;
+    try {
+      const input: SaveMatchInput = {
+        match_id: festivalScoreModalMatch.id,
+        bagan_id: festivalScoreModalMatch.bagan_id || baganId,
+        score1: "-",
+        score2: "-",
+        pemenang: null,
+        selesai: false,
+        vr1: false,
+        vr2: false,
+        hantei: false,
+      };
+      await handleSaveMatchResult(input);
+      festivalScoreModalMatch = null;
+      await loadBracketData();
+      onBaganUpdated?.();
+    } catch (err) {
+      console.error("Gagal mereset skor festival:", err);
+    } finally {
+      isSavingFestMatch = false;
+    }
+  }
+
   async function loadRoundRobinData() {
     if (!baganId) return;
     try {
@@ -1010,6 +1186,14 @@
         <span>Cetak (A4)</span>
       </button>
 
+      <!-- Festival Indicator -->
+      {#if isFestivalBagan}
+        <div class="px-2.5 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-bold flex items-center gap-1.5 shadow-xs">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+          <span>BAGAN FESTIVAL (4 ATLET / GRUP • {festivalGroupCount} GRUP)</span>
+        </div>
+      {/if}
+
       <!-- Round Robin or Repechage Actions -->
       {#if isRoundRobin}
         <div class="px-2.5 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[11px] font-bold flex items-center gap-1.5 shadow-xs">
@@ -1497,6 +1681,202 @@
           </div>
         </div>
       </div>
+    {:else if isFestivalBagan}
+      <!-- Festival 2x2 Grid View (Single A4 Landscape Canvas & Print Sheet) -->
+      <div class="festival-canvas-wrapper w-full min-h-full p-4 space-y-4">
+        <!-- Top Tournament Banner -->
+        <div class="festival-banner rounded-xl border p-3.5 {isDarkMode ? 'bg-[#181a20] border-white/10' : 'bg-white border-slate-200'} flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-xs">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                BAGAN FESTIVAL [{currentBaganInfo?.kode || 'F01'}]
+              </span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase bg-zinc-800 text-zinc-300 border border-white/10">
+                {String(currentBaganInfo?.tipe_tanding) === '1' ? 'KATA' : 'KUMITE'}
+              </span>
+              <span class="text-[10px] font-mono text-emerald-400 font-bold">
+                {festivalGroups.length} GRUP ({festivalGroups.length * 4} ATLET MAKSIMAL)
+              </span>
+            </div>
+            <h2 class="text-base font-black mt-1 {isDarkMode ? 'text-white' : 'text-slate-900'} uppercase tracking-wide">
+              {displayBaganName}
+            </h2>
+            <p class="text-xs {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+              {eventName} • {eventVenue} • {eventDate || '2026'}
+            </p>
+          </div>
+
+          <div class="flex items-center gap-2 no-print">
+            <button
+              type="button"
+              onclick={() => printWithOrientation('landscape')}
+              class="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs transition flex items-center space-x-1.5 shadow-sm active:scale-95 cursor-pointer"
+            >
+              <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
+              </svg>
+              <span>Cetak Bagan (1 Lembar A4)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 2x2 Grid of Groups -->
+        <div class="festival-grid-container grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {#each festivalGroups as group}
+            <div class="group-card rounded-xl border p-3 flex flex-col justify-between {isDarkMode ? 'bg-[#15171e] border-white/10 hover:border-emerald-500/30' : 'bg-white border-slate-200'} transition shadow-xs">
+              <!-- Group Top Header -->
+              <div class="flex items-center justify-between pb-2 mb-2 border-b {isDarkMode ? 'border-white/5' : 'border-slate-100'}">
+                <div class="flex items-center space-x-2">
+                  <span class="w-6 h-6 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center font-mono font-black text-xs text-emerald-400">
+                    {group.groupNum}
+                  </span>
+                  <span class="text-xs font-black uppercase tracking-wider {isDarkMode ? 'text-white' : 'text-slate-800'}">
+                    GRUP {group.groupNum}
+                  </span>
+                </div>
+
+                {#if group.isCompleted}
+                  <span class="px-2 py-0.5 rounded font-mono font-bold text-[9px] uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                    <span>🏆</span>
+                    <span>SELESAI (PODIUM SAH)</span>
+                  </span>
+                {:else}
+                  <span class="px-2 py-0.5 rounded font-mono font-bold text-[9px] uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>BERJALAN</span>
+                  </span>
+                {/if}
+              </div>
+
+              <!-- Bracket Area: Semifinals & Final -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 my-1 items-center flex-1">
+                <!-- Column 1: Semifinals -->
+                <div class="space-y-2">
+                  <!-- Semi 1 -->
+                  {#if group.matches.semi1}
+                    {@const m = group.matches.semi1}
+                    <div
+                      role="button"
+                      tabindex="0"
+                      onclick={() => openFestScoreModal(m)}
+                      onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
+                      class="match-box rounded-lg border p-1.5 cursor-pointer transition text-left {m.selesai ? (isDarkMode ? 'border-emerald-500/30 bg-emerald-950/10' : 'border-emerald-300 bg-emerald-50/50') : (isDarkMode ? 'border-white/10 bg-black/20 hover:border-emerald-500/40' : 'border-slate-200 bg-slate-50 hover:border-emerald-400')}"
+                    >
+                      <div class="flex items-center justify-between text-[9px] font-mono text-zinc-400 mb-1">
+                        <span class="font-bold text-emerald-400">Semifinal 1</span>
+                        <span>{m.kode || `P-${m.id}`}</span>
+                      </div>
+                      <!-- Aka -->
+                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '1' ? 'bg-red-500/20 text-red-300 font-bold' : 'text-zinc-300'}">
+                        <span class="truncate">{m.atlet1_nama || '— (BYE)'}</span>
+                        <span class="font-mono font-bold ml-1">{m.score1 ?? '-'}</span>
+                      </div>
+                      <!-- Ao -->
+                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '2' ? 'bg-blue-500/20 text-blue-300 font-bold' : 'text-zinc-300'}">
+                        <span class="truncate">{m.atlet2_nama || '— (BYE)'}</span>
+                        <span class="font-mono font-bold ml-1">{m.score2 ?? '-'}</span>
+                      </div>
+                    </div>
+                  {/if}
+
+                  <!-- Semi 2 -->
+                  {#if group.matches.semi2}
+                    {@const m = group.matches.semi2}
+                    <div
+                      role="button"
+                      tabindex="0"
+                      onclick={() => openFestScoreModal(m)}
+                      onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
+                      class="match-box rounded-lg border p-1.5 cursor-pointer transition text-left {m.selesai ? (isDarkMode ? 'border-emerald-500/30 bg-emerald-950/10' : 'border-emerald-300 bg-emerald-50/50') : (isDarkMode ? 'border-white/10 bg-black/20 hover:border-emerald-500/40' : 'border-slate-200 bg-slate-50 hover:border-emerald-400')}"
+                    >
+                      <div class="flex items-center justify-between text-[9px] font-mono text-zinc-400 mb-1">
+                        <span class="font-bold text-emerald-400">Semifinal 2</span>
+                        <span>{m.kode || `P-${m.id}`}</span>
+                      </div>
+                      <!-- Aka -->
+                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '1' ? 'bg-red-500/20 text-red-300 font-bold' : 'text-zinc-300'}">
+                        <span class="truncate">{m.atlet1_nama || '— (BYE)'}</span>
+                        <span class="font-mono font-bold ml-1">{m.score1 ?? '-'}</span>
+                      </div>
+                      <!-- Ao -->
+                      <div class="flex items-center justify-between text-xs py-0.5 px-1 rounded {m.pemenang === '2' ? 'bg-blue-500/20 text-blue-300 font-bold' : 'text-zinc-300'}">
+                        <span class="truncate">{m.atlet2_nama || '— (BYE)'}</span>
+                        <span class="font-mono font-bold ml-1">{m.score2 ?? '-'}</span>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- Column 2: Final Match -->
+                <div>
+                  {#if group.matches.final}
+                    {@const m = group.matches.final}
+                    <div
+                      role="button"
+                      tabindex="0"
+                      onclick={() => openFestScoreModal(m)}
+                      onkeydown={(e) => { if (e.key === 'Enter') openFestScoreModal(m); }}
+                      class="match-box rounded-xl border p-2 cursor-pointer transition text-left {m.selesai ? (isDarkMode ? 'border-amber-500/40 bg-amber-950/20' : 'border-amber-400 bg-amber-50') : (isDarkMode ? 'border-amber-500/20 bg-amber-950/10 hover:border-amber-500/50' : 'border-amber-300 bg-amber-50/40 hover:border-amber-500')}"
+                    >
+                      <div class="flex items-center justify-between text-[9px] font-mono text-amber-400 mb-1 font-bold">
+                        <span>FINAL GRUP {group.groupNum} 🏆</span>
+                        <span class="text-zinc-400">{m.kode || `P-${m.id}`}</span>
+                      </div>
+                      <!-- Aka -->
+                      <div class="flex items-center justify-between text-xs py-1 px-1.5 rounded {m.pemenang === '1' ? 'bg-red-500/25 text-red-200 font-black border border-red-500/30' : 'text-zinc-300'}">
+                        <span class="truncate">{m.atlet1_nama || 'Pemenang Semi 1'}</span>
+                        <span class="font-mono font-black ml-1">{m.score1 ?? '-'}</span>
+                      </div>
+                      <!-- Ao -->
+                      <div class="flex items-center justify-between text-xs py-1 px-1.5 rounded mt-1 {m.pemenang === '2' ? 'bg-blue-500/25 text-blue-200 font-black border border-blue-500/30' : 'text-zinc-300'}">
+                        <span class="truncate">{m.atlet2_nama || 'Pemenang Semi 2'}</span>
+                        <span class="font-mono font-black ml-1">{m.score2 ?? '-'}</span>
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              </div>
+
+              <!-- Podium Bar for Group -->
+              <div class="podium-bar mt-2 pt-2 border-t {isDarkMode ? 'border-white/5 bg-black/20' : 'border-slate-100 bg-slate-50'} rounded-lg p-2">
+                <div class="text-[9px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-1">
+                  Hasil Juara Grup {group.groupNum}
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-1 text-[11px]">
+                  <!-- Emas -->
+                  <div class="flex items-center space-x-1 truncate">
+                    <span class="shrink-0">🥇</span>
+                    <span class="truncate font-bold text-amber-300" title={group.podium.emas?.name || '—'}>
+                      {group.podium.emas?.name || '—'}
+                    </span>
+                  </div>
+                  <!-- Perak -->
+                  <div class="flex items-center space-x-1 truncate">
+                    <span class="shrink-0">🥈</span>
+                    <span class="truncate font-semibold text-slate-300" title={group.podium.perak?.name || '—'}>
+                      {group.podium.perak?.name || '—'}
+                    </span>
+                  </div>
+                  <!-- Perunggu 1 -->
+                  <div class="flex items-center space-x-1 truncate">
+                    <span class="shrink-0">🥉</span>
+                    <span class="truncate text-amber-600/90" title={group.podium.perunggu1?.name || '—'}>
+                      {group.podium.perunggu1?.name || '—'}
+                    </span>
+                  </div>
+                  <!-- Perunggu 2 -->
+                  <div class="flex items-center space-x-1 truncate">
+                    <span class="shrink-0">🥉</span>
+                    <span class="truncate text-amber-600/90" title={group.podium.perunggu2?.name || '—'}>
+                      {group.podium.perunggu2?.name || '—'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
     {:else if elimRounds.length === 0}
       <div class="h-64 flex flex-col items-center justify-center text-center">
         <p class="text-sm font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'}">Belum ada partai untuk bagan ini</p>
@@ -1940,6 +2320,117 @@
 </div>
 {/if}
 
+<!-- Festival Quick Score Modal -->
+{#if festivalScoreModalMatch}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-fade-in no-print">
+    <div class="bg-[#181a20] border border-white/15 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden font-sans text-zinc-200">
+      <div class="px-5 py-3.5 border-b border-white/10 flex items-center justify-between bg-[#20232b]">
+        <div class="flex items-center space-x-2">
+          <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+            {festivalScoreModalMatch.round === 2 ? 'FINAL' : 'SEMIFINAL'}
+          </span>
+          <h3 class="text-xs font-bold text-white uppercase">
+            Input Hasil Partai #{festivalScoreModalMatch.urutan}
+          </h3>
+        </div>
+        <button
+          onclick={() => { festivalScoreModalMatch = null; }}
+          class="text-zinc-400 hover:text-white p-1 rounded"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <!-- Aka (Red) Selection -->
+        <label
+          class="flex items-center justify-between p-3 rounded-xl border cursor-pointer transition {festWinner === '1' ? 'bg-red-500/15 border-red-500/50' : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.04]'}"
+        >
+          <div class="flex items-center space-x-2.5 min-w-0">
+            <input
+              type="radio"
+              bind:group={festWinner}
+              value="1"
+              class="accent-red-500 w-4 h-4"
+            />
+            <div class="min-w-0">
+              <span class="text-[10px] font-mono font-bold text-red-400 uppercase block">AKA (MERAH)</span>
+              <span class="text-xs font-bold text-white truncate block">
+                {festivalScoreModalMatch.atlet1_nama || '—'}
+              </span>
+              <span class="text-[10px] text-zinc-400 block truncate">
+                {festivalScoreModalMatch.atlet1_kontingen || ''}
+              </span>
+            </div>
+          </div>
+          <input
+            type="text"
+            bind:value={festScore1}
+            class="w-14 text-center text-sm font-mono font-black py-1.5 rounded-lg bg-black/60 border border-white/20 text-white outline-none focus:border-red-400"
+          />
+        </label>
+
+        <!-- Ao (Blue) Selection -->
+        <label
+          class="flex items-center justify-between p-3 rounded-xl border cursor-pointer transition {festWinner === '2' ? 'bg-blue-500/15 border-blue-500/50' : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.04]'}"
+        >
+          <div class="flex items-center space-x-2.5 min-w-0">
+            <input
+              type="radio"
+              bind:group={festWinner}
+              value="2"
+              class="accent-blue-500 w-4 h-4"
+            />
+            <div class="min-w-0">
+              <span class="text-[10px] font-mono font-bold text-blue-400 uppercase block">AO (BIRU)</span>
+              <span class="text-xs font-bold text-white truncate block">
+                {festivalScoreModalMatch.atlet2_nama || '—'}
+              </span>
+              <span class="text-[10px] text-zinc-400 block truncate">
+                {festivalScoreModalMatch.atlet2_kontingen || ''}
+              </span>
+            </div>
+          </div>
+          <input
+            type="text"
+            bind:value={festScore2}
+            class="w-14 text-center text-sm font-mono font-black py-1.5 rounded-lg bg-black/60 border border-white/20 text-white outline-none focus:border-blue-400"
+          />
+        </label>
+      </div>
+
+      <div class="px-5 py-3.5 border-t border-white/10 flex items-center justify-between bg-[#20232b]">
+        <button
+          type="button"
+          onclick={resetFestMatch}
+          disabled={isSavingFestMatch}
+          class="px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 font-semibold rounded-lg hover:bg-rose-500/10 transition"
+        >
+          Reset Partai
+        </button>
+
+        <div class="flex items-center space-x-2">
+          <button
+            type="button"
+            onclick={() => { festivalScoreModalMatch = null; }}
+            class="px-3 py-1.5 text-xs text-zinc-400 hover:text-white rounded-lg transition"
+          >
+            Batal
+          </button>
+          <button
+            type="button"
+            onclick={saveFestScore}
+            disabled={isSavingFestMatch}
+            class="px-4 py-1.5 text-xs font-bold rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black shadow-md transition"
+          >
+            {isSavingFestMatch ? 'Menyimpan...' : 'Simpan Pemenang'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- Best of the Best (BOB) Drawing Modal -->
 <BobDrawingModal
   eventId={currentBaganInfo?.event_id || 1}
@@ -2068,6 +2559,65 @@
       display: block !important;
       z-index: 1 !important;
     }
+    /* Festival Print Layout on A4 Landscape (Single Sheet) */
+    .festival-canvas-wrapper {
+      width: 285mm !important;
+      max-width: 285mm !important;
+      height: 198mm !important;
+      max-height: 198mm !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      overflow: hidden !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      background: #ffffff !important;
+      color: #000000 !important;
+    }
+    .festival-banner {
+      height: 18mm !important;
+      max-height: 18mm !important;
+      padding: 1.5mm 3mm !important;
+      border: 1px solid #18181b !important;
+      background: #ffffff !important;
+      color: #000000 !important;
+      box-shadow: none !important;
+      margin-bottom: 2mm !important;
+    }
+    .festival-grid-container {
+      display: grid !important;
+      grid-template-columns: 1fr 1fr !important;
+      grid-template-rows: 1fr 1fr !important;
+      gap: 2.5mm !important;
+      flex: 1 !important;
+      height: calc(100% - 22mm) !important;
+      max-height: calc(100% - 22mm) !important;
+      overflow: hidden !important;
+    }
+    .group-card {
+      background: #ffffff !important;
+      color: #000000 !important;
+      border: 1.5px solid #18181b !important;
+      padding: 2mm !important;
+      box-shadow: none !important;
+      overflow: hidden !important;
+    }
+    .match-box {
+      border: 1px solid #71717a !important;
+      background: #fafafa !important;
+      color: #000000 !important;
+      padding: 1mm !important;
+    }
+    .podium-bar {
+      border-top: 1px solid #18181b !important;
+      background: #f4f4f5 !important;
+      color: #000000 !important;
+      padding: 1mm 2mm !important;
+      margin-top: 1mm !important;
+    }
+
     .bracket-grid {
       position: relative !important;
       background: transparent !important;

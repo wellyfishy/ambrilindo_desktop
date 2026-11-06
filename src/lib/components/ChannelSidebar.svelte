@@ -25,6 +25,7 @@
     onSelectChannel: (channel: ActiveChannel) => void;
     onOpenQrModal: () => void;
     onOpenDrawingModal?: () => void;
+    onOpenDrawingFestivalModal?: () => void;
     onReturnToLanding: () => void;
   }
 
@@ -40,6 +41,7 @@
     onSelectChannel,
     onOpenQrModal,
     onOpenDrawingModal,
+    onOpenDrawingFestivalModal,
     onReturnToLanding,
   }: Props = $props();
 
@@ -194,36 +196,35 @@
     window.addEventListener("mouseup", onMouseUp);
   }
 
-  const defaultFestivalBagan: BaganItem = {
-    id: 0,
-    event_id: 1,
-    nama_bagan: "Festival",
-    nomor_tanding_id: null,
-    tipe_tanding: "2",
-    juara_1_id: null,
-    juara_2_id: null,
-    juara_3a_id: null,
-    juara_3b_id: null,
-    peringkat_5_id: null,
-    peringkat_6_id: null,
-    peringkat_7_id: null,
-    peringkat_8_id: null,
-    round_robin: false,
-    pool: 1,
-    kode: "000",
-    is_bob: false,
-    has_vr: false,
-  };
+  // Separate Open / Prestasi bagans and Festival bagans
+  let openBagans = $derived(
+    bagans.filter(
+      (b) => b.id !== 0 && b.kode !== "000" && !(b.nama_bagan || "").toUpperCase().includes("FESTIVAL")
+    )
+  );
 
-  let allBagans = $derived.by(() => {
-    const list = bagans.filter((b) => b.id !== 0 && b.kode !== "000");
-    return [defaultFestivalBagan, ...list];
-  });
+  let festivalBagans = $derived(
+    bagans.filter(
+      (b) => b.id !== 0 && b.kode !== "000" && (b.nama_bagan || "").toUpperCase().includes("FESTIVAL")
+    )
+  );
 
-  let filteredBagans = $derived(
-    allBagans.filter((b) =>
-      (b.nama_bagan || "").toLowerCase().includes(searchBagan.toLowerCase()) ||
-      (b.kode || "").toLowerCase().includes(searchBagan.toLowerCase())
+  let filteredOpenBagans = $derived(
+    openBagans.filter(
+      (b) =>
+        (b.nama_bagan || "").toLowerCase().includes(searchBagan.toLowerCase()) ||
+        (b.kode || "").toLowerCase().includes(searchBagan.toLowerCase())
+    )
+  );
+
+  let collapseFestival = $state(false);
+  let searchFestival = $state("");
+
+  let filteredFestivalBagans = $derived(
+    festivalBagans.filter(
+      (b) =>
+        (b.nama_bagan || "").toLowerCase().includes(searchFestival.toLowerCase()) ||
+        (b.kode || "").toLowerCase().includes(searchFestival.toLowerCase())
     )
   );
 
@@ -660,14 +661,14 @@
       {/if}
     </div>
 
-    <!-- Group 4: Bagan Kategori ({bagans.length}) -->
+    <!-- Group 4: Bagan Kategori ({openBagans.length}) -->
     <div>
       <div class="flex items-center justify-between px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-zinc-500 uppercase transition">
         <button
           onclick={() => (collapseBagan = !collapseBagan)}
           class="flex items-center space-x-1.5 hover:text-zinc-300 uppercase transition"
         >
-          <span>BAGAN KATEGORI ({allBagans.length})</span>
+          <span>BAGAN KATEGORI ({openBagans.length})</span>
           <span class="text-[9px]">{collapseBagan ? '▶' : '▼'}</span>
         </button>
 
@@ -677,7 +678,7 @@
             e.stopPropagation();
             onOpenDrawingModal?.();
           }}
-          title="Buka Drawing Bagan Otomatis"
+          title="Buka Drawing Bagan Prestasi Otomatis"
           class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-amber-400 hover:text-amber-300 hover:bg-amber-400/10 border border-amber-500/20 transition flex items-center space-x-1"
         >
           <span>+ DRAWING</span>
@@ -685,7 +686,7 @@
       </div>
 
       {#if !collapseBagan}
-        {#if bagans.length > 5}
+        {#if openBagans.length > 5}
           <div class="px-2 my-1">
             <input
               type="text"
@@ -696,11 +697,9 @@
           </div>
         {/if}
 
-        <!-- Expandable without nested scroll: flows naturally with sidebar -->
         <div class="mt-1 space-y-0.5">
-          {#if filteredBagans.length > 0}
-            {#each filteredBagans as bagan}
-              {@const isFestival = bagan.id === 0 || bagan.kode === '000'}
+          {#if filteredOpenBagans.length > 0}
+            {#each filteredOpenBagans as bagan}
               {@const isKata = String(bagan.tipe_tanding) === '1'}
               {@const isActive = activeChannel.type === 'bagan' && activeChannel.id === bagan.id}
               {@const baganCode = bagan.kode || String(bagan.id).padStart(3, '0')}
@@ -710,30 +709,108 @@
                     type: "bagan",
                     id: bagan.id,
                     name: bagan.nama_bagan || `bagan-${bagan.id}`,
-                    subtitle: isFestival
-                      ? "Bagan Default Festival [000]: Scoring Langsung Tanpa Data"
-                      : `Bagan [${baganCode}]: ${bagan.nama_bagan || ''}`,
+                    subtitle: `Bagan [${baganCode}]: ${bagan.nama_bagan || ''}`,
                   })}
-                title={isFestival ? "[000] Bagan Festival Bebas (Klik untuk langsung buka Control Panel)" : `[${baganCode}] ${bagan.nama_bagan || `bagan-${bagan.id}`}`}
-                class="w-full flex items-start space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-left group {isFestival ? 'hover:bg-emerald-500/10 border border-emerald-500/20 bg-emerald-950/20' : (isActive ? (isKata ? 'bg-sky-500/10 text-sky-200 font-semibold border border-sky-500/20 shadow-sm' : 'bg-amber-500/10 text-amber-200 font-semibold border border-amber-500/20 shadow-sm') : 'hover:bg-white/[0.04]')}"
+                title={`[${baganCode}] ${bagan.nama_bagan || `bagan-${bagan.id}`}`}
+                class="w-full flex items-start space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-left group {isActive ? (isKata ? 'bg-sky-500/10 text-sky-200 font-semibold border border-sky-500/20 shadow-sm' : 'bg-amber-500/10 text-amber-200 font-semibold border border-amber-500/20 shadow-sm') : 'hover:bg-white/[0.04]'}"
               >
-                <!-- Monospace Bagan Code Badge replacing '#' -->
-                <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wider shrink-0 mt-0.5 {isFestival ? 'bg-emerald-950/70 text-emerald-400 border border-emerald-500/30' : (isKata ? 'bg-sky-950/50 text-sky-400/80 border border-sky-500/20' : 'bg-amber-950/50 text-amber-400/80 border border-amber-500/20')}">
+                <!-- Monospace Bagan Code Badge -->
+                <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wider shrink-0 mt-0.5 {isKata ? 'bg-sky-950/50 text-sky-400/80 border border-sky-500/20' : 'bg-amber-950/50 text-amber-400/80 border border-amber-500/20'}">
                   {baganCode}
                 </span>
 
-                <!-- Multi-line title wrap with toned-down, eye-friendly soft colors -->
-                <span class="line-clamp-2 leading-snug break-words flex-1 {isFestival ? 'text-emerald-300 font-bold group-hover:text-emerald-200' : (isActive ? (isKata ? 'text-sky-200' : 'text-amber-200') : (isKata ? 'text-sky-300/70 group-hover:text-sky-200' : 'text-amber-300/70 group-hover:text-amber-200'))}">
+                <span class="line-clamp-2 leading-snug break-words flex-1 {isActive ? (isKata ? 'text-sky-200' : 'text-amber-200') : (isKata ? 'text-sky-300/70 group-hover:text-sky-200' : 'text-amber-300/70 group-hover:text-amber-200')}">
                   {bagan.nama_bagan || `bagan-${bagan.id}`}
-                  {#if isFestival}
-                    <span class="text-[9px] font-mono text-emerald-400/80 font-normal ml-1">(Festival)</span>
-                  {/if}
                 </span>
               </button>
             {/each}
           {:else}
             <div class="px-3 py-2 text-[11px] text-zinc-500 italic">
-              {bagans.length === 0 ? 'Belum ada bagan' : 'Bagan tidak ditemukan'}
+              {openBagans.length === 0 ? 'Belum ada bagan prestasi' : 'Bagan prestasi tidak ditemukan'}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Group 5: Bagan Festival ({festivalBagans.length}) -->
+    <div class="pt-2 border-t border-white/[0.06]">
+      <div class="flex items-center justify-between px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-emerald-400 uppercase transition">
+        <button
+          onclick={() => (collapseFestival = !collapseFestival)}
+          class="flex items-center space-x-1.5 hover:text-emerald-300 uppercase transition"
+        >
+          <span>BAGAN FESTIVAL ({festivalBagans.length})</span>
+          <span class="text-[9px]">{collapseFestival ? '▶' : '▼'}</span>
+        </button>
+
+        <button
+          type="button"
+          onclick={(e) => {
+            e.stopPropagation();
+            onOpenDrawingFestivalModal?.();
+          }}
+          title="Buka Drawing Bagan Festival Otomatis (4 Atlet / Grup)"
+          class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10 border border-emerald-500/30 transition flex items-center space-x-1"
+        >
+          <span>+ DRAWING</span>
+        </button>
+      </div>
+
+      {#if !collapseFestival}
+        {#if festivalBagans.length > 5}
+          <div class="px-2 my-1">
+            <input
+              type="text"
+              bind:value={searchFestival}
+              placeholder="Cari kategori festival..."
+              class="w-full bg-black/40 text-zinc-200 text-[11px] px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-emerald-500/40 outline-none"
+            />
+          </div>
+        {/if}
+
+        <div class="mt-1 space-y-0.5">
+          {#if filteredFestivalBagans.length > 0}
+            {#each filteredFestivalBagans as bagan}
+              {@const isKata = String(bagan.tipe_tanding) === '1'}
+              {@const isActive = activeChannel.type === 'bagan' && activeChannel.id === bagan.id}
+              {@const baganCode = bagan.kode || String(bagan.id).padStart(3, '0')}
+              {@const poolCount = bagan.pool || 1}
+              <button
+                onclick={() =>
+                  onSelectChannel({
+                    type: "bagan",
+                    id: bagan.id,
+                    name: bagan.nama_bagan || `festival-${bagan.id}`,
+                    subtitle: `Bagan Festival [${baganCode}]: ${bagan.nama_bagan || ''} (${poolCount} Grup)`,
+                  })}
+                title={`[${baganCode}] ${bagan.nama_bagan || `festival-${bagan.id}`} (${poolCount} Grup)`}
+                class="w-full flex items-start space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-left group {isActive ? 'bg-emerald-500/15 text-emerald-200 font-semibold border border-emerald-500/30 shadow-sm' : 'hover:bg-emerald-500/[0.06] text-zinc-300'}"
+              >
+                <!-- Monospace Bagan Code Badge -->
+                <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wider shrink-0 mt-0.5 bg-emerald-950/70 text-emerald-400 border border-emerald-500/30">
+                  {baganCode}
+                </span>
+
+                <!-- Title & Group Tag -->
+                <div class="flex-1 min-w-0">
+                  <span class="line-clamp-2 leading-snug break-words block {isActive ? 'text-emerald-200 font-bold' : 'text-emerald-300/80 group-hover:text-emerald-200'}">
+                    {bagan.nama_bagan || `festival-${bagan.id}`}
+                  </span>
+                  <div class="flex items-center gap-1.5 mt-0.5">
+                    <span class="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      {poolCount} Grup
+                    </span>
+                    <span class="text-[9px] font-mono text-zinc-400">
+                      {isKata ? 'Kata' : 'Kumite'}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            {/each}
+          {:else}
+            <div class="px-3 py-2 text-[11px] text-zinc-500 italic">
+              {festivalBagans.length === 0 ? 'Belum ada bagan festival' : 'Bagan festival tidak ditemukan'}
             </div>
           {/if}
         </div>

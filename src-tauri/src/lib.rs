@@ -293,6 +293,26 @@ async fn execute_drawing_bagan(
 }
 
 #[tauri::command]
+async fn get_drawing_eligible_festival_categories(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<DrawingCategoryInfo>, String> {
+    let db = state.db.lock().await;
+    db.get_drawing_eligible_festival_categories(event_id).await
+}
+
+#[tauri::command]
+async fn execute_drawing_festival_bagan(
+    event_id: i64,
+    category_ids: Vec<i64>,
+    shuffle_type: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<DrawingSummary, String> {
+    let db = state.db.lock().await;
+    db.execute_drawing_festival_bagan(event_id, category_ids, &shuffle_type).await
+}
+
+#[tauri::command]
 async fn delete_all_bagans(
     event_id: i64,
     state: tauri::State<'_, DesktopState>,
@@ -1696,7 +1716,9 @@ pub fn run() {
             update_tatami_number,
             get_categories,
             get_drawing_eligible_categories,
+            get_drawing_eligible_festival_categories,
             execute_drawing_bagan,
+            execute_drawing_festival_bagan,
             delete_all_bagans,
             delete_category_bagans,
             delete_all_athletes,

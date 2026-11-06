@@ -840,6 +840,14 @@ async fn drawing_eligible_categories_api(Path(event_id): Path<i64>, State(state)
     }
 }
 
+async fn drawing_eligible_festival_categories_api(Path(event_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    match db.get_drawing_eligible_festival_categories(event_id).await {
+        Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
 async fn list_perguruans_api(Path(event_id): Path<i64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let db = state.db.lock().await;
     match db.get_perguruans(event_id).await {
@@ -1114,6 +1122,23 @@ async fn execute_drawing_bagan_api(
     let shuffle = payload.shuffle_type.unwrap_or_else(|| "random".into());
     let vr_cats = payload.vr_category_ids.unwrap_or_default();
     match db.execute_drawing_bagan(payload.event_id, payload.category_ids, &shuffle, vr_cats).await {
+        Ok(v) => {
+            if let Some(app) = &state.app_handle {
+                let _ = app.emit("bracket_updated", ());
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
+async fn execute_drawing_festival_bagan_api(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ExecuteDrawingHttpInput>,
+) -> impl IntoResponse {
+    let db = state.db.lock().await;
+    let shuffle = payload.shuffle_type.unwrap_or_else(|| "random".into());
+    match db.execute_drawing_festival_bagan(payload.event_id, payload.category_ids, &shuffle).await {
         Ok(v) => {
             if let Some(app) = &state.app_handle {
                 let _ = app.emit("bracket_updated", ());
@@ -1574,12 +1599,33 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "get_drawing_eligible_festival_categories" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_drawing_eligible_festival_categories(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "execute_drawing_bagan" => {
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             let cat_ids = serde_json::from_value::<Vec<i64>>(payload.get("categoryIds").or(payload.get("category_ids")).cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
             let shuffle_type = get_str_val(&payload, &["shuffleType", "shuffle_type"]).unwrap_or_else(|| "random".into());
             let vr_cat_ids = serde_json::from_value::<Vec<i64>>(payload.get("vrCategoryIds").or(payload.get("vr_category_ids")).cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
             match db.execute_drawing_bagan(ev_id, cat_ids, &shuffle_type, vr_cat_ids).await {
+                Ok(v) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "execute_drawing_festival_bagan" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let cat_ids = serde_json::from_value::<Vec<i64>>(payload.get("categoryIds").or(payload.get("category_ids")).cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
+            let shuffle_type = get_str_val(&payload, &["shuffleType", "shuffle_type"]).unwrap_or_else(|| "random".into());
+            match db.execute_drawing_festival_bagan(ev_id, cat_ids, &shuffle_type).await {
                 Ok(v) => {
                     if let Some(app) = &state.app_handle {
                         let _ = app.emit("bracket_updated", ());
@@ -2624,6 +2670,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/enriched-categories/:event_id", get(list_enriched_categories_api))
         .route("/api/category-athletes/:category_id", get(list_category_athletes_api))
         .route("/api/drawing-eligible-categories/:event_id", get(drawing_eligible_categories_api))
+        .route("/api/festival/drawing-eligible-categories/:event_id", get(drawing_eligible_festival_categories_api))
+        .route("/api/festival/execute-drawing", post(execute_drawing_festival_bagan_api))
         .route("/api/categories/create", post(create_category_api))
         .route("/api/categories/update", post(update_category_api))
         .route("/api/categories/toggle-vr", post(toggle_category_vr_api))
