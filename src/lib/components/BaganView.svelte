@@ -1347,15 +1347,25 @@
           {displayBaganName}
         </h1>
       {/if}
-      <p class="text-[11px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
-        <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
-        <span>•</span>
-        <span>{eventVenue}</span>
-        {#if eventDate}
+      {#if isFestivalBagan}
+        <p class="text-[11px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
+          <span>{eventVenue}</span>
+          {#if eventDate}
+            <span>•</span>
+            <span>{eventDate}</span>
+          {/if}
+        </p>
+      {:else}
+        <p class="text-[11px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
+          <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
           <span>•</span>
-          <span>{eventDate}</span>
-        {/if}
-      </p>
+          <span>{eventVenue}</span>
+          {#if eventDate}
+            <span>•</span>
+            <span>{eventDate}</span>
+          {/if}
+        </p>
+      {/if}
     </div>
 
     <!-- Right Match Counter & Action -->
@@ -1907,13 +1917,8 @@
                   </div>
                 </div>
 
-                <div class="final-card-centered flex flex-col justify-center h-[148px] gap-2">
+                <div class="final-card-centered flex flex-col justify-center h-[148px]">
                   {@render festivalMatchCard(group.matches.final, `FINAL GRUP ${gNum}`, true)}
-                  <div class="text-center">
-                    <span class="text-[7.5px] font-extrabold {isDarkMode ? 'text-amber-300 bg-amber-500/10 border-amber-500/30' : 'text-amber-900 bg-amber-50 border-amber-300'} border px-2 py-0.5 rounded uppercase tracking-wider inline-block">
-                      🏆 Perebutan Medali Emas & Perak
-                    </span>
-                  </div>
                 </div>
               </div>
 
@@ -1932,8 +1937,8 @@
                     <span class="col-header-badge w-3.5 h-3.5 rounded-full {isDarkMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-amber-400 text-amber-950'} text-[8px] font-black flex items-center justify-center shrink-0">
                       🏆
                     </span>
-                    <span class="col-header-title text-[9px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-amber-300' : 'text-amber-900'}">
-                      HASIL JUARA GRUP {gNum}
+                    <span class="col-header-title text-[9px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-amber-300' : 'text-amber-900'} whitespace-nowrap">
+                      PODIUM GRUP {gNum}
                     </span>
                   </div>
                 </div>
@@ -2635,33 +2640,37 @@
     }
     .bracket-banner {
       position: relative !important;
-      border-bottom: 1.5px solid #0f172a !important;
-      padding-top: 0 !important;
-      padding-bottom: 2px !important;
-      margin-bottom: 3px !important;
-      height: 38px !important;
+      border-bottom: 2px solid #000000 !important;
+      padding: 1.5mm 4mm !important;
+      margin-bottom: 2mm !important;
+      height: auto !important;
+      min-height: 14mm !important;
+      max-height: 16mm !important;
       box-sizing: border-box !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
-      width: 1064px !important;
+      width: 287mm !important;
+      max-width: 287mm !important;
     }
     .banner-title-wrapper {
       width: 100% !important;
       text-align: center !important;
-      padding-left: 16px !important;
-      padding-right: 16px !important;
+      padding: 0 !important;
     }
     .bracket-banner h1 {
-      font-size: 13px !important;
+      font-size: 13.5pt !important;
+      font-weight: 950 !important;
       line-height: 1.15 !important;
-      color: #020617 !important;
+      color: #000000 !important;
       text-align: center !important;
+      letter-spacing: 0.5px !important;
     }
     .bracket-banner p,
     .bracket-banner span {
-      font-size: 8.5px !important;
-      color: #334155 !important;
+      font-size: 8.5pt !important;
+      font-weight: 800 !important;
+      color: #1e293b !important;
       text-align: center !important;
     }
     .bracket-viewport {
@@ -2671,10 +2680,10 @@
       overflow: hidden !important;
       padding: 0 !important;
       margin: 0 !important;
-      width: 285mm !important;
-      max-width: 285mm !important;
-      height: 184mm !important;
-      max-height: 184mm !important;
+      width: 287mm !important;
+      max-width: 287mm !important;
+      height: calc(200mm - 18mm) !important;
+      max-height: calc(200mm - 18mm) !important;
     }
     .zoom-container {
       width: 1064px !important;
@@ -2708,12 +2717,12 @@
       display: block !important;
       z-index: 1 !important;
     }
-    /* Festival Split 4-Quadrant Print Layout on A4 Landscape (Single Sheet) */
+    /* Festival Split 4-Quadrant Print Layout on A4 Landscape (Single Sheet - 100% Fill) */
     .festival-canvas-wrapper {
-      width: 285mm !important;
-      max-width: 285mm !important;
-      height: 180mm !important;
-      max-height: 180mm !important;
+      width: 287mm !important;
+      max-width: 287mm !important;
+      height: 182mm !important;
+      max-height: 182mm !important;
       padding: 0 !important;
       margin: 0 !important;
       overflow: hidden !important;
@@ -2726,9 +2735,9 @@
     }
     .festival-split-canvas {
       width: 100% !important;
-      max-width: 285mm !important;
-      height: 180mm !important;
-      max-height: 180mm !important;
+      max-width: 287mm !important;
+      height: 100% !important;
+      max-height: 100% !important;
       border: 2px solid #000000 !important;
       background: #ffffff !important;
       overflow: hidden !important;
@@ -2754,11 +2763,11 @@
       background: #ffffff !important;
       color: #000000 !important;
       border: 1px solid #000000 !important;
-      padding: 1.5mm 2.5mm !important;
+      padding: 2mm 3mm !important;
       box-sizing: border-box !important;
       overflow: hidden !important;
-      height: 89mm !important;
-      max-height: 89mm !important;
+      height: 90.5mm !important;
+      max-height: 90.5mm !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
@@ -2964,11 +2973,12 @@
       stroke-width: 1.6px !important;
     }
 
-    /* 3-Column Festival Layout in Print */
+    /* 3-Column Festival Layout in Print (Full Height Stretch & Large Crisp Typography) */
     .group-quadrant .col-header-line {
-      height: 16px !important;
-      padding-bottom: 2px !important;
-      margin-bottom: 3px !important;
+      height: 5.5mm !important;
+      min-height: 5.5mm !important;
+      padding-bottom: 0.8mm !important;
+      margin-bottom: 1.5mm !important;
       border-bottom: 1.5px solid #000000 !important;
       line-height: 1 !important;
     }
@@ -2977,38 +2987,156 @@
       flex-direction: row !important;
       align-items: stretch !important;
       justify-content: space-between !important;
-      height: calc(100% - 20px) !important;
+      height: calc(100% - 7mm) !important;
       width: 100% !important;
     }
     .col-semi {
-      width: 44mm !important;
+      width: 53mm !important;
       flex-shrink: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
     }
     .col-final {
-      width: 46mm !important;
+      width: 39mm !important;
       flex-shrink: 0 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
     }
     .col-podium {
       flex: 1 !important;
       min-width: 0 !important;
       margin-left: 2mm !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
+    }
+    .semi-cards-flex {
+      flex: 1 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
+      gap: 2mm !important;
+    }
+    .final-card-centered {
+      flex: 1 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: center !important;
+      height: 100% !important;
+    }
+    .podium-card-wrap {
+      flex: 1 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: space-between !important;
+      height: 100% !important;
+      gap: 1.2mm !important;
     }
     .connector-fork-col {
-      width: 5mm !important;
+      width: 3mm !important;
       flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      height: 100% !important;
+    }
+    .connector-fork-col svg {
+      width: 100% !important;
+      height: 100% !important;
     }
     .connector-arrow-col {
-      width: 4mm !important;
+      width: 3mm !important;
       flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      height: 100% !important;
+    }
+    .connector-arrow-col svg {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .group-quadrant .match-card {
+      max-height: 36mm !important;
+      flex: 1 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      border: 1.8px solid #000000 !important;
+      border-radius: 1.5mm !important;
+    }
+    .group-quadrant .card-header-bar {
+      height: 5mm !important;
+      min-height: 5mm !important;
+      font-size: 8pt !important;
+      font-weight: 950 !important;
+      padding: 0 2mm !important;
+    }
+    .group-quadrant .player-row {
+      min-height: 13.5mm !important;
+      padding: 1.2mm 2mm !important;
+      flex: 1 !important;
+    }
+    .group-quadrant .player-name-text {
+      font-size: 9.2pt !important;
+      line-height: 11pt !important;
+      font-weight: 950 !important;
+      color: #000000 !important;
+      letter-spacing: -0.15px !important;
+    }
+    .group-quadrant .player-sub-text {
+      font-size: 8pt !important;
+      line-height: 9pt !important;
+      font-weight: 800 !important;
+      color: #1e293b !important;
+      margin-top: 0.3mm !important;
+    }
+    .group-quadrant .side-pill-aka, .group-quadrant .side-pill-ao {
+      font-size: 7.5pt !important;
+      font-weight: 950 !important;
+      padding: 0.8mm 1.5mm !important;
+      border-radius: 0.8mm !important;
+    }
+    .group-quadrant .score-box {
+      width: 5.5mm !important;
+      height: 5.5mm !important;
+      font-size: 9.5pt !important;
+      font-weight: 950 !important;
+    }
+    .podium-row {
+      flex: 1 !important;
+      padding: 1.2mm 2mm !important;
+      border-radius: 1.5mm !important;
+      border: 1.2px solid #000000 !important;
     }
     .podium-rank-tag {
       color: #000000 !important;
-      font-weight: 900 !important;
-      font-size: 6.5px !important;
+      font-weight: 950 !important;
+      font-size: 6.8pt !important;
       line-height: 1 !important;
+      margin-bottom: 0.2mm !important;
+    }
+    .podium-name {
+      font-size: 9.5pt !important;
+      font-weight: 950 !important;
+      line-height: 11pt !important;
+      color: #000000 !important;
+    }
+    .podium-sub {
+      font-size: 7.8pt !important;
+      font-weight: 800 !important;
+      line-height: 9pt !important;
+      color: #334155 !important;
     }
     .medal-circle {
+      width: 5mm !important;
+      height: 5mm !important;
       border: 1px solid #000000 !important;
+      font-size: 8.5pt !important;
+      font-weight: 950 !important;
     }
 
     /* Hasil Juara Card in Print */
