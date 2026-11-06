@@ -1737,8 +1737,8 @@
             title={isByeMatch ? 'Pertandingan BYE' : 'Klik untuk membuka Skor Cepat / Kontrol Pertandingan'}
           >
             <!-- Match Card Header Bar -->
-            <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
-              <span class="flex items-center space-x-1">
+            <div class="card-header-bar flex items-center justify-between px-2 h-[14px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8.5px] font-black font-mono tracking-wider">
+              <span class="flex items-center space-x-1.5">
                 {#if isFinal}
                   <span class="final-title {isDarkMode ? 'text-amber-300' : 'text-amber-800'} font-black flex items-center gap-1">
                     <svg class="w-2.5 h-2.5 fill-current shrink-0" viewBox="0 0 24 24">
@@ -1767,9 +1767,9 @@
             </div>
 
             <!-- AKA (Red) Row -->
-            <div class="player-row {m.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative">
-              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-                <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+            <div class="player-row {m.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-2 py-[1px] min-h-[19px] transition relative">
+              <div class="flex items-center space-x-1.5 mr-1 min-w-0 flex-1">
+                <span class="side-pill-aka w-[24px] inline-flex items-center justify-center text-[7.5px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
                   AKA
                 </span>
                 {#if m.atlet1_logo && logoMap[m.atlet1_logo]}
@@ -1788,32 +1788,32 @@
                         </svg>
                       </span>
                     {/if}
-                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet1_nama ? (isDarkMode ? (m.pemenang === '1' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
+                    <span class="player-name-text truncate block text-[9.5px] leading-[11px] {m.atlet1_nama ? (isDarkMode ? (m.pemenang === '1' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
                       {m.atlet1_nama || (m.atlet1_id ? `Atlet #${m.atlet1_id}` : (isFinal ? '...' : 'BYE'))}
                     </span>
                   </div>
                   {#if m.atlet1_nama}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                    <div class="player-sub-text truncate min-w-0 text-[8px] font-bold leading-[9.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-800'}">
                       {m.atlet1_kontingen || '-'}
                     </div>
                   {:else if !isFinal && m.atlet1_id}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                    <div class="player-sub-text truncate min-w-0 text-[8px] font-bold leading-[9.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
                       —
                     </div>
                   {/if}
                 </div>
               </div>
               <div class="shrink-0 flex items-center">
-                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
+                <span class="score-box min-w-[20px] h-[16px] px-0.5 font-mono text-[9px] flex items-center justify-center rounded border {m.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
                   {m.score1 ?? '-'}
                 </span>
               </div>
             </div>
 
             <!-- AO (Blue) Row -->
-            <div class="player-row {m.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative border-t {isDarkMode ? 'border-zinc-700/60' : 'border-slate-300'}">
-              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-                <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
+            <div class="player-row {m.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-2 py-[1px] min-h-[19px] transition relative border-t {isDarkMode ? 'border-zinc-700/60' : 'border-slate-300'}">
+              <div class="flex items-center space-x-1.5 mr-1 min-w-0 flex-1">
+                <span class="side-pill-ao w-[24px] inline-flex items-center justify-center text-[7.5px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
                   AO
                 </span>
                 {#if m.atlet2_logo && logoMap[m.atlet2_logo]}
@@ -1832,23 +1832,23 @@
                         </svg>
                       </span>
                     {/if}
-                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {m.atlet2_nama ? (isDarkMode ? (m.pemenang === '2' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
+                    <span class="player-name-text truncate block text-[9.5px] leading-[11px] {m.atlet2_nama ? (isDarkMode ? (m.pemenang === '2' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
                       {m.atlet2_nama || (m.atlet2_id ? `Atlet #${m.atlet2_id}` : (isFinal ? '...' : 'BYE'))}
                     </span>
                   </div>
                   {#if m.atlet2_nama}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
+                    <div class="player-sub-text truncate min-w-0 text-[8px] font-bold leading-[9.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-800'}">
                       {m.atlet2_kontingen || '-'}
                     </div>
                   {:else if !isFinal && m.atlet2_id}
-                    <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                    <div class="player-sub-text truncate min-w-0 text-[8px] font-bold leading-[9.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
                       —
                     </div>
                   {/if}
                 </div>
               </div>
               <div class="shrink-0 flex items-center">
-                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
+                <span class="score-box min-w-[20px] h-[16px] px-0.5 font-mono text-[9px] flex items-center justify-center rounded border {m.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
                   {m.score2 ?? '-'}
                 </span>
               </div>
@@ -1887,10 +1887,10 @@
           </div>
 
           {#if group}
-            <!-- 3 Balanced Columns (100% Space Utilization: Semifinal -> Final -> Hasil Juara) -->
-            <div class="{isBandLayout ? 'band-grid-3col' : 'quadrant-grid-3col'} flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1">
+            <!-- 2-Stage Tournament Bracket (Semifinal -> Fork -> Final) -->
+            <div class="{isBandLayout ? 'band-grid-2col' : 'quadrant-grid-2col'} flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1">
               <!-- Column 1: SEMIFINALS (Round 1) -->
-              <div class="col-wrap col-semi {isBandLayout ? 'band-col-semi' : 'w-[164px]'} shrink-0 flex flex-col justify-start">
+              <div class="col-wrap col-semi {isBandLayout ? 'band-col-semi' : 'flex-1'} shrink-0 flex flex-col justify-start">
                 <div class="col-header-line h-4.5 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1.5">
                   <div class="flex items-center justify-center space-x-1.5 text-center w-full">
                     <span class="col-header-badge w-3.5 h-3.5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[8px] font-black font-mono flex items-center justify-center shrink-0">
@@ -1908,18 +1908,18 @@
                 </div>
               </div>
 
-              <!-- Connector 1: SVG Fork (Semi 1 & 2 -> Final) -->
-              <div class="connector-fork-col {isBandLayout ? 'band-connector-fork' : 'w-5'} shrink-0 flex items-center justify-center pointer-events-none">
-                <svg viewBox="0 0 40 100" preserveAspectRatio="none" class="w-full h-full overflow-visible">
-                  <line x1="0" y1="25" x2="20" y2="25" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
-                  <line x1="0" y1="75" x2="20" y2="75" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
-                  <line x1="20" y1="25" x2="20" y2="75" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
-                  <line x1="20" y1="50" x2="40" y2="50" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
+              <!-- Connector: SVG Fork (Semi 1 & 2 -> Final) -->
+              <div class="connector-fork-col {isBandLayout ? 'band-connector-fork' : 'w-7'} shrink-0 flex items-center justify-center pointer-events-none">
+                <svg viewBox="0 0 30 100" preserveAspectRatio="none" class="w-full h-full overflow-visible">
+                  <line x1="0" y1="20" x2="15" y2="20" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
+                  <line x1="0" y1="80" x2="15" y2="80" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
+                  <line x1="15" y1="20" x2="15" y2="80" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
+                  <line x1="15" y1="50" x2="30" y2="50" stroke={isDarkMode ? "rgba(255,255,255,0.75)" : "#0f172a"} stroke-width="2.2" stroke-linecap="round" class="connector-line" />
                 </svg>
               </div>
 
               <!-- Column 2: PARTAI FINAL (Round 2) -->
-              <div class="col-wrap col-final {isBandLayout ? 'band-col-final' : 'w-[168px]'} shrink-0 flex flex-col justify-start">
+              <div class="col-wrap col-final {isBandLayout ? 'band-col-final' : 'flex-1'} shrink-0 flex flex-col justify-start">
                 <div class="col-header-line h-4.5 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-amber-500/40' : 'border-amber-600'} mb-1.5">
                   <div class="flex items-center justify-center space-x-1.5 text-center w-full">
                     <span class="col-header-badge w-3.5 h-3.5 rounded-full {isDarkMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-amber-400 text-amber-950'} text-[8px] font-black flex items-center justify-center shrink-0">
@@ -1933,86 +1933,6 @@
 
                 <div class="final-card-centered flex flex-col justify-center {isBandLayout ? 'h-full' : 'h-[148px]'}">
                   {@render festivalMatchCard(group.matches.final, `FINAL GRUP ${gNum}`, true)}
-                </div>
-              </div>
-
-              <!-- Connector 2: SVG Flow Arrow (Final -> Podium) -->
-              <div class="connector-arrow-col {isBandLayout ? 'band-connector-arrow' : 'w-4'} shrink-0 flex items-center justify-center pointer-events-none">
-                <svg viewBox="0 0 30 100" preserveAspectRatio="none" class="w-full h-full overflow-visible">
-                  <line x1="0" y1="50" x2="22" y2="50" stroke={isDarkMode ? "#f59e0b" : "#d97706"} stroke-width="2.5" stroke-linecap="round" class="connector-line" />
-                  <polygon points="20,44 30,50 20,56" fill={isDarkMode ? "#f59e0b" : "#d97706"} class="connector-polygon" />
-                </svg>
-              </div>
-
-              <!-- Column 3: PODIUM JUARA (Results) -->
-              <div class="col-wrap col-podium {isBandLayout ? 'band-col-podium' : 'flex-1 min-w-0 ml-1'} flex flex-col justify-start">
-                <div class="col-header-line h-4.5 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-amber-500/40' : 'border-amber-600'} mb-1.5">
-                  <div class="flex items-center justify-center space-x-1.5 text-center w-full">
-                    <span class="col-header-badge w-3.5 h-3.5 rounded-full {isDarkMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-amber-400 text-amber-950'} text-[8px] font-black flex items-center justify-center shrink-0">
-                      🏆
-                    </span>
-                    <span class="col-header-title text-[9px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-amber-300' : 'text-amber-900'} whitespace-nowrap">
-                      PODIUM GRUP {gNum}
-                    </span>
-                  </div>
-                </div>
-
-                <div class="podium-card-wrap flex flex-col justify-between {isBandLayout ? 'h-full' : 'h-[148px]'} gap-1">
-                  <!-- Juara 1 (Emas) -->
-                  <div class="podium-row row-emas px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-amber-500/10 border-amber-500/50' : 'bg-[#fffbeb] border-amber-400'}">
-                    <span class="medal-circle medal-emas w-4.5 h-4.5 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">1</span>
-                    {#if group.podium.emas?.logo && logoMap[group.podium.emas.logo]}
-                      <img src={logoMap[group.podium.emas.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
-                    {/if}
-                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.emas?.name || '...'}</div>
-                      {#if group.podium.emas?.contingent}
-                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.emas.contingent}</div>
-                      {/if}
-                    </div>
-                  </div>
-
-                  <!-- Juara 2 (Perak) -->
-                  <div class="podium-row row-perak px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-slate-400/10 border-slate-400/40' : 'bg-[#f8fafc] border-slate-300'}">
-                    <span class="medal-circle medal-perak w-4.5 h-4.5 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">2</span>
-                    {#if group.podium.perak?.logo && logoMap[group.podium.perak.logo]}
-                      <img src={logoMap[group.podium.perak.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
-                    {/if}
-                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.perak?.name || '...'}</div>
-                      {#if group.podium.perak?.contingent}
-                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.perak.contingent}</div>
-                      {/if}
-                    </div>
-                  </div>
-
-                  <!-- Juara 3 (Perunggu 1) -->
-                  <div class="podium-row row-perunggu px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-orange-500/10 border-orange-500/40' : 'bg-[#fff7ed] border-orange-300'}">
-                    <span class="medal-circle medal-perunggu w-4.5 h-4.5 rounded-full bg-gradient-to-br from-orange-400 to-amber-700 text-white font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">3</span>
-                    {#if group.podium.perunggu1?.logo && logoMap[group.podium.perunggu1.logo]}
-                      <img src={logoMap[group.podium.perunggu1.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
-                    {/if}
-                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.perunggu1?.name || '...'}</div>
-                      {#if group.podium.perunggu1?.contingent}
-                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.perunggu1.contingent}</div>
-                      {/if}
-                    </div>
-                  </div>
-
-                  <!-- Juara 3 (Perunggu 2) -->
-                  <div class="podium-row row-perunggu px-2 py-1 flex items-center space-x-2 rounded border transition {isDarkMode ? 'bg-orange-500/10 border-orange-500/40' : 'bg-[#fff7ed] border-orange-300'}">
-                    <span class="medal-circle medal-perunggu w-4.5 h-4.5 rounded-full bg-gradient-to-br from-orange-400 to-amber-700 text-white font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">3</span>
-                    {#if group.podium.perunggu2?.logo && logoMap[group.podium.perunggu2.logo]}
-                      <img src={logoMap[group.podium.perunggu2.logo]} alt="Logo" class="podium-dojo-logo w-3.5 h-3.5 object-contain shrink-0" />
-                    {/if}
-                    <div class="min-w-0 flex-1 truncate flex flex-col justify-center">
-                      <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate text-[9.5px] leading-tight">{group.podium.perunggu2?.name || '...'}</div>
-                      {#if group.podium.perunggu2?.contingent}
-                        <div class="podium-sub text-[7px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-600'} truncate leading-tight mt-0.5">{group.podium.perunggu2.contingent}</div>
-                      {/if}
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -2053,11 +1973,49 @@
                 {/each}
               </div>
 
-              <!-- Right Column (Even Groups: 2, 4, 6) -->
+              <!-- Right Column (Even Groups: 2, 4, 6 or Slot 6 Official Box) -->
               <div class="divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex flex-col flex-1 h-full">
                 {#each rightGroups as g (g.groupNum)}
                   {@render festivalGroupQuadrant(g.groupNum, false)}
                 {/each}
+                {#if festivalGroups.length === 5}
+                  <!-- Slot 6: Official Verification & Signatures Box -->
+                  <div class="group-quadrant flex flex-col justify-between p-2.5 {isDarkMode ? 'bg-[#15171e]' : 'bg-[#f8fafc]'} flex-1 overflow-hidden">
+                    <div class="col-header-line flex items-center justify-between px-2 py-0.5 border-b-2 {isDarkMode ? 'border-zinc-700' : 'border-slate-800'} mb-1.5 h-6 shrink-0">
+                      <div class="flex items-center space-x-2">
+                        <span class="col-header-badge w-4 h-4 rounded-full {isDarkMode ? 'bg-zinc-800 text-zinc-300' : 'bg-slate-700 text-white'} text-[9px] font-black flex items-center justify-center shrink-0">✓</span>
+                        <span class="col-header-title text-[10px] font-black uppercase tracking-tight {isDarkMode ? 'text-zinc-200' : 'text-slate-800'}">
+                          PENGESAHAN HASIL PERTANDINGAN
+                        </span>
+                      </div>
+                    </div>
+                    <div class="flex-1 flex flex-col justify-between px-2 py-1">
+                      <div class="flex items-center justify-around gap-4 mt-2">
+                        <div class="flex-1 flex flex-col items-center text-center">
+                          <span class="text-[9px] font-black uppercase tracking-wider {isDarkMode ? 'text-zinc-300' : 'text-slate-800'} mb-8">
+                            Dewan Wasit / Juri
+                          </span>
+                          <div class="w-4/5 border-b border-dashed {isDarkMode ? 'border-zinc-500' : 'border-slate-600'} mb-1"></div>
+                          <span class="text-[7.5px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                            (Nama & Tanda Tangan)
+                          </span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center text-center">
+                          <span class="text-[9px] font-black uppercase tracking-wider {isDarkMode ? 'text-zinc-300' : 'text-slate-800'} mb-8">
+                            Technical Delegate (TD)
+                          </span>
+                          <div class="w-4/5 border-b border-dashed {isDarkMode ? 'border-zinc-500' : 'border-slate-600'} mb-1"></div>
+                          <span class="text-[7.5px] font-bold {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">
+                            (Nama & Tanda Tangan)
+                          </span>
+                        </div>
+                      </div>
+                      <div class="text-[7.5px] font-bold text-center {isDarkMode ? 'text-zinc-400 border-zinc-700' : 'text-slate-500 border-slate-300'} border-t pt-1 mt-1 leading-tight">
+                        Bagan Pertandingan Festival Resmi Federasi Olahraga Karate-Do Indonesia (FORKI). Seluruh hasil pertandingan dicatat dan disahkan oleh panitia pelaksana.
+                      </div>
+                    </div>
+                  </div>
+                {/if}
               </div>
             </div>
           {/if}
@@ -2892,10 +2850,10 @@
       border-bottom: 1.5px solid #000000 !important;
       color: #000000 !important;
       padding: 0 4px !important;
-      height: 13px !important;
-      min-height: 13px !important;
-      line-height: 13px !important;
-      font-size: 7.5px !important;
+      height: 14px !important;
+      min-height: 14px !important;
+      line-height: 14px !important;
+      font-size: 8pt !important;
       font-weight: 900 !important;
     }
     .card-header-bar span {
@@ -2912,21 +2870,21 @@
       background: #ffffff !important;
       background-color: #ffffff !important;
       border-color: #000000 !important;
-      min-height: 17px !important;
-      padding: 0.5px 3px !important;
+      min-height: 19px !important;
+      padding: 0.8mm 2.5mm !important;
     }
     .player-name-text {
       color: #000000 !important;
-      font-weight: 900 !important;
-      font-size: 8.5px !important;
-      line-height: 10px !important;
+      font-weight: 950 !important;
+      font-size: 9.5pt !important;
+      line-height: 11.5pt !important;
     }
     .player-sub-text {
       color: #0f172a !important;
       font-weight: 800 !important;
-      font-size: 7px !important;
-      line-height: 8.5px !important;
-      margin-top: 0.5px !important;
+      font-size: 8pt !important;
+      line-height: 9.5pt !important;
+      margin-top: 0.3mm !important;
       display: block !important;
       white-space: nowrap !important;
       overflow: hidden !important;
@@ -2941,10 +2899,10 @@
       background-color: #f8fafc !important;
       border: 1.5px solid #000000 !important;
       color: #000000 !important;
-      font-weight: 900 !important;
-      min-width: 18px !important;
-      height: 15px !important;
-      font-size: 8.5px !important;
+      font-weight: 950 !important;
+      min-width: 20px !important;
+      height: 16px !important;
+      font-size: 9pt !important;
       padding: 0 1px !important;
     }
 
@@ -2975,11 +2933,11 @@
       background: #b91c1c !important;
       background-color: #b91c1c !important;
       color: #ffffff !important;
-      font-weight: 900 !important;
-      font-size: 7px !important;
-      width: 22px !important;
-      min-width: 22px !important;
-      max-width: 22px !important;
+      font-weight: 950 !important;
+      font-size: 7.5pt !important;
+      width: 24px !important;
+      min-width: 24px !important;
+      max-width: 24px !important;
       display: inline-flex !important;
       align-items: center !important;
       justify-content: center !important;
@@ -2990,11 +2948,11 @@
       background: #1d4ed8 !important;
       background-color: #1d4ed8 !important;
       color: #ffffff !important;
-      font-weight: 900 !important;
-      font-size: 7px !important;
-      width: 22px !important;
-      min-width: 22px !important;
-      max-width: 22px !important;
+      font-weight: 950 !important;
+      font-size: 7.5pt !important;
+      width: 24px !important;
+      min-width: 24px !important;
+      max-width: 24px !important;
       display: inline-flex !important;
       align-items: center !important;
       justify-content: center !important;
@@ -3082,47 +3040,19 @@
       border-bottom: 1.5px solid #000000 !important;
       line-height: 1 !important;
     }
-    .col-final .col-header-title,
-    .col-podium .col-header-title {
+    .col-final .col-header-title {
       color: #92400e !important;
       font-weight: 950 !important;
     }
-    .col-final .col-header-badge,
-    .col-podium .col-header-badge {
+    .col-final .col-header-badge {
       background: #d97706 !important;
       color: #ffffff !important;
       border: none !important;
     }
-    .row-emas {
-      background: #fffbeb !important;
-      border: 1.5px solid #b45309 !important;
-    }
-    .row-emas .medal-circle {
-      background: #fde047 !important;
-      color: #78350f !important;
-      border: 1.2px solid #b45309 !important;
-    }
-    .row-perak {
-      background: #f8fafc !important;
-      border: 1.5px solid #475569 !important;
-    }
-    .row-perak .medal-circle {
-      background: #e2e8f0 !important;
-      color: #1e293b !important;
-      border: 1.2px solid #64748b !important;
-    }
-    .row-perunggu {
-      background: #fff7ed !important;
-      border: 1.5px solid #c2410c !important;
-    }
-    .row-perunggu .medal-circle {
-      background: #fed7aa !important;
-      color: #7c2d12 !important;
-      border: 1.2px solid #c2410c !important;
-    }
 
-    /* 4-Quadrant 3-Column Widths (Generous card widths & tight connectors) */
-    .quadrant-grid-3col {
+    /* 2-Column Balanced Bracket (Semifinal -> Fork -> Final) */
+    .quadrant-grid-2col,
+    .band-grid-2col {
       display: flex !important;
       flex-direction: row !important;
       align-items: stretch !important;
@@ -3131,16 +3061,20 @@
       width: 100% !important;
       gap: 0 !important;
     }
-    .group-quadrant .col-semi {
-      width: 55mm !important;
-      flex-shrink: 0 !important;
+    .group-quadrant .col-semi,
+    .group-quadrant .col-final {
+      flex: 1 !important;
+      width: auto !important;
+      min-width: 0 !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
       height: 100% !important;
     }
     .group-quadrant .connector-fork-col {
-      width: 4mm !important;
+      width: 7mm !important;
+      min-width: 7mm !important;
+      max-width: 7mm !important;
       flex-shrink: 0 !important;
       display: flex !important;
       align-items: center !important;
@@ -3151,56 +3085,22 @@
       width: 100% !important;
       height: 100% !important;
     }
-    .group-quadrant .col-final {
-      width: 50mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
-      height: 100% !important;
-    }
-    .group-quadrant .connector-arrow-col {
-      width: 3.5mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      height: 100% !important;
-    }
-    .group-quadrant .connector-arrow-col svg {
-      width: 100% !important;
-      height: 100% !important;
-    }
-    .group-quadrant .col-podium {
-      flex: 1 !important;
-      min-width: 25mm !important;
-      margin-left: 1.5mm !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
-      height: 100% !important;
-    }
 
-    /* Full-Width Band 3-Column Widths (Spans 100% of Page Width: 287mm) */
-    .band-grid-3col {
-      display: flex !important;
-      flex-direction: row !important;
-      align-items: stretch !important;
-      justify-content: space-between !important;
-      height: calc(100% - 6.5mm) !important;
-      width: 100% !important;
-      gap: 0 !important;
-    }
-    .band-col-semi {
-      width: 82mm !important;
-      flex-shrink: 0 !important;
+    /* Full-Width Band 2-Column Widths (Spans 100% of Page Width: 287mm) */
+    .band-col-semi,
+    .band-col-final {
+      flex: 1 !important;
+      width: auto !important;
+      min-width: 0 !important;
       display: flex !important;
       flex-direction: column !important;
       justify-content: space-between !important;
       height: 100% !important;
     }
     .band-connector-fork {
-      width: 10mm !important;
+      width: 12mm !important;
+      min-width: 12mm !important;
+      max-width: 12mm !important;
       flex-shrink: 0 !important;
       display: flex !important;
       align-items: center !important;
@@ -3209,35 +3109,6 @@
     }
     .band-connector-fork svg {
       width: 100% !important;
-      height: 100% !important;
-    }
-    .band-col-final {
-      width: 78mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
-      height: 100% !important;
-    }
-    .band-connector-arrow {
-      width: 8mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      height: 100% !important;
-    }
-    .band-connector-arrow svg {
-      width: 100% !important;
-      height: 100% !important;
-    }
-    .band-col-podium {
-      flex: 1 !important;
-      min-width: 86mm !important;
-      margin-left: 2mm !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
       height: 100% !important;
     }
 
@@ -3260,24 +3131,13 @@
       height: 100% !important;
     }
 
-    /* Centered, Well-Proportioned Podium */
-    .group-quadrant .podium-card-wrap,
-    .group-band .podium-card-wrap {
-      flex: 1 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: center !important;
-      height: 100% !important;
-      gap: 1.2mm !important;
-    }
-
     .group-quadrant .match-card,
     .group-band .match-card {
-      max-height: 36mm !important;
+      max-height: 38mm !important;
       flex: 1 !important;
       display: flex !important;
       flex-direction: column !important;
-      border: 1.6px solid #000000 !important;
+      border: 1.8px solid #000000 !important;
       border-radius: 1.2mm !important;
       overflow: hidden !important;
     }
@@ -3285,27 +3145,28 @@
     .group-band .card-header-bar {
       height: 4.5mm !important;
       min-height: 4.5mm !important;
-      font-size: 7.5pt !important;
+      font-size: 8pt !important;
       font-weight: 950 !important;
-      padding: 0 1.5mm !important;
+      padding: 0 2mm !important;
     }
     .group-quadrant .player-row,
     .group-band .player-row {
       min-height: 8mm !important;
-      padding: 0.8mm 1.5mm !important;
+      padding: 0.8mm 2mm !important;
       flex: 1 !important;
     }
     .group-quadrant .player-name-text,
     .group-band .player-name-text {
-      font-size: 8.8pt !important;
-      line-height: 10.5pt !important;
+      font-size: 9.5pt !important;
+      line-height: 11.5pt !important;
       font-weight: 950 !important;
       color: #000000 !important;
-      letter-spacing: -0.15px !important;
+      letter-spacing: -0.1px !important;
     }
-    .group-band .player-sub-text {
-      font-size: 7.2pt !important;
-      line-height: 8.8pt !important;
+    .group-band .player-sub-text,
+    .group-quadrant .player-sub-text {
+      font-size: 8pt !important;
+      line-height: 9.5pt !important;
       font-weight: 800 !important;
       color: #1e293b !important;
       margin-top: 0.3mm !important;
@@ -3314,69 +3175,21 @@
       overflow: hidden !important;
       text-overflow: ellipsis !important;
     }
-    .group-quadrant .player-sub-text {
-      font-size: 6.8pt !important;
-      line-height: 8.4pt !important;
-      font-weight: 800 !important;
-      color: #1e293b !important;
-      letter-spacing: -0.15px !important;
-      margin-top: 0.2mm !important;
-      padding-bottom: 0.2mm !important;
-      white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
     .group-quadrant .side-pill-aka,
     .group-quadrant .side-pill-ao,
     .group-band .side-pill-aka,
     .group-band .side-pill-ao {
-      font-size: 7pt !important;
+      font-size: 7.5pt !important;
       font-weight: 950 !important;
-      padding: 0.5mm 1.2mm !important;
+      padding: 0.5mm 1.5mm !important;
       border-radius: 0.6mm !important;
     }
     .group-quadrant .score-box,
     .group-band .score-box {
-      width: 5mm !important;
-      height: 5mm !important;
-      font-size: 8.5pt !important;
+      width: 6.5mm !important;
+      height: 5.5mm !important;
+      font-size: 9pt !important;
       font-weight: 950 !important;
-    }
-
-    .group-quadrant .podium-row,
-    .group-band .podium-row {
-      height: 8.8mm !important;
-      min-height: 8mm !important;
-      max-height: 10.5mm !important;
-      padding: 0.8mm 2mm !important;
-      border-radius: 1mm !important;
-      border: 1.2px solid #000000 !important;
-      display: flex !important;
-      align-items: center !important;
-    }
-    .group-quadrant .podium-name,
-    .group-band .podium-name {
-      font-size: 9.5pt !important;
-      font-weight: 950 !important;
-      line-height: 11.5pt !important;
-      color: #000000 !important;
-    }
-    .group-quadrant .podium-sub,
-    .group-band .podium-sub {
-      font-size: 7.2pt !important;
-      font-weight: 800 !important;
-      line-height: 8.8pt !important;
-      color: #334155 !important;
-      margin-top: 0.3mm !important;
-    }
-    .group-quadrant .medal-circle,
-    .group-band .medal-circle {
-      width: 4.8mm !important;
-      height: 4.8mm !important;
-      border: 1.2px solid #000000 !important;
-      font-size: 8.5pt !important;
-      font-weight: 950 !important;
-      flex-shrink: 0 !important;
     }
 
     /* Connector SVG Lines in Print (Pure lines, fill: none) */
@@ -3386,17 +3199,6 @@
       stroke-linecap: round !important;
       fill: none !important;
     }
-    .connector-arrow-col :global(svg line.connector-line),
-    .band-connector-arrow :global(svg line.connector-line) {
-      stroke: #d97706 !important;
-      stroke-width: 2.2px !important;
-      stroke-linecap: round !important;
-      fill: none !important;
-    }
-    :global(svg polygon.connector-polygon),
-    :global(svg polygon) {
-      fill: #d97706 !important;
-    }
 
     /* Contingent Dojo Logos in Print */
     .player-dojo-logo {
@@ -3404,16 +3206,6 @@
       height: 12px !important;
       max-width: 12px !important;
       max-height: 12px !important;
-      object-fit: contain !important;
-      flex-shrink: 0 !important;
-      display: inline-block !important;
-      border: none !important;
-    }
-    .podium-dojo-logo {
-      width: 14px !important;
-      height: 14px !important;
-      max-width: 14px !important;
-      max-height: 14px !important;
       object-fit: contain !important;
       flex-shrink: 0 !important;
       display: inline-block !important;
@@ -3468,17 +3260,21 @@
     justify-content: space-between;
     min-height: 200px;
   }
-  .band-grid-3col {
+  .band-grid-2col,
+  .quadrant-grid-2col {
     display: flex;
     align-items: stretch;
     justify-content: space-between;
-    gap: 0.5rem;
+    gap: 0.25rem;
     flex: 1;
   }
-  .band-col-semi {
-    width: 32%;
-    min-width: 200px;
-    flex-shrink: 0;
+  .band-col-semi,
+  .band-col-final {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
   }
   .band-connector-fork {
     width: 32px;
@@ -3486,21 +3282,5 @@
     display: flex;
     align-items: center;
     justify-content: center;
-  }
-  .band-col-final {
-    width: 28%;
-    min-width: 180px;
-    flex-shrink: 0;
-  }
-  .band-connector-arrow {
-    width: 24px;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .band-col-podium {
-    flex: 1;
-    min-width: 220px;
   }
 </style>
