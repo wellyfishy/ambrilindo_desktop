@@ -36,6 +36,18 @@
   let confirmDeleteAthletesChecked = $state(false);
   let isDeletingAthletes = $state(false);
 
+  let showDeleteCategoriesModal = $state(false);
+  let confirmDeleteCategoriesChecked = $state(false);
+  let isDeletingCategories = $state(false);
+
+  let showDeleteContingentsModal = $state(false);
+  let confirmDeleteContingentsChecked = $state(false);
+  let isDeletingContingents = $state(false);
+
+  let showDeletePerguruansModal = $state(false);
+  let confirmDeletePerguruansChecked = $state(false);
+  let isDeletingPerguruans = $state(false);
+
   let showResetAllModal = $state(false);
   let confirmResetAllChecked = $state(false);
   let isResettingAll = $state(false);
@@ -162,16 +174,83 @@
     }
   }
 
+  interface ResetTournamentSummary {
+    deleted_bagans: number;
+    deleted_matches: number;
+    deleted_athletes: number;
+    deleted_categories: number;
+    deleted_contingents: number;
+    deleted_perguruans: number;
+    deleted_tatamis: number;
+    deleted_timetable_days: number;
+    deleted_wasits: number;
+  }
+
+  async function handleDeleteAllCategories() {
+    if (!confirmDeleteCategoriesChecked) return;
+    isDeletingCategories = true;
+    errorMessage = null;
+    try {
+      const count = await invoke<number>("delete_all_categories", { eventId });
+      showDeleteCategoriesModal = false;
+      confirmDeleteCategoriesChecked = false;
+      onShowToast(`Berhasil menghapus seluruh nomor tanding (${count} kategori terhapus)!`);
+      await loadStatistics();
+      onRefreshEvent();
+    } catch (err: any) {
+      errorMessage = typeof err === "string" ? err : err?.message || "Gagal menghapus kategori.";
+    } finally {
+      isDeletingCategories = false;
+    }
+  }
+
+  async function handleDeleteAllContingents() {
+    if (!confirmDeleteContingentsChecked) return;
+    isDeletingContingents = true;
+    errorMessage = null;
+    try {
+      const count = await invoke<number>("delete_all_contingents", { eventId });
+      showDeleteContingentsModal = false;
+      confirmDeleteContingentsChecked = false;
+      onShowToast(`Berhasil menghapus seluruh kontingen (${count} kontingen terhapus)!`);
+      await loadStatistics();
+      onRefreshEvent();
+    } catch (err: any) {
+      errorMessage = typeof err === "string" ? err : err?.message || "Gagal menghapus kontingen.";
+    } finally {
+      isDeletingContingents = false;
+    }
+  }
+
+  async function handleDeleteAllPerguruans() {
+    if (!confirmDeletePerguruansChecked) return;
+    isDeletingPerguruans = true;
+    errorMessage = null;
+    try {
+      const count = await invoke<number>("delete_all_perguruans", { eventId });
+      showDeletePerguruansModal = false;
+      confirmDeletePerguruansChecked = false;
+      onShowToast(`Berhasil menghapus seluruh perguruan (${count} perguruan terhapus)!`);
+      await loadStatistics();
+      onRefreshEvent();
+    } catch (err: any) {
+      errorMessage = typeof err === "string" ? err : err?.message || "Gagal menghapus perguruan.";
+    } finally {
+      isDeletingPerguruans = false;
+    }
+  }
+
   async function handleResetAll() {
     if (!confirmResetAllChecked) return;
     isResettingAll = true;
     errorMessage = null;
     try {
-      await invoke("delete_all_bagans", { eventId });
-      const deletedCount = await invoke<number>("delete_all_athletes", { eventId });
+      const summary = await invoke<ResetTournamentSummary>("reset_total_tournament", { eventId });
       showResetAllModal = false;
       confirmResetAllChecked = false;
-      onShowToast(`Reset total selesai: Seluruh bagan dan ${deletedCount} atlet berhasil dibersihkan!`);
+      onShowToast(
+        `Reset total selesai: Seluruh bagan, ${summary.deleted_athletes} atlet, ${summary.deleted_categories} kategori, ${summary.deleted_contingents} kontingen, dan ${summary.deleted_perguruans} perguruan berhasil dibersihkan!`
+      );
       await loadStatistics();
       onRefreshEvent();
     } catch (err: any) {
@@ -885,17 +964,110 @@
           </button>
         </div>
 
-        <!-- Action Row 4: Reset Total Event (Bagan + Atlet) -->
-        <div class="py-3.5 last:pb-0 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <!-- Action Row 4: Hapus Seluruh Nomor Tanding (Kategori) -->
+        <div class="py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div class="max-w-xl">
             <div class="flex items-center space-x-2">
-              <h3 class="text-xs sm:text-sm font-bold text-white tracking-wide">Reset Total Turnamen (Bagan & Atlet)</h3>
-              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
-                Pembersihan Penuh
+              <h3 class="text-xs sm:text-sm font-bold text-white tracking-wide">Hapus Seluruh Nomor Tanding (Kategori)</h3>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                {totalCategories} Kategori Terdaftar
               </span>
             </div>
             <p class="text-xs text-zinc-400 mt-1 leading-relaxed">
-              Membersihkan sekaligus seluruh bagan pertandingan dan seluruh data atlet peserta pada event ini. Database kembali ke kondisi awal tanpa perlu membuat event baru.
+              Menghapus seluruh kelas nomor tanding pada event ini beserta jadwal partai dan bagan terkait. Dianjurkan sebelum mengimpor ulang daftar kategori baru.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onclick={() => {
+              confirmDeleteCategoriesChecked = false;
+              showDeleteCategoriesModal = true;
+            }}
+            disabled={totalCategories === 0 || isLoading}
+            class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+            <span>Hapus Semua Kategori</span>
+          </button>
+        </div>
+
+        <!-- Action Row 5: Hapus Seluruh Kontingen (Utusan) -->
+        <div class="py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div class="max-w-xl">
+            <div class="flex items-center space-x-2">
+              <h3 class="text-xs sm:text-sm font-bold text-white tracking-wide">Hapus Seluruh Kontingen (Utusan)</h3>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                {totalContingents} Kontingen Terdaftar
+              </span>
+            </div>
+            <p class="text-xs text-zinc-400 mt-1 leading-relaxed">
+              Menghapus seluruh daftar kontingen/dojo pada event ini. Relasi atlet dengan kontingen akan dikosongkan.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onclick={() => {
+              confirmDeleteContingentsChecked = false;
+              showDeleteContingentsModal = true;
+            }}
+            disabled={totalContingents === 0 || isLoading}
+            class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+            </svg>
+            <span>Hapus Semua Kontingen</span>
+          </button>
+        </div>
+
+        <!-- Action Row 6: Hapus Seluruh Perguruan -->
+        <div class="py-3.5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div class="max-w-xl">
+            <div class="flex items-center space-x-2">
+              <h3 class="text-xs sm:text-sm font-bold text-white tracking-wide">Hapus Seluruh Perguruan</h3>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                {totalPerguruans} Perguruan Terdaftar
+              </span>
+            </div>
+            <p class="text-xs text-zinc-400 mt-1 leading-relaxed">
+              Menghapus seluruh daftar perguruan karate pada event ini. Relasi atlet dan wasit dengan perguruan akan dikosongkan.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onclick={() => {
+              confirmDeletePerguruansChecked = false;
+              showDeletePerguruansModal = true;
+            }}
+            disabled={totalPerguruans === 0 || isLoading}
+            class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+            </svg>
+            <span>Hapus Semua Perguruan</span>
+          </button>
+        </div>
+
+        <!-- Action Row 7: Reset Total Turnamen (Pembersihan Menyeluruh) -->
+        <div class="p-4 rounded-2xl bg-gradient-to-r from-red-950/40 via-red-900/20 to-black/40 border border-red-500/40 flex flex-col md:flex-row md:items-center justify-between gap-4 mt-2">
+          <div class="max-w-xl">
+            <div class="flex items-center space-x-2">
+              <div class="w-6 h-6 rounded-lg bg-red-600/30 border border-red-500/50 flex items-center justify-center text-red-400 text-xs font-black">
+                ⚠️
+              </div>
+              <h3 class="text-sm font-extrabold text-white tracking-wide">Reset Total Turnamen (Pembersihan Menyeluruh)</h3>
+              <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-red-600 text-white shadow-sm">
+                FULL WIPE
+              </span>
+            </div>
+            <p class="text-xs text-zinc-300 mt-1.5 leading-relaxed">
+              Mereset total seluruh data pada turnamen ini: <strong>bagan pertandingan</strong>, seluruh <strong>data atlet</strong>, <strong>nomor tanding / kategori</strong>, <strong>kontingen</strong>, <strong>perguruan</strong>, jadwal tatami, penugasan wasit/juri, kop surat, dan berkas festival. Event kembali bersih ke kondisi awal siap pakai.
             </p>
           </div>
 
@@ -905,13 +1077,13 @@
               confirmResetAllChecked = false;
               showResetAllModal = true;
             }}
-            disabled={(totalBagans === 0 && totalAthletes === 0) || isLoading}
-            class="shrink-0 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition shadow-md flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
+            disabled={(totalBagans === 0 && totalAthletes === 0 && totalCategories === 0 && totalContingents === 0 && totalPerguruans === 0) || isLoading}
+            class="shrink-0 px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white text-xs font-black transition shadow-lg shadow-red-600/30 flex items-center space-x-2 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span>Reset Total Event</span>
+            <span>Reset Total Turnamen</span>
           </button>
         </div>
       </div>
@@ -1128,10 +1300,197 @@
   </div>
 {/if}
 
+<!-- ================= MODAL: HAPUS SEMUA KATEGORI ================= -->
+{#if showDeleteCategoriesModal}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-none font-sans">
+    <div class="bg-[#181a20] border border-red-500/40 w-full max-w-md rounded-2xl shadow-2xl p-6 text-zinc-200 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex items-center space-x-3 text-red-400 mb-3">
+        <div class="w-10 h-10 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center shrink-0">
+          <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm sm:text-base font-extrabold text-white">Hapus Seluruh Nomor Tanding</h3>
+          <p class="text-xs text-zinc-400">Menghapus semua kelas kategori nomor tanding</p>
+        </div>
+      </div>
+
+      <div class="my-4 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-xs text-zinc-200 leading-relaxed space-y-2">
+        <p class="font-bold text-red-300">Peringatan: Seluruh nomor tanding akan dihapus!</p>
+        <ul class="list-disc pl-5 space-y-1 font-mono text-[11px] text-red-200">
+          <li><strong>{totalCategories} Nomor Tanding / Kategori</strong> kelas pertandingan</li>
+          <li>Seluruh jadwal bagan & partai yang bergantung pada kategori ini</li>
+        </ul>
+      </div>
+
+      <label class="flex items-start space-x-2.5 my-4 cursor-pointer">
+        <input
+          type="checkbox"
+          bind:checked={confirmDeleteCategoriesChecked}
+          class="mt-0.5 rounded border-white/20 bg-black/40 text-red-600 focus:ring-2 focus:ring-red-500/40 w-4 h-4 cursor-pointer"
+        />
+        <span class="text-xs text-red-300 font-bold leading-tight">
+          Saya memahami dan menyetujui penghapusan seluruh nomor tanding ({totalCategories} kelas).
+        </span>
+      </label>
+
+      <div class="flex items-center justify-end space-x-2 mt-5">
+        <button
+          type="button"
+          onclick={() => (showDeleteCategoriesModal = false)}
+          disabled={isDeletingCategories}
+          class="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-white/[0.05] hover:bg-white/[0.08] transition cursor-pointer"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={handleDeleteAllCategories}
+          disabled={!confirmDeleteCategoriesChecked || isDeletingCategories}
+          class="px-4 py-2 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-500 transition disabled:opacity-40 active:scale-95 flex items-center space-x-1.5 shadow-lg cursor-pointer"
+        >
+          {#if isDeletingCategories}
+            <span>Menghapus...</span>
+          {:else}
+            <span>Hapus Kategori</span>
+          {/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ================= MODAL: HAPUS SEMUA KONTINGEN ================= -->
+{#if showDeleteContingentsModal}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-none font-sans">
+    <div class="bg-[#181a20] border border-red-500/40 w-full max-w-md rounded-2xl shadow-2xl p-6 text-zinc-200 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex items-center space-x-3 text-red-400 mb-3">
+        <div class="w-10 h-10 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center shrink-0">
+          <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm sm:text-base font-extrabold text-white">Hapus Seluruh Kontingen</h3>
+          <p class="text-xs text-zinc-400">Menghapus semua kontingen / dojo pada event ini</p>
+        </div>
+      </div>
+
+      <div class="my-4 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-xs text-zinc-200 leading-relaxed space-y-2">
+        <p class="font-bold text-red-300">Peringatan: Seluruh data kontingen akan dihapus!</p>
+        <p class="font-mono text-[11px] text-red-200">
+          Total: <strong>{totalContingents} Kontingen / Utusan</strong>
+        </p>
+        <p class="text-[11px] text-zinc-400">
+          Relasi kontingen pada atlet yang masih terdaftar akan dikosongkan.
+        </p>
+      </div>
+
+      <label class="flex items-start space-x-2.5 my-4 cursor-pointer">
+        <input
+          type="checkbox"
+          bind:checked={confirmDeleteContingentsChecked}
+          class="mt-0.5 rounded border-white/20 bg-black/40 text-red-600 focus:ring-2 focus:ring-red-500/40 w-4 h-4 cursor-pointer"
+        />
+        <span class="text-xs text-red-300 font-bold leading-tight">
+          Saya memahami dan menyetujui penghapusan seluruh kontingen ({totalContingents} kontingen).
+        </span>
+      </label>
+
+      <div class="flex items-center justify-end space-x-2 mt-5">
+        <button
+          type="button"
+          onclick={() => (showDeleteContingentsModal = false)}
+          disabled={isDeletingContingents}
+          class="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-white/[0.05] hover:bg-white/[0.08] transition cursor-pointer"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={handleDeleteAllContingents}
+          disabled={!confirmDeleteContingentsChecked || isDeletingContingents}
+          class="px-4 py-2 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-500 transition disabled:opacity-40 active:scale-95 flex items-center space-x-1.5 shadow-lg cursor-pointer"
+        >
+          {#if isDeletingContingents}
+            <span>Menghapus...</span>
+          {:else}
+            <span>Hapus Kontingen</span>
+          {/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ================= MODAL: HAPUS SEMUA PERGURUAN ================= -->
+{#if showDeletePerguruansModal}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-none font-sans">
+    <div class="bg-[#181a20] border border-red-500/40 w-full max-w-md rounded-2xl shadow-2xl p-6 text-zinc-200 animate-in fade-in zoom-in-95 duration-150">
+      <div class="flex items-center space-x-3 text-red-400 mb-3">
+        <div class="w-10 h-10 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center shrink-0">
+          <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-sm sm:text-base font-extrabold text-white">Hapus Seluruh Perguruan</h3>
+          <p class="text-xs text-zinc-400">Menghapus semua perguruan karate pada event ini</p>
+        </div>
+      </div>
+
+      <div class="my-4 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-xs text-zinc-200 leading-relaxed space-y-2">
+        <p class="font-bold text-red-300">Peringatan: Seluruh data perguruan akan dihapus!</p>
+        <p class="font-mono text-[11px] text-red-200">
+          Total: <strong>{totalPerguruans} Perguruan Karate</strong>
+        </p>
+        <p class="text-[11px] text-zinc-400">
+          Relasi perguruan pada atlet dan wasit akan dikosongkan.
+        </p>
+      </div>
+
+      <label class="flex items-start space-x-2.5 my-4 cursor-pointer">
+        <input
+          type="checkbox"
+          bind:checked={confirmDeletePerguruansChecked}
+          class="mt-0.5 rounded border-white/20 bg-black/40 text-red-600 focus:ring-2 focus:ring-red-500/40 w-4 h-4 cursor-pointer"
+        />
+        <span class="text-xs text-red-300 font-bold leading-tight">
+          Saya memahami dan menyetujui penghapusan seluruh perguruan ({totalPerguruans} perguruan).
+        </span>
+      </label>
+
+      <div class="flex items-center justify-end space-x-2 mt-5">
+        <button
+          type="button"
+          onclick={() => (showDeletePerguruansModal = false)}
+          disabled={isDeletingPerguruans}
+          class="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-white/[0.05] hover:bg-white/[0.08] transition cursor-pointer"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={handleDeleteAllPerguruans}
+          disabled={!confirmDeletePerguruansChecked || isDeletingPerguruans}
+          class="px-4 py-2 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-500 transition disabled:opacity-40 active:scale-95 flex items-center space-x-1.5 shadow-lg cursor-pointer"
+        >
+          {#if isDeletingPerguruans}
+            <span>Menghapus...</span>
+          {:else}
+            <span>Hapus Perguruan</span>
+          {/if}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- ================= MODAL 4: KONFIRMASI RESET TOTAL ================= -->
 {#if showResetAllModal}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-none font-sans">
-    <div class="bg-[#181a20] border border-red-500/40 w-full max-w-md rounded-2xl shadow-2xl p-6 text-zinc-200 animate-in fade-in zoom-in-95 duration-150">
+    <div class="bg-[#181a20] border border-red-500/40 w-full max-w-lg rounded-2xl shadow-2xl p-6 text-zinc-200 animate-in fade-in zoom-in-95 duration-150">
       <div class="flex items-center space-x-3 text-red-400 mb-3">
         <div class="w-10 h-10 rounded-xl bg-red-600/20 border border-red-500/30 flex items-center justify-center shrink-0">
           <svg class="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1139,19 +1498,23 @@
           </svg>
         </div>
         <div>
-          <h3 class="text-sm sm:text-base font-extrabold text-white">Reset Total Turnamen</h3>
-          <p class="text-xs text-zinc-400">Membersihkan seluruh bagan dan atlet</p>
+          <h3 class="text-sm sm:text-base font-extrabold text-white">Reset Total Turnamen (Pembersihan Penuh)</h3>
+          <p class="text-xs text-zinc-400">Membersihkan seluruh bagan, atlet, kategori, kontingen, perguruan & jadwal</p>
         </div>
       </div>
 
-      <div class="my-4 p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-xs text-zinc-200 leading-relaxed space-y-2">
-        <p class="font-bold text-red-300">Peringatan: Seluruh data pertandingan akan dibersihkan!</p>
+      <div class="my-4 p-3.5 rounded-xl bg-red-500/15 border border-red-500/30 text-xs text-zinc-200 leading-relaxed space-y-2.5">
+        <p class="font-bold text-red-300">Peringatan: Seluruh data master turnamen ini akan dibersihkan total!</p>
         <ul class="list-disc pl-5 space-y-1 font-mono text-[11px] text-red-200">
-          <li><strong>{totalBagans} Bagan</strong> & seluruh jadwal partai pertandingan</li>
-          <li><strong>{totalAthletes} Data atlet</strong> & penugasan kontingen</li>
+          <li><strong>{totalBagans} Bagan Pertandingan</strong> & seluruh jadwal partai pertandingan</li>
+          <li><strong>{totalAthletes} Data Atlet</strong> terdaftar</li>
+          <li><strong>{totalCategories} Nomor Tanding / Kategori</strong> kelas pertandingan</li>
+          <li><strong>{totalContingents} Kontingen / Utusan</strong></li>
+          <li><strong>{totalPerguruans} Perguruan Karate</strong></li>
+          <li>Seluruh jadwal tatami, penugasan wasit/juri, kop surat & berkas festival</li>
         </ul>
         <p class="text-[11px] text-zinc-400 pt-1 border-t border-red-500/20">
-          Gunakan fitur ini apabila Anda ingin memulai turnamen baru dari awal tanpa perlu membuat event baru.
+          Event ini akan kembali bersih ke kondisi awal tanpa perlu membuat event baru. Tindakan ini tidak dapat dibatalkan.
         </p>
       </div>
 
@@ -1163,7 +1526,7 @@
           class="mt-0.5 rounded border-white/20 bg-black/40 text-red-600 focus:ring-2 focus:ring-red-500/40 w-4 h-4 cursor-pointer"
         />
         <span class="text-xs text-red-300 font-bold leading-tight">
-          Saya memahami sepenuhnya dan menyetujui pembersihan seluruh bagan & atlet.
+          Saya memahami sepenuhnya dan menyetujui reset total seluruh data turnamen ini (Bagan, Atlet, Kategori, Kontingen, Perguruan, Tatami & Jadwal).
         </span>
       </label>
 

@@ -350,12 +350,58 @@ async fn delete_all_athletes(
 }
 
 #[tauri::command]
+async fn reset_total_tournament(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::ResetTournamentSummary, String> {
+    let db = state.db.lock().await;
+    db.reset_total_tournament(event_id).await
+}
+
+#[tauri::command]
+async fn delete_all_categories(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<u64, String> {
+    let db = state.db.lock().await;
+    db.delete_all_categories(event_id).await
+}
+
+#[tauri::command]
+async fn delete_all_contingents(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<u64, String> {
+    let db = state.db.lock().await;
+    db.delete_all_contingents(event_id).await
+}
+
+#[tauri::command]
+async fn delete_all_perguruans(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<u64, String> {
+    let db = state.db.lock().await;
+    db.delete_all_perguruans(event_id).await
+}
+
+#[tauri::command]
 async fn get_bagans(
     event_id: i64,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Vec<Bagan>, String> {
     let db = state.db.lock().await;
     db.get_bagans(event_id).await
+}
+
+#[tauri::command]
+async fn update_bagan_layout_type(
+    bagan_id: i64,
+    layout_type: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.update_bagan_layout_type(bagan_id, layout_type).await
 }
 
 #[tauri::command]
@@ -1293,6 +1339,25 @@ async fn auto_pair_festival_category(
 }
 
 #[tauri::command]
+async fn get_festival_mix_groups(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<models::FestivalMixGroup>, String> {
+    let db = state.db.lock().await;
+    db.get_festival_mix_groups(event_id).await
+}
+
+#[tauri::command]
+async fn save_festival_mix_groups(
+    event_id: i64,
+    mix_groups: Vec<models::FestivalMixGroup>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.save_festival_mix_groups(event_id, mix_groups).await
+}
+
+#[tauri::command]
 async fn mix_festival_categories(
     event_id: i64,
     source_ids: Vec<i64>,
@@ -1742,8 +1807,13 @@ pub fn run() {
             delete_all_festival_bagans,
             delete_category_bagans,
             delete_all_athletes,
+            reset_total_tournament,
+            delete_all_categories,
+            delete_all_contingents,
+            delete_all_perguruans,
             get_bagans,
             get_bagan_by_id,
+            update_bagan_layout_type,
             get_bagan_podium,
             get_athletes_for_bagan,
             update_bagan_details,
@@ -1806,6 +1876,8 @@ pub fn run() {
             save_festival_roster_state,
             auto_pair_festival_category,
             mix_festival_categories,
+            get_festival_mix_groups,
+            save_festival_mix_groups,
             get_enriched_categories,
             create_category,
             update_category,

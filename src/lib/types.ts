@@ -44,6 +44,7 @@ export interface NomorTandingItem {
   tipe: string | null;
   is_bob: boolean;
   has_vr: boolean;
+  layout_type?: string | null;
 }
 
 export interface EnrichedNomorTanding {
@@ -91,6 +92,7 @@ export interface BaganItem {
   kode: string | null;
   is_bob: boolean;
   has_vr: boolean;
+  layout_type?: string | null;
 }
 
 export interface DetailBaganItem {
@@ -641,6 +643,7 @@ export interface FestivalBookletCategory {
   tipe_tanding: string | null;
   athletes_count: number;
   matches: DetailBaganItem[];
+  layout_type?: string | null;
 }
 
 export interface FestivalBookletData {

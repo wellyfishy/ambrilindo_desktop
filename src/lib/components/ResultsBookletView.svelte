@@ -417,7 +417,7 @@ ${inlinedCss}
   });
   function getFestivalGroups(matches: DetailBaganItem[]) {
     const groups = [];
-    for (let g = 1; g <= 4; g++) {
+    for (let g = 1; g <= 6; g++) {
       const semi1 = matches.find((m) => m.round === 1 && m.urutan === 2 * g - 1) || null;
       const semi2 = matches.find((m) => m.round === 1 && m.urutan === 2 * g) || null;
       const finalMatch = matches.find((m) => m.round === 2 && m.urutan === g) || null;
@@ -1206,18 +1206,26 @@ ${inlinedCss}
                     <!-- 2. Bracket Grid Columns -->
                     {#if bCat.category_name.toUpperCase().includes("FESTIVAL") || (bCat.bagan_nama && bCat.bagan_nama.toUpperCase().includes("FESTIVAL"))}
                       {@const festGroups = getFestivalGroups(bCat.matches)}
-                      <!-- Festival 4-Quadrant Grid in Booklet -->
+                      {@const totalSlots = festGroups.length <= 4 ? 4 : 6}
+                      <!-- Festival 4/6 Quadrant Grid in Booklet -->
                       <div class="festival-split-canvas flex-1 border-2 border-slate-900 rounded overflow-hidden my-1 flex flex-col justify-between">
-                        <div class="grid grid-cols-2 divide-x-2 divide-y-2 divide-slate-900 h-full">
-                          {#each [1, 2, 3, 4] as gNum}
+                        <div class="grid grid-cols-2 divide-x-2 divide-y-2 divide-slate-900 h-full {totalSlots === 4 ? 'grid-rows-2' : 'grid-rows-3'}">
+                          {#each Array.from({ length: totalSlots }) as _, idx}
+                            {@const gNum = idx + 1}
                             {@const fg = festGroups.find((g) => g.groupNum === gNum)}
-                            <div class="p-1.5 flex flex-col justify-between bg-white text-[9px] min-h-[145px]">
+                            <div class="p-1.5 flex flex-col justify-between bg-white text-[9px] {totalSlots === 4 ? 'min-h-[145px]' : 'min-h-[95px]'}">
                               <!-- Group Title Bar -->
-                              <div class="flex items-center justify-between pb-0.5 border-b border-slate-800 font-mono font-bold">
+                              <div class="flex items-center justify-between pb-0.5 border-b border-slate-800 font-mono font-bold {fg ? '' : 'opacity-40'}">
                                 <span>GRUP {gNum} (POOL {String.fromCharCode(64 + gNum)})</span>
-                                <span class="text-[7.5px] px-1 rounded {fg?.finalMatch?.selesai ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}">
-                                  {fg?.finalMatch?.selesai ? 'SELESAI' : 'BERJALAN'}
-                                </span>
+                                {#if fg}
+                                  <span class="text-[7.5px] px-1 rounded {fg.finalMatch?.selesai ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}">
+                                    {fg.finalMatch?.selesai ? 'SELESAI' : 'BERJALAN'}
+                                  </span>
+                                {:else}
+                                  <span class="text-[7.5px] px-1 rounded bg-slate-100 text-slate-500 font-normal">
+                                    KOSONG
+                                  </span>
+                                {/if}
                               </div>
 
                               {#if fg}
@@ -1290,8 +1298,16 @@ ${inlinedCss}
                                   </div>
                                 </div>
                               {:else}
-                                <div class="flex items-center justify-center h-full opacity-30 text-[8px] font-mono">
-                                  [GRUP {gNum} TIDAK DIGUNAKAN]
+                                <div class="flex-1 flex flex-col items-center justify-center p-3 text-center my-1 rounded border border-dashed border-slate-300 bg-slate-50/50">
+                                  <div class="w-6 h-6 rounded-full border border-slate-400 text-slate-400 font-black text-[10px] flex items-center justify-center mb-1">
+                                    {gNum}
+                                  </div>
+                                  <span class="text-[9px] font-mono font-black text-slate-400 tracking-wider">
+                                    [GRUP {gNum} TIDAK DIGUNAKAN]
+                                  </span>
+                                  <span class="text-[7.5px] text-slate-400 mt-0.5">
+                                    Peserta terakomodasi pada grup sebelumnya
+                                  </span>
                                 </div>
                               {/if}
                             </div>

@@ -2,7 +2,11 @@
   import { onMount } from "svelte";
   import { invoke } from "$lib/api_client";
   import { printWithOrientation } from "$lib/print_helper";
-  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
+  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL, BUSHIDO_LOGO_DATA_URL } from "$lib/assets_base64";
+  import FestivalSmartMixModal from "$lib/components/FestivalSmartMixModal.svelte";
+  import FestivalAutoMixModal from "$lib/components/FestivalAutoMixModal.svelte";
+  import FestivalBracketSheet from "$lib/components/FestivalBracketSheet.svelte";
+  import type { FestivalMixGroupData } from "$lib/festival_mix_helper";
   import type {
     FestivalRosterData,
     FestivalRosterState,
@@ -40,6 +44,19 @@
   let mixDeleteSources = $state(true);
   let isMixing = $state(false);
 
+  // Non-Destructive Mix Groups & Auto Mix Modal State
+  let mixGroups = $state<FestivalMixGroupData[]>([]);
+  let autoMixModalOpen = $state(false);
+
+  // Smart Mix Assistant State
+  let smartMixModalOpen = $state(false);
+  let smartMixSourceCategory = $state<FestivalCategory | null>(null);
+
+  function openSmartMixForCategory(cat: FestivalCategory) {
+    smartMixSourceCategory = cat;
+    smartMixModalOpen = true;
+  }
+
   // --- Print View State (Table Roster) ---
   let printModalOpen = $state(false);
   let printSelectedTatamiId = $state<number | "all">("all");
@@ -50,8 +67,8 @@
   let baganBookletData = $state<FestivalBookletData | null>(null);
   let baganBookletSelectedTatamiId = $state<number | "all">("all");
   let sampulDayLabel = $state("DAY 1");
-  let sampulVenue = $state("Gedung Olahraga SMPN & SMAN 1 Samarinda");
-  let sampulDate = $state("Tanggal 3 Oktober 2026");
+  let sampulVenue = $state("FESTIVAL BUSHIDO I");
+  let sampulDate = $state("8 OKTOBER 2026");
   let sampulOrg = $state("FEDERASI OLAHRAGA KARATE-DO INDONESIA PROVINSI KALIMANTAN TIMUR");
 
   async function openBaganBooklet(tatamiId: number | "all" = "all") {
@@ -64,8 +81,8 @@
         tatamiId: tatamiId === "all" ? null : tatamiId,
       });
       baganBookletData = res;
-      if (res.venue) sampulVenue = res.venue;
-      if (res.event_date) sampulDate = `Tanggal ${res.event_date}`;
+      sampulVenue = "FESTIVAL BUSHIDO I";
+      sampulDate = "8 OKTOBER 2026";
       if (res.kop_surat?.nama_organisasi) sampulOrg = res.kop_surat.nama_organisasi;
     } catch (e: any) {
       console.error("Gagal memuat booklet bagan festival:", e);
@@ -82,30 +99,14 @@
 
   let coverTatamiTitle = $derived.by(() => {
     if (baganBookletSelectedTatamiId === "all" || !baganBookletData) {
-      return `${sampulDayLabel} - BAGAN FESTIVAL`;
+      return "BAGAN FESTIVAL";
     }
     const t = baganBookletData.tatamis.find((x) => x.id === baganBookletSelectedTatamiId);
     const num = t?.tatami_number || 1;
-    return `${sampulDayLabel} - TATAMI ${num}`;
+    return `BAGAN FESTIVAL - TATAMI ${num}`;
   });
 
-  function getFestivalGroups(cat: FestivalBookletCategory) {
-    const poolCount = Math.min(6, Math.max(1, cat.pool || 1));
-    const groups = [];
-    for (let g = 1; g <= poolCount; g++) {
-      const semi1 = cat.matches.find((m) => m.round === 1 && m.urutan === 2 * g - 1) || null;
-      const semi2 = cat.matches.find((m) => m.round === 1 && m.urutan === 2 * g) || null;
-      const finalMatch = cat.matches.find((m) => m.round === 2 && m.urutan === g) || null;
-      const isCompleted = !!(finalMatch && finalMatch.selesai && finalMatch.pemenang);
-      groups.push({
-        groupNum: g,
-        poolLabel: String.fromCharCode(64 + g),
-        matches: { semi1, semi2, final: finalMatch },
-        isCompleted,
-      });
-    }
-    return groups;
-  }
+
 
   function triggerBookletPrint() {
     printWithOrientation("landscape", "5mm");
@@ -124,8 +125,12 @@
   async function loadFestivalData() {
     isLoading = true;
     try {
-      const res: FestivalRosterData = await invoke("get_festival_roster_data", { eventId });
+      const [res, mg] = await Promise.all([
+        invoke<FestivalRosterData>("get_festival_roster_data", { eventId }),
+        invoke<FestivalMixGroupData[]>("get_festival_mix_groups", { eventId }).catch(() => []),
+      ]);
       data = res;
+      mixGroups = mg || [];
       isDirty = false;
     } catch (e: any) {
       console.error("Gagal memuat data festival roster:", e);
@@ -333,6 +338,11 @@
 
   // Open Mix Modal
   function openMixModal() {
+    const sparseCat = allCategoriesList.find((c) => c.atlet_count <= 2);
+    if (sparseCat) {
+      openSmartMixForCategory(sparseCat);
+      return;
+    }
     mixSourceIds = [];
     mixNewName = "";
     mixDeleteSources = true;
@@ -441,16 +451,25 @@
         <span>Auto-Pairing Anti-Bentrok</span>
       </button>
 
+      <!-- Auto Mix Kategori Solo -->
+      <button
+        onclick={() => (autoMixModalOpen = true)}
+        class="h-9 px-3 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 hover:text-amber-200 font-bold text-xs rounded-xl border border-amber-500/30 transition-all flex items-center space-x-1.5 cursor-pointer"
+        title="Otomatis mencocokkan dan menyusun bagan mix untuk seluruh kategori solo"
+      >
+        <span>⚡ Auto Mix Solo</span>
+      </button>
+
       <!-- Mix / Gabung Kelas -->
       <button
         onclick={openMixModal}
-        class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-all flex items-center space-x-1.5"
+        class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-all flex items-center space-x-1.5 cursor-pointer"
         title="Gabungkan kategori festival yang sepi / solo"
       >
         <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
         </svg>
-        <span>Mix / Gabung Kelas</span>
+        <span>Mix Manual</span>
       </button>
 
       <!-- Cetak Bagan Festival (Booklet Lengkap Sampul) -->
@@ -714,6 +733,16 @@
                     >
                       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </button>
+
+                    {#if cat.atlet_count <= 2}
+                      <button
+                        onclick={() => openSmartMixForCategory(cat)}
+                        class="px-2 py-0.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[10px] font-bold rounded flex items-center space-x-1 transition active:scale-95 cursor-pointer"
+                        title="Buka rekomendasi cerdas untuk menggabungkan kelas sepi ini"
+                      >
+                        <span>⚡ Mix</span>
+                      </button>
+                    {/if}
 
                     <!-- Auto-Pair Single -->
                     <button
@@ -1082,6 +1111,55 @@
 
 
 <!-- ========================================================================= -->
+<!-- MODAL: ASISTEN REKOMENDASI MIX CERDAS FESTIVAL                           -->
+<!-- ========================================================================= -->
+{#if autoMixModalOpen && data}
+  <FestivalAutoMixModal
+    {eventId}
+    categories={data.sections.flatMap((s) => s.categories).map((c) => ({
+      id: c.id,
+      nama: c.nama,
+      athlete_count: c.atlet_count,
+    }))}
+    existingMixGroups={mixGroups}
+    onClose={() => (autoMixModalOpen = false)}
+    onConfirmMix={async (newMixList) => {
+      mixGroups = newMixList;
+      try {
+        await invoke("save_festival_mix_groups", { eventId, mixGroups });
+      } catch (e) {
+        console.error("Gagal menyimpan auto mix:", e);
+      }
+      await loadFestivalData();
+    }}
+  />
+{/if}
+
+{#if smartMixModalOpen && smartMixSourceCategory && data}
+  <FestivalSmartMixModal
+    {eventId}
+    sourceCategory={{
+      id: smartMixSourceCategory.id,
+      nama: smartMixSourceCategory.nama,
+      athlete_count: smartMixSourceCategory.atlet_count,
+    }}
+    allCategories={allCategoriesList.map((c) => ({
+      id: c.id,
+      nama: c.nama,
+      athlete_count: c.atlet_count,
+    }))}
+    onClose={() => {
+      smartMixModalOpen = false;
+      smartMixSourceCategory = null;
+    }}
+    onMixed={async () => {
+      await loadFestivalData();
+    }}
+    {onShowToast}
+  />
+{/if}
+
+<!-- ========================================================================= -->
 <!-- MODAL: PRATINJAU DOKUMEN CETAK BAGAN FESTIVAL (LENGKAP SAMPUL RESMI)     -->
 <!-- ========================================================================= -->
 {#if baganBookletModalOpen}
@@ -1092,6 +1170,11 @@
         <div class="flex items-center space-x-2">
           <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
           <h3 class="text-sm font-black text-white uppercase tracking-tight">Cetak Bagan Festival (Lengkap Sampul)</h3>
+          {#if baganBookletData}
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" title="Bagan membaca langsung dari database SQLite (Single Source of Truth)">
+              ⚡ SSoT • {baganBookletData.categories.length} BAGAN
+            </span>
+          {/if}
         </div>
 
         <!-- Filter Tatami -->
@@ -1122,12 +1205,12 @@
         </div>
 
         <div class="flex items-center space-x-1 text-[11px] font-mono text-zinc-400">
-          <span>Venue:</span>
+          <span>Event:</span>
           <input
             type="text"
             bind:value={sampulVenue}
-            placeholder="Venue Pertandingan"
-            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-52 outline-none"
+            placeholder="FESTIVAL BUSHIDO I"
+            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-52 outline-none uppercase font-bold"
           />
         </div>
 
@@ -1136,8 +1219,8 @@
           <input
             type="text"
             bind:value={sampulDate}
-            placeholder="Tanggal Event"
-            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-36 outline-none"
+            placeholder="8 OKTOBER 2026"
+            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-36 outline-none uppercase font-bold"
           />
         </div>
 
@@ -1188,10 +1271,9 @@
             <!-- Event Logo Container -->
             <div class="sampul-logo-container">
               <img
-                src={baganBookletData.kop_surat?.logo || "/img/cover/wkf_logo.png"}
+                src={BUSHIDO_LOGO_DATA_URL}
                 class="sampul-event-logo"
-                alt="Logo Event"
-                onerror={(e) => { (e.currentTarget as HTMLImageElement).src = '/img/cover/wkf_logo.png'; }}
+                alt="Logo Bushido"
               />
             </div>
 
@@ -1214,170 +1296,38 @@
         <!-- HALAMAN 2+: BAGAN PER KATEGORI (A4 LANDSCAPE PRESISI 1 LEMBAR PER KELAS) -->
         <!-- ========================================================================= -->
         {#if targetCategories.length === 0}
-          <div class="bg-white p-12 text-center text-zinc-500 rounded-xl">
-            Belum ada bagan festival yang terjadwal untuk filter tatami ini.
+          <div class="bg-white p-12 text-center text-zinc-600 rounded-2xl shadow-sm border border-slate-200 max-w-lg mx-auto space-y-3">
+            <div class="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-2xl flex items-center justify-center mx-auto">
+              🎋
+            </div>
+            <h4 class="text-sm font-black text-slate-900 uppercase">Belum Ada Bagan Festival di Database</h4>
+            <p class="text-xs text-slate-500 leading-relaxed">
+              Bagan festival turnamen ini belum dibuat/diundi di database. Silakan buka menu <strong>Drawing Bagan Festival</strong> untuk mengundi bagan terlebih dahulu.
+            </p>
           </div>
         {:else}
           {#each targetCategories as cat, cIdx}
-            {@const groups = getFestivalGroups(cat)}
             <div class="booklet-page booklet-bracket-page">
               <div class="booklet-page-label-bar no-print">
                 <span>Halaman {cIdx + 2} • Bagan {cIdx + 1}/{targetCategories.length}: [{cat.bagan_kode || 'F'}] {cat.category_name} (Tatami {cat.tatami_number})</span>
               </div>
 
               <div class="bracket-page-container print-sheet">
-                <!-- Banner Header -->
-                <div class="bracket-banner">
-                  <div class="banner-left">
-                    <img src={FORKI_LOGO_DATA_URL} alt="FORKI" class="banner-logo" />
-                  </div>
-                  <div class="banner-center">
-                    <h2 class="category-title truncate">
-                      [{cat.bagan_kode || 'FESTIVAL'}] {cat.category_name}
-                    </h2>
-                    <p class="banner-meta">
-                      <span class="festival-type-badge font-mono font-black">{cat.discipline.toUpperCase()}</span>
-                      <span>•</span>
-                      <span class="festival-pool-badge font-black">{cat.pool} POOL / GRUP</span>
-                      <span>•</span>
-                      <span class="festival-count-badge font-bold">{cat.athletes_count} ATLET</span>
-                      <span>•</span>
-                      <span>TATAMI {cat.tatami_number}</span>
-                      <span>•</span>
-                      <span>{sampulVenue}</span>
-                    </p>
-                  </div>
-                  <div class="banner-right">
-                    <img src={AMBRILINDO_LOGO_DATA_URL} alt="Ambrilindo" class="banner-logo" />
-                  </div>
-                </div>
-
-                <!-- Canvas Wrapper -->
-                <div class="festival-canvas-wrapper">
-                  {#if groups.length <= 3}
-                    <!-- 1 - 3 Groups: Horizontal Bands Layout -->
-                    <div class="festival-bands-grid">
-                      {#each groups as grp}
-                        <div class="group-band flex flex-col justify-between p-1.5 bg-white flex-1 overflow-hidden">
-                          <div class="group-header-line flex items-center justify-between px-2 py-0.5 border-b-2 border-slate-900 bg-slate-50 mb-1 h-5 shrink-0">
-                            <div class="flex items-center space-x-1.5">
-                              <span class="group-header-badge w-4 h-4 rounded-full bg-slate-900 text-white text-[9px] font-black font-mono flex items-center justify-center shrink-0">
-                                {grp.groupNum}
-                              </span>
-                              <span class="group-header-title text-[10px] font-black uppercase tracking-tight text-slate-950">
-                                GRUP {grp.groupNum} (POOL {grp.poolLabel})
-                              </span>
-                            </div>
-                            <span class="text-[9px] font-mono font-bold text-slate-600">4 ATLET</span>
-                          </div>
-
-                          <div class="band-grid-2col flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1 min-h-0">
-                            <!-- Semifinals -->
-                            <div class="col-wrap col-semi band-col-semi shrink-0 flex flex-col justify-between min-h-0">
-                              <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
-                                <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-slate-950">SEMIFINAL</span>
-                              </div>
-                              <div class="semi-cards-flex flex flex-col justify-between flex-1 min-h-0 gap-1">
-                                {@render bookletFestivalCard(grp.matches.semi1, 'SEMIFINAL 1')}
-                                {@render bookletFestivalCard(grp.matches.semi2, 'SEMIFINAL 2')}
-                              </div>
-                            </div>
-
-                            <!-- Fork Connector -->
-                            <div class="connector-fork-col band-connector-fork shrink-0 flex flex-col pointer-events-none relative">
-                              <div class="stage-header-spacer h-4 shrink-0 mb-1"></div>
-                              <div class="connector-track-flex flex flex-col justify-between flex-1 min-h-0 relative w-full">
-                                <div class="connector-slot connector-slot-top shrink-0 flex items-center justify-start w-full relative">
-                                  <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
-                                </div>
-                                <div class="connector-spine-track absolute left-1/2 w-1/2 flex items-center pointer-events-none">
-                                  <div class="connector-spine-bar absolute inset-y-0 left-0 border-l-[2px] border-slate-900"></div>
-                                  <div class="connector-arm-right w-[calc(100%+1px)] border-b-[2px] border-amber-600"></div>
-                                </div>
-                                <div class="connector-slot connector-slot-bottom shrink-0 flex items-center justify-start w-full relative">
-                                  <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
-                                </div>
-                              </div>
-                            </div>
-
-                            <!-- Final -->
-                            <div class="col-wrap col-final band-col-final shrink-0 flex flex-col justify-between min-h-0">
-                              <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
-                                <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-amber-700">PARTAI FINAL</span>
-                              </div>
-                              <div class="final-card-flex flex flex-col justify-center flex-1 min-h-0">
-                                {@render bookletFestivalCard(grp.matches.final, 'FINAL JUARA', true)}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      {/each}
-                    </div>
-                  {:else}
-                    <!-- 4 - 6 Groups: 2-Column Quadrants Grid -->
-                    <div class="festival-quadrants-grid">
-                      {#each [1, 2, 3, 4, 5, 6].slice(0, Math.max(4, groups.length + (groups.length % 2 !== 0 ? 1 : 0))) as gNum}
-                        {@const grp = groups.find((g) => g.groupNum === gNum)}
-                        {#if grp}
-                          <div class="group-quadrant flex flex-col justify-between p-1.5 bg-white flex-1 overflow-hidden border border-slate-200">
-                            <div class="group-header-line flex items-center justify-between px-2 py-0.5 border-b-2 border-slate-900 bg-slate-50 mb-1 h-5 shrink-0">
-                              <div class="flex items-center space-x-1.5">
-                                <span class="group-header-badge w-4 h-4 rounded-full bg-slate-900 text-white text-[9px] font-black font-mono flex items-center justify-center shrink-0">
-                                  {grp.groupNum}
-                                </span>
-                                <span class="group-header-title text-[10px] font-black uppercase tracking-tight text-slate-950">
-                                  GRUP {grp.groupNum} (POOL {grp.poolLabel})
-                                </span>
-                              </div>
-                              <span class="text-[9px] font-mono font-bold text-slate-600">4 ATLET</span>
-                            </div>
-
-                            <div class="quadrant-grid-2col flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1 min-h-0">
-                              <div class="col-wrap col-semi flex-1 shrink-0 flex flex-col justify-between min-h-0">
-                                <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
-                                  <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-slate-950">SEMIFINAL</span>
-                                </div>
-                                <div class="semi-cards-flex flex flex-col justify-between flex-1 min-h-0 gap-1">
-                                  {@render bookletFestivalCard(grp.matches.semi1, 'SEMIFINAL 1')}
-                                  {@render bookletFestivalCard(grp.matches.semi2, 'SEMIFINAL 2')}
-                                </div>
-                              </div>
-
-                              <div class="connector-fork-col quadrant-connector-fork shrink-0 flex flex-col pointer-events-none relative">
-                                <div class="stage-header-spacer h-4 shrink-0 mb-1"></div>
-                                <div class="connector-track-flex flex flex-col justify-between flex-1 min-h-0 relative w-full">
-                                  <div class="connector-slot connector-slot-top shrink-0 flex items-center justify-start w-full relative">
-                                    <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
-                                  </div>
-                                  <div class="connector-spine-track absolute left-1/2 w-1/2 flex items-center pointer-events-none">
-                                    <div class="connector-spine-bar absolute inset-y-0 left-0 border-l-[2px] border-slate-900"></div>
-                                    <div class="connector-arm-right w-[calc(100%+1px)] border-b-[2px] border-amber-600"></div>
-                                  </div>
-                                  <div class="connector-slot connector-slot-bottom shrink-0 flex items-center justify-start w-full relative">
-                                    <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] border-slate-900"></div>
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div class="col-wrap col-final flex-1 shrink-0 flex flex-col justify-between min-h-0">
-                                <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 border-slate-900 mb-1">
-                                  <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-amber-700">PARTAI FINAL</span>
-                                </div>
-                                <div class="final-card-flex flex flex-col justify-center flex-1 min-h-0">
-                                  {@render bookletFestivalCard(grp.matches.final, 'FINAL JUARA', true)}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        {:else}
-                          <div class="group-quadrant p-1.5 bg-slate-50/50 flex-1 border border-dashed border-slate-300 rounded flex items-center justify-center text-[10px] font-mono text-slate-400">
-                            -
-                          </div>
-                        {/if}
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
+                <FestivalBracketSheet
+                  baganId={cat.bagan_id || undefined}
+                  baganKode={cat.bagan_kode}
+                  categoryName={cat.category_name}
+                  discipline={cat.discipline}
+                  poolCount={cat.pool}
+                  athletesCount={cat.athletes_count}
+                  tatamiNumber={cat.tatami_number}
+                  venue={sampulVenue}
+                  matches={cat.matches}
+                  layoutTemplate={cat.layout_type || "quadrant"}
+                  showHeader={true}
+                  interactive={false}
+                  isDarkMode={false}
+                />
               </div>
             </div>
           {/each}
@@ -1386,62 +1336,6 @@
     {/if}
   </div>
 {/if}
-
-<!-- Snippet for booklet festival match card -->
-{#snippet bookletFestivalCard(m: DetailBaganItem | null, stageLabel: string, isFinal: boolean = false)}
-  {#if m}
-    <div class="match-card festival-match-card w-full bg-white border border-slate-400 rounded-md overflow-hidden shadow-xs relative {isFinal ? 'border-amber-500' : ''}">
-      <div class="match-card-header px-1.5 py-[1px] bg-slate-100 border-b border-slate-300 flex items-center justify-between text-[7px] font-mono font-bold text-slate-700">
-        <span class="truncate">{stageLabel} {m.kode ? `(${m.kode})` : ''}</span>
-        <span class="tabular-nums">Partai #{m.id}</span>
-      </div>
-
-      <!-- AKA (Red) -->
-      <div class="player-row {m.pemenang === '1' ? 'player-row-winner bg-[#fee2e2] border-l-4 border-red-600' : 'bg-white text-slate-900'} flex items-center justify-between px-1.5 py-[1px] min-h-[17px]">
-        <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-          <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0">AKA</span>
-          <div class="min-w-0 flex-1 leading-tight">
-            <span class="player-name-text truncate block text-[8.5px] font-black text-black">
-              {m.atlet1_nama || (m.atlet1_id ? `Atlet #${m.atlet1_id}` : (isFinal ? '...' : 'BYE'))}
-            </span>
-            <div class="player-sub-text truncate min-w-0 text-[7px] font-bold text-slate-800">
-              {m.atlet1_kontingen || '-'}
-            </div>
-          </div>
-        </div>
-        <div class="shrink-0 flex items-center">
-          <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '1' ? 'bg-[#fde047] border-amber-500 font-black' : 'bg-slate-100 border-slate-400 font-bold'}">
-            {m.score1 ?? '-'}
-          </span>
-        </div>
-      </div>
-
-      <!-- AO (Blue) -->
-      <div class="player-row {m.pemenang === '2' ? 'player-row-winner bg-[#dbeafe] border-l-4 border-blue-600' : 'bg-white text-slate-900'} flex items-center justify-between px-1.5 py-[1px] min-h-[17px] border-t border-slate-200">
-        <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-          <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0">AO</span>
-          <div class="min-w-0 flex-1 leading-tight">
-            <span class="player-name-text truncate block text-[8.5px] font-black text-black">
-              {m.atlet2_nama || (m.atlet2_id ? `Atlet #${m.atlet2_id}` : (isFinal ? '...' : 'BYE'))}
-            </span>
-            <div class="player-sub-text truncate min-w-0 text-[7px] font-bold text-slate-800">
-              {m.atlet2_kontingen || '-'}
-            </div>
-          </div>
-        </div>
-        <div class="shrink-0 flex items-center">
-          <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {m.pemenang === '2' ? 'bg-[#fde047] border-amber-500 font-black' : 'bg-slate-100 border-slate-400 font-bold'}">
-            {m.score2 ?? '-'}
-          </span>
-        </div>
-      </div>
-    </div>
-  {:else}
-    <div class="empty-slot festival-empty-slot w-full border border-dashed border-slate-400 text-slate-500 bg-white/40 rounded-md h-[38px] flex items-center justify-center text-[8px] font-mono">
-      Kosong
-    </div>
-  {/if}
-{/snippet}
 
 <style>
   .simple-roster-header {
@@ -1696,146 +1590,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-  }
-
-  .bracket-banner {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    height: 15mm;
-    max-height: 15.5mm;
-    margin-bottom: 1.5mm;
-    border-bottom: 2px solid #0f172a;
-    padding-bottom: 1mm;
-    gap: 2mm;
-    box-sizing: border-box;
-    flex-shrink: 0;
-  }
-  .banner-left, .banner-right {
-    width: 16mm;
-    height: 13mm;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-  .banner-logo {
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
-  }
-  .banner-center {
-    flex: 1;
-    min-width: 0;
-    text-align: center;
-  }
-  .category-title {
-    font-size: 13.5pt;
-    font-weight: 900;
-    letter-spacing: -0.02em;
-    line-height: 1.1;
-    margin: 0;
-    text-transform: uppercase;
-    color: #000000;
-  }
-  .banner-meta {
-    font-size: 7.5pt;
-    font-weight: 700;
-    color: #334155;
-    margin: 0.5mm 0 0 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 1.5mm;
-    text-transform: uppercase;
-  }
-  .festival-type-badge {
-    background: #f1f5f9;
-    border: 1px solid #94a3b8;
-    padding: 0 1.5mm;
-    border-radius: 1mm;
-    color: #0f172a;
-  }
-  .festival-pool-badge {
-    background: #ecfdf5;
-    border: 1px solid #059669;
-    color: #065f46;
-    padding: 0 1.5mm;
-    border-radius: 1mm;
-  }
-
-  .festival-canvas-wrapper {
-    flex: 1;
-    min-height: 0;
-    height: 174mm;
-    max-height: 174mm;
-    overflow: hidden;
-    box-sizing: border-box;
-  }
-  .festival-bands-grid {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    width: 100%;
-    gap: 1.5mm;
-  }
-  .festival-quadrants-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    height: 100%;
-    width: 100%;
-    gap: 1.5mm;
-  }
-  .group-band, .group-quadrant {
-    border: 1.2px solid #cbd5e1;
-    border-radius: 1.5mm;
-    box-sizing: border-box;
-  }
-
-  .band-grid-2col, .quadrant-grid-2col {
-    display: flex;
-    align-items: stretch;
-    justify-content: space-between;
-    width: 100%;
-    height: 100%;
-  }
-  .band-col-semi {
-    width: 48%;
-  }
-  .band-connector-fork {
-    width: 6%;
-  }
-  .band-col-final {
-    width: 44%;
-  }
-  .quadrant-connector-fork {
-    width: 8%;
-  }
-
-  .festival-match-card {
-    height: 18mm !important;
-    min-height: 18mm !important;
-    max-height: 18mm !important;
-    box-sizing: border-box;
-  }
-
-  /* Connector Fork */
-  .connector-track-flex {
-    position: relative;
-    width: 100%;
-    height: 100%;
-  }
-  .connector-slot {
-    height: 18mm;
-    box-sizing: border-box;
-  }
-  .connector-spine-track {
-    top: 9mm;
-    bottom: 9mm;
-  }
-  .connector-spine-bar {
-    top: 0;
-    bottom: 0;
   }
 
   @media print {

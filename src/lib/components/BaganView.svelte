@@ -22,6 +22,7 @@
   import { initLiveSync, isMatchLive, getRunningTatamiForMatch, subscribeLiveSync } from "$lib/liveSync";
   import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
+  import FestivalBracketSheet from "./FestivalBracketSheet.svelte";
 
   interface Props {
     baganId: number;
@@ -34,6 +35,7 @@
     tatamis?: TatamiItem[];
     onDispatchToTatami?: (tatamiNum: number, matchId: number) => void;
     onBaganUpdated?: () => void;
+    onShowToast?: (message: string, type?: "success" | "error" | "info") => void;
   }
 
   let {
@@ -47,6 +49,7 @@
     tatamis = [],
     onDispatchToTatami,
     onBaganUpdated,
+    onShowToast = () => {},
   }: Props = $props();
 
   let liveSyncVersion = $state(0);
@@ -204,12 +207,31 @@
     return groups;
   });
 
+  let festivalTotalSlots = $derived(festivalGroups.length <= 4 ? 4 : 6);
+
   // Festival Quick Scoring Modal State
   let festivalScoreModalMatch = $state<DetailBaganItem | null>(null);
   let festWinner = $state<string>("1");
   let festScore1 = $state<string>("0");
   let festScore2 = $state<string>("0");
   let isSavingFestMatch = $state(false);
+
+  async function handleUpdateLayoutType(newLayout: string) {
+    if (!baganId) return;
+    try {
+      await invoke("update_bagan_layout_type", {
+        baganId,
+        layoutType: newLayout,
+      });
+      if (currentBaganInfo) {
+        currentBaganInfo.layout_type = newLayout;
+      }
+      onShowToast?.(`Template bagan festival diubah ke ${newLayout === 'bands' ? 'Horizontal Bands' : '4-Quadrant Grid'}`, "success");
+    } catch (err: any) {
+      console.error("Gagal mengubah template bagan:", err);
+      onShowToast?.(`Gagal mengubah template: ${err?.message || err}`, "error");
+    }
+  }
 
   function openFestScoreModal(m: DetailBaganItem) {
     if (!m.atlet1_id || !m.atlet2_id) return;
@@ -1384,19 +1406,7 @@
         </h1>
       {/if}
       {#if isFestivalBagan}
-        {#if (eventVenue && eventVenue !== "Venue Pertandingan") || eventDate}
-          <p class="text-[11px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
-            {#if eventVenue && eventVenue !== "Venue Pertandingan"}
-              <span>{eventVenue}</span>
-            {/if}
-            {#if eventVenue && eventVenue !== "Venue Pertandingan" && eventDate}
-              <span>•</span>
-            {/if}
-            {#if eventDate}
-              <span>{eventDate}</span>
-            {/if}
-          </p>
-        {/if}
+        <!-- Pure Judul Saja: Subtext festival dihilangkan sesuai instruksi operator -->
       {:else}
         <p class="text-[11px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
           <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
@@ -1413,6 +1423,20 @@
     <!-- Right Match Counter & Action -->
     <div class="banner-info-wrapper absolute right-0 top-1/2 -translate-y-1/2 flex justify-end items-center text-right text-[10px] {isDarkMode ? 'text-zinc-400 font-bold' : 'text-slate-600 font-bold'} font-mono no-print z-10 gap-2 pr-2">
       {#if isFestivalBagan}
+        <!-- Template Layout Selector -->
+        <div class="flex items-center space-x-1">
+          <span class="text-[10px] text-zinc-400 font-sans hidden sm:inline">Template:</span>
+          <select
+            value={currentBaganInfo?.layout_type || "quadrant"}
+            onchange={(e) => handleUpdateLayoutType(e.currentTarget.value)}
+            class="h-7 px-2 text-[10.5px] font-bold rounded-lg border {isDarkMode ? 'bg-[#181a20] text-amber-300 border-white/20' : 'bg-white text-slate-800 border-slate-300 shadow-xs'} outline-none cursor-pointer"
+            title="Pilih Template Layout Bagan Festival"
+          >
+            <option value="quadrant">⊞ 4-Quadrant Grid (Default)</option>
+            <option value="bands">☰ Horizontal Bands (Baris Lebar)</option>
+          </select>
+        </div>
+
         <button
           type="button"
           onclick={() => printWithOrientation('landscape', '5mm')}
@@ -1914,152 +1938,22 @@
       {/snippet}
 
       <!-- Snippet: Group Quadrant / Band View -->
-      {#snippet festivalGroupQuadrant(gNum: number, isBandLayout: boolean = false)}
-        {@const group = festivalGroups.find((g) => g.groupNum === gNum)}
-        <div class="{isBandLayout ? 'group-band' : 'group-quadrant'} flex flex-col justify-between p-1.5 md:p-2 {isDarkMode ? 'bg-[#15171e]' : 'bg-white'} flex-1 overflow-hidden">
-          <!-- Quadrant / Band Top Header Bar -->
-          <div class="group-header-line flex items-center justify-between px-2 py-0.5 border-b-2 {isDarkMode ? 'border-zinc-700 bg-white/[0.02]' : 'border-slate-900 bg-slate-50'} mb-1 h-5 md:h-6 shrink-0">
-            <div class="flex items-center space-x-1.5 md:space-x-2">
-              <span class="group-header-badge w-4 h-4 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[9px] font-black font-mono flex items-center justify-center shrink-0">
-                {gNum}
-              </span>
-              <span class="group-header-title text-[10px] md:text-[10.5px] font-black uppercase tracking-tight {isDarkMode ? 'text-white' : 'text-slate-950'}">
-                GRUP {gNum} (POOL {String.fromCharCode(64 + gNum)})
-              </span>
-            </div>
-
-            <div>
-              {#if group?.isCompleted}
-                <span class="no-print px-1.5 py-0.2 rounded font-mono font-bold text-[8px] uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                  <span>🏆</span>
-                  <span>SELESAI</span>
-                </span>
-              {/if}
-            </div>
-          </div>
-
-          {#if group}
-            <!-- 2-Stage Tournament Bracket (Semifinal -> Fork -> Final) -->
-            <div class="{isBandLayout ? 'band-grid-2col' : 'quadrant-grid-2col'} flex items-stretch justify-between gap-0 px-0.5 py-0.5 flex-1 min-h-0">
-              <!-- Column 1: SEMIFINALS (Round 1) -->
-              <div class="col-wrap col-semi {isBandLayout ? 'band-col-semi' : 'flex-1'} shrink-0 flex flex-col justify-between min-h-0">
-                <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1">
-                  <div class="flex items-center justify-center space-x-1 text-center w-full">
-                    <span class="stage-header-badge w-3 h-3 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[7.5px] font-black font-mono flex items-center justify-center shrink-0">
-                      1
-                    </span>
-                    <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-white' : 'text-slate-950'}">
-                      SEMIFINAL
-                    </span>
-                  </div>
-                </div>
-
-                <div class="semi-cards-flex flex flex-col justify-between flex-1 min-h-0 gap-1">
-                  {@render festivalMatchCard(group.matches.semi1, `SEMIFINAL 1`)}
-                  {@render festivalMatchCard(group.matches.semi2, `SEMIFINAL 2`)}
-                </div>
-              </div>
-
-              <!-- Connector Fork (Semi 1 & 2 -> Final) -->
-              <div class="connector-fork-col {isBandLayout ? 'band-connector-fork' : 'quadrant-connector-fork'} shrink-0 flex flex-col pointer-events-none relative">
-                <!-- Top spacer to match stage-header-line height -->
-                <div class="stage-header-spacer h-4 shrink-0 mb-1"></div>
-
-                <!-- Connector Flex Body (Synchronized with semi-cards-flex) -->
-                <div class="connector-track-flex flex flex-col justify-between flex-1 min-h-0 relative w-full">
-                  <!-- Top Arm Slot (centered on Semi 1) -->
-                  <div class="connector-slot connector-slot-top shrink-0 flex items-center justify-start w-full relative">
-                    <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] {isDarkMode ? 'border-white/80' : 'border-slate-900'}"></div>
-                  </div>
-
-                  <!-- Spine Track (starts at top arm, ends at bottom arm, middle arm branches to Final) -->
-                  <div class="connector-spine-track absolute left-1/2 w-1/2 flex items-center pointer-events-none">
-                    <div class="connector-spine-bar absolute inset-y-0 left-0 border-l-[2px] {isDarkMode ? 'border-white/80' : 'border-slate-900'}"></div>
-                    <div class="connector-arm-right w-[calc(100%+1px)] border-b-[2px] {isDarkMode ? 'border-amber-400' : 'border-amber-600'}"></div>
-                  </div>
-
-                  <!-- Bottom Arm Slot (centered on Semi 2) -->
-                  <div class="connector-slot connector-slot-bottom shrink-0 flex items-center justify-start w-full relative">
-                    <div class="connector-arm-left w-[calc(50%+1px)] -ml-[1px] border-b-[2px] {isDarkMode ? 'border-white/80' : 'border-slate-900'}"></div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Column 2: PARTAI FINAL (Round 2) -->
-              <div class="col-wrap col-final {isBandLayout ? 'band-col-final' : 'flex-1'} shrink-0 flex flex-col justify-between min-h-0">
-                <div class="stage-header-line h-4 shrink-0 flex items-center justify-center pb-0.5 border-b-2 {isDarkMode ? 'border-amber-500/40' : 'border-amber-600'} mb-1">
-                  <div class="flex items-center justify-center space-x-1 text-center w-full">
-                    <span class="stage-header-badge w-3 h-3 rounded-full {isDarkMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-amber-400 text-amber-950'} text-[7.5px] font-black flex items-center justify-center shrink-0">
-                      2
-                    </span>
-                    <span class="stage-header-title text-[8.5px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-amber-300' : 'text-amber-900'}">
-                      PARTAI FINAL
-                    </span>
-                  </div>
-                </div>
-
-                <div class="final-card-centered flex flex-col justify-center flex-1 min-h-0">
-                  {@render festivalMatchCard(group.matches.final, `FINAL GRUP ${gNum}`, true)}
-                </div>
-              </div>
-            </div>
-          {:else}
-            <!-- Empty Quadrant Placeholder -->
-            <div class="group-quadrant group-quadrant-empty flex flex-col items-center justify-center p-4 {isDarkMode ? 'bg-[#12141a]' : 'bg-slate-50/80'} flex-1 h-full w-full overflow-hidden">
-              <div class="flex flex-col items-center justify-center text-center w-full">
-                <span class="empty-group-badge w-7 h-7 rounded-full border-2 {isDarkMode ? 'border-zinc-400 text-white bg-zinc-800' : 'border-slate-800 text-slate-950 bg-slate-200'} flex items-center justify-center font-mono font-black text-xs mb-1.5 shadow-xs">
-                  {gNum}
-                </span>
-                <span class="empty-group-title text-[10.5px] font-mono font-black {isDarkMode ? 'text-white' : 'text-slate-950'} uppercase tracking-wide">
-                  [GRUP {gNum} TIDAK DIGUNAKAN]
-                </span>
-                <p class="empty-group-desc text-[9px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'} mt-1">
-                  Peserta terakomodasi pada grup sebelumnya
-                </p>
-              </div>
-            </div>
-          {/if}
-        </div>
-      {/snippet}
-
-      <!-- Festival "Bagan Biasa" Template (Single A4 Landscape Sheet) -->
-      <div class="festival-canvas-wrapper w-full h-full max-w-[1064px] mx-auto p-1 overflow-hidden">
-        <div class="festival-split-canvas w-full h-full border-2 {isDarkMode ? 'border-zinc-700 bg-[#101216]' : 'border-slate-900 bg-white'} rounded-lg overflow-hidden shadow-xs flex flex-col">
-          {#if festivalGroups.length <= 3}
-            <!-- 1 to 3 Groups: Full-Width Horizontal Bands (Zero Wasted Space, Generous Card Widths) -->
-            <div class="festival-bands-grid flex flex-col divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
-              {#each festivalGroups as g (g.groupNum)}
-                {@render festivalGroupQuadrant(g.groupNum, true)}
-              {/each}
-            </div>
-          {:else}
-            <!-- 4 to 6 Groups: 2-Column Balanced Grid (100% Fill of A4 Landscape Sheet, Zero Empty Space) -->
-            {@const rowCount = Math.ceil(Math.max(4, festivalGroups.length) / 2)}
-            <div class="festival-quadrants-grid grid grid-cols-2 divide-x-2 divide-y-2 {isDarkMode ? 'divide-zinc-700' : 'divide-slate-900'} flex-1">
-              {#each Array.from({ length: rowCount * 2 }) as _, idx}
-                {@const gNum = idx + 1}
-                {#if gNum <= festivalGroups.length}
-                  {@render festivalGroupQuadrant(gNum, false)}
-                {:else}
-                  <!-- Clean Empty Slot to preserve row balance (no pengesahan) -->
-                  <div class="group-quadrant group-quadrant-empty flex flex-col items-center justify-center p-4 {isDarkMode ? 'bg-[#12141a]' : 'bg-slate-50/80'} flex-1 h-full w-full overflow-hidden">
-                    <div class="flex flex-col items-center justify-center text-center w-full">
-                      <span class="empty-group-badge w-7 h-7 rounded-full border-2 {isDarkMode ? 'border-zinc-400 text-white bg-zinc-800' : 'border-slate-800 text-slate-950 bg-slate-200'} flex items-center justify-center font-mono font-black text-xs mb-1.5 shadow-xs">
-                        {gNum}
-                      </span>
-                      <span class="empty-group-title text-[10.5px] font-mono font-black {isDarkMode ? 'text-white' : 'text-slate-950'} uppercase tracking-wide">
-                        [GRUP {gNum} TIDAK DIGUNAKAN]
-                      </span>
-                      <p class="empty-group-desc text-[9px] font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'} mt-1">
-                        Peserta terakomodasi pada grup sebelumnya
-                      </p>
-                    </div>
-                  </div>
-                {/if}
-              {/each}
-            </div>
-          {/if}
-        </div>
+            <div class="festival-canvas-wrapper w-full h-full max-w-[1064px] mx-auto p-1 overflow-hidden">
+        <FestivalBracketSheet
+          {baganId}
+          baganKode={currentBaganInfo?.kode || baganInfo?.kode}
+          categoryName={displayBaganName}
+          discipline={displayBaganName.toLowerCase().includes("kata") ? "kata" : "kumite"}
+          poolCount={festivalGroupCount}
+          athletesCount={matches.length > 0 ? new Set(matches.flatMap(m => [m.atlet1_id, m.atlet2_id].filter(Boolean))).size : festivalGroupCount * 4}
+          venue={eventVenue}
+          {matches}
+          layoutTemplate={currentBaganInfo?.layout_type || "quadrant"}
+          showHeader={false}
+          interactive={true}
+          {isDarkMode}
+          onMatchClick={handleOpenMatchControl}
+        />
       </div>
     {:else if elimRounds.length === 0}
       <div class="h-64 flex flex-col items-center justify-center text-center">
@@ -2839,6 +2733,16 @@
       page-break-inside: avoid !important;
       break-inside: avoid !important;
     }
+    .festival-quadrants-grid-4 {
+      grid-template-rows: repeat(2, 1fr) !important;
+    }
+    .festival-quadrants-grid-6 {
+      grid-template-rows: repeat(3, 1fr) !important;
+    }
+    .group-quadrant-empty {
+      border: 1.5px dashed #94a3b8 !important;
+      background: #f8fafc !important;
+    }
     .group-quadrant {
       background: #ffffff !important;
       color: #000000 !important;
@@ -3429,6 +3333,12 @@
     grid-template-columns: repeat(2, 1fr);
     height: 100%;
     width: 100%;
+  }
+  .festival-quadrants-grid-4 {
+    grid-template-rows: repeat(2, 1fr) !important;
+  }
+  .festival-quadrants-grid-6 {
+    grid-template-rows: repeat(3, 1fr) !important;
   }
   .group-band {
     flex: 1;

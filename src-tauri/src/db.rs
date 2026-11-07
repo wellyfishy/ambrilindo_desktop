@@ -13,7 +13,7 @@ use crate::models::{
     EnrichedPerguruan, EnrichedUtusan,
     EnrichedTimetableCell, EnrichedTimetableDay, EnrichedTimetableRow, Event, FestivalAthlete,
     FestivalCategory, FestivalMatch, FestivalRosterData, FestivalRosterState, FestivalTatamiSection,
-    FestivalBookletCategory, FestivalBookletData,
+    FestivalBookletCategory, FestivalBookletData, FestivalMixGroup,
     KopSurat, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, SaveTimetablePayload,
     StandingItem, SummaryBaganItem, SummaryBaganResult, SummaryBaganWinner, SummaryJuaraResult,
     SummaryWinnerAthlete, Tatami, TatamiBookletCategory, TatamiBookletData, TatamiLiveStatus,
@@ -87,6 +87,7 @@ impl DatabaseManager {
         if let Some(p) = &self.pool {
             let _ = crate::sync::SyncService::ensure_sync_queue_table(p).await;
             Self::ensure_performance_indexes(p).await;
+            Self::ensure_bagan_layout_column(p).await;
             Self::auto_heal_legacy_master_data(p).await;
             // Reset stale tatami match state on database mount
             let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL").execute(p).await;
@@ -112,6 +113,20 @@ impl DatabaseManager {
 
         for q in index_queries {
             let _ = sqlx::query(q).execute(pool).await;
+        }
+    }
+
+    /// Ensures layout_type column exists on backend_bagan table
+    async fn ensure_bagan_layout_column(pool: &Pool<Sqlite>) {
+        let has_col: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('backend_bagan') WHERE name = 'layout_type'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0) > 0;
+
+        if !has_col {
+            let _ = sqlx::query("ALTER TABLE backend_bagan ADD COLUMN layout_type TEXT DEFAULT 'quadrant'").execute(pool).await;
         }
     }
 
@@ -592,7 +607,7 @@ impl DatabaseManager {
         }
 
         sqlx::query_as::<_, Bagan>(
-            "SELECT id, event_id, nama_bagan, nomor_tanding_id, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id, peringkat_5_id, peringkat_6_id, peringkat_7_id, peringkat_8_id, round_robin, pool, kode, is_bob, has_vr FROM backend_bagan WHERE event_id = ? ORDER BY CAST(COALESCE(kode, '9999') AS INTEGER) ASC, id ASC"
+            "SELECT id, event_id, nama_bagan, nomor_tanding_id, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id, peringkat_5_id, peringkat_6_id, peringkat_7_id, peringkat_8_id, round_robin, pool, kode, is_bob, has_vr, layout_type FROM backend_bagan WHERE event_id = ? ORDER BY CAST(COALESCE(kode, '9999') AS INTEGER) ASC, id ASC"
         )
         .bind(event_id)
         .fetch_all(pool)
@@ -604,7 +619,7 @@ impl DatabaseManager {
     pub async fn get_bagan_by_id(&self, bagan_id: i64) -> Result<Option<Bagan>, String> {
         let pool = self.get_pool()?;
         sqlx::query_as::<_, Bagan>(
-            "SELECT id, event_id, nama_bagan, nomor_tanding_id, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id, peringkat_5_id, peringkat_6_id, peringkat_7_id, peringkat_8_id, round_robin, pool, kode, is_bob, has_vr FROM backend_bagan WHERE id = ?"
+            "SELECT id, event_id, nama_bagan, nomor_tanding_id, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id, peringkat_5_id, peringkat_6_id, peringkat_7_id, peringkat_8_id, round_robin, pool, kode, is_bob, has_vr, layout_type FROM backend_bagan WHERE id = ?"
         )
         .bind(bagan_id)
         .fetch_optional(pool)
@@ -2431,6 +2446,274 @@ impl DatabaseManager {
         Ok(affected)
     }
 
+    /// Mereset total seluruh data turnamen untuk suatu event:
+    /// bagan, partai, atlet, nomor tanding (kategori), kontingen (utusan), perguruan,
+    /// tatami, jadwal partai/timetable, wasit & juri, serta berkas festival roster.
+    pub async fn reset_total_tournament(&self, event_id: i64) -> Result<crate::models::ResetTournamentSummary, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Unassign tatamis
+        let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 2. Wasit detail bagan
+        let _ = sqlx::query("DELETE FROM backend_wasitdetailbagan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 3. Matchup & Score & Detail bagan
+        let _ = sqlx::query("DELETE FROM backend_matchup WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_score WHERE detail_bagan_id IN (SELECT id FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?))")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let res_matches = sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus detail bagan: {}", e))?;
+
+        // 4. Bagan
+        let res_bagan = sqlx::query("DELETE FROM backend_bagan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus bagan: {}", e))?;
+
+        // 5. Timetable (cells, rows, days)
+        let _ = sqlx::query("DELETE FROM backend_timetablecell WHERE row_id IN (SELECT id FROM backend_timetablerow WHERE day_id IN (SELECT id FROM backend_timetableday WHERE event_id = ?))")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_timetablerow WHERE day_id IN (SELECT id FROM backend_timetableday WHERE event_id = ?)")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let res_timetable = sqlx::query("DELETE FROM backend_timetableday WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus jadwal: {}", e))?;
+
+        // 6. Wasit Tatami, Jury, Admin Tatami, Role
+        let _ = sqlx::query("DELETE FROM backend_wasittatami WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_jury WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_admintatami WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_role WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 7. Tatami
+        let res_tatami = sqlx::query("DELETE FROM backend_tatami WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus tatami: {}", e))?;
+
+        // 8. Athletes
+        let res_athletes = sqlx::query("DELETE FROM backend_atlet WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus atlet: {}", e))?;
+
+        // 9. Categories (Nomor Tanding)
+        let res_categories = sqlx::query("DELETE FROM backend_nomortanding WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus nomor tanding: {}", e))?;
+
+        // 10. Wasit
+        let res_wasit = sqlx::query("DELETE FROM backend_wasit WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus wasit: {}", e))?;
+
+        // 11. Kontingen (Utusan)
+        let res_contingents = sqlx::query("DELETE FROM backend_utusan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus kontingen: {}", e))?;
+
+        // 12. Perguruan
+        let res_perguruans = sqlx::query("DELETE FROM backend_perguruan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus perguruan: {}", e))?;
+
+        // 13. Kop surat, event keterangan, sync queue
+        let _ = sqlx::query("DELETE FROM backend_kopsurat WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_eventketerangan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_syncqueue WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi reset total: {}", e))?;
+
+        // 14. Clean up festival roster JSON file if present
+        if let Some(active_path) = &self.active_db_path {
+            if let Some(parent_dir) = std::path::Path::new(active_path).parent() {
+                let roster_file = parent_dir.join(format!("festival_roster_{}.json", event_id));
+                if roster_file.exists() {
+                    let _ = std::fs::remove_file(roster_file);
+                }
+            }
+        }
+        let default_roster = std::path::Path::new("../tournament_data").join(format!("festival_roster_{}.json", event_id));
+        if default_roster.exists() {
+            let _ = std::fs::remove_file(default_roster);
+        }
+        let local_roster = std::path::Path::new("tournament_data").join(format!("festival_roster_{}.json", event_id));
+        if local_roster.exists() {
+            let _ = std::fs::remove_file(local_roster);
+        }
+
+        Ok(crate::models::ResetTournamentSummary {
+            deleted_bagans: res_bagan.rows_affected(),
+            deleted_matches: res_matches.rows_affected(),
+            deleted_athletes: res_athletes.rows_affected(),
+            deleted_categories: res_categories.rows_affected(),
+            deleted_contingents: res_contingents.rows_affected(),
+            deleted_perguruans: res_perguruans.rows_affected(),
+            deleted_tatamis: res_tatami.rows_affected(),
+            deleted_timetable_days: res_timetable.rows_affected(),
+            deleted_wasits: res_wasit.rows_affected(),
+        })
+    }
+
+    /// Menghapus seluruh nomor tanding (kategori) untuk suatu event
+    pub async fn delete_all_categories(&self, event_id: i64) -> Result<u64, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Unassign categories from athletes
+        let _ = sqlx::query("UPDATE backend_atlet SET nomor_tanding_id = NULL WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 2. Clear timetable cells referencing these categories
+        let _ = sqlx::query("DELETE FROM backend_timetablecell WHERE nomor_tanding_id IN (SELECT id FROM backend_nomortanding WHERE event_id = ?)")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 3. Clear brackets linked to these categories
+        let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("DELETE FROM backend_bagan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 4. Delete categories
+        let res = sqlx::query("DELETE FROM backend_nomortanding WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus seluruh kategori: {}", e))?;
+
+        let affected = res.rows_affected();
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi: {}", e))?;
+        Ok(affected)
+    }
+
+    /// Menghapus seluruh kontingen (utusan) untuk suatu event
+    pub async fn delete_all_contingents(&self, event_id: i64) -> Result<u64, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Unassign contingents from athletes
+        let _ = sqlx::query("UPDATE backend_atlet SET utusan_id = NULL WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 2. Delete contingents
+        let res = sqlx::query("DELETE FROM backend_utusan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus seluruh kontingen: {}", e))?;
+
+        let affected = res.rows_affected();
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi: {}", e))?;
+        Ok(affected)
+    }
+
+    /// Menghapus seluruh perguruan untuk suatu event
+    pub async fn delete_all_perguruans(&self, event_id: i64) -> Result<u64, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        // 1. Unassign perguruans from athletes and wasits
+        let _ = sqlx::query("UPDATE backend_atlet SET perguruan_id = NULL WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        let _ = sqlx::query("UPDATE backend_wasit SET perguruan_id = NULL WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await;
+
+        // 2. Delete perguruans
+        let res = sqlx::query("DELETE FROM backend_perguruan WHERE event_id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus seluruh perguruan: {}", e))?;
+
+        let affected = res.rows_affected();
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi: {}", e))?;
+        Ok(affected)
+    }
+
     /// Deletes brackets and match records for a single category
     pub async fn delete_category_bagans(&self, _event_id: i64, category_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
@@ -2901,8 +3184,24 @@ impl DatabaseManager {
             .max()
             .unwrap_or(0) + 1;
 
-        // 3. Process each category
+        // 3. Process each category (aware of non-destructive FestivalMixGroups)
+        let state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        let mut primary_to_mix: std::collections::HashMap<i64, &FestivalMixGroup> = std::collections::HashMap::new();
+        let mut consumed_secondary_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+        for mg in &state.mix_groups {
+            primary_to_mix.insert(mg.primary_category_id, mg);
+            for &sec_id in &mg.secondary_category_ids {
+                consumed_secondary_ids.insert(sec_id);
+            }
+        }
+
         for cat_id in category_ids {
+            // If this category is merged into a primary category's bracket, skip generating a duplicate solo bracket
+            if consumed_secondary_ids.contains(&cat_id) {
+                continue;
+            }
+
             #[derive(sqlx::FromRow)]
             #[allow(dead_code)]
             struct CatRow {
@@ -2938,21 +3237,44 @@ impl DatabaseManager {
                 nama_perguruan: Option<String>,
             }
 
-            let raw_atlets = sqlx::query_as::<_, RawAtletFest>(
-                r#"
-                SELECT a.id, a.nama_atlet, a.utusan_id, a.perguruan_id, u.nama_utusan, p.nama_perguruan
-                FROM backend_atlet a
-                LEFT JOIN backend_utusan u ON a.utusan_id = u.id
-                LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
-                WHERE a.nomor_tanding_id = ?
-                  AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
-                ORDER BY a.id ASC
-                "#
-            )
-            .bind(cat_id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| format!("Gagal memuat atlet festival: {}", e))?;
+            let raw_atlets = if let Some(mg) = primary_to_mix.get(&cat_id) {
+                // Fetch athletes from PRIMARY category AND all SECONDARY categories in this mix!
+                let mut all_cat_ids = vec![cat_id];
+                all_cat_ids.extend(mg.secondary_category_ids.clone());
+                let in_clause = all_cat_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+                let query_str = format!(
+                    r#"
+                    SELECT a.id, a.nama_atlet, a.utusan_id, a.perguruan_id, u.nama_utusan, p.nama_perguruan
+                    FROM backend_atlet a
+                    LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                    LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                    WHERE a.nomor_tanding_id IN ({})
+                      AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+                    ORDER BY a.id ASC
+                    "#,
+                    in_clause
+                );
+                sqlx::query_as::<_, RawAtletFest>(&query_str)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal memuat atlet festival mix: {}", e))?
+            } else {
+                sqlx::query_as::<_, RawAtletFest>(
+                    r#"
+                    SELECT a.id, a.nama_atlet, a.utusan_id, a.perguruan_id, u.nama_utusan, p.nama_perguruan
+                    FROM backend_atlet a
+                    LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                    LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                    WHERE a.nomor_tanding_id = ?
+                      AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+                    ORDER BY a.id ASC
+                    "#
+                )
+                .bind(cat_id)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal memuat atlet festival: {}", e))?
+            };
 
             if raw_atlets.is_empty() {
                 continue;
@@ -3006,10 +3328,16 @@ impl DatabaseManager {
                 let group_slices: Vec<Vec<FestivalAthlete>> = all_groups[group_cursor..group_cursor + num_groups].to_vec();
                 group_cursor += num_groups;
 
-                let bagan_title = if total_bagans == 1 {
-                    cat_name.clone()
+                let effective_cat_name = if let Some(mg) = primary_to_mix.get(&cat_id) {
+                    mg.bagan_name.clone()
                 } else {
-                    format!("{} - Bagan {}", cat_name, chunk_idx + 1)
+                    cat_name.clone()
+                };
+
+                let bagan_title = if total_bagans == 1 {
+                    effective_cat_name
+                } else {
+                    format!("{} - Bagan {}", effective_cat_name, chunk_idx + 1)
                 };
 
                 let bagan_code = format!("F{:02}", next_code_num);
@@ -6316,7 +6644,19 @@ impl DatabaseManager {
         helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state)
     }
 
-    /// Memuat data lengkap Booklet Cetak Bagan Festival (Kategori, Detail Bagan Matches per Tatami)
+    /// Memperbarui tipe layout template bagan ('quadrant' atau 'bands')
+    pub async fn update_bagan_layout_type(&self, bagan_id: i64, layout_type: String) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query("UPDATE backend_bagan SET layout_type = ? WHERE id = ?")
+            .bind(&layout_type)
+            .bind(bagan_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal memperbarui layout template bagan #{}: {}", bagan_id, e))?;
+        Ok(())
+    }
+
+    /// Memuat data lengkap Booklet Cetak Bagan Festival (Single Source of Truth dari backend_bagan & backend_detailbagan)
     pub async fn get_festival_booklet_data(
         &self,
         event_id: i64,
@@ -6365,86 +6705,104 @@ impl DatabaseManager {
             tatamis
         };
 
-        // 4. Load Festival Roster State
+        // 4. Load Festival Roster State for tatami assignment mapping
         let state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        let mut cat_to_tatami: HashMap<i64, (i64, i64)> = HashMap::new(); // cat_id -> (tatami_id, tatami_number)
+        for t in &tatamis {
+            let t_key = t.id.to_string();
+            let t_num = t.tatami_number.unwrap_or(1) as i64;
+            if let Some(cat_ids) = state.tatami_assignments.get(&t_key) {
+                for &cid in cat_ids {
+                    cat_to_tatami.insert(cid, (t.id, t_num));
+                }
+            }
+        }
 
-        // 5. Query All Festival Nomor Tanding
-        let all_festival_nts: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id, nama_nomor_tanding FROM backend_nomortanding WHERE event_id = ? AND UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'"
+        // 5. Query All Festival Bagan directly from backend_bagan (SINGLE SOURCE OF TRUTH)
+        // Reads the exact festival brackets created during drawing or edited in BaganView
+        let festival_bagans: Vec<(i64, i64, String, Option<String>, i64, Option<String>, String, Option<String>)> = sqlx::query_as(
+            "SELECT b.id, b.nomor_tanding_id, b.nama_bagan, b.kode, b.pool, b.tipe_tanding, nt.nama_nomor_tanding, COALESCE(b.layout_type, 'quadrant')
+             FROM backend_bagan b
+             JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
+             WHERE b.event_id = ?
+               AND (UPPER(b.nama_bagan) LIKE '%FESTIVAL%' OR UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%')
+             ORDER BY 
+                 CASE WHEN UPPER(nt.nama_nomor_tanding) LIKE '%KATA%' THEN 1 ELSE 2 END,
+                 b.kode ASC,
+                 b.id ASC"
         )
         .bind(event_id)
         .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())?;
 
-        let all_nt_map: HashMap<i64, String> = all_festival_nts.into_iter().collect();
-
-        // Target tatamis to process
-        let target_tatamis: Vec<&Tatami> = if let Some(t_id) = tatami_id {
-            tatamis.iter().filter(|t| t.id == t_id).collect()
-        } else {
-            tatamis.iter().collect()
-        };
+        let default_tatami = &tatamis[0];
+        let default_tatami_id = default_tatami.id;
+        let default_tatami_number = default_tatami.tatami_number.unwrap_or(1) as i64;
 
         let mut categories_out: Vec<FestivalBookletCategory> = Vec::new();
 
-        for t in target_tatamis {
-            let t_key = t.id.to_string();
-            let cat_ids = state.tatami_assignments.get(&t_key).cloned().unwrap_or_default();
+        for (b_id, b_nt_id, b_nama, b_kode, b_pool, b_tipe, nt_nama, b_layout) in festival_bagans {
+            // Fetch live enriched matches directly from backend_detailbagan
+            let matches = self.get_detail_bagan(b_id).await.unwrap_or_default();
 
-            for cat_id in cat_ids {
-                let cat_name = match all_nt_map.get(&cat_id) {
-                    Some(n) => n.clone(),
-                    None => continue,
-                };
+            // Resolve tatami assignment:
+            // 1) From roster tatami_assignments, 2) From match assigned_tatami_id, 3) Default to first tatami
+            let (t_id, t_num) = if let Some(&(assigned_tid, assigned_tnum)) = cat_to_tatami.get(&b_nt_id) {
+                (assigned_tid, assigned_tnum)
+            } else if let Some(assigned_match_tid) = matches.iter().find_map(|m| m.assigned_tatami_id) {
+                let match_tnum = tatamis.iter().find(|t| t.id == assigned_match_tid).and_then(|t| t.tatami_number).unwrap_or(1) as i64;
+                (assigned_match_tid, match_tnum)
+            } else {
+                (default_tatami_id, default_tatami_number)
+            };
 
-                let discipline = if cat_name.to_lowercase().contains("kata") {
-                    "kata".to_string()
-                } else {
-                    "kumite".to_string()
-                };
-
-                // Query bagan for this category
-                let bagan_opt: Option<(i64, Option<String>, Option<String>, i64, Option<String>)> = sqlx::query_as(
-                    "SELECT id, kode, nama_bagan, pool, tipe_tanding FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ? LIMIT 1"
-                )
-                .bind(event_id)
-                .bind(cat_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| e.to_string())?;
-
-                let (bagan_id, bagan_kode, bagan_nama, pool_count, tipe_tanding, matches) = match bagan_opt {
-                    Some((b_id, b_kode, b_nama, b_pool, b_tipe)) => {
-                        let m_list = self.get_detail_bagan(b_id).await.unwrap_or_default();
-                        (Some(b_id), b_kode, b_nama, b_pool, b_tipe, m_list)
-                    }
-                    None => (None, None, None, 1, Some(if discipline == "kata" { "1".to_string() } else { "2".to_string() }), Vec::new()),
-                };
-
-                let athletes_count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM backend_atlet WHERE nomor_tanding_id = ?"
-                )
-                .bind(cat_id)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0);
-
-                categories_out.push(FestivalBookletCategory {
-                    category_id: cat_id,
-                    category_name: cat_name,
-                    discipline,
-                    tatami_id: t.id,
-                    tatami_number: t.tatami_number.unwrap_or(1) as i64,
-                    bagan_id,
-                    bagan_kode,
-                    bagan_nama,
-                    pool: pool_count,
-                    tipe_tanding,
-                    athletes_count,
-                    matches,
-                });
+            // If tatami filter specified (e.g. from "Cetak Bagan Tatami X"), apply filter
+            if let Some(req_tid) = tatami_id {
+                if t_id != req_tid {
+                    continue;
+                }
             }
+
+            // Determine discipline
+            let discipline = if nt_nama.to_lowercase().contains("kata") || b_nama.to_lowercase().contains("kata") {
+                "kata".to_string()
+            } else {
+                "kumite".to_string()
+            };
+
+            // Calculate exact unique athlete count from matches, fallback to nt count
+            let mut unique_athletes = std::collections::HashSet::new();
+            for m in &matches {
+                if let Some(aid) = m.atlet1_id { unique_athletes.insert(aid); }
+                if let Some(aid) = m.atlet2_id { unique_athletes.insert(aid); }
+            }
+            let athletes_count = if !unique_athletes.is_empty() {
+                unique_athletes.len() as i64
+            } else {
+                let cnt: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backend_atlet WHERE nomor_tanding_id = ?")
+                    .bind(b_nt_id)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(0);
+                cnt
+            };
+
+            categories_out.push(FestivalBookletCategory {
+                category_id: b_nt_id,
+                category_name: b_nama.clone(),
+                discipline,
+                tatami_id: t_id,
+                tatami_number: t_num,
+                bagan_id: Some(b_id),
+                bagan_kode: b_kode,
+                bagan_nama: Some(b_nama),
+                pool: b_pool,
+                tipe_tanding: b_tipe,
+                athletes_count,
+                matches,
+                layout_type: b_layout,
+            });
         }
 
         let venue = kop_surat.as_ref().map(|k| k.alamat.clone()).or(Some("Gedung Olahraga SMPN & SMAN 1 Samarinda".to_string()));
@@ -6515,6 +6873,17 @@ impl DatabaseManager {
         let _ = helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state);
 
         self.get_festival_roster_data(event_id).await
+    }
+
+    pub async fn get_festival_mix_groups(&self, event_id: i64) -> Result<Vec<FestivalMixGroup>, String> {
+        let state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        Ok(state.mix_groups)
+    }
+
+    pub async fn save_festival_mix_groups(&self, event_id: i64, mix_groups: Vec<FestivalMixGroup>) -> Result<(), String> {
+        let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        state.mix_groups = mix_groups;
+        helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state)
     }
 
     pub async fn mix_festival_categories(
@@ -8801,6 +9170,7 @@ fn helper_load_festival_roster_state(db_path: Option<&std::path::Path>, event_id
     FestivalRosterState {
         tatami_assignments: std::collections::HashMap::new(),
         athlete_pairings: std::collections::HashMap::new(),
+        mix_groups: Vec::new(),
     }
 }
 
@@ -9079,6 +9449,119 @@ mod festival_tests {
         // Cleanup
         let _ = std::fs::remove_file(&test_db_path);
         println!("test_delete_all_festival_bagans_preserves_regular_bagans PASSED successfully!");
+    }
+
+    #[tokio::test]
+    async fn test_reset_total_tournament_cleans_all_data() {
+        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
+        if !original_db.exists() {
+            return;
+        }
+
+        let test_db_path = std::path::Path::new("../tournament_data/test_reset_total.sqlite3");
+        let orig_wal = std::path::Path::new("../tournament_data/db.sqlite3-wal");
+        let test_wal = std::path::Path::new("../tournament_data/test_reset_total.sqlite3-wal");
+        let orig_shm = std::path::Path::new("../tournament_data/db.sqlite3-shm");
+        let test_shm = std::path::Path::new("../tournament_data/test_reset_total.sqlite3-shm");
+
+        let _ = std::fs::remove_file(&test_db_path);
+        let _ = std::fs::remove_file(&test_wal);
+        let _ = std::fs::remove_file(&test_shm);
+
+        let _ = std::fs::copy(original_db, &test_db_path);
+        if orig_wal.exists() {
+            let _ = std::fs::copy(orig_wal, &test_wal);
+        }
+        if orig_shm.exists() {
+            let _ = std::fs::copy(orig_shm, &test_shm);
+        }
+
+        let mut db = DatabaseManager::new();
+        db.mount_database(&test_db_path).await.expect("mount failed");
+
+        // Execute reset on Event 14
+        let summary = db.reset_total_tournament(14).await.expect("reset_total_tournament failed");
+
+        let pool = db.get_pool().expect("get pool failed");
+        let athlete_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backend_atlet WHERE event_id = 14")
+            .fetch_one(pool).await.unwrap();
+        assert_eq!(athlete_count.0, 0);
+
+        let cat_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backend_nomortanding WHERE event_id = 14")
+            .fetch_one(pool).await.unwrap();
+        assert_eq!(cat_count.0, 0);
+
+        let contingent_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backend_utusan WHERE event_id = 14")
+            .fetch_one(pool).await.unwrap();
+        assert_eq!(contingent_count.0, 0);
+
+        let perguruan_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backend_perguruan WHERE event_id = 14")
+            .fetch_one(pool).await.unwrap();
+        assert_eq!(perguruan_count.0, 0);
+
+        let bagan_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backend_bagan WHERE event_id = 14")
+            .fetch_one(pool).await.unwrap();
+        assert_eq!(bagan_count.0, 0);
+
+        // Verify Event 9 is unaffected
+        let other_cat_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM backend_nomortanding WHERE event_id = 9")
+            .fetch_one(pool).await.unwrap();
+        assert!(other_cat_count.0 > 0, "Event lain tidak boleh terhapus!");
+
+        let _ = std::fs::remove_file(&test_db_path);
+        let _ = std::fs::remove_file(&test_wal);
+        let _ = std::fs::remove_file(&test_shm);
+        println!("test_reset_total_tournament_cleans_all_data PASSED: {:?}", summary);
+    }
+
+    #[tokio::test]
+    async fn test_get_festival_booklet_data_single_source_of_truth() {
+        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
+        if !original_db.exists() {
+            return;
+        }
+
+        let mut db = DatabaseManager::new();
+        db.mount_database(&original_db).await.expect("mount failed");
+
+        // 1. Load booklet data for Event 14 (Festival Bushido I)
+        let booklet = db.get_festival_booklet_data(14, None).await.expect("load booklet failed");
+
+        // Event 14 has 18 festival bagans in backend_bagan
+        assert_eq!(booklet.categories.len(), 18, "Harus mengembalikan 18 bagan festival resmi dari backend_bagan!");
+
+        // 2. Verify first bagan has valid matches and athletes
+        let first_cat = &booklet.categories[0];
+        assert!(!first_cat.matches.is_empty(), "Partai bagan festival tidak boleh kosong!");
+        assert!(first_cat.athletes_count > 0, "Jumlah atlet harus > 0");
+
+        // 3. Test Live Mutation (Single Source of Truth verification)
+        let first_match = &first_cat.matches[0];
+        let match_id = first_match.id;
+        let orig_score = first_match.score1.clone();
+
+        let pool = db.get_pool().expect("pool failed");
+        // Mutate score directly in backend_detailbagan
+        sqlx::query("UPDATE backend_detailbagan SET score1 = '8' WHERE id = ?")
+            .bind(match_id)
+            .execute(pool)
+            .await
+            .expect("update score failed");
+
+        // Re-fetch booklet data
+        let reloaded = db.get_festival_booklet_data(14, None).await.expect("reload booklet failed");
+        let reloaded_match = reloaded.categories[0].matches.iter().find(|m| m.id == match_id).expect("match found");
+        assert_eq!(reloaded_match.score1.as_deref(), Some("8"), "Skor hasil perubahan di database harus langsung tercermin di booklet!");
+
+        // Revert score back
+        sqlx::query("UPDATE backend_detailbagan SET score1 = ? WHERE id = ?")
+            .bind(&orig_score)
+            .bind(match_id)
+            .execute(pool)
+            .await
+            .expect("revert score failed");
+
+        println!("test_get_festival_booklet_data_single_source_of_truth PASSED successfully! 18 bagans verified as SSoT.");
     }
 
 }

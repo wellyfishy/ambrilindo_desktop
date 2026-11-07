@@ -16,6 +16,8 @@ pub struct NomorTanding {
     pub nama_nomor_tanding: Option<String>,
     pub is_bob: bool,
     pub has_vr: bool,
+    #[serde(default)]
+    pub layout_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -118,6 +120,8 @@ pub struct Bagan {
     pub kode: Option<String>,
     pub is_bob: bool,
     pub has_vr: bool,
+    #[serde(default)]
+    pub layout_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -419,6 +423,8 @@ pub struct CategoryMutationInput {
     pub nama_nomor_tanding: String,
     pub is_bob: bool,
     pub has_vr: bool,
+    #[serde(default)]
+    pub layout_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -761,10 +767,19 @@ pub struct FestivalRosterData {
     pub kop_surat: Option<KopSurat>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FestivalMixGroup {
+    pub primary_category_id: i64,
+    pub secondary_category_ids: Vec<i64>,
+    pub bagan_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FestivalRosterState {
     pub tatami_assignments: std::collections::HashMap<String, Vec<i64>>, // tatami_id -> [nt_id]
     pub athlete_pairings: std::collections::HashMap<String, Vec<i64>>,  // nt_id -> [athlete_id]
+    #[serde(default)]
+    pub mix_groups: Vec<FestivalMixGroup>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -781,6 +796,8 @@ pub struct FestivalBookletCategory {
     pub tipe_tanding: Option<String>,
     pub athletes_count: i64,
     pub matches: Vec<EnrichedDetailBagan>,
+    #[serde(default)]
+    pub layout_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1069,4 +1086,15 @@ pub struct BobBaganResult {
     pub nama_bob: String,
 }
 
-
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ResetTournamentSummary {
+    pub deleted_bagans: u64,
+    pub deleted_matches: u64,
+    pub deleted_athletes: u64,
+    pub deleted_categories: u64,
+    pub deleted_contingents: u64,
+    pub deleted_perguruans: u64,
+    pub deleted_tatamis: u64,
+    pub deleted_timetable_days: u64,
+    pub deleted_wasits: u64,
+}

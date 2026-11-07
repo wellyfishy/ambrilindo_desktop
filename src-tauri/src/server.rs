@@ -1725,6 +1725,14 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "update_bagan_layout_type" => {
+            let b_id = get_i64_val(&payload, &["baganId", "bagan_id", "id"]).unwrap_or(0);
+            let lt = payload.get("layoutType").or(payload.get("layout_type")).and_then(|v| v.as_str()).unwrap_or("quadrant").to_string();
+            match db.update_bagan_layout_type(b_id, lt).await {
+                Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "get_bagan_podium" => {
             let b_id = get_i64_val(&payload, &["baganId", "bagan_id", "id"]).unwrap_or(0);
             match db.get_bagan_podium(b_id).await {
