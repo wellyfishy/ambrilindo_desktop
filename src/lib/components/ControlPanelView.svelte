@@ -188,11 +188,17 @@
 
   // Claim the current tatami, keep the claim alive, and listen to that tatami's
   // devices. Re-runs when the festival tatami selector changes.
+  //
+  // Opening a match (or picking a tatami) is an explicit choice, so this window
+  // takes the tatami over: whoever opened a match last controls it. This also covers
+  // the previous control panel window, which the app closes without giving it a
+  // chance to release its claim. The heartbeat never forces, so a window that was
+  // taken over stops instead of fighting back.
   $effect(() => {
     const tatami = activeTatami;
     untrack(() => {
       claimStatus = "pending";
-      requestClaim(tatami);
+      requestClaim(tatami, true);
     });
     const heartbeat = setInterval(() => requestClaim(tatami), CLAIM_HEARTBEAT_MS);
     const socket = connectTatamiSocket("admin-control", tatami, handleSocketMessage);
@@ -1285,18 +1291,15 @@
     aria-describedby="claim-desc"
   >
     <div class="w-full max-w-md bg-[#161820] border border-rose-500/20 rounded-xl p-6 shadow-2xl">
-      <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-rose-400">Tatami sedang dipakai</div>
+      <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-rose-400">Tatami diambil alih</div>
       <h2 id="claim-title" class="mt-2 text-lg font-black tracking-tight text-white uppercase">
-        Tatami <span class="font-mono tabular-nums">{activeTatami}</span> dikendalikan {claimHolderLabel}
+        Tatami <span class="font-mono tabular-nums">{activeTatami}</span> kini dikendalikan {claimHolderLabel}
       </h2>
       <p id="claim-desc" class="mt-2 text-xs font-medium text-zinc-300">
-        {#if claimHolderSince}Sejak pukul <span class="font-mono tabular-nums">{formatClaimTime(claimHolderSince)}</span>.{" "}{/if}Selama itu,
-        jendela ini tidak mengirim skor atau timer ke scoreboard dan tidak bisa menyimpan hasil.
+        Match dibuka di panel lain{#if claimHolderSince}{" "}pukul <span class="font-mono tabular-nums">{formatClaimTime(claimHolderSince)}</span>{/if}.
+        Jendela ini berhenti mengirim skor dan timer, dan tidak bisa menyimpan hasil.
       </p>
-      <p class="mt-1.5 text-[11px] text-zinc-500">
-        Ambil alih hanya jika operator itu sudah selesai atau laptopnya bermasalah. Panel di sana berhenti dalam beberapa detik.
-        Tutup jendela ini jika tidak dipakai.
-      </p>
+      <p class="mt-1.5 text-[11px] text-zinc-500">Tutup jendela ini, atau ambil alih kembali.</p>
       {#if isFestival}
         <label class="mt-4 flex items-center gap-2 text-[11px] text-zinc-400">
           Pindah ke
@@ -1317,7 +1320,7 @@
           disabled={isTakingOver}
           class="px-3.5 py-2 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:border-rose-500/40 hover:text-rose-300 text-xs font-bold transition disabled:opacity-50"
         >
-          {isTakingOver ? "Mengambil alih…" : `Ambil alih Tatami ${activeTatami}`}
+          {isTakingOver ? "Mengambil alih…" : `Ambil alih kembali Tatami ${activeTatami}`}
         </button>
       </div>
     </div>
