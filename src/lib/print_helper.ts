@@ -30,6 +30,19 @@ export function printWithOrientation(
           size: A4 landscape;
           margin: 6mm;
         }
+        /* Results booklet cover: 16:9 like its source design (297 x 167 mm). */
+        @page cover-sheet {
+          size: 297mm 167.0625mm;
+          margin: 0;
+        }
+        .booklet-page-cover {
+          page: cover-sheet !important;
+          break-after: page !important;
+          page-break-after: always !important;
+          height: 167mm !important;
+          max-height: 167mm !important;
+          overflow: hidden !important;
+        }
         .booklet-page-portrait {
           page: portrait-sheet !important;
           break-after: page !important;

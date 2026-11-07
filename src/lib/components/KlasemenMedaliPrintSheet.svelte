@@ -80,7 +80,7 @@
 <div class="klasemen-medali-sheet font-sans text-slate-900 bg-white">
   <!-- ================= LEMBAR 1: KLASEMEN KONTINGEN / UTUSAN ================= -->
   <div class="print-page-sheet break-after-page mb-8 print:mb-0">
-    <table class="w-full border-collapse border-none">
+    <table class="w-full table-fixed border-collapse border-none">
       <!-- Recurring Document Header for Kontingen Page -->
       <thead class="print-table-header">
         <tr>
@@ -221,7 +221,7 @@
 
   <!-- ================= LEMBAR 2: KLASEMEN PERGURUAN ================= -->
   <div class="print-page-sheet">
-    <table class="w-full border-collapse border-none">
+    <table class="w-full table-fixed border-collapse border-none">
       <!-- Recurring Document Header for Perguruan Page -->
       <thead class="print-table-header">
         <tr>

@@ -16,8 +16,49 @@ pub struct NomorTanding {
     pub nama_nomor_tanding: Option<String>,
     pub is_bob: bool,
     pub has_vr: bool,
+    // backend_nomortanding has no layout_type column (it lives on backend_bagan), so
+    // category queries never select it. Without #[sqlx(default)] every NomorTanding
+    // query fails with ColumnNotFound("layout_type").
     #[serde(default)]
+    #[sqlx(default)]
     pub layout_type: Option<String>,
+}
+
+#[cfg(test)]
+mod nomor_tanding_row_tests {
+    use super::NomorTanding;
+
+    #[tokio::test]
+    async fn decodes_without_layout_type_column() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE backend_nomortanding (id INTEGER PRIMARY KEY, nama_nomor_tanding varchar(50), event_id bigint, is_bob bool NOT NULL, has_vr bool NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO backend_nomortanding VALUES (1, 'KATA PERORANGAN PUTRI', 14, 0, 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Same SELECT as DatabaseManager::get_categories.
+        let rows = sqlx::query_as::<_, NomorTanding>(
+            "SELECT id, event_id, nama_nomor_tanding, is_bob, has_vr FROM backend_nomortanding WHERE event_id = ? ORDER BY nama_nomor_tanding ASC",
+        )
+        .bind(14_i64)
+        .fetch_all(&pool)
+        .await
+        .expect("get_categories query must decode into NomorTanding");
+
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].has_vr);
+        assert_eq!(rows[0].layout_type, None);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

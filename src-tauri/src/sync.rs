@@ -462,6 +462,30 @@ impl SyncService {
         }
     }
 
+    /// Drops every web-portal mapping of a local event (all target modes), e.g. after
+    /// the event was deleted, so a stale mapping cannot be picked up again.
+    pub fn remove_event_mapping(db_path: Option<&PathBuf>, local_event_id: i64) -> Result<(), String> {
+        let mapping_file = Self::get_config_dir(db_path).join("event_mapping.json");
+        if !mapping_file.exists() {
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(&mapping_file).map_err(|e| e.to_string())?;
+        let mut data: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let exact = format!("local_{}", local_event_id);
+        let prefix = format!("local_{}_", local_event_id);
+        let mut changed = false;
+        if let Some(obj) = data.as_object_mut() {
+            let before = obj.len();
+            obj.retain(|k, _| k != &exact && !k.starts_with(&prefix));
+            changed = obj.len() != before;
+        }
+        if changed {
+            std::fs::write(&mapping_file, serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?)
+                .map_err(|e| format!("Gagal menyimpan event_mapping.json: {}", e))?;
+        }
+        Ok(())
+    }
+
     /// Saves event mapping to event_mapping.json
     pub fn set_event_mapping(
         db_path: Option<&PathBuf>,

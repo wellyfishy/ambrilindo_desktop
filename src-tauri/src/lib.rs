@@ -6,6 +6,7 @@ pub mod models;
 pub mod referee;
 pub mod server;
 pub mod sync;
+pub mod tatami_claim;
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -25,7 +26,6 @@ pub struct DesktopState {
     pub db: Arc<Mutex<DatabaseManager>>,
     pub audio: AudioService,
     pub server_broadcast: broadcast::Sender<ArenaMessage>,
-    pub server_running: Mutex<bool>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -51,21 +51,14 @@ fn get_network_info() -> NetworkInfo {
 }
 
 #[tauri::command]
-async fn check_ip_availability(
-    state: tauri::State<'_, DesktopState>,
-) -> Result<Vec<server::IpAvailabilityInfo>, String> {
-    let is_running = *state.server_running.lock().await;
+async fn check_ip_availability() -> Result<Vec<server::IpAvailabilityInfo>, String> {
+    let is_running = server::is_server_running().await;
     Ok(server::check_ip_availability(is_running).await)
 }
 
 #[tauri::command]
-async fn stop_arena_server(
-    state: tauri::State<'_, DesktopState>,
-) -> Result<(), String> {
-    server::stop_server().await?;
-    let mut running = state.server_running.lock().await;
-    *running = false;
-    Ok(())
+async fn stop_arena_server() -> Result<(), String> {
+    server::stop_server().await
 }
 
 #[tauri::command]
@@ -74,8 +67,7 @@ async fn start_arena_server(
     selected_ip: Option<String>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<NetworkInfo, String> {
-    let mut running = state.server_running.lock().await;
-    if *running {
+    if server::is_server_running().await {
         return Ok(server::get_network_info_with_ip(selected_ip.as_deref()));
     }
 
@@ -86,15 +78,25 @@ async fn start_arena_server(
     });
 
     server::start_server(app_state).await?;
-    *running = true;
     Ok(server::get_network_info_with_ip(selected_ip.as_deref()))
 }
 
 #[tauri::command]
-async fn get_server_status(
-    state: tauri::State<'_, DesktopState>,
-) -> Result<bool, String> {
-    Ok(*state.server_running.lock().await)
+fn claim_tatami(tatami: i64, owner_id: String, owner_label: Option<String>, force: Option<bool>) -> Result<tatami_claim::ClaimResult, String> {
+    if tatami <= 0 || owner_id.is_empty() {
+        return Err("tatami dan ownerId wajib diisi".into());
+    }
+    Ok(tatami_claim::claim(tatami, &owner_id, owner_label.as_deref().unwrap_or(""), force.unwrap_or(false)))
+}
+
+#[tauri::command]
+fn release_tatami(tatami: i64, owner_id: String) -> bool {
+    tatami_claim::release(tatami, &owner_id)
+}
+
+#[tauri::command]
+async fn get_server_status() -> Result<bool, String> {
+    Ok(server::is_server_running().await)
 }
 
 #[tauri::command]
@@ -358,6 +360,16 @@ async fn reset_total_tournament(
     db.reset_total_tournament(event_id).await
 }
 
+/// Host-only on purpose: not exposed through the LAN dispatcher.
+#[tauri::command]
+async fn delete_event(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::ResetTournamentSummary, String> {
+    let db = state.db.lock().await;
+    db.delete_event(event_id).await
+}
+
 #[tauri::command]
 async fn delete_all_categories(
     event_id: i64,
@@ -527,15 +539,19 @@ async fn open_control_panel_window(
     match_id: i64,
     bagan_id: i64,
     tatami: Option<i64>,
+    host_url: Option<String>,
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
     let win_label = format!("control-panel-{}", match_id);
     let t_num = tatami.unwrap_or(1);
+    // Set when this laptop is an operator tambahan: the window must talk to the host,
+    // and the host (not this laptop's DB) records the running match.
+    let host_param = host_query_param(host_url.as_deref());
 
     // Notify match is running on this tatami and enqueue to sync
     let t_num_i32 = t_num as i32;
-    if match_id > 0 {
+    if match_id > 0 && host_param.is_empty() {
         let (pool_opt, db_path_opt) = {
             let db = state.db.lock().await;
             let _ = db.notify_match_running(match_id, t_num_i32).await;
@@ -579,12 +595,12 @@ async fn open_control_panel_window(
 
     let (url, title) = if match_id == 0 {
         (
-            format!("/control-panel?matchId=0&baganId=0&isFestival=true&tatami={}", t_num),
+            format!("/control-panel?matchId=0&baganId=0&isFestival=true&tatami={}{}", t_num, host_param),
             format!("Ambrilindo - Control Panel Festival (Bagan 000) - Tatami {}", t_num),
         )
     } else {
         (
-            format!("/control-panel?matchId={}&baganId={}&tatami={}", match_id, bagan_id, t_num),
+            format!("/control-panel?matchId={}&baganId={}&tatami={}{}", match_id, bagan_id, t_num, host_param),
             format!("Ambrilindo - Control Panel Partai #{}", match_id),
         )
     };
@@ -598,6 +614,14 @@ async fn open_control_panel_window(
         .map_err(|e| format!("Gagal membuka window control panel: {}", e))?;
 
     Ok(())
+}
+
+/// `&hostUrl=<encoded>` when a host URL is given, otherwise empty.
+fn host_query_param(host_url: Option<&str>) -> String {
+    match host_url.map(str::trim) {
+        Some(h) if !h.is_empty() => format!("&hostUrl={}", helper_url_encode(h)),
+        _ => String::new(),
+    }
 }
 
 fn helper_url_encode(s: &str) -> String {
@@ -624,6 +648,7 @@ async fn open_festival_control_panel(
     ao_utusan: Option<String>,
     cat_name: Option<String>,
     discipline: Option<String>,
+    host_url: Option<String>,
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -657,6 +682,7 @@ async fn open_festival_control_panel(
         query.push_str(&format!("&disc={}", helper_url_encode(d)));
     }
 
+    query.push_str(&host_query_param(host_url.as_deref()));
     let url = format!("/control-panel?{}", query);
     let title = format!("Ambrilindo - Control Panel Festival (Bagan 000) - Tatami {}", t_num);
 
@@ -1052,6 +1078,7 @@ async fn project_scoreboard(
     app: tauri::AppHandle,
     monitor_id: usize,
     tatami_number: u32,
+    host_url: Option<String>,
 ) -> Result<(), String> {
     use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
 
@@ -1069,7 +1096,7 @@ async fn project_scoreboard(
         return Ok(());
     }
 
-    let url = format!("/scoreboard?tatami={}", tatami_number);
+    let url = format!("/scoreboard?tatami={}{}", tatami_number, host_query_param(host_url.as_deref()));
     let _win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
         .title(format!("Scoreboard Arena Tatami {}", tatami_number))
         .position(monitor.position().x as f64, monitor.position().y as f64)
@@ -1762,14 +1789,13 @@ async fn export_html_to_pdf(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let (broadcast_tx, _rx) = broadcast::channel(100);
+    let (broadcast_tx, _rx) = broadcast::channel(server::BROADCAST_CAPACITY);
 
     let db_arc = Arc::new(Mutex::new(DatabaseManager::new()));
     let desktop_state = DesktopState {
         db: db_arc.clone(),
         audio: AudioService::new(),
         server_broadcast: broadcast_tx,
-        server_running: Mutex::new(false),
     };
 
     tauri::Builder::default()
@@ -1787,6 +1813,8 @@ pub fn run() {
             start_arena_server,
             stop_arena_server,
             get_server_status,
+            claim_tatami,
+            release_tatami,
             pick_and_mount_database,
             mount_database_path,
             auto_mount_default_database,
@@ -1808,6 +1836,7 @@ pub fn run() {
             delete_category_bagans,
             delete_all_athletes,
             reset_total_tournament,
+            delete_event,
             delete_all_categories,
             delete_all_contingents,
             delete_all_perguruans,

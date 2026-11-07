@@ -21,6 +21,17 @@ function getInitialHostUrl(): string {
     const saved = window.sessionStorage.getItem("ambrilindo_host_url");
     if (saved) return saved;
   }
+  // A browser device (tablet, TV) opened this page from the host itself, e.g.
+  // http://192.168.1.5:8000/scoreboard — the host is wherever the page came from.
+  // (Port 1420 is the Vite dev server, which has no API.)
+  if (
+    typeof window !== "undefined" &&
+    !(window as any).__TAURI_INTERNALS__ &&
+    /^https?:$/.test(window.location.protocol) &&
+    window.location.port !== "1420"
+  ) {
+    return window.location.origin;
+  }
   return "http://127.0.0.1:8000";
 }
 
@@ -48,6 +59,45 @@ export function getConnectionConfig(): AppConnectionState {
   return { ...connectionState };
 }
 
+function hasTauri(): boolean {
+  return typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
+}
+
+/** True for windows of the host/solo desktop app itself (not an operator tambahan). */
+export function isHostUi(): boolean {
+  return hasTauri() && !isClientMode();
+}
+
+/** Base URL of the Axum host this window should talk to over HTTP/WS. */
+export function getHostBaseUrl(): string {
+  return connectionState.hostUrl.replace(/\/$/, "");
+}
+
+/**
+ * Adds `hostUrl=` to an app path when this window is an operator tambahan, so a
+ * window it opens keeps talking to the host instead of falling back to local mode.
+ */
+export function withHostParam(path: string): string {
+  if (!isClientMode()) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}hostUrl=${encodeURIComponent(getHostBaseUrl())}`;
+}
+
+/**
+ * Commands that act on this machine's own windows and monitors. They always run on
+ * the local desktop app, even for an operator tambahan; the window they open is
+ * told the host URL so it talks to the host.
+ */
+const LOCAL_WINDOW_COMMANDS = new Set([
+  "open_control_panel_window",
+  "open_festival_control_panel",
+  "close_control_panel_window",
+  "project_scoreboard",
+  "close_scoreboard",
+  "get_available_monitors",
+  "get_running_scoreboards",
+]);
+
 export function isClientMode(): boolean {
   if (connectionState.mode === "client") return true;
   if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) return true;
@@ -72,12 +122,25 @@ export async function apiCall<T = any>(
   }
 
   // If local Tauri IPC is active and not running as LAN client, invoke directly
-  if (!isClientMode() && typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+  if (!isClientMode() && hasTauri()) {
     return await tauriInvoke<T>(command, args);
   }
 
-  // Client / LAN mode: proxy request via HTTP to Axum server
-  const base = connectionState.hostUrl.replace(/\/$/, "");
+  // Operator tambahan with the desktop app: window/monitor commands run locally.
+  if (hasTauri() && LOCAL_WINDOW_COMMANDS.has(command)) {
+    if (command === "open_control_panel_window" && Number(args?.matchId) > 0) {
+      // The host's DB records which match runs on which tatami.
+      await remoteCall("notify_match_running", { matchId: args.matchId, tatami: args.tatami });
+    }
+    return await tauriInvoke<T>(command, { ...args, hostUrl: getHostBaseUrl() });
+  }
+
+  return remoteCall<T>(command, args);
+}
+
+/** Calls the host's universal RPC dispatcher over HTTP. */
+async function remoteCall<T = any>(command: string, args: Record<string, any> = {}): Promise<T> {
+  const base = getHostBaseUrl();
   const url = `${base}/api/command/${command}`;
 
   const res = await fetch(url, {

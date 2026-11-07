@@ -6,14 +6,21 @@
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import DaftarJuaraPrintSheet from "$lib/components/DaftarJuaraPrintSheet.svelte";
   import KlasemenMedaliPrintSheet from "$lib/components/KlasemenMedaliPrintSheet.svelte";
+  import ResultCoverSheet from "$lib/components/ResultCoverSheet.svelte";
+  import { loadCoverSettings, resolveCoverText, type CoverSettings } from "$lib/cover_settings";
 
   interface Props {
     eventId: number;
     eventName?: string;
     hostAddress?: string;
+    /** Cover settings being edited live (from the #cetak channel). */
+    coverSettings?: CoverSettings | null;
+    /** Reports the event data the cover falls back to (for form placeholders). */
+    onCoverDefaults?: (d: { namaEvent: string; tempat: string; tanggalRaw: string; hasEventLogo: boolean }) => void;
   }
 
-  let { eventId, eventName = "", hostAddress = "" }: Props = $props();
+  let { eventId, eventName = "", hostAddress = "", coverSettings = null, onCoverDefaults }: Props = $props();
+
 
   let bookletData = $state<ResultsBookletData | null>(null);
   let isLoading = $state(true);
@@ -39,6 +46,34 @@
   let editableNomorSurat = $state("");
   let editableCatatanSanksi = $state("");
   let editableSignatories = $state<ResultsBookletSignatory[]>([]);
+
+  // Cover: settings come from the #cetak channel when embedded there; otherwise the
+  // ones saved for this event (or the defaults) are used.
+  let savedCoverSettings = $derived(loadCoverSettings(eventId));
+  let cover = $derived<CoverSettings>(coverSettings ?? savedCoverSettings);
+  let coverText = $derived(
+    resolveCoverText(cover, {
+      namaEvent: editableEventName || bookletData?.event_info?.nama_event || eventName,
+      tempat: editableTempat,
+      tanggalRaw: editableTanggal,
+    })
+  );
+  $effect(() => {
+    if (!bookletData || !onCoverDefaults) return;
+    onCoverDefaults({
+      namaEvent: editableEventName || bookletData.event_info?.nama_event || eventName,
+      tempat: editableTempat,
+      tanggalRaw: editableTanggal,
+      hasEventLogo: !!bookletData.event_info?.logo,
+    });
+  });
+
+  let coverLogoUrl = $derived.by(() => {
+    if (cover.logoMode === "none") return null;
+    if (cover.logoMode === "custom") return cover.customLogo;
+    const path = bookletData?.event_info?.logo;
+    return path ? logoMap[path] || null : null;
+  });
 
   let topKontingen = $derived(bookletData?.standings_kontingen?.[0]);
   let topPerguruan = $derived(bookletData?.standings_perguruan?.[0]);
@@ -142,7 +177,40 @@ $effect(() => {
     }, 80);
   }
 
-  function preparePrintHtml(mode: "combined" | "portrait" | "landscape"): string {
+  /**
+   * The exported HTML is rendered from a temp file by headless Edge, so font files
+   * referenced by URL (the cover's Oswald/Roboto/Inter) would not load there.
+   * Inline every @font-face source as a data URL.
+   */
+  async function inlineFontFaces(css: string): Promise<string> {
+    const urlRe = /url\((["']?)([^"')]+)\1\)/g;
+    const urls = new Set<string>();
+    for (const block of css.match(/@font-face\s*{[^}]*}/g) || []) {
+      for (const m of block.matchAll(urlRe)) {
+        if (!m[2].startsWith("data:")) urls.add(m[2]);
+      }
+    }
+    const inlined: Record<string, string> = {};
+    await Promise.all(
+      [...urls].map(async (u) => {
+        try {
+          const res = await fetch(new URL(u, document.baseURI).href);
+          if (!res.ok) return;
+          const blob = await res.blob();
+          inlined[u] = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.readAsDataURL(blob);
+          });
+        } catch (_) {}
+      })
+    );
+    return css.replace(/@font-face\s*{[^}]*}/g, (block) =>
+      block.replace(urlRe, (full, q, u) => (inlined[u] ? `url("${inlined[u]}")` : full))
+    );
+  }
+
+  async function preparePrintHtml(mode: "combined" | "portrait" | "landscape"): Promise<string> {
     const container = document.querySelector(".booklet-workspace-container");
     if (!container) return "";
     const cloned = container.cloneNode(true) as HTMLElement;
@@ -163,7 +231,9 @@ $effect(() => {
             const ctx = canvas.getContext("2d");
             if (ctx) {
               ctx.drawImage(orig, 0, 0);
-              clone.src = canvas.toDataURL("image/png");
+              // Photos (e.g. the cover background) as JPEG: a 2000 px PNG is ~4 MB.
+              const isLargePhoto = orig.naturalWidth * orig.naturalHeight > 1_000_000;
+              clone.src = isLargePhoto ? canvas.toDataURL("image/jpeg", 0.9) : canvas.toDataURL("image/png");
             }
           } catch (_) {}
         }
@@ -190,6 +260,8 @@ $effect(() => {
       } catch (_) {}
     }
 
+    inlinedCss = await inlineFontFaces(inlinedCss);
+
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -200,6 +272,29 @@ ${inlinedCss}
 
     @page {
       margin: 0;
+    }
+    @page cover-sheet {
+      size: 297mm 167.0625mm;
+      margin: 0;
+    }
+    .booklet-page-cover {
+      page: cover-sheet !important;
+      break-after: page !important;
+      page-break-after: always !important;
+      display: block !important;
+      width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      /* The 16:9 sheet is 167.06 mm tall; a hair over the page height spills a blank page. */
+      height: 167mm !important;
+      max-height: 167mm !important;
+      overflow: hidden !important;
+    }
+    .paper-sheet-cover {
+      width: 100% !important;
+      max-width: none !important;
+      box-shadow: none !important;
+      margin: 0 !important;
     }
     @page portrait-sheet {
       size: A4 portrait;
@@ -281,7 +376,7 @@ ${inlinedCss}
       padding: 0 !important;
     }
     ${mode === "portrait" ? ".booklet-section-landscape, .booklet-page-landscape, .paper-sheet-landscape { display: none !important; }" : ""}
-    ${mode === "landscape" ? ".booklet-section-portrait, .booklet-page-portrait, .paper-sheet-portrait { display: none !important; }" : ""}
+    ${mode === "landscape" ? ".booklet-section-portrait, .booklet-page-portrait, .paper-sheet-portrait, .booklet-page-cover { display: none !important; }" : ""}
   </style>
 </head>
 <body class="bg-white text-black">
@@ -299,7 +394,7 @@ ${inlinedCss}
 
     try {
       const mode = viewFilter === "portrait" ? "portrait" : viewFilter === "landscape" ? "landscape" : "combined";
-      const htmlContent = preparePrintHtml(mode);
+      const htmlContent = await preparePrintHtml(mode);
       const cleanEventName = (editableEventName || "Turnamen").replace(/[^a-zA-Z0-9]/g, "_");
       const suggestedFilename = `Buku_Hasil_${cleanEventName}_${new Date().toISOString().slice(0, 10)}.pdf`;
 
@@ -477,6 +572,15 @@ ${inlinedCss}
       size: A4 landscape;
       margin: 6mm;
     }
+    @page cover-sheet {
+      size: 297mm 167.0625mm;
+      margin: 0;
+    }
+    .booklet-page-cover {
+      page: cover-sheet;
+      break-after: page;
+      page-break-after: always;
+    }
     .booklet-page-portrait {
       page: portrait-sheet;
       break-after: page;
@@ -555,11 +659,11 @@ ${inlinedCss}
               </button>
               <button
                 type="button"
-                onclick={() => { scrollToSection('page-closing'); isJumpMenuOpen = false; }}
+                onclick={() => { scrollToSection('page-back-cover'); isJumpMenuOpen = false; }}
                 class="w-full text-left px-3 py-1.5 hover:bg-white/[0.08] flex items-center justify-between cursor-pointer"
               >
-                <span>Halaman 4: Lembar Penutup Resmi</span>
-                <span class="text-[9px] font-mono text-amber-400/80">PORTRAIT</span>
+                <span>Halaman 4: Sampul Penutup</span>
+                <span class="text-[9px] font-mono text-amber-400/80">16:9</span>
               </button>
             </div>
             {#if activeBrackets.length > 0}
@@ -642,17 +746,6 @@ ${inlinedCss}
 
     <!-- Right: Edit Toggle, Primary Print & Direct PDF Actions -->
     <div class="flex items-center space-x-2 shrink-0">
-      <!-- Edit Mode Toggle -->
-      <button
-        type="button"
-        onclick={() => (isEditing = !isEditing)}
-        class="px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition flex items-center space-x-1.5 cursor-pointer {isEditing ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-sm' : 'bg-white/[0.05] border-white/[0.1] text-zinc-300 hover:bg-white/[0.08]'}"
-        title="Buka form untuk menyunting pengesahan, kota, dan nomor surat"
-      >
-        <span>✏️</span>
-        <span>{isEditing ? 'Selesai Edit' : 'Edit Pengesahan'}</span>
-      </button>
-
       <!-- EXPORT ACTION 1: 1-CLICK SAVE AS PDF (.pdf) -->
       <button
         type="button"
@@ -733,155 +826,30 @@ ${inlinedCss}
         {#if viewFilter === "all" || viewFilter === "portrait"}
           <div class="booklet-section-portrait">
 
-            <!-- ================= HALAMAN 1: SAMPUL RESMI (A4 PORTRAIT) ================= -->
-            <section id="page-cover" class="booklet-page booklet-page-portrait">
-              <div
-                class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400"
-              >
-                <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
-                  <span>📄</span> <span>A4 PORTRAIT (210 × 297 mm)</span>
-                </span>
-                <span class="text-zinc-500">Halaman 1 • Sampul Depan Resmi</span>
-              </div>
-
-              <div class="paper-sheet paper-sheet-portrait sheet-full-portrait relative">
-                <!-- Outer Formal Frame with Crisp Dark Double Border Accent (Fills exactly 280mm page height) -->
-                <div class="sheet-full-portrait border-[5px] border-slate-950 rounded-xs p-8 sm:p-10 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950 box-border">
-                  <!-- Fine Inner Hairline Inset -->
-                  <div class="absolute inset-2.5 border-2 border-slate-300 pointer-events-none"></div>
-
-                  <!-- 1. TOP SECTION: Institution & Clean Dual Logos (Left & Right only, no middle badge) -->
-                  <div class="relative z-10 text-center space-y-6">
-                    <!-- Top Institutional Classification -->
-                    <div class="border-b-2 border-slate-900 pb-3">
-                      <div class="text-xs font-black uppercase tracking-[0.3em] text-slate-700 mb-1">
-                        PENGURUS PROVINSI FEDERASI OLAHRAGA KARATE-DO INDONESIA
-                      </div>
-                      <div class="text-lg font-black text-slate-950 uppercase tracking-wider">
-                        {#if isEditing}
-                          <input
-                            type="text"
-                            bind:value={editableOrganisasi}
-                            class="bg-slate-100 text-slate-950 text-center px-2 py-0.5 rounded border-2 border-amber-500 text-xs w-full max-w-md font-black"
-                          />
-                        {:else}
-                          <span>{editableOrganisasi}</span>
-                        {/if}
-                      </div>
-                    </div>
-
-                    <!-- Clean Dual Logos (FORKI left, Event right, balanced with no middle text) -->
-                    <div class="flex items-center justify-between px-10 py-1">
-                      <div class="flex items-center justify-center">
-                        <img
-                          src={FORKI_LOGO_DATA_URL}
-                          alt="Logo FORKI"
-                          class="h-24 w-24 object-contain shrink-0 drop-shadow-xs"
-                          style="width: 96px; height: 96px; max-width: 96px; max-height: 96px; object-fit: contain;"
-                          width="96"
-                          height="96"
-                        />
-                      </div>
-                      <div class="flex items-center justify-center">
-                        {#if bookletData.event_info.logo && logoMap[bookletData.event_info.logo]}
-                          <img
-                            src={logoMap[bookletData.event_info.logo]}
-                            alt="Logo Kejuaraan"
-                            class="h-24 w-auto max-w-[170px] object-contain shrink-0 drop-shadow-xs"
-                            style="max-height: 96px; max-width: 170px; object-fit: contain;"
-                          />
-                        {:else}
-                          <div class="h-24 px-5 flex items-center justify-center border-2 border-slate-900 rounded bg-white text-center shadow-2xs">
-                            <span class="text-xs font-black text-slate-950 uppercase">
-                              {editableEventName}
-                            </span>
-                          </div>
-                        {/if}
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 2. MAIN CENTER HERO: Pure Championship Title Block -->
-                  <div class="relative z-10 text-center my-auto py-10 px-8 bg-slate-950 text-white rounded-xl border-2 border-amber-500 shadow-xl space-y-4">
-                    <div class="inline-block px-4 py-1 rounded bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-[0.25em] shadow-sm">
-                      BUKU HASIL PERTANDINGAN
-                    </div>
-                    <h1 class="text-3xl sm:text-4xl font-black text-white tracking-tight uppercase leading-snug drop-shadow-md px-2">
-                      {editableEventName}
-                    </h1>
-                    <div class="flex items-center justify-center space-x-3 my-2">
-                      <div class="h-0.5 w-16 bg-amber-400"></div>
-                      <span class="text-amber-400 text-sm">◆</span>
-                      <div class="h-0.5 w-16 bg-amber-400"></div>
-                    </div>
-                    <p class="text-sm font-bold text-amber-200 tracking-widest uppercase">
-                      OFFICIAL TOURNAMENT RESULTS BOOK
-                    </p>
-                  </div>
-
-                  <!-- 3. LOWER SECTION: Elegant Event Details & Metadata -->
-                  <div class="relative z-10 text-center space-y-6">
-                    <div class="max-w-xl mx-auto border-2 border-slate-800 rounded-lg p-5 bg-slate-50 space-y-3">
-                      <div>
-                        <div class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-0.5">
-                          TEMPAT &amp; ARENA PERTANDINGAN
-                        </div>
-                        <div class="text-base font-black text-slate-950 uppercase">
-                          {#if isEditing}
-                            <input
-                              type="text"
-                              bind:value={editableTempat}
-                              class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold text-center"
-                            />
-                          {:else}
-                            <span>{editableTempat}</span>
-                          {/if}
-                        </div>
-                        <div class="text-xs font-bold text-slate-700 mt-0.5">
-                          Kota {editableKota || 'Samarinda'} • Provinsi Kalimantan Timur
-                        </div>
-                      </div>
-                      <div class="border-t border-slate-300 pt-2.5">
-                        <div class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-0.5">
-                          WAKTU PELAKSANAAN
-                        </div>
-                        <div class="text-sm font-black font-mono text-slate-950">
-                          {#if isEditing}
-                            <input
-                              type="text"
-                              bind:value={editableTanggal}
-                              class="border border-slate-400 px-1 py-0.5 rounded text-xs w-full font-bold text-center"
-                            />
-                          {:else}
-                            <span>{editableTanggal}</span>
-                          {/if}
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- 4. BOTTOM OFFICIAL TECHNOLOGY PARTNER & FOOTER BAR -->
-                    <div class="pt-4 border-t-2 border-slate-900 flex items-center justify-between text-slate-900 text-xs">
-                      <div class="text-left space-y-0.5">
-                        <div class="font-black text-xs uppercase tracking-wider text-slate-950">
-                          AMBRILINDO TOURNAMENT ENGINE
-                        </div>
-                        <div class="text-[10px] text-slate-600 font-bold font-mono">
-                          Sistem Digitalisasi &amp; Validasi Resmi Hasil Pertandingan FORKI
-                        </div>
-                      </div>
-                      <div class="flex items-center space-x-2.5 bg-white px-3 py-1.5 rounded border border-slate-300 shadow-2xs">
-                        <img
-                          src={AMBRILINDO_LOGO_DATA_URL}
-                          alt="Ambrilindo"
-                          class="h-7 w-auto object-contain shrink-0"
-                          style="max-height: 28px; max-width: 120px;"
-                        />
-                      </div>
-                    </div>
-                  </div>
+            <!-- ================= HALAMAN 1: SAMPUL (16:9 LANDSCAPE, see ResultCoverSheet) ================= -->
+            {#if cover.enabled}
+              <section id="page-cover" class="booklet-page booklet-page-cover">
+                <div class="no-print max-w-[297mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                    SAMPUL 16:9 (297 × 167 mm)
+                  </span>
+                  <span class="text-zinc-500">Halaman 1 • Sampul</span>
                 </div>
-              </div>
-            </section>
+                <div class="paper-sheet paper-sheet-cover">
+                  <ResultCoverSheet
+                    federasi={coverText.federasi}
+                    badge={coverText.badge}
+                    judul={coverText.judul}
+                    namaEvent={coverText.namaEvent}
+                    tempat={coverText.tempat}
+                    tanggal={coverText.tanggal}
+                    showSupportedBy={cover.showSupportedBy}
+                    logoUrl={coverLogoUrl}
+                    backgroundUrl={cover.customBackground}
+                  />
+                </div>
+              </section>
+            {/if}
 
 <!-- ================= HALAMAN 2: KLASEMEN MEDALI (KONTINGEN & PERGURUAN) ================= -->
             <section id="page-klasemen" class="booklet-page booklet-page-portrait">
@@ -928,188 +896,30 @@ ${inlinedCss}
             </section>
 
             
-<!-- ================= HALAMAN 4: LEMBAR PENUTUP RESMI ================= -->
-            <section id="page-closing" class="booklet-page booklet-page-portrait">
-              <div class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
-                <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
-                  <span>📄</span> <span>A4 PORTRAIT (210 × 297 mm)</span>
-                </span>
-                <span class="text-zinc-500">Halaman 4 • Lembar Penutup &amp; Rekapitulasi Akhir Resmi</span>
-              </div>
-              <div class="paper-sheet paper-sheet-portrait sheet-full-portrait">
-                <div class="sheet-full-portrait border-4 border-slate-900 rounded-xs p-6 sm:p-7 flex flex-col justify-between relative bg-white overflow-hidden text-slate-950 box-border">
-                  <div class="absolute inset-2 border border-slate-400 pointer-events-none"></div>
-
-                  <!-- 1. Header Penutup -->
-                  <div class="flex items-center justify-between border-b-2 border-slate-900 pb-3 relative z-10">
-                    <div class="flex items-center space-x-3.5">
-                      <img src={FORKI_LOGO_DATA_URL} alt="Logo FORKI" class="h-11 w-11 object-contain" width="44" height="44" />
-                      <div class="h-7 w-[2px] bg-slate-400"></div>
-                      <img src={AMBRILINDO_LOGO_DATA_URL} alt="Ambrilindo" class="h-7 w-auto object-contain" />
-                    </div>
-                    <span class="text-xs font-mono font-black tracking-widest text-white bg-slate-950 px-3 py-1 rounded uppercase">
-                      LEMBAR PENUTUP &amp; REKAPITULASI RESMI
-                    </span>
-                  </div>
-
-                  <!-- 2. Pernyataan Penutupan Resmi -->
-                  <div class="text-center space-y-2 px-4 py-3.5 bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 text-white rounded-lg border-2 border-amber-500 relative z-10 shadow-sm my-1">
-                    <div class="inline-block px-3 py-0.5 rounded bg-amber-400 text-slate-950 font-mono text-[10px] font-black uppercase tracking-wider">
-                      PERNYATAAN RESMI PENUTUPAN KEJUARAAN
-                    </div>
-                    <h2 class="text-xl sm:text-2xl font-black uppercase tracking-tight text-white leading-tight">
-                      TERIMA KASIH ATAS PARTISIPASI &amp; SPORTIVITAS
-                    </h2>
-                    <p class="text-xs text-slate-200 max-w-2xl mx-auto leading-relaxed font-medium">
-                      Seluruh rangkaian pertandingan <strong>{editableEventName}</strong> telah selesai diselenggarakan secara penuh sesuai dengan Ketentuan Pertandingan PB FORKI. Seluruh perolehan medali, penetapan juara, dan bagan pertandingan yang tercantum dalam dokumen ini telah divalidasi dan ditutup secara resmi melalui sistem <strong>Ambrilindo Tournament Engine</strong>.
-                    </p>
-                  </div>
-
-                  <!-- 3. Podium Kehormatan: Top 3 Juara Umum Kontingen & Perguruan -->
-                  <div class="grid grid-cols-2 gap-3 relative z-10 my-1">
-                    <!-- Column A: Top 3 Kontingen -->
-                    <div class="border-2 border-amber-500 bg-amber-50/60 rounded-lg p-2.5">
-                      <div class="flex items-center justify-between border-b-2 border-amber-400 pb-1 mb-2">
-                        <span class="text-xs font-black uppercase tracking-wider text-amber-950">🏆 TOP 3 JUARA UMUM KONTINGEN</span>
-                        <span class="text-[9px] font-black bg-amber-400 text-amber-950 px-1.5 py-0.2 rounded">RESMI</span>
-                      </div>
-                      <div class="space-y-1.5">
-                        {#if top3Kontingen.length === 0}
-                          <div class="text-center text-xs text-slate-500 italic py-2">Data klasemen belum tersedia</div>
-                        {:else}
-                          {#each top3Kontingen as k, idx}
-                            <div class="flex items-center justify-between p-1.5 rounded {idx === 0 ? 'bg-amber-100 border border-amber-400' : idx === 1 ? 'bg-slate-100 border border-slate-300' : 'bg-orange-50 border border-orange-200'}">
-                              <div class="flex items-center space-x-1.5 min-w-0 pr-1">
-                                <span class="text-xs font-mono font-black {idx === 0 ? 'text-amber-800' : idx === 1 ? 'text-slate-700' : 'text-amber-700'}">#{idx + 1}</span>
-                                <span class="text-xs font-black text-slate-950 truncate block">{k.nama}</span>
-                              </div>
-                              <span class="text-[11px] font-mono font-black text-slate-900 shrink-0 bg-white/80 px-1.5 py-0.5 rounded border border-slate-300">
-                                {k.gold}🥇 {k.silver}🥈 {k.bronze}🥉
-                              </span>
-                            </div>
-                          {/each}
-                        {/if}
-                      </div>
-                    </div>
-
-                    <!-- Column B: Top 3 Perguruan -->
-                    <div class="border-2 border-emerald-500 bg-emerald-50/60 rounded-lg p-2.5">
-                      <div class="flex items-center justify-between border-b-2 border-emerald-400 pb-1 mb-2">
-                        <span class="text-xs font-black uppercase tracking-wider text-emerald-950">🎖️ TOP 3 JUARA UMUM PERGURUAN</span>
-                        <span class="text-[9px] font-black bg-emerald-400 text-emerald-950 px-1.5 py-0.2 rounded">RESMI</span>
-                      </div>
-                      <div class="space-y-1.5">
-                        {#if top3Perguruan.length === 0}
-                          <div class="text-center text-xs text-slate-500 italic py-2">Data perguruan belum tersedia</div>
-                        {:else}
-                          {#each top3Perguruan as p, idx}
-                            <div class="flex items-center justify-between p-1.5 rounded {idx === 0 ? 'bg-emerald-100 border border-emerald-400' : idx === 1 ? 'bg-slate-100 border border-slate-300' : 'bg-orange-50 border border-orange-200'}">
-                              <div class="flex items-center space-x-1.5 min-w-0 pr-1">
-                                <span class="text-xs font-mono font-black {idx === 0 ? 'text-emerald-800' : idx === 1 ? 'text-slate-700' : 'text-emerald-700'}">#{idx + 1}</span>
-                                <span class="text-xs font-black text-slate-950 truncate block">{p.nama}</span>
-                              </div>
-                              <span class="text-[11px] font-mono font-black text-slate-900 shrink-0 bg-white/80 px-1.5 py-0.5 rounded border border-slate-300">
-                                {p.gold}🥇 {p.silver}🥈 {p.bronze}🥉
-                              </span>
-                            </div>
-                          {/each}
-                        {/if}
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 4. Ringkasan Statistik Vital Turnamen -->
-                  <div class="border-2 border-slate-800 rounded-lg bg-slate-50 p-2.5 relative z-10 my-1">
-                    <div class="grid grid-cols-4 divide-x-2 divide-slate-300 text-center">
-                      <div>
-                        <div class="text-lg font-black font-mono text-slate-950">{totalKategori}</div>
-                        <div class="text-[9.5px] uppercase font-black text-slate-800">Nomor Tanding</div>
-                      </div>
-                      <div>
-                        <div class="text-lg font-black font-mono text-slate-950">{bookletData.berita_acara.total_atlet}</div>
-                        <div class="text-[9.5px] uppercase font-black text-slate-800">Atlet Bertanding</div>
-                      </div>
-                      <div>
-                        <div class="text-lg font-black font-mono text-slate-950">{bookletData.berita_acara.total_kontingen} / {bookletData.berita_acara.total_perguruan}</div>
-                        <div class="text-[9.5px] uppercase font-black text-slate-800">Kontingen / Perguruan</div>
-                      </div>
-                      <div>
-                        <div class="text-sm font-black font-mono text-slate-950">{totalMedaliEmas}🥇 {totalMedaliPerak}🥈 {totalMedaliPerunggu}🥉</div>
-                        <div class="text-[9.5px] uppercase font-black text-slate-800">Total Medali Dianugerahkan</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 5. Kolom Pengesahan Tiga Pihak (Signature Block) -->
-                  <div class="border-2 border-slate-800 rounded-lg p-3 bg-white relative z-10 my-1" style="break-inside: avoid; page-break-inside: avoid;">
-                    <div class="text-right text-xs font-bold text-slate-900 mb-2">
-                      Kota {editableKota || 'Samarinda'}, {editableTanggal || 'November 2026'}
-                    </div>
-                    <div class="grid grid-cols-3 gap-3 text-center">
-                      <!-- Signatory 1 -->
-                      <div class="flex flex-col justify-between min-h-[95px]">
-                        <div class="text-[11px] font-black uppercase text-slate-950">
-                          {editableSignatories[0]?.jabatan || 'Ketua Panitia Pelaksana'}
-                        </div>
-                        <div class="text-[10px] text-slate-700 font-semibold">
-                          {editableSignatories[0]?.peran || 'Panitia Penyelenggara'}
-                        </div>
-                        <div class="my-1">
-                          <div class="w-9 h-9 rounded-full border border-dashed border-slate-400 text-slate-400 text-[6.5px] font-bold uppercase flex items-center justify-center mx-auto select-none opacity-40">
-                            STEMPEL
-                          </div>
-                        </div>
-                        <div class="text-xs font-black text-slate-950 underline underline-offset-2">
-                          {editableSignatories[0]?.nama || 'Ketua Panitia'}
-                        </div>
-                      </div>
-
-                      <!-- Signatory 2 -->
-                      <div class="flex flex-col justify-between min-h-[95px]">
-                        <div class="text-[11px] font-black uppercase text-slate-950">
-                          {editableSignatories[1]?.jabatan || 'Technical Delegate'}
-                        </div>
-                        <div class="text-[10px] text-slate-700 font-semibold">
-                          {editableSignatories[1]?.peran || 'Delegasi Teknik FORKI'}
-                        </div>
-                        <div class="my-1">
-                          <div class="w-9 h-9 rounded-full border border-dashed border-slate-400 text-slate-400 text-[6.5px] font-bold uppercase flex items-center justify-center mx-auto select-none opacity-40">
-                            STEMPEL
-                          </div>
-                        </div>
-                        <div class="text-xs font-black text-slate-950 underline underline-offset-2">
-                          {editableSignatories[1]?.nama || 'Technical Delegate'}
-                        </div>
-                      </div>
-
-                      <!-- Signatory 3 -->
-                      <div class="flex flex-col justify-between min-h-[95px]">
-                        <div class="text-[11px] font-black uppercase text-slate-950">
-                          {editableSignatories[2]?.jabatan || 'Ketua Dewan Wasit'}
-                        </div>
-                        <div class="text-[10px] text-slate-700 font-semibold">
-                          {editableSignatories[2]?.peran || 'Dewan Wasit & Juri'}
-                        </div>
-                        <div class="my-1">
-                          <div class="w-9 h-9 rounded-full border border-dashed border-slate-400 text-slate-400 text-[6.5px] font-bold uppercase flex items-center justify-center mx-auto select-none opacity-40">
-                            STEMPEL
-                          </div>
-                        </div>
-                        <div class="text-xs font-black text-slate-950 underline underline-offset-2">
-                          {editableSignatories[2]?.nama || 'Ketua Dewan Wasit'}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- 6. Footer Penutup & Segel Digital -->
-                  <div class="border-t-2 border-slate-900 pt-3 flex items-center justify-between text-xs text-slate-900 font-mono relative z-10">
-                    <span class="font-black text-slate-950">AMBRILINDO TOURNAMENT ENGINE • DIGITAL RATIFIED</span>
-                    <span class="font-bold text-slate-800">Dokumen Hasil Resmi • Penutup &amp; Kompilasi Akhir</span>
-                  </div>
+<!-- ================= HALAMAN 4: SAMPUL PENUTUP (replaces the old closing sheet; same design as the front cover) ================= -->
+            {#if cover.penutupEnabled}
+              <section id="page-back-cover" class="booklet-page booklet-page-cover">
+                <div class="no-print max-w-[297mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
+                    SAMPUL 16:9 (297 × 167 mm)
+                  </span>
+                  <span class="text-zinc-500">Halaman 4 • Sampul penutup</span>
                 </div>
-              </div>
-            </section>
+                <div class="paper-sheet paper-sheet-cover">
+                  <ResultCoverSheet
+                    federasi={coverText.federasi}
+                    badge={coverText.badge}
+                    judul={coverText.penutupJudul}
+                    namaEvent={coverText.namaEvent}
+                    tempat={coverText.penutupPesan}
+                    tanggal={coverText.tanggal}
+                    showSupportedBy={cover.showSupportedBy}
+                    logoUrl={coverLogoUrl}
+                    backgroundUrl={cover.customBackground}
+                  />
+                </div>
+              </section>
+            {/if}
 
           </div>
         {/if}
@@ -1457,6 +1267,15 @@ ${inlinedCss}
     justify-content: space-between;
   }
 
+  .paper-sheet-cover {
+    width: 297mm;
+    max-width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 2.5rem;
+    box-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.45);
+  }
+
   .paper-sheet-landscape {
     width: 297mm;
     min-height: 210mm;
@@ -1529,6 +1348,26 @@ ${inlinedCss}
       page-break-after: always !important;
     }
 
+    .booklet-page-cover {
+      display: block !important;
+      page: cover-sheet !important;
+      break-after: page !important;
+      page-break-after: always !important;
+      /* The 16:9 sheet is 167.06 mm tall; a hair over the page height spills a blank page. */
+      height: 167mm !important;
+      max-height: 167mm !important;
+      overflow: hidden !important;
+    }
+    .paper-sheet-cover {
+      width: 100% !important;
+      max-width: none !important;
+      box-shadow: none !important;
+      margin: 0 !important;
+    }
+    .is-printing-landscape .booklet-page-cover {
+      display: none !important;
+    }
+
     /* Print Mode 1: PORTRAIT ONLY */
     .is-printing-portrait .booklet-section-landscape,
     .is-printing-portrait .booklet-page-landscape {
@@ -1567,12 +1406,6 @@ ${inlinedCss}
       padding: 0 !important;
       break-after: auto !important;
       page-break-after: auto !important;
-    }
-    .sheet-full-portrait {
-      height: 280mm !important;
-      min-height: 280mm !important;
-      max-height: 280mm !important;
-      box-sizing: border-box !important;
     }
 
     .paper-sheet-landscape {

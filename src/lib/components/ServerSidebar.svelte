@@ -25,6 +25,23 @@
     // 3 or more words: take first 2-3 initials (e.g. "Kejuaraan Karate Ambrilindo" -> "KKA" or "KK")
     return (words[0][0] + words[1][0] + (words[2] ? words[2][0] : "")).slice(0, 3).toUpperCase();
   }
+
+  // Several events often share initials ("SATRIA WADOKAI CUP I" and its test copies
+  // are all "SWC"). Number the duplicates so the icons can be told apart without
+  // hovering.
+  let duplicateIndex = $derived.by(() => {
+    const groups = new Map<string, number[]>();
+    for (const ev of events) {
+      const key = getEventSingkatan(ev.nama_event);
+      groups.set(key, [...(groups.get(key) || []), ev.id]);
+    }
+    const index = new Map<number, number>();
+    for (const ids of groups.values()) {
+      if (ids.length < 2) continue;
+      [...ids].sort((a, b) => a - b).forEach((id, i) => index.set(id, i + 1));
+    }
+    return index;
+  });
 </script>
 
 <nav class="no-print w-[72px] bg-[#0d0e12] flex flex-col items-center py-3 select-none shrink-0 z-20 border-r border-white/[0.08]">
@@ -61,11 +78,19 @@
 
         <button
           onclick={() => onSelectEvent(ev.id)}
+          aria-label={ev.nama_event || "Event"}
+          aria-current={isSelected ? "page" : undefined}
           class="w-12 h-12 flex items-center justify-center transition-all duration-200 font-mono font-bold text-xs tracking-wider border {isSelected ? 'rounded-2xl bg-white text-black border-white shadow-lg' : 'rounded-full bg-[#181a20] hover:bg-white/[0.08] text-zinc-300 hover:text-white border-white/[0.08] hover:rounded-2xl'}"
           title={ev.nama_event || 'Event'}
         >
           {singkatan}
         </button>
+        {#if duplicateIndex.has(ev.id)}
+          <span
+            class="pointer-events-none absolute right-2.5 -bottom-0.5 min-w-4 h-4 px-1 rounded-full bg-[#0d0e12] border border-white/[0.14] text-[9px] font-mono font-bold tabular-nums text-zinc-300 flex items-center justify-center"
+            aria-hidden="true"
+          >{duplicateIndex.get(ev.id)}</span>
+        {/if}
       </div>
     {/each}
 

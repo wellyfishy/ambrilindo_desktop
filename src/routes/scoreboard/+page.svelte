@@ -3,6 +3,8 @@
   import { page } from "$app/state";
   import { listen, emit } from "@tauri-apps/api/event";
   import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
+  import { isHostUi, setConnectionConfig } from "$lib/api_client";
+  import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
 
   // Tatami number from query string, defaults to 1
   let tatamiNumber = $derived(Number(page.url.searchParams.get("tatami") || "1"));
@@ -371,9 +373,36 @@
   }
 
   let unlistenSync: (() => void) | null = null;
+  let tatamiSocket: TatamiSocket | null = null;
 
   onMount(() => {
     unlockAudio();
+
+    // Opened by an operator-tambahan laptop: keep talking to its host.
+    const qHost = page.url.searchParams.get("hostUrl");
+    if (qHost) {
+      setConnectionConfig("client", qHost);
+    }
+
+    // On a TV/browser device or an operator-tambahan laptop, live state arrives from
+    // the host over WebSocket (the host's own windows get it over Tauri IPC instead).
+    if (!isHostUi()) {
+      tatamiSocket = connectTatamiSocket(
+        "scoring-board",
+        tatamiNumber,
+        (msg) => {
+          if (msg?.type === "tatami_live_state") {
+            const data = msg.payload || msg.data;
+            if (data && data.tatami == tatamiNumber) applyLiveState(data);
+          } else if (msg?.type === "manual_buzzer" && (!msg.tatami || msg.tatami == tatamiNumber)) {
+            playEndBuzzer();
+          }
+        },
+        // Ask the control panel for its current state so a freshly opened or
+        // reconnected scoreboard is not blank until the next change.
+        (sock) => sock.send({ type: "request_tatami_state", tatami: tatamiNumber })
+      );
+    }
     async function setupIpc() {
       try {
         unlistenSync = await listen("tatami_live_state", (event: any) => {
@@ -407,6 +436,7 @@
 
   onDestroy(() => {
     if (unlistenSync) unlistenSync();
+    tatamiSocket?.close();
     if (animFrameId !== null) cancelAnimationFrame(animFrameId);
     if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
     if (vrChimeTimer) clearTimeout(vrChimeTimer);

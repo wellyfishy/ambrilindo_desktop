@@ -46,7 +46,7 @@
 
 <div class="daftar-juara-sheet font-sans text-slate-900 bg-white">
   <!-- Semantic Table structure for recurring header/footer on every printed page -->
-  <table class="w-full border-collapse border-none">
+  <table class="w-full table-fixed border-collapse border-none">
     <!-- Recurring Document Header (Repeats at top of every printed page in Chromium) -->
     <thead class="print-table-header">
       <tr>

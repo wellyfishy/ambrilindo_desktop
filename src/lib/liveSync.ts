@@ -1,6 +1,6 @@
 import { emit as tauriEmit, listen as tauriListen } from "@tauri-apps/api/event";
 import type { TatamiItem } from "./types";
-import { getConnectionConfig } from "./api_client";
+import { getConnectionConfig, getHostBaseUrl, isHostUi } from "./api_client";
 
 export interface TatamiLiveMatchPayload {
   tatami: number;
@@ -54,7 +54,7 @@ export function applyLiveMatchPayload(data: any) {
       notifyListeners();
     }
   } else if (mId && mId > 0) {
-    activeLiveTatamis[tNum] = {
+    const next: TatamiLiveMatchPayload = {
       tatami: tNum,
       matchId: mId,
       baganId: bId,
@@ -63,7 +63,20 @@ export function applyLiveMatchPayload(data: any) {
       isFinished: false,
       isClosed: false,
     };
-    notifyListeners();
+    const prev = activeLiveTatamis[tNum];
+    activeLiveTatamis[tNum] = next;
+    // Control panels send their state ~7x/second while the timer runs. Only wake
+    // subscribers (sidebar, bracket view, tatami manager) when something they
+    // display actually changed, not on every timer tick.
+    if (
+      !prev ||
+      prev.matchId !== next.matchId ||
+      prev.baganId !== next.baganId ||
+      prev.category !== next.category ||
+      prev.isTimerRunning !== next.isTimerRunning
+    ) {
+      notifyListeners();
+    }
   }
 }
 
@@ -196,6 +209,9 @@ export function broadcastLiveMatch(payload: TatamiLiveMatchPayload) {
       wsClient.send(
         JSON.stringify({
           type: "tatami_live_state",
+          // The host app already delivered this to its own windows over Tauri IPC;
+          // tell the relay not to re-emit it there.
+          origin: isHostUi() ? "host" : undefined,
           payload,
         })
       );
@@ -282,4 +298,72 @@ export function subscribeLiveSync(callback: LiveStateListener): () => void {
   return () => {
     listeners.delete(callback);
   };
+}
+
+export interface TatamiSocket {
+  send: (data: Record<string, any>) => void;
+  close: () => void;
+}
+
+/**
+ * Opens a reconnecting WebSocket to the host for one tatami
+ * (`/ws/<role>/<tatami>`). The host relays to it only that tatami's traffic plus
+ * global messages. `onOpen` runs after every (re)connect.
+ */
+export function connectTatamiSocket(
+  role: string,
+  tatami: number,
+  onMessage: (msg: any) => void,
+  onOpen?: (socket: TatamiSocket) => void
+): TatamiSocket {
+  let ws: WebSocket | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let closed = false;
+
+  const handle: TatamiSocket = {
+    send(data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify(data));
+        } catch (_) {}
+      }
+    },
+    close() {
+      closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      try {
+        ws?.close();
+      } catch (_) {}
+      ws = null;
+    },
+  };
+
+  function connect() {
+    if (closed || typeof window === "undefined") return;
+    const base = getHostBaseUrl().replace(/^http/, "ws");
+    try {
+      ws = new WebSocket(`${base}/ws/${role}/${tatami}`);
+    } catch (_) {
+      retryTimer = setTimeout(connect, 3000);
+      return;
+    }
+    ws.onopen = () => onOpen?.(handle);
+    ws.onmessage = (ev) => {
+      try {
+        onMessage(JSON.parse(ev.data));
+      } catch (_) {}
+    };
+    ws.onclose = () => {
+      ws = null;
+      if (!closed) retryTimer = setTimeout(connect, 3000);
+    };
+    ws.onerror = () => {
+      try {
+        ws?.close();
+      } catch (_) {}
+    };
+  }
+
+  connect();
+  return handle;
 }

@@ -18,6 +18,9 @@ target/
 *.sqlite3-wal
 *.sqlite3-shm
 *.sqlite3-journal
+tournament_data/backups/
+tournament_data/test_*.sqlite3*
+
 
 # Logs
 *.log

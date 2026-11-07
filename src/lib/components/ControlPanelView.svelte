@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import { emit, listen } from "@tauri-apps/api/event";
+  import { invoke, isHostUi, getHostBaseUrl, withHostParam } from "$lib/api_client";
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput } from "$lib/types";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
   import ServerStatusBadge from "$lib/components/ServerStatusBadge.svelte";
   import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
-  import { broadcastLiveMatch, initLiveSync } from "$lib/liveSync";
+  import { broadcastLiveMatch, initLiveSync, connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
 
   interface Props {
     match: DetailBaganItem;
@@ -99,11 +100,114 @@
       liveBroadcastChannel.postMessage(payload);
     }
     emit("tatami_manual_buzzer", payload).catch(() => {});
+    if (claimStatus === "owned") {
+      tatamiSocket?.send({ ...payload, origin: isHostUi() ? "host" : undefined });
+    }
   }
   let activeTatami = $state<number>(1);
 
   $effect(() => {
     activeTatami = tatamiNumber;
+  });
+
+  // ==================== TATAMI OWNERSHIP (KLAIM TATAMI) ====================
+  // Only one control panel may drive a tatami. This window claims its tatami on the
+  // host, renews the claim every few seconds, and goes inert (no broadcasts, no
+  // saving) while another operator holds it.
+  interface ClaimResult {
+    granted: boolean;
+    tatami: number;
+    owner_id: string | null;
+    owner_label: string | null;
+    claimed_at_ms: number | null;
+  }
+
+  const CLAIM_HEARTBEAT_MS = 3000;
+  const claimOwnerId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `cp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const claimOwnerLabel = isHostUi()
+    ? "Laptop host"
+    : typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__
+      ? "Laptop operator tambahan"
+      : "Perangkat browser";
+
+  let claimStatus = $state<"pending" | "owned" | "blocked">("pending");
+  let claimHolderLabel = $state<string>("");
+  let claimHolderSince = $state<number | null>(null);
+  let isTakingOver = $state<boolean>(false);
+  let tatamiSocket: TatamiSocket | null = null;
+
+  async function requestClaim(tatami: number, force = false) {
+    try {
+      const res = await invoke<ClaimResult>("claim_tatami", {
+        tatami,
+        ownerId: claimOwnerId,
+        ownerLabel: claimOwnerLabel,
+        force,
+      });
+      if (tatami !== activeTatami) return; // switched tatami while waiting
+      if (res.granted) {
+        const wasOwned = claimStatus === "owned";
+        claimStatus = "owned";
+        if (!wasOwned) broadcastLiveState();
+      } else {
+        // Mark as blocked first so pausing the timer does not broadcast.
+        claimStatus = "blocked";
+        claimHolderLabel = res.owner_label || "operator lain";
+        claimHolderSince = res.claimed_at_ms ?? null;
+        if (isTimerRunning) pauseTimer();
+      }
+    } catch (err) {
+      // Host briefly unreachable, or an older host without claim support: never
+      // lock an operator out of a match because of it. Keep the current state, and
+      // let a first claim that cannot be checked proceed.
+      if (claimStatus === "pending" && tatami === activeTatami) {
+        console.warn("Klaim tatami tidak dapat diperiksa, lanjut tanpa klaim:", err);
+        claimStatus = "owned";
+        broadcastLiveState();
+      }
+    }
+  }
+
+  async function takeOverTatami() {
+    if (isTakingOver) return;
+    isTakingOver = true;
+    try {
+      await requestClaim(activeTatami, true);
+    } finally {
+      isTakingOver = false;
+    }
+  }
+
+  function formatClaimTime(ms: number | null): string {
+    if (!ms) return "";
+    return new Date(ms).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Claim the current tatami, keep the claim alive, and listen to that tatami's
+  // devices. Re-runs when the festival tatami selector changes.
+  $effect(() => {
+    const tatami = activeTatami;
+    untrack(() => {
+      claimStatus = "pending";
+      requestClaim(tatami);
+    });
+    const heartbeat = setInterval(() => requestClaim(tatami), CLAIM_HEARTBEAT_MS);
+    const socket = connectTatamiSocket("admin-control", tatami, handleSocketMessage);
+    tatamiSocket = socket;
+    const releaseOnUnload = () => {
+      invoke("release_tatami", { tatami, ownerId: claimOwnerId }).catch(() => {});
+    };
+    window.addEventListener("beforeunload", releaseOnUnload);
+    return () => {
+      clearInterval(heartbeat);
+      window.removeEventListener("beforeunload", releaseOnUnload);
+      socket.close();
+      if (tatamiSocket === socket) tatamiSocket = null;
+      releaseOnUnload();
+    };
   });
 
   let isKata = $derived.by(() => {
@@ -161,7 +265,7 @@
       liveBroadcastChannel.postMessage(resolvedPayload);
     }
     try {
-      await fetch("/api/vr/resolve", {
+      await fetch(`${getHostBaseUrl()}/api/vr/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tatami: activeTatami, side, decision }),
@@ -819,6 +923,8 @@
 
   // ==================== REALTIME LOCAL IPC BROADCAST ====================
   function broadcastLiveState() {
+    // A window that does not hold the tatami must not overwrite the owner's scoreboard.
+    if (claimStatus !== "owned") return;
     const payload = {
       tatami: activeTatami,
       matchId: match.id,
@@ -892,6 +998,10 @@
   // ==================== SAVING & EXIT ====================
   async function handleSaveAndExit() {
     if (isSaving) return;
+    if (claimStatus !== "owned") {
+      alert(`Hasil tidak disimpan: Tatami ${activeTatami} sedang dikendalikan oleh ${claimHolderLabel || "operator lain"}.`);
+      return;
+    }
     isSaving = true;
 
     try {
@@ -944,6 +1054,72 @@
     } finally {
       isSaving = false;
     }
+  }
+
+  // Input from venue devices (jury tablets, LO Kata, VR table, LAN scoreboards).
+  function handleRemoteInput(data: any, targetTatami?: number) {
+    if (!data || claimStatus !== "owned") return;
+    if (targetTatami && Number(targetTatami) !== activeTatami) return;
+
+    if (data.type === "request_tatami_state") {
+      broadcastLiveState();
+      return;
+    }
+
+    if (data.type === "judge_score") {
+      const juriIdx = (Number(data.juri) || 1) - 1;
+      if (juriIdx >= 0 && juriIdx < 5) {
+        if (data.score_aka !== undefined && data.score_aka !== null) {
+          akaJudgeScores[juriIdx] = String(data.score_aka);
+        }
+        if (data.score_ao !== undefined && data.score_ao !== null) {
+          aoJudgeScores[juriIdx] = String(data.score_ao);
+        }
+        broadcastLiveState();
+      }
+    } else if (data.type === "lo_kata_broadcast") {
+      if (data.kata_aka !== undefined && data.kata_aka !== null) {
+        kataAkaName = String(data.kata_aka);
+      }
+      if (data.kata_ao !== undefined && data.kata_ao !== null) {
+        kataAoName = String(data.kata_ao);
+      }
+      broadcastLiveState();
+    } else if (data.type === "vr_challenge_started") {
+      if (isTimerRunning) {
+        pauseTimer();
+      }
+      activeVrChallenge = {
+        side: data.side,
+        reason: data.reason || "Video Review Challenge",
+        timestamp: data.timestamp || Date.now(),
+        status: "in_progress",
+      };
+      broadcastLiveState();
+    } else if (data.type === "vr_challenge_resolved") {
+      if (data.decision === "rejected") {
+        if (data.side === "aka") hasVr1 = true;
+        if (data.side === "ao") hasVr2 = true;
+      }
+      activeVrChallenge = {
+        side: data.side,
+        reason: activeVrChallenge?.reason || "Video Review Challenge",
+        timestamp: Date.now(),
+        status: data.decision === "accepted" ? "accepted" : "rejected",
+      };
+      broadcastLiveState();
+      setTimeout(() => {
+        activeVrChallenge = null;
+        broadcastLiveState();
+      }, 3500);
+    }
+  }
+
+  // Messages from the host over this tatami's socket. The host's own windows already
+  // receive device input over Tauri IPC, so they ignore the socket copy.
+  function handleSocketMessage(msg: any) {
+    if (!msg || isHostUi()) return;
+    handleRemoteInput(msg, msg.tatami);
   }
 
   // Initialize values from match prop
@@ -1029,62 +1205,14 @@
       unlistenRequest = unsub;
     }).catch(() => {});
 
-    // Listen for remote input from mobile venue devices (Jury Panel & LO Kata)
+    // Listen for remote input from mobile venue devices (Jury Panel & LO Kata).
+    // On the host these arrive over Tauri IPC; elsewhere over the tatami socket.
     let unlistenRemote: (() => void) | undefined;
     listen("tatami_remote_input", (event: any) => {
       const arenaMsg = event.payload;
       if (!arenaMsg) return;
       const data = arenaMsg.payload || arenaMsg;
-      const targetTatami = arenaMsg.tatami_pk || data.tatami;
-      if (targetTatami && targetTatami !== activeTatami) return;
-
-      if (data.type === "judge_score") {
-        const juriIdx = (Number(data.juri) || 1) - 1;
-        if (juriIdx >= 0 && juriIdx < 5) {
-          if (data.score_aka !== undefined && data.score_aka !== null) {
-            akaJudgeScores[juriIdx] = String(data.score_aka);
-          }
-          if (data.score_ao !== undefined && data.score_ao !== null) {
-            aoJudgeScores[juriIdx] = String(data.score_ao);
-          }
-          broadcastLiveState();
-        }
-      } else if (data.type === "lo_kata_broadcast") {
-        if (data.kata_aka !== undefined && data.kata_aka !== null) {
-          kataAkaName = String(data.kata_aka);
-        }
-        if (data.kata_ao !== undefined && data.kata_ao !== null) {
-          kataAoName = String(data.kata_ao);
-        }
-        broadcastLiveState();
-      } else if (data.type === "vr_challenge_started") {
-        if (isTimerRunning) {
-          pauseTimer();
-        }
-        activeVrChallenge = {
-          side: data.side,
-          reason: data.reason || "Video Review Challenge",
-          timestamp: data.timestamp || Date.now(),
-          status: "in_progress",
-        };
-        broadcastLiveState();
-      } else if (data.type === "vr_challenge_resolved") {
-        if (data.decision === "rejected") {
-          if (data.side === "aka") hasVr1 = true;
-          if (data.side === "ao") hasVr2 = true;
-        }
-        activeVrChallenge = {
-          side: data.side,
-          reason: activeVrChallenge?.reason || "Video Review Challenge",
-          timestamp: Date.now(),
-          status: data.decision === "accepted" ? "accepted" : "rejected",
-        };
-        broadcastLiveState();
-        setTimeout(() => {
-          activeVrChallenge = null;
-          broadcastLiveState();
-        }, 3500);
-      }
+      handleRemoteInput(data, arenaMsg.tatami_pk || data.tatami);
     }).then((unsub) => {
       unlistenRemote = unsub;
     }).catch(() => {});
@@ -1133,7 +1261,7 @@
       if (animFrameId) cancelAnimationFrame(animFrameId);
       if (unlistenRequest) unlistenRequest();
       if (unlistenRemote) unlistenRemote();
-      broadcastLiveMatch({
+      if (claimStatus === "owned") broadcastLiveMatch({
         tatami: activeTatami,
         matchId: match.id,
         baganId: match.bagan_id || baganInfo?.id || null,
@@ -1147,6 +1275,54 @@
 </script>
 
 <svelte:window onkeydown={handleKataModalKeydown} />
+
+{#if claimStatus === "blocked"}
+  <div
+    class="fixed inset-0 z-[200] bg-black/80 backdrop-blur-xs flex items-center justify-center p-6"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="claim-title"
+    aria-describedby="claim-desc"
+  >
+    <div class="w-full max-w-md bg-[#161820] border border-rose-500/20 rounded-xl p-6 shadow-2xl">
+      <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-rose-400">Tatami sedang dipakai</div>
+      <h2 id="claim-title" class="mt-2 text-lg font-black tracking-tight text-white uppercase">
+        Tatami <span class="font-mono tabular-nums">{activeTatami}</span> dikendalikan {claimHolderLabel}
+      </h2>
+      <p id="claim-desc" class="mt-2 text-xs font-medium text-zinc-300">
+        {#if claimHolderSince}Sejak pukul <span class="font-mono tabular-nums">{formatClaimTime(claimHolderSince)}</span>.{" "}{/if}Selama itu,
+        jendela ini tidak mengirim skor atau timer ke scoreboard dan tidak bisa menyimpan hasil.
+      </p>
+      <p class="mt-1.5 text-[11px] text-zinc-500">
+        Ambil alih hanya jika operator itu sudah selesai atau laptopnya bermasalah. Panel di sana berhenti dalam beberapa detik.
+        Tutup jendela ini jika tidak dipakai.
+      </p>
+      {#if isFestival}
+        <label class="mt-4 flex items-center gap-2 text-[11px] text-zinc-400">
+          Pindah ke
+          <select
+            bind:value={activeTatami}
+            class="bg-[#111216] border border-white/[0.08] text-white font-mono font-bold text-xs rounded px-1.5 py-1 focus:outline-none focus:border-blue-500/40"
+          >
+            {#each [1, 2, 3, 4, 5, 6, 7, 8] as t}
+              <option value={t}>Tatami {t}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+      <div class="mt-5 flex justify-end">
+        <button
+          type="button"
+          onclick={takeOverTatami}
+          disabled={isTakingOver}
+          class="px-3.5 py-2 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:border-rose-500/40 hover:text-rose-300 text-xs font-bold transition disabled:opacity-50"
+        >
+          {isTakingOver ? "Mengambil alih…" : `Ambil alih Tatami ${activeTatami}`}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Main Cockpit Container (Discord Palette: #0d0f12 deep background) -->
 <div class="h-full flex flex-col bg-[#0d0f12] text-zinc-100 overflow-hidden font-sans select-none p-3">
@@ -1238,7 +1414,7 @@
         type="button"
         onclick={() => {
           if (typeof window !== "undefined") {
-            window.open(`/scoreboard?tatami=${activeTatami}`, `scoreboard_tatami_${activeTatami}`);
+            window.open(withHostParam(`/scoreboard?tatami=${activeTatami}`), `scoreboard_tatami_${activeTatami}`);
           }
         }}
         class="px-2.5 py-1.5 bg-cyan-600/30 hover:bg-cyan-600/50 border border-cyan-500/40 text-cyan-300 hover:text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"

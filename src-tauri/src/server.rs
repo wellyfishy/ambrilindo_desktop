@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
+        DefaultBodyLimit, Path, State,
     },
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use axum::http::StatusCode;
 use tokio::sync::Mutex;
@@ -158,14 +158,58 @@ pub fn get_network_info() -> NetworkInfo {
     get_network_info_with_ip(None)
 }
 
-static SHUTDOWN_TX: Mutex<Option<tokio::sync::oneshot::Sender<()>>> = Mutex::const_new(None);
+/// The one running Axum server, if any. This is the single source of truth for
+/// "is the LAN server running" — IPC commands and the LAN dispatcher both read it,
+/// so the state can no longer drift between them.
+struct RunningServer {
+    shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    handle: tokio::task::JoinHandle<()>,
+}
 
+static RUNNING_SERVER: Mutex<Option<RunningServer>> = Mutex::const_new(None);
+
+/// Bumped on every stop so open WebSocket loops exit instead of keeping the
+/// old server (and port 8000) alive.
+static WS_STOP: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> = std::sync::OnceLock::new();
+
+fn ws_stop() -> &'static tokio::sync::watch::Sender<u64> {
+    WS_STOP.get_or_init(|| tokio::sync::watch::channel(0u64).0)
+}
+
+/// Capacity of the arena broadcast channel. Live state is sent ~7x/second per active
+/// tatami, so this leaves several seconds of headroom for a slow device before it
+/// starts skipping messages.
+pub const BROADCAST_CAPACITY: usize = 1024;
+
+pub async fn is_server_running() -> bool {
+    RUNNING_SERVER
+        .lock()
+        .await
+        .as_ref()
+        .map(|r| !r.handle.is_finished())
+        .unwrap_or(false)
+}
+
+/// Stops the LAN server and waits until port 8000 is actually released, so an
+/// immediate restart does not hit "port in use".
 pub async fn stop_server() -> Result<(), String> {
-    let mut lock = SHUTDOWN_TX.lock().await;
-    if let Some(tx) = lock.take() {
-        let _ = tx.send(());
-        info!("Arena server graceful shutdown signal sent");
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let running = RUNNING_SERVER.lock().await.take();
+    let Some(running) = running else {
+        return Ok(());
+    };
+
+    let _ = running.shutdown_tx.send(());
+    ws_stop().send_modify(|v| *v = v.wrapping_add(1));
+    info!("Arena server shutdown signal sent; closing WebSocket clients");
+
+    let mut handle = running.handle;
+    match tokio::time::timeout(std::time::Duration::from_secs(3), &mut handle).await {
+        Ok(_) => info!("Arena server stopped cleanly"),
+        Err(_) => {
+            warn!("Arena server did not stop within 3s; aborting it");
+            handle.abort();
+            let _ = handle.await;
+        }
     }
     Ok(())
 }
@@ -320,29 +364,45 @@ async fn handle_socket(
     state: Arc<AppState>,
 ) {
     let mut rx = state.broadcast_tx.subscribe();
+    let mut stop_rx = ws_stop().subscribe();
+    let socket_id = NEXT_SOCKET_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     info!("WebSocket client connected for channel '{}' on Tatami #{}", channel, tatami_pk);
 
     loop {
         tokio::select! {
+            // Server is stopping: close this client so the old server can shut down.
+            _ = stop_rx.changed() => {
+                let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
             // Receive inbound message from client
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                            let (target_tatami, from_host_ui) = route_inbound(&parsed, tatami_pk);
+                            if let Some(obj) = parsed.as_object_mut() {
+                                // Tag with the sender so it is not echoed back to itself.
+                                obj.insert(ORIGIN_KEY.into(), serde_json::json!(socket_id));
+                            }
                             let arena_msg = ArenaMessage {
-                                tatami_pk,
+                                tatami_pk: target_tatami,
                                 channel: channel.clone(),
                                 payload: parsed.clone(),
                             };
                             let _ = state.broadcast_tx.send(arena_msg.clone());
-                            if let Some(app) = &state.app_handle {
-                                let _ = app.emit("tatami_remote_input", &arena_msg);
-                                if let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str()) {
-                                    if msg_type == "tatami_live_state" {
-                                        let data_payload = parsed.get("payload").unwrap_or(&parsed);
-                                        let _ = app.emit("tatami_live_state", data_payload);
-                                    } else if msg_type == "bracket_updated" {
-                                        let _ = app.emit("bracket_updated", &parsed);
+                            // The host's own windows already got this via Tauri IPC, so
+                            // only forward messages coming from other devices.
+                            if !from_host_ui {
+                                if let Some(app) = &state.app_handle {
+                                    let _ = app.emit("tatami_remote_input", &arena_msg);
+                                    if let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str()) {
+                                        if msg_type == "tatami_live_state" {
+                                            let data_payload = parsed.get("payload").unwrap_or(&parsed);
+                                            let _ = app.emit("tatami_live_state", data_payload);
+                                        } else if msg_type == "bracket_updated" {
+                                            let _ = app.emit("bracket_updated", &parsed);
+                                        }
                                     }
                                 }
                             }
@@ -357,16 +417,100 @@ async fn handle_socket(
             }
             // Broadcast outbound message to client
             broadcast_result = rx.recv() => {
-                if let Ok(msg) = broadcast_result {
-                    if msg.tatami_pk == tatami_pk || msg.tatami_pk == 0 {
+                match broadcast_result {
+                    Ok(msg) => {
+                        if !should_deliver(&msg, tatami_pk, socket_id) {
+                            continue;
+                        }
                         let text = serde_json::to_string(&msg.payload).unwrap_or_default();
                         if socket.send(Message::Text(text.into())).await.is_err() {
                             break;
                         }
                     }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "WebSocket client '{}' (Tatami #{}) is too slow; skipped {} messages",
+                            channel, tatami_pk, skipped
+                        );
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
+    }
+}
+
+static NEXT_SOCKET_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Key added to relayed payloads naming the socket that sent them.
+const ORIGIN_KEY: &str = "_origin";
+
+/// Decides which tatami an inbound WebSocket message belongs to, and whether it came
+/// from the host's own UI (which must not be re-emitted to the host's windows).
+///
+/// Live state is sent by every control panel on the shared `/ws/bracket/0` socket.
+/// Re-targeting it to its own tatami means tablets on `/ws/<role>/<n>` only receive
+/// their own tatami's traffic instead of every tatami's.
+fn route_inbound(parsed: &serde_json::Value, socket_tatami: i64) -> (i64, bool) {
+    let from_host_ui = parsed.get("origin").and_then(|o| o.as_str()) == Some("host");
+    if socket_tatami != 0 {
+        return (socket_tatami, from_host_ui);
+    }
+    let is_live_state = parsed.get("type").and_then(|t| t.as_str()) == Some("tatami_live_state");
+    if is_live_state {
+        let inner = parsed.get("payload").unwrap_or(parsed);
+        if let Some(t) = inner.get("tatami").and_then(|t| t.as_i64()) {
+            if t > 0 {
+                return (t, from_host_ui);
+            }
+        }
+    }
+    (0, from_host_ui)
+}
+
+/// Overview sockets (tatami 0: bracket view, marshalling, master data) receive
+/// everything; a tatami socket receives its own tatami plus global (0) messages.
+/// Nobody receives its own message back.
+fn should_deliver(msg: &ArenaMessage, socket_tatami: i64, socket_id: u64) -> bool {
+    if msg.payload.get(ORIGIN_KEY).and_then(|o| o.as_u64()) == Some(socket_id) {
+        return false;
+    }
+    socket_tatami == 0 || msg.tatami_pk == 0 || msg.tatami_pk == socket_tatami
+}
+
+#[cfg(test)]
+mod ws_routing_tests {
+    use super::*;
+
+    fn msg(tatami_pk: i64, payload: serde_json::Value) -> ArenaMessage {
+        ArenaMessage { tatami_pk, channel: "test".into(), payload }
+    }
+
+    #[test]
+    fn live_state_on_overview_socket_is_retargeted() {
+        let p = serde_json::json!({ "type": "tatami_live_state", "payload": { "tatami": 3 } });
+        assert_eq!(route_inbound(&p, 0), (3, false));
+        let host = serde_json::json!({ "type": "tatami_live_state", "origin": "host", "payload": { "tatami": 2 } });
+        assert_eq!(route_inbound(&host, 0), (2, true));
+        // Other messages on the overview socket stay global.
+        let other = serde_json::json!({ "type": "bracket_updated", "tatami": 4 });
+        assert_eq!(route_inbound(&other, 0), (0, false));
+        // Messages on a tatami socket keep that socket's tatami.
+        let jury = serde_json::json!({ "type": "judge_score", "tatami": 9 });
+        assert_eq!(route_inbound(&jury, 1), (1, false));
+    }
+
+    #[test]
+    fn delivery_rules() {
+        let t2 = msg(2, serde_json::json!({ "type": "x" }));
+        assert!(should_deliver(&t2, 2, 10));
+        assert!(!should_deliver(&t2, 1, 10));
+        assert!(should_deliver(&t2, 0, 10));
+        let global = msg(0, serde_json::json!({ "type": "x" }));
+        assert!(should_deliver(&global, 5, 10));
+        let own = msg(2, serde_json::json!({ "type": "x", "_origin": 10 }));
+        assert!(!should_deliver(&own, 2, 10));
+        assert!(should_deliver(&own, 2, 11));
     }
 }
 
@@ -1522,10 +1666,42 @@ async fn dispatch_command_api(
             let list = check_ip_availability(true).await;
             (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": list }))).into_response()
         },
-        "stop_arena_server" => {
-            match stop_server().await {
-                Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+        // Only the host laptop itself may stop its server (via Tauri IPC). A LAN
+        // device stopping it would cut off every other operator and tablet.
+        "stop_arena_server" | "start_arena_server" => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "status": "error", "message": "Server hanya bisa dinyalakan/dihentikan dari laptop host." })),
+        ).into_response(),
+        "claim_tatami" => {
+            let tatami = get_i64_val(&payload, &["tatami", "tatamiNumber", "tatami_number"]).unwrap_or(0);
+            let owner_id = get_str_val(&payload, &["ownerId", "owner_id"]).unwrap_or_default();
+            let owner_label = get_str_val(&payload, &["ownerLabel", "owner_label"]).unwrap_or_default();
+            let force = get_bool_val(&payload, &["force"]).unwrap_or(false);
+            if tatami <= 0 || owner_id.is_empty() {
+                (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "tatami dan ownerId wajib diisi" }))).into_response()
+            } else {
+                let res = crate::tatami_claim::claim(tatami, &owner_id, &owner_label, force);
+                (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": res }))).into_response()
+            }
+        },
+        "release_tatami" => {
+            let tatami = get_i64_val(&payload, &["tatami", "tatamiNumber", "tatami_number"]).unwrap_or(0);
+            let owner_id = get_str_val(&payload, &["ownerId", "owner_id"]).unwrap_or_default();
+            let released = crate::tatami_claim::release(tatami, &owner_id);
+            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": released }))).into_response()
+        },
+        // Sent by an operator-tambahan laptop when it opens a match locally, so the
+        // host's DB records which match is running on which tatami.
+        "notify_match_running" => {
+            let match_id = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let tatami = get_i32_val(&payload, &["tatami", "tatamiNumber", "tatami_number"]).unwrap_or(1);
+            if match_id <= 0 {
+                (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": null }))).into_response()
+            } else {
+                match db.notify_match_running(match_id, tatami).await {
+                    Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": null }))).into_response(),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+                }
             }
         },
         "get_events" => match db.get_events().await {
@@ -2787,7 +2963,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/tatami-panel/auto-assign", post(auto_assign_tatami_panel_api))
         // Official Multi-Sheet Excel Exporter
         .route("/api/export-excel/:event_id", get(export_tournament_excel_api))
-        .route("/api/export/html-to-pdf", post(export_html_to_pdf_api))
+        // A full results booklet with its cover and embedded fonts/logos is several MB;
+        // the default 2 MB body limit made export from LAN devices fail.
+        .route(
+            "/api/export/html-to-pdf",
+            post(export_html_to_pdf_api).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         // Athlete Marshalling & Call Room
         .route("/api/marshalling/:event_id", get(get_marshalling_overview_api))
         .route("/api/marshalling/urgent-call", post(submit_urgent_call_api))
@@ -2819,16 +3000,22 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 
 /// Starts the embedded Axum server strictly on port 8000.
 /// If port 8000 is occupied, halts and returns Err describing the port conflict.
-pub async fn start_server(
-    state: Arc<AppState>,
-) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), String> {
+pub async fn start_server(state: Arc<AppState>) -> Result<SocketAddr, String> {
+    // Hold the lock for the whole start so two concurrent starts cannot both bind.
+    let mut running = RUNNING_SERVER.lock().await;
+    if let Some(existing) = running.as_ref() {
+        if !existing.handle.is_finished() {
+            return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), DEFAULT_PORT));
+        }
+    }
+
     let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), DEFAULT_PORT);
 
     let listener = match TcpListener::bind(bind_addr).await {
         Ok(l) => l,
         Err(e) => {
             let err_msg = format!(
-                "Room tidak dapat dimulai â€” Port {} sedang digunakan oleh aplikasi lain ({})",
+                "Room tidak dapat dimulai — Port {} sedang digunakan oleh aplikasi lain ({})",
                 DEFAULT_PORT, e
             );
             error!("{}", err_msg);
@@ -2846,10 +3033,6 @@ pub async fn start_server(
     );
 
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    {
-        let mut lock = SHUTDOWN_TX.lock().await;
-        *lock = Some(tx);
-    }
 
     let app = create_router(state);
     let handle = tokio::spawn(async move {
@@ -2862,5 +3045,6 @@ pub async fn start_server(
         }
     });
 
-    Ok((local_addr, handle))
+    *running = Some(RunningServer { shutdown_tx: tx, handle });
+    Ok(local_addr)
 }

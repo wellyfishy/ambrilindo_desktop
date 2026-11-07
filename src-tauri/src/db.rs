@@ -2452,158 +2452,168 @@ impl DatabaseManager {
     pub async fn reset_total_tournament(&self, event_id: i64) -> Result<crate::models::ResetTournamentSummary, String> {
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let summary = Self::purge_event_data(&mut tx, event_id).await?;
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi reset total: {}", e))?;
+        self.remove_festival_roster_files(event_id);
+        Ok(summary)
+    }
 
+    /// Deletes an event and everything that belongs to it, in one transaction.
+    /// The event row itself goes last, so a failure part-way leaves the event intact.
+    pub async fn delete_event(&self, event_id: i64) -> Result<crate::models::ResetTournamentSummary, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let summary = Self::purge_event_data(&mut tx, event_id).await?;
+        let res = sqlx::query("DELETE FROM backend_event WHERE id = ?")
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus event: {}", e))?;
+        if res.rows_affected() != 1 {
+            return Err(format!("Event #{} tidak ditemukan.", event_id));
+        }
+        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi hapus event: {}", e))?;
+        self.remove_festival_roster_files(event_id);
+        let _ = crate::sync::SyncService::remove_event_mapping(self.active_db_path.as_ref(), event_id);
+        Ok(summary)
+    }
+
+    /// Removes every row that belongs to `event_id` (everything except the event row).
+    async fn purge_event_data(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        event_id: i64,
+    ) -> Result<crate::models::ResetTournamentSummary, String> {
         // 1. Unassign tatamis
         let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         // 2. Wasit detail bagan
         let _ = sqlx::query("DELETE FROM backend_wasitdetailbagan WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         // 3. Matchup & Score & Detail bagan
         let _ = sqlx::query("DELETE FROM backend_matchup WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let _ = sqlx::query("DELETE FROM backend_score WHERE detail_bagan_id IN (SELECT id FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?))")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let res_matches = sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus detail bagan: {}", e))?;
 
         // 4. Bagan
         let res_bagan = sqlx::query("DELETE FROM backend_bagan WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus bagan: {}", e))?;
 
         // 5. Timetable (cells, rows, days)
         let _ = sqlx::query("DELETE FROM backend_timetablecell WHERE row_id IN (SELECT id FROM backend_timetablerow WHERE day_id IN (SELECT id FROM backend_timetableday WHERE event_id = ?))")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let _ = sqlx::query("DELETE FROM backend_timetablerow WHERE day_id IN (SELECT id FROM backend_timetableday WHERE event_id = ?)")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let res_timetable = sqlx::query("DELETE FROM backend_timetableday WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus jadwal: {}", e))?;
 
         // 6. Wasit Tatami, Jury, Admin Tatami, Role
         let _ = sqlx::query("DELETE FROM backend_wasittatami WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let _ = sqlx::query("DELETE FROM backend_jury WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let _ = sqlx::query("DELETE FROM backend_admintatami WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let _ = sqlx::query("DELETE FROM backend_role WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         // 7. Tatami
         let res_tatami = sqlx::query("DELETE FROM backend_tatami WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus tatami: {}", e))?;
 
         // 8. Athletes
         let res_athletes = sqlx::query("DELETE FROM backend_atlet WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus atlet: {}", e))?;
 
         // 9. Categories (Nomor Tanding)
         let res_categories = sqlx::query("DELETE FROM backend_nomortanding WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus nomor tanding: {}", e))?;
 
         // 10. Wasit
         let res_wasit = sqlx::query("DELETE FROM backend_wasit WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus wasit: {}", e))?;
 
         // 11. Kontingen (Utusan)
         let res_contingents = sqlx::query("DELETE FROM backend_utusan WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus kontingen: {}", e))?;
 
         // 12. Perguruan
         let res_perguruans = sqlx::query("DELETE FROM backend_perguruan WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|e| format!("Gagal menghapus perguruan: {}", e))?;
 
         // 13. Kop surat, event keterangan, sync queue
         let _ = sqlx::query("DELETE FROM backend_kopsurat WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let _ = sqlx::query("DELETE FROM backend_eventketerangan WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
 
         let _ = sqlx::query("DELETE FROM backend_syncqueue WHERE event_id = ?")
             .bind(event_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await;
-
-        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi reset total: {}", e))?;
-
-        // 14. Clean up festival roster JSON file if present
-        if let Some(active_path) = &self.active_db_path {
-            if let Some(parent_dir) = std::path::Path::new(active_path).parent() {
-                let roster_file = parent_dir.join(format!("festival_roster_{}.json", event_id));
-                if roster_file.exists() {
-                    let _ = std::fs::remove_file(roster_file);
-                }
-            }
-        }
-        let default_roster = std::path::Path::new("../tournament_data").join(format!("festival_roster_{}.json", event_id));
-        if default_roster.exists() {
-            let _ = std::fs::remove_file(default_roster);
-        }
-        let local_roster = std::path::Path::new("tournament_data").join(format!("festival_roster_{}.json", event_id));
-        if local_roster.exists() {
-            let _ = std::fs::remove_file(local_roster);
-        }
 
         Ok(crate::models::ResetTournamentSummary {
             deleted_bagans: res_bagan.rows_affected(),
@@ -2616,6 +2626,23 @@ impl DatabaseManager {
             deleted_timetable_days: res_timetable.rows_affected(),
             deleted_wasits: res_wasit.rows_affected(),
         })
+    }
+
+    /// Removes the festival roster JSON files kept next to the database for an event.
+    ///
+    /// Only the folder of the database that is open is touched. The previous version
+    /// also deleted `../tournament_data/…` and `tournament_data/…` relative to the
+    /// working directory, which removed another database's roster for the same event
+    /// id whenever a database from a different folder was open.
+    fn remove_festival_roster_files(&self, event_id: i64) {
+        if let Some(active_path) = &self.active_db_path {
+            if let Some(parent_dir) = std::path::Path::new(active_path).parent() {
+                let roster_file = parent_dir.join(format!("festival_roster_{}.json", event_id));
+                if roster_file.exists() {
+                    let _ = std::fs::remove_file(roster_file);
+                }
+            }
+        }
     }
 
     /// Menghapus seluruh nomor tanding (kategori) untuk suatu event
@@ -9564,4 +9591,65 @@ mod festival_tests {
         println!("test_get_festival_booklet_data_single_source_of_truth PASSED successfully! 18 bagans verified as SSoT.");
     }
 
+}
+
+#[cfg(test)]
+mod delete_event_tests {
+    use super::*;
+
+    const EVENT_TABLES: &[&str] = &[
+        "backend_atlet", "backend_nomortanding", "backend_utusan", "backend_perguruan",
+        "backend_tatami", "backend_wasit", "backend_bagan", "backend_timetableday",
+    ];
+
+    async fn counts(pool: &Pool<Sqlite>, event_id: i64) -> Vec<i64> {
+        let mut out = Vec::new();
+        for t in EVENT_TABLES {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {} WHERE event_id = ?", t))
+                .bind(event_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            out.push(n);
+        }
+        out
+    }
+
+    /// Runs on a temporary copy; the real tournament database is never opened for writing.
+    #[tokio::test]
+    async fn delete_event_removes_only_that_event() {
+        let original = std::path::Path::new("../tournament_data/db.sqlite3");
+        if !original.exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ambr_del_evt_{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("db.sqlite3");
+        std::fs::copy(original, &copy).unwrap();
+
+        let mut db = DatabaseManager::new();
+        db.mount_database(&copy).await.unwrap();
+        let pool = db.get_pool_cloned().unwrap();
+
+        let events: Vec<i64> = sqlx::query_scalar("SELECT id FROM backend_event ORDER BY id").fetch_all(&pool).await.unwrap();
+        assert!(events.len() >= 2, "need at least two events in the copy");
+        let target = *events.last().unwrap();
+        let other = events[0];
+        let other_before = counts(&pool, other).await;
+
+        let summary = db.delete_event(target).await.unwrap();
+        let _ = summary;
+
+        let still_there: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backend_event WHERE id = ?").bind(target).fetch_one(&pool).await.unwrap();
+        assert_eq!(still_there, 0);
+        assert!(counts(&pool, target).await.iter().all(|&n| n == 0), "rows left for deleted event");
+        assert_eq!(counts(&pool, other).await, other_before, "another event was touched");
+
+        // Deleting it again reports a clear error instead of succeeding silently.
+        assert!(db.delete_event(target).await.is_err());
+
+        drop(pool);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

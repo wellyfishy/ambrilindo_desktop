@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { invoke } from "$lib/api_client";
+  import { invoke, isClientMode } from "$lib/api_client";
   import type { ActiveChannel, BaganItem } from "$lib/types";
 
   interface Props {
@@ -9,9 +8,15 @@
     onRefreshEvent: () => void;
     onNavigate: (channel: ActiveChannel) => void;
     onShowToast: (msg: string) => void;
+    /** Called after this event was deleted; the shell switches to another event. */
+    onEventDeleted?: (eventId: number) => void;
   }
 
-  let { eventId, eventName = "Event Turnamen", onRefreshEvent, onNavigate, onShowToast }: Props = $props();
+  let { eventId, eventName = "Event Turnamen", onRefreshEvent, onNavigate, onShowToast, onEventDeleted }: Props = $props();
+
+  // Backup and the clean-up actions run on the host's own database and are not
+  // available over LAN, so an operator-tambahan laptop only sees them disabled.
+  const hostOnly = isClientMode();
 
   // Statistics State
   let isLoading = $state(true);
@@ -89,17 +94,27 @@
 
   let errorMessage = $state<string | null>(null);
 
+  // Bumped on every load so a slow response for the previous event is ignored.
+  let statsLoadSeq = 0;
+  // True when the last load failed: counts are unknown, so destructive actions stay off.
+  let statsFailed = $state(false);
+
   async function loadStatistics() {
+    const seq = ++statsLoadSeq;
+    const forEvent = eventId;
     isLoading = true;
     errorMessage = null;
     try {
+      // No per-call fallbacks: a failed query must show an error, not a silent 0.
       const [baganList, athleteList, categoryList, contingentList, perguruanList] = await Promise.all([
-        invoke<BaganItem[]>("get_bagans", { eventId }).catch(() => []),
-        invoke<any[]>("get_athletes", { eventId }).catch(() => []),
-        invoke<any[]>("get_categories", { eventId }).catch(() => []),
-        invoke<any[]>("get_contingents", { eventId }).catch(() => []),
-        invoke<any[]>("get_perguruans", { eventId }).catch(() => []),
+        invoke<BaganItem[]>("get_bagans", { eventId: forEvent }),
+        invoke<any[]>("get_athletes", { eventId: forEvent }),
+        invoke<any[]>("get_categories", { eventId: forEvent }),
+        invoke<any[]>("get_contingents", { eventId: forEvent }),
+        invoke<any[]>("get_perguruans", { eventId: forEvent }),
       ]);
+      if (seq !== statsLoadSeq) return;
+      statsFailed = false;
 
       totalBagans = baganList.length;
       totalFestivalBagans = baganList.filter((b) =>
@@ -109,14 +124,20 @@
       ).length;
       totalTournamentBagans = Math.max(0, totalBagans - totalFestivalBagans);
 
-      totalAthletes = athleteList.length;
+      // Team member rows (MEMBER_…) belong to a team entry and are not separate entrants.
+      totalAthletes = athleteList.filter((a) => !String(a.additional_code || "").startsWith("MEMBER_")).length;
       totalCategories = categoryList.length;
       totalContingents = contingentList.length;
       totalPerguruans = (perguruanList || []).length;
     } catch (err: any) {
-      errorMessage = typeof err === "string" ? err : err?.message || "Gagal memuat ringkasan data master.";
+      if (seq !== statsLoadSeq) return;
+      statsFailed = true;
+      totalBagans = totalFestivalBagans = totalTournamentBagans = 0;
+      totalAthletes = totalCategories = totalContingents = totalPerguruans = 0;
+      const msg = typeof err === "string" ? err : err?.message || "";
+      errorMessage = `Gagal memuat ringkasan data master. Tombol hapus dinonaktifkan sampai data berhasil dimuat.${msg ? " (" + msg + ")" : ""}`;
     } finally {
-      isLoading = false;
+      if (seq === statsLoadSeq) isLoading = false;
     }
   }
 
@@ -260,12 +281,110 @@
     }
   }
 
-  onMount(() => {
-    loadStatistics();
+  // Hapus event dialog state
+  let showDeleteEventModal = $state(false);
+  let deleteEventConfirmText = $state("");
+  let deleteEventBackupFirst = $state(true);
+  let isDeletingEvent = $state(false);
+
+  // Reload whenever the selected event changes, not only on first mount: otherwise the
+  // counts (and the confirmation dialogs) would describe the previous event while the
+  // buttons act on the new one.
+  $effect(() => {
+    if (eventId) {
+      // Close any open confirmation that was opened for the previous event.
+      closeAllModals();
+      loadStatistics();
+    }
   });
+
+  let anyModalOpen = $derived(
+    showDeleteFestivalBagansModal ||
+      showDeleteBagansModal ||
+      showDeleteAthletesModal ||
+      showDeleteCategoriesModal ||
+      showDeleteContingentsModal ||
+      showDeletePerguruansModal ||
+      showResetAllModal ||
+      showDeleteEventModal
+  );
+
+  let anyActionBusy = $derived(
+    isDeletingFestivalBagans ||
+      isDeletingBagans ||
+      isDeletingAthletes ||
+      isDeletingCategories ||
+      isDeletingContingents ||
+      isDeletingPerguruans ||
+      isResettingAll ||
+      isDeletingEvent
+  );
+
+  function closeAllModals() {
+    showDeleteFestivalBagansModal = false;
+    showDeleteBagansModal = false;
+    showDeleteAthletesModal = false;
+    showDeleteCategoriesModal = false;
+    showDeleteContingentsModal = false;
+    showDeletePerguruansModal = false;
+    showResetAllModal = false;
+    showDeleteEventModal = false;
+  }
+
+  function handleWindowKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape" && anyModalOpen && !anyActionBusy) {
+      closeAllModals();
+      errorMessage = null;
+    }
+  }
+
+  // ==================== HAPUS EVENT ====================
+
+  let deleteEventNameMatches = $derived(
+    deleteEventConfirmText.trim().toUpperCase() === (eventName || "").trim().toUpperCase() &&
+      deleteEventConfirmText.trim().length > 0
+  );
+
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+  }
+
+  function openDeleteEventModal() {
+    deleteEventConfirmText = "";
+    deleteEventBackupFirst = true;
+    errorMessage = null;
+    showDeleteEventModal = true;
+  }
+
+  async function handleDeleteEvent() {
+    if (!deleteEventNameMatches || isDeletingEvent) return;
+    isDeletingEvent = true;
+    errorMessage = null;
+    const deletedId = eventId;
+    const deletedName = eventName;
+    try {
+      if (deleteEventBackupFirst) {
+        const path = await invoke<string>("backup_database");
+        lastBackupPath = path;
+      }
+      await invoke("delete_event", { eventId: deletedId });
+      showDeleteEventModal = false;
+      onShowToast(`Event "${deletedName}" beserta seluruh datanya telah dihapus.`);
+      onEventDeleted?.(deletedId);
+    } catch (err: any) {
+      const msg = typeof err === "string" ? err : err?.message || "Gagal menghapus event.";
+      errorMessage = deleteEventBackupFirst && !lastBackupPath
+        ? `Cadangan gagal dibuat, event TIDAK dihapus. ${msg}`
+        : msg;
+    } finally {
+      isDeletingEvent = false;
+    }
+  }
 </script>
 
-<div class="h-full flex flex-col p-4 md:p-6 pb-12 select-none bg-[#14161b] text-zinc-200 overflow-y-auto font-sans">
+<svelte:window onkeydown={handleWindowKeydown} />
+
+<div class="h-full p-4 md:p-6 pb-12 select-none bg-[#14161b] text-zinc-200 overflow-y-auto font-sans">
   <!-- Top Bar -->
   <div class="flex items-center justify-between pb-4 mb-5 border-b border-white/[0.08] shrink-0">
     <div>
@@ -798,7 +917,7 @@
         <button
           type="button"
           onclick={handleQuickBackup}
-          disabled={isBackingUpQuick || isBackingUpCustom}
+          disabled={isBackingUpQuick || isBackingUpCustom || hostOnly}
           class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-2 shadow-lg active:scale-95 disabled:opacity-50 cursor-pointer"
           title="Buat snapshot instan dengan timestamp ke folder backups"
         >
@@ -820,7 +939,7 @@
         <button
           type="button"
           onclick={handleCustomBackup}
-          disabled={isBackingUpQuick || isBackingUpCustom}
+          disabled={isBackingUpQuick || isBackingUpCustom || hostOnly}
           class="px-3.5 py-2.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-zinc-300 hover:text-white border border-white/10 text-xs font-semibold transition flex items-center space-x-2 active:scale-95 disabled:opacity-50 cursor-pointer"
           title="Simpan cadangan ke lokasi tertentu, misal Flashdisk USB"
         >
@@ -863,6 +982,11 @@
     </div>
 
     <div class="bg-[#181a20] border border-white/[0.08] rounded-2xl overflow-hidden shadow-xs">
+      {#if hostOnly}
+        <div class="mb-3 p-3 rounded-xl bg-white/[0.04] border border-white/[0.1] text-xs text-zinc-300">
+          Cadangan, pembersihan data dan hapus event hanya bisa dilakukan dari <strong class="text-white">laptop host</strong>.
+        </div>
+      {/if}
       <!-- Notice Bar -->
       <div class="p-3.5 bg-red-500/[0.04] border-b border-red-500/15 text-xs text-zinc-400 leading-relaxed flex items-center space-x-2.5">
         <svg class="w-4 h-4 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -894,7 +1018,7 @@
               confirmDeleteFestivalBagansChecked = false;
               showDeleteFestivalBagansModal = true;
             }}
-            disabled={totalFestivalBagans === 0 || isLoading}
+            disabled={totalFestivalBagans === 0 || isLoading || statsFailed || hostOnly}
             class="shrink-0 px-3.5 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 border border-amber-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -924,7 +1048,7 @@
               confirmDeleteBagansChecked = false;
               showDeleteBagansModal = true;
             }}
-            disabled={totalBagans === 0 || isLoading}
+            disabled={totalBagans === 0 || isLoading || statsFailed || hostOnly}
             class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -954,7 +1078,7 @@
               confirmDeleteAthletesChecked = false;
               showDeleteAthletesModal = true;
             }}
-            disabled={totalAthletes === 0 || isLoading}
+            disabled={totalAthletes === 0 || isLoading || statsFailed || hostOnly}
             class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -984,7 +1108,7 @@
               confirmDeleteCategoriesChecked = false;
               showDeleteCategoriesModal = true;
             }}
-            disabled={totalCategories === 0 || isLoading}
+            disabled={totalCategories === 0 || isLoading || statsFailed || hostOnly}
             class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1014,7 +1138,7 @@
               confirmDeleteContingentsChecked = false;
               showDeleteContingentsModal = true;
             }}
-            disabled={totalContingents === 0 || isLoading}
+            disabled={totalContingents === 0 || isLoading || statsFailed || hostOnly}
             class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1044,7 +1168,7 @@
               confirmDeletePerguruansChecked = false;
               showDeletePerguruansModal = true;
             }}
-            disabled={totalPerguruans === 0 || isLoading}
+            disabled={totalPerguruans === 0 || isLoading || statsFailed || hostOnly}
             class="shrink-0 px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/25 text-xs font-semibold transition flex items-center space-x-1.5 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1077,7 +1201,7 @@
               confirmResetAllChecked = false;
               showResetAllModal = true;
             }}
-            disabled={(totalBagans === 0 && totalAthletes === 0 && totalCategories === 0 && totalContingents === 0 && totalPerguruans === 0) || isLoading}
+            disabled={(totalBagans === 0 && totalAthletes === 0 && totalCategories === 0 && totalContingents === 0 && totalPerguruans === 0) || isLoading || statsFailed || hostOnly}
             class="shrink-0 px-5 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white text-xs font-black transition shadow-lg shadow-red-600/30 flex items-center space-x-2 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1086,10 +1210,118 @@
             <span>Reset Total Turnamen</span>
           </button>
         </div>
+
+        <!-- Action Row 8: Hapus Event (removes the event itself) -->
+        <div class="p-4 rounded-2xl bg-black/40 border border-red-500/40 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div class="max-w-xl">
+            <div class="flex items-center space-x-2">
+              <h3 class="text-sm font-extrabold text-white tracking-wide">Hapus Event Ini</h3>
+              <span class="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-red-500/15 text-red-300 border border-red-500/30">
+                PERMANEN
+              </span>
+            </div>
+            <p class="text-xs text-zinc-300 mt-1.5 leading-relaxed">
+              Menghapus event <strong class="text-white">{eventName}</strong> dari daftar beserta seluruh isinya
+              (semua yang dibersihkan Reset Total, ditambah event itu sendiri dan pemetaan sinkronnya ke web).
+              Event lain tidak terpengaruh.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onclick={openDeleteEventModal}
+            disabled={isLoading || hostOnly}
+            class="shrink-0 px-5 py-2.5 rounded-xl bg-black/40 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/50 text-xs font-black transition flex items-center space-x-2 disabled:opacity-40 disabled:pointer-events-none active:scale-95 cursor-pointer"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            <span>Hapus Event</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
 </div>
+
+<!-- Errors from an action must be visible above its confirmation dialog. -->
+{#if errorMessage && anyModalOpen}
+  <div class="fixed top-4 left-1/2 -translate-x-1/2 z-[60] w-[min(36rem,calc(100%-2rem))] p-3.5 rounded-xl bg-[#1f1214] border border-red-500/40 text-red-200 text-xs shadow-2xl flex items-start justify-between gap-3" role="alert">
+    <span class="leading-relaxed">{errorMessage}</span>
+    <button onclick={() => (errorMessage = null)} class="text-zinc-400 hover:text-white shrink-0" aria-label="Tutup pesan error">✕</button>
+  </div>
+{/if}
+
+<!-- ================= MODAL: HAPUS EVENT ================= -->
+{#if showDeleteEventModal}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-none font-sans">
+    <div
+      class="bg-[#181a20] border border-red-500/40 w-full max-w-lg rounded-2xl shadow-2xl p-6 text-zinc-200"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-event-title"
+    >
+      <h3 id="delete-event-title" class="text-base font-extrabold text-white">Hapus event "{eventName}"?</h3>
+      <p class="text-xs text-zinc-400 mt-1">Tindakan ini tidak dapat dibatalkan dari aplikasi.</p>
+
+      <div class="my-4 p-3.5 rounded-xl bg-red-500/10 border border-red-500/25 text-xs text-zinc-200 leading-relaxed">
+        <p class="font-semibold text-red-300 mb-1.5">Yang akan dihapus:</p>
+        <ul class="list-disc pl-5 space-y-0.5 font-mono text-[11px] text-red-100/90">
+          <li><span class="tabular-nums">{totalAthletes}</span> atlet, <span class="tabular-nums">{totalCategories}</span> nomor tanding, <span class="tabular-nums">{totalBagans}</span> bagan</li>
+          <li><span class="tabular-nums">{totalContingents}</span> kontingen, <span class="tabular-nums">{totalPerguruans}</span> perguruan</li>
+          <li>Tatami, jadwal, wasit, kop surat, berkas festival & pemetaan sinkron web</li>
+          <li>Event itu sendiri dari daftar server di kiri</li>
+        </ul>
+      </div>
+
+      <label class="flex items-start gap-2.5 cursor-pointer">
+        <input
+          type="checkbox"
+          bind:checked={deleteEventBackupFirst}
+          class="mt-0.5 w-4 h-4 accent-emerald-500 cursor-pointer"
+        />
+        <span class="text-xs text-zinc-300 leading-snug">
+          Buat cadangan database dulu <span class="text-zinc-500">(disarankan; kalau cadangan gagal, event tidak dihapus)</span>
+        </span>
+      </label>
+
+      <label class="block mt-4">
+        <span class="text-xs text-zinc-300">Ketik nama event untuk konfirmasi:</span>
+        <span class="block mt-1 font-mono text-[11px] text-zinc-400 select-text">{eventName}</span>
+        <input
+          use:focusOnMount
+          type="text"
+          bind:value={deleteEventConfirmText}
+          onkeydown={(e) => {
+            if (e.key === "Enter") handleDeleteEvent();
+          }}
+          autocomplete="off"
+          spellcheck="false"
+          class="mt-1.5 w-full bg-[#14161b] text-sm text-white px-3 py-2 rounded-lg border outline-none {deleteEventNameMatches ? 'border-red-500/60' : 'border-white/[0.1] focus:border-white/30'}"
+        />
+      </label>
+
+      <div class="flex items-center justify-end gap-2 mt-5">
+        <button
+          type="button"
+          onclick={() => (showDeleteEventModal = false)}
+          disabled={isDeletingEvent}
+          class="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-white bg-white/[0.05] hover:bg-white/[0.08] transition cursor-pointer"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={handleDeleteEvent}
+          disabled={!deleteEventNameMatches || isDeletingEvent}
+          class="px-4 py-2 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-500 transition disabled:opacity-40 active:scale-95 cursor-pointer"
+        >
+          {isDeletingEvent ? (deleteEventBackupFirst ? "Mencadangkan & menghapus…" : "Menghapus…") : "Hapus Event Permanen"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- ================= MODAL 1: KONFIRMASI HAPUS SEMUA BAGAN FESTIVAL (NEW) ================= -->
 {#if showDeleteFestivalBagansModal}

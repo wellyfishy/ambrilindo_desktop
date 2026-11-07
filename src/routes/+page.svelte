@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke, setConnectionConfig } from "$lib/api_client";
+  import { invoke, setConnectionConfig, withHostParam } from "$lib/api_client";
   import { initLiveSync } from "$lib/liveSync";
 
   import type {
@@ -32,6 +32,7 @@
   import ContingentManagerView from "$lib/components/ContingentManagerView.svelte";
   import PerguruanManagerView from "$lib/components/PerguruanManagerView.svelte";
   import ResultsBookletView from "$lib/components/ResultsBookletView.svelte";
+  import PrintCenterView from "$lib/components/PrintCenterView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
@@ -47,6 +48,70 @@
 
   // Discord Shell Active State
   let activeRole = $state<string>("admin_utama");
+
+  // The role is remembered per event (server): coming back to an event restores the
+  // role last used there, and a role whose tatami does not exist in the event is
+  // dropped back to Admin Utama.
+  const ROLES_STORAGE_KEY = "ambrilindo_roles_by_event";
+  let rolesByEvent: Record<number, string> = {};
+
+  function persistRolesByEvent() {
+    try {
+      sessionStorage.setItem(ROLES_STORAGE_KEY, JSON.stringify(rolesByEvent));
+    } catch (_) {}
+  }
+
+  function roleLabel(role: string): string {
+    return role.startsWith("admin_tatami_")
+      ? `Admin Tatami ${role.replace("admin_tatami_", "")}`
+      : "Admin Utama";
+  }
+
+  function isRoleValidForTatamis(role: string, list: TatamiItem[]): boolean {
+    if (!role.startsWith("admin_tatami_")) return true;
+    const num = parseInt(role.replace("admin_tatami_", ""), 10);
+    return list.some((t) => (t.tatami_number || 1) === num);
+  }
+
+  function setRole(role: string) {
+    activeRole = role;
+    if (selectedEventId) {
+      rolesByEvent[selectedEventId] = role;
+      persistRolesByEvent();
+    }
+  }
+
+  /** Applies the remembered role for `eventId`, validated against its tatamis. */
+  function applyRoleForEvent(eventId: number, eventChanged: boolean) {
+    const remembered = rolesByEvent[eventId] ?? (eventChanged ? "admin_utama" : activeRole);
+    const previous = activeRole;
+    let next = remembered;
+    if (!isRoleValidForTatamis(remembered, tatamis)) {
+      next = "admin_utama";
+      showToast(`${roleLabel(remembered)} tidak ada di event ini. Role kembali ke Admin Utama.`);
+    } else if (eventChanged && next !== previous) {
+      showToast(`Role di event ini: ${roleLabel(next)}`);
+    }
+    activeRole = next;
+    rolesByEvent[eventId] = next;
+    persistRolesByEvent();
+  }
+
+  const DEFAULT_CHANNEL: ActiveChannel = {
+    type: "tatami",
+    id: "tatami-manager",
+    name: "tatami",
+    subtitle: "Manajemen Tatami Turnamen",
+  };
+
+  /** A bracket channel from another event must not stay open after switching. */
+  function validateActiveChannel() {
+    if (activeChannel.type !== "bagan") return;
+    const id = activeChannel.id;
+    if (typeof id === "number" && id !== 0 && !bagans.some((b) => b.id === id)) {
+      activeChannel = { ...DEFAULT_CHANNEL };
+    }
+  }
   let activeChannel = $state<ActiveChannel>({
     type: "tatami",
     id: "tatami-manager",
@@ -208,9 +273,6 @@
       }
     } catch (e) {
       console.warn("No default database mounted:", e);
-      if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
-        await selectEvent(1);
-      }
     }
   }
 
@@ -254,46 +316,60 @@
       has_vr: false,
     };
     const result = [festivalBagan, ...list.filter((b) => b.id !== 0 && b.kode !== "000")];
-    if (result.length === 1 && typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
-      result.push({
-        id: 2,
-        event_id: eventId,
-        nama_bagan: "KATA PERORANGAN KADET PUTRA",
-        nomor_tanding_id: 2,
-        tipe_tanding: "1",
-        juara_1_id: null,
-        juara_2_id: null,
-        juara_3a_id: null,
-        juara_3b_id: null,
-        peringkat_5_id: null,
-        peringkat_6_id: null,
-        peringkat_7_id: null,
-        peringkat_8_id: null,
-        round_robin: false,
-        pool: 1,
-        kode: "002",
-        is_bob: false,
-        has_vr: false,
-      });
-    }
     return result;
   }
 
+  // Increments on every selectEvent call so a slow response for an event the user
+  // already left cannot overwrite the data of the event now on screen.
+  let eventLoadSeq = 0;
+
   async function selectEvent(eventId: number) {
+    const seq = ++eventLoadSeq;
+    const eventChanged = selectedEventId !== eventId;
     selectedEventId = eventId;
     try {
       const [tatamiList, baganList] = await Promise.all([
         invoke<TatamiItem[]>("get_tatamis", { eventId }),
         invoke<BaganItem[]>("get_bagans", { eventId }),
       ]);
+      if (seq !== eventLoadSeq) return;
       tatamis = tatamiList;
       bagans = withFestivalBagan(baganList, eventId);
     } catch (err) {
+      if (seq !== eventLoadSeq) return;
       console.error("Gagal memuat data event:", err);
-      if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
-        tatamis = [];
-        bagans = withFestivalBagan([], eventId);
-      }
+      // Never keep showing the previous event's tatamis and brackets under this one.
+      tatamis = [];
+      bagans = withFestivalBagan([], eventId);
+      showToast("Gagal memuat data event. Coba pilih event lagi.");
+    }
+    applyRoleForEvent(eventId, eventChanged);
+    validateActiveChannel();
+  }
+
+  /** After an event was deleted in Data Master: drop it from the rail and move on. */
+  async function handleEventDeleted(deletedId: number) {
+    if (databaseSummary) {
+      databaseSummary = {
+        ...databaseSummary,
+        events: (databaseSummary.events || []).filter((e) => e.id !== deletedId),
+      };
+    }
+    delete rolesByEvent[deletedId];
+    persistRolesByEvent();
+    activeChannel = { ...DEFAULT_CHANNEL };
+    const next = databaseSummary?.events?.[0];
+    if (next) {
+      await selectEvent(next.id);
+    } else {
+      eventLoadSeq++;
+      selectedEventId = null;
+      tatamis = [];
+      bagans = [];
+      activeRole = "admin_utama";
+      try {
+        sessionStorage.removeItem("ambrilindo_event_id");
+      } catch (_) {}
     }
   }
 
@@ -335,7 +411,7 @@
         console.warn("Tauri open_control_panel_window failed, fallback window.open:", err);
         if (typeof window !== "undefined" && window.open) {
           window.open(
-            `/control-panel?matchId=0&baganId=0&isFestival=true&tatami=${assignedTatami}`,
+            withHostParam(`/control-panel?matchId=0&baganId=0&isFestival=true&tatami=${assignedTatami}`),
             "control_panel_0",
             "width=1366,height=820"
           );
@@ -424,20 +500,26 @@
       const savedEventId = sessionStorage.getItem("ambrilindo_event_id");
       const savedChannel = sessionStorage.getItem("ambrilindo_active_channel");
       const savedRole = sessionStorage.getItem("ambrilindo_active_role");
+      const savedRoles = sessionStorage.getItem(ROLES_STORAGE_KEY);
 
-      if (savedEventId) {
-        const eid = parseInt(savedEventId, 10);
-        if (!isNaN(eid)) {
-          await selectEvent(eid);
-        }
+      if (savedRoles) {
+        try {
+          rolesByEvent = { ...rolesByEvent, ...JSON.parse(savedRoles) };
+        } catch (_) {}
+      }
+      const eid = savedEventId ? parseInt(savedEventId, 10) : NaN;
+      // Sessions saved before roles were remembered per event.
+      if (!isNaN(eid) && savedRole && rolesByEvent[eid] === undefined) {
+        rolesByEvent[eid] = savedRole;
       }
       if (savedChannel) {
         try {
           activeChannel = JSON.parse(savedChannel);
         } catch (_) {}
       }
-      if (savedRole) {
-        activeRole = savedRole;
+      if (!isNaN(eid)) {
+        // Also validates the restored role and channel against this event.
+        await selectEvent(eid);
       }
     } catch (_) {}
 
@@ -458,7 +540,7 @@
 </script>
 
 <svelte:head>
-  <title>Ambrilindo â€” {activeChannel.name}</title>
+  <title>Ambrilindo — {activeChannel.name}</title>
 </svelte:head>
 
 <div class="app-shell h-screen w-screen bg-[#0d0e12] text-zinc-200 flex overflow-hidden font-sans select-none">
@@ -498,11 +580,8 @@
       hostAddress={appMode === "host" ? (networkInfo?.server_url || "Port 8000") : hostUrl}
       {activeRole}
       onSelectRole={(role) => {
-        activeRole = role;
-        const label = role.startsWith("admin_tatami_")
-          ? `Admin Tatami ${role.replace("admin_tatami_", "")}`
-          : "Admin Utama";
-        showToast(`Role aktif: ${label}`);
+        setRole(role);
+        showToast(`Role aktif: ${roleLabel(role)}`);
       }}
       onSelectChannel={handleSelectChannel}
       onOpenQrModal={() => (qrModal = true)}
@@ -585,6 +664,7 @@
             eventId={selectedEventId || 1}
             eventName={activeEvent?.nama_event || ""}
             onRefreshEvent={() => selectedEventId && selectEvent(selectedEventId)}
+            onEventDeleted={handleEventDeleted}
             onNavigate={(channel) => handleSelectChannel(channel)}
             onShowToast={showToast}
           />
@@ -632,6 +712,13 @@
             eventId={selectedEventId || 1}
             eventName={activeEvent?.nama_event || ""}
             {tatamis}
+            hostAddress={hostUrl}
+            onShowToast={showToast}
+          />
+        {:else if activeChannel.type === "cetak"}
+          <PrintCenterView
+            eventId={selectedEventId || 1}
+            eventName={activeEvent?.nama_event || ""}
             hostAddress={hostUrl}
             onShowToast={showToast}
           />

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { invoke } from "$lib/api_client";
+  import { invoke, withHostParam } from "$lib/api_client";
   import { printWithOrientation } from "$lib/print_helper";
   import { listen } from "@tauri-apps/api/event";
   import type {
@@ -386,7 +386,7 @@
       console.warn("Tauri open_control_panel_window failed, fallback to window.open or in-page:", err);
       if (typeof window !== "undefined" && window.open) {
         window.open(
-          `/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}&tatami=${match.assigned_tatami_id || 1}`,
+          withHostParam(`/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}&tatami=${match.assigned_tatami_id || 1}`),
           "control_panel",
           "width=1366,height=820"
         );

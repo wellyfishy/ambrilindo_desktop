@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, withHostParam } from "$lib/api_client";
   import { listen } from "@tauri-apps/api/event";
   import type { ActiveChannel, AppMode, BaganItem, EventItem, TatamiItem } from "$lib/types";
   import { initLiveSync, getLiveTatamisForBagan, subscribeLiveSync } from "$lib/liveSync";
@@ -135,7 +135,7 @@
       await refreshRunningScoreboards();
     } catch (err) {
       console.warn("Tauri project_scoreboard failed, fallback to window.open:", err);
-      window.open(`/scoreboard?tatami=${tatamiNum}`, `scoreboard_tatami_${tatamiNum}`);
+      window.open(withHostParam(`/scoreboard?tatami=${tatamiNum}`), `scoreboard_tatami_${tatamiNum}`);
     } finally {
       isScoreboardMenuOpen = false;
       hoveredTatami = null;
@@ -246,6 +246,18 @@
     return "Admin Utama";
   });
 </script>
+
+<!-- The role menu says "ESC untuk tutup"; make it true (also closes the scoreboard flyout). -->
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key !== "Escape") return;
+    if (isRoleDropdownOpen) isRoleDropdownOpen = false;
+    if (isScoreboardMenuOpen) {
+      isScoreboardMenuOpen = false;
+      hoveredTatami = null;
+    }
+  }}
+/>
 
 <aside
   style="width: {sidebarWidth}px;"
@@ -557,6 +569,21 @@
             <span>summary-juara</span>
           </button>
 
+          <!-- Cetak: print preview hub (booklet + custom cover) -->
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "cetak",
+                id: "cetak",
+                name: "cetak",
+                subtitle: "Preview & cetak dokumen",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'cetak' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>cetak</span>
+          </button>
+
           <!-- Buku Hasil Resmi & Berita Acara (In-App Channel) -->
           <button
             type="button"
@@ -856,6 +883,8 @@
     <div class="relative flex-1 min-w-0 mr-1">
       <button
         onclick={() => (isRoleDropdownOpen = !isRoleDropdownOpen)}
+        aria-haspopup="menu"
+        aria-expanded={isRoleDropdownOpen}
         class="w-full flex items-center space-x-2 text-left p-1 rounded-lg hover:bg-white/[0.04] transition group"
       >
         <div class="relative shrink-0">

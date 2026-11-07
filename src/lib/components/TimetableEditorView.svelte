@@ -460,13 +460,7 @@
   let printMode = $state<"none" | "simple_roster" | "detailed_timeline" | "call_sheet" | "booklet">("none");
   let printSelectedTatami = $state<TatamiItem | null>(null);
 
-  // --- Cell Picker & Conflict Modals ---
-  let pickerModalOpen = $state(false);
-  let targetRowIndex = $state<number | null>(null);
-  let targetTatamiId = $state<number | null>(null);
-  let pickerSearch = $state("");
-  let pickerAgeFilter = $state("all");
-  let customTextInput = $state("");
+  // --- Conflict Modal ---
 
   let conflictModalOpen = $state(false);
   let activeConflictRow = $state<EnrichedTimetableRow | null>(null);
@@ -648,6 +642,42 @@
 
     return timelines;
   });
+
+  // Start/end time of every cell, using the same rules as the per-tatami finish time
+  // above: each tatami runs its column top to bottom from the day's start time.
+  let cellTimes = $derived.by(() => {
+    const map: Record<string, { start: string; end: string }> = {};
+    if (!activeDay) return map;
+    tatamis.forEach((t) => {
+      let cur = parseTimeToMinutes(startTimeStr);
+      activeDay.rows.forEach((row, rIdx) => {
+        if (row.row_type === "label") {
+          cur = cur < 12 * 60 ? 13 * 60 : cur + 30;
+          return;
+        }
+        const cell = row.cells.find((c) => c.tatami_id === t.id);
+        if (!cell) return;
+        const start = cur;
+        if (cell.nomor_tanding_id) {
+          cur += cell.est_duration_minutes || 15;
+        } else if (cell.custom_text) {
+          if (cell.is_break) cur = cur < 12 * 60 ? 13 * 60 : cur + 30;
+          else cur += 45;
+        } else {
+          return;
+        }
+        map[`${rIdx}:${t.id}`] = { start: formatMinutesToTime(start), end: formatMinutesToTime(cur) };
+      });
+    });
+    return map;
+  });
+
+  // Unscheduled categories first; scheduled ones stay listed below, dimmed.
+  let poolSortedCategories = $derived(
+    [...poolFilteredCategories].sort(
+      (a, b) => Number(assignedCategoryIds.has(a.id)) - Number(assignedCategoryIds.has(b.id))
+    )
+  );
 
   function getTatamiCellSeq(targetTatamiId: number, targetRowIdx: number): number {
     if (!activeDay) return 1;
@@ -1761,9 +1791,8 @@
     });
   }
 
-  function addSlotRow() {
-    if (!activeDay) return;
-    const newCells: EnrichedTimetableCell[] = tatamis.map((t) => ({
+  function emptyCellFor(t: TatamiItem): EnrichedTimetableCell {
+    return {
       id: 0,
       row_id: 0,
       tatami_id: t.id,
@@ -1781,21 +1810,35 @@
       remaining_matches: 0,
       is_festival: false,
       is_break: false,
-    }));
+    };
+  }
 
-    activeDay.rows = [
-      ...activeDay.rows,
-      {
-        id: 0,
-        day_id: activeDay.id,
-        order: activeDay.rows.length,
-        row_type: "slot",
-        time_label: `Sesi ${activeDay.rows.length + 1}`,
-        label_text: "",
-        cells: newCells,
-        conflicts: [],
-      },
-    ];
+  function newSlotRow(): EnrichedTimetableRow {
+    return {
+      id: 0,
+      day_id: activeDay?.id ?? null,
+      order: 0,
+      row_type: "slot",
+      // Left empty: the start/end time of every category is calculated automatically.
+      time_label: "",
+      label_text: "",
+      cells: tatamis.map(emptyCellFor),
+      conflicts: [],
+    } as EnrichedTimetableRow;
+  }
+
+  function addSlotRow() {
+    if (!activeDay) return;
+    activeDay.rows = [...activeDay.rows, newSlotRow()];
+    markDirty();
+  }
+
+  /** Inserts an empty session directly below `rowIdx`. */
+  function insertSlotRowAfter(rowIdx: number) {
+    if (!activeDay) return;
+    const rows = [...activeDay.rows];
+    rows.splice(rowIdx + 1, 0, newSlotRow());
+    activeDay.rows = rows;
     markDirty();
   }
 
@@ -1852,23 +1895,176 @@
       targetRow = activeDay.rows[activeDay.rows.length - 1];
     }
 
-    const cell = targetRow.cells.find((c) => c.tatami_id === targetTatamiId);
-    if (cell) {
-      cell.nomor_tanding_id = cat.id;
-      cell.nomor_tanding_nama = cat.nama;
-      cell.atlet_count = cat.atlet_count;
-      cell.matches = cat.matches;
-      cell.discipline = cat.discipline;
-      cell.est_duration_minutes = cat.est_duration_minutes;
-      cell.is_festival = cat.is_festival;
-      cell.is_break = false;
-      cell.custom_text = "";
-      cell.progress_status = cat.progress_status;
-      cell.progress_pct = cat.progress_pct;
-      markDirty();
-      notify(`Kategori ditempatkan di Tatami.`);
+    const rowIdx = activeDay.rows.indexOf(targetRow);
+    const tNum = tatamis.find((t) => t.id === targetTatamiId)?.tatami_number ?? "";
+    placeCategory(cat, rowIdx, targetTatamiId);
+    notify(`${cat.nama} ditempatkan di Tatami ${tNum}, sesi #${rowIdx + 1}.`);
+  }
+
+  // ==================== MANUAL EDITING: PLACE, MOVE, SWAP ====================
+  // Fields that make up a cell's content. Moving/swapping copies these and leaves
+  // the cell's identity (id, row, tatami) where it is.
+  const CELL_CONTENT_KEYS = [
+    "nomor_tanding_id",
+    "nomor_tanding_nama",
+    "custom_text",
+    "atlet_count",
+    "matches",
+    "discipline",
+    "est_duration_minutes",
+    "progress_status",
+    "progress_pct",
+    "finished_matches",
+    "remaining_matches",
+    "is_festival",
+    "is_break",
+  ] as const;
+
+  /** The cell of `row` for `tatamiId`, created if the tatami was added after the row. */
+  function ensureCell(row: EnrichedTimetableRow, tatamiId: number): EnrichedTimetableCell | null {
+    let cell = row.cells.find((c) => c.tatami_id === tatamiId);
+    if (!cell) {
+      const t = tatamis.find((x) => x.id === tatamiId);
+      if (!t) return null;
+      row.cells = [...row.cells, emptyCellFor(t)];
+      cell = row.cells[row.cells.length - 1];
+    }
+    return cell;
+  }
+
+  function cellHasContent(cell: EnrichedTimetableCell | undefined | null): boolean {
+    return !!cell && (!!cell.nomor_tanding_id || !!cell.custom_text);
+  }
+
+  /** Re-checks athlete clashes for one session after a manual change. */
+  function refreshRowConflicts(rowIdx: number) {
+    const row = activeDay?.rows[rowIdx];
+    if (!row || row.row_type !== "slot") return;
+    row.conflicts = detectRowConflicts(row.cells);
+  }
+
+  function placeCategory(cat: TimetableCategoryOption, rowIdx: number, tatamiId: number) {
+    const row = activeDay?.rows[rowIdx];
+    if (!row) return;
+    const cell = ensureCell(row, tatamiId);
+    if (!cell) return;
+    cell.nomor_tanding_id = cat.id;
+    cell.nomor_tanding_nama = cat.nama;
+    cell.atlet_count = cat.atlet_count;
+    cell.matches = cat.matches;
+    cell.discipline = cat.discipline;
+    cell.est_duration_minutes = cat.est_duration_minutes;
+    cell.is_festival = cat.is_festival;
+    cell.is_break = false;
+    cell.custom_text = "";
+    cell.progress_status = cat.progress_status;
+    cell.progress_pct = cat.progress_pct;
+    refreshRowConflicts(rowIdx);
+    markDirty();
+  }
+
+  // --- Category picker (click an empty cell) ---
+  let pickerTarget = $state<{ rowIdx: number; tatamiId: number } | null>(null);
+  let catPickSearch = $state("");
+  let pickerShowFestival = $state(false);
+
+  let pickerOptions = $derived.by(() => {
+    if (!pickerTarget) return [];
+    const q = catPickSearch.trim().toLowerCase();
+    return categories
+      .filter((c) => !assignedCategoryIds.has(c.id))
+      .filter((c) => pickerShowFestival || !c.is_festival)
+      .filter((c) => !q || c.nama.toLowerCase().includes(q) || c.age_group.toLowerCase().includes(q))
+      // Categories without athletes go last: there is nothing to schedule yet.
+      .sort(
+        (a, b) =>
+          Number(a.atlet_count === 0) - Number(b.atlet_count === 0) ||
+          getAgeGroupRank(a.age_group) - getAgeGroupRank(b.age_group) ||
+          a.nama.localeCompare(b.nama)
+      );
+  });
+
+  function openPicker(rowIdx: number, tatamiId: number) {
+    pickerTarget = { rowIdx, tatamiId };
+    catPickSearch = "";
+  }
+
+  function closePicker() {
+    pickerTarget = null;
+  }
+
+  function pickCategory(cat: TimetableCategoryOption) {
+    if (!pickerTarget) return;
+    placeCategory(cat, pickerTarget.rowIdx, pickerTarget.tatamiId);
+    pickerTarget = null;
+  }
+
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+  }
+
+  // --- Move / swap mode ---
+  let moveSource = $state<{ rowIdx: number; tatamiId: number; name: string } | null>(null);
+
+  function startMove(rowIdx: number, tatamiId: number) {
+    const cell = activeDay?.rows[rowIdx]?.cells.find((c) => c.tatami_id === tatamiId);
+    if (!cellHasContent(cell)) return;
+    moveSource = { rowIdx, tatamiId, name: cell!.nomor_tanding_nama || cell!.custom_text || "Kategori" };
+  }
+
+  function cancelMove() {
+    moveSource = null;
+  }
+
+  /** Moves the selected cell to the target; swaps when the target is occupied. */
+  function dropMoveOn(rowIdx: number, tatamiId: number) {
+    if (!activeDay || !moveSource) return;
+    const src = moveSource;
+    moveSource = null;
+    if (src.rowIdx === rowIdx && src.tatamiId === tatamiId) return;
+    const fromRow = activeDay.rows[src.rowIdx];
+    const toRow = activeDay.rows[rowIdx];
+    if (!fromRow || !toRow || toRow.row_type !== "slot") return;
+    const from = ensureCell(fromRow, src.tatamiId);
+    const to = ensureCell(toRow, tatamiId);
+    if (!from || !to) return;
+    const swapped = cellHasContent(to);
+    for (const key of CELL_CONTENT_KEYS) {
+      const tmp = (to as any)[key];
+      (to as any)[key] = (from as any)[key];
+      (from as any)[key] = tmp;
+    }
+    refreshRowConflicts(src.rowIdx);
+    if (rowIdx !== src.rowIdx) refreshRowConflicts(rowIdx);
+    markDirty();
+    const tNum = tatamis.find((t) => t.id === tatamiId)?.tatami_number ?? "";
+    notify(swapped ? `Ditukar dengan isi Tatami ${tNum}, sesi #${rowIdx + 1}.` : `Dipindah ke Tatami ${tNum}, sesi #${rowIdx + 1}.`);
+  }
+
+  function handleEditorKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      if (pickerTarget) {
+        closePicker();
+        e.preventDefault();
+      } else if (moveSource) {
+        cancelMove();
+        e.preventDefault();
+      }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && isEditMode) {
+      e.preventDefault();
+      if (isDirty && !isSaving) handleSaveTimetable();
     }
   }
+
+  // Leaving edit mode cancels a pending move or pick.
+  $effect(() => {
+    if (!isEditMode) {
+      moveSource = null;
+      pickerTarget = null;
+    }
+  });
 
   function clearCell(rowIdx: number, tatamiId: number) {
     if (!activeDay) return;
@@ -1884,6 +2080,7 @@
     cell.is_festival = false;
     cell.is_break = false;
     cell.progress_status = "belum_disentuh";
+    refreshRowConflicts(rowIdx);
     markDirty();
   }
 
@@ -2011,7 +2208,10 @@
   });
 </script>
 
+<svelte:window onkeydown={handleEditorKeydown} />
+
 {#if printMode === "none"}
+
 <div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
   <!-- Top Live Tatamis Strip (Matching Ambrilindo Local Live Banner) -->
   {#if summary.tatamis_live && summary.tatamis_live.length > 0}
@@ -2201,47 +2401,30 @@
     </div>
   {/if}
 
-  <!-- KPI Stats Cards (5-column responsive strip) -->
-  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 my-4 shrink-0">
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold tracking-wider text-zinc-400 uppercase">Slot Waktu</span>
-      <div class="flex items-baseline justify-between mt-1">
-        <span class="text-2xl font-black font-mono text-white">{totalSlotsCount}</span>
-        <span class="text-[10px] font-mono text-zinc-500">sesi</span>
-      </div>
-    </div>
-
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold tracking-wider text-sky-400 uppercase">Total Pertandingan</span>
-      <div class="flex items-baseline justify-between mt-1">
-        <span class="text-2xl font-black font-mono text-white">{summary.total_matches}</span>
-        <span class="text-[10px] font-mono text-zinc-500">match</span>
-      </div>
-    </div>
-
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold tracking-wider text-emerald-400 uppercase">Match Selesai</span>
-      <div class="flex items-baseline justify-between mt-1">
-        <span class="text-2xl font-black font-mono text-white">{summary.finished_matches}</span>
-        <span class="text-[10px] font-mono text-emerald-400/80">{summary.overall_pct}%</span>
-      </div>
-    </div>
-
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold tracking-wider text-amber-400 uppercase">Arena Tatami</span>
-      <div class="flex items-baseline justify-between mt-1">
-        <span class="text-2xl font-black font-mono text-white">{tatamis.length}</span>
-        <span class="text-[10px] font-mono text-zinc-500">tatami</span>
-      </div>
-    </div>
-
-    <div class="bg-[#181a20] border {summary.total_conflicts > 0 ? 'border-rose-500/50 bg-rose-500/[0.05]' : 'border-white/[0.08]'} rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold tracking-wider {summary.total_conflicts > 0 ? 'text-rose-400' : 'text-zinc-400'} uppercase">Bentrok Atlet</span>
-      <div class="flex items-baseline justify-between mt-1">
-        <span class="text-2xl font-black font-mono {summary.total_conflicts > 0 ? 'text-rose-400 animate-pulse' : 'text-white'}">{summary.total_conflicts}</span>
-        <span class="text-[10px] font-mono {summary.total_conflicts > 0 ? 'text-rose-400' : 'text-zinc-500'}">konflik</span>
-      </div>
-    </div>
+  <!-- Compact stats strip (one line, leaves the height to the grid) -->
+  <div class="flex flex-wrap items-center gap-x-5 gap-y-1.5 my-3 px-3.5 py-2 bg-[#181a20] border border-white/[0.08] rounded-xl shrink-0 text-xs min-h-9">
+    {#if isLoading}
+      <span class="text-zinc-500 font-mono text-[11px]">Memuat ringkasan…</span>
+    {:else}
+    <span class="text-zinc-400">Sesi <strong class="font-mono tabular-nums text-white">{totalSlotsCount}</strong></span>
+    <span class="text-zinc-400">Tatami <strong class="font-mono tabular-nums text-white">{tatamis.length}</strong></span>
+    <span class="text-zinc-400">
+      Pertandingan <strong class="font-mono tabular-nums text-white">{summary.finished_matches}</strong><span class="font-mono tabular-nums text-zinc-500">/{summary.total_matches}</span>
+      <span class="ml-1 font-mono tabular-nums text-emerald-400">{summary.overall_pct}%</span>
+    </span>
+    <span class="text-zinc-400">
+      Belum terjadwal
+      <strong class="font-mono tabular-nums {unscheduledTournamentCount > 0 ? 'text-amber-400' : 'text-emerald-400'}">{unscheduledTournamentCount}</strong>
+    </span>
+    <span class="{summary.total_conflicts > 0 ? 'text-rose-400' : 'text-zinc-400'}">
+      Bentrok atlet <strong class="font-mono tabular-nums {summary.total_conflicts > 0 ? 'text-rose-400' : 'text-white'}">{summary.total_conflicts}</strong>
+    </span>
+    {#if isEditMode}
+      <span class="ml-auto text-[11px] text-zinc-500">
+        Klik sel kosong untuk mengisi • <span class="font-mono">Esc</span> batal • <span class="font-mono">Ctrl+S</span> simpan
+      </span>
+    {/if}
+    {/if}
   </div>
 
   <!-- Main Body: Category Pool Sidebar + Timetable Grid -->
@@ -2252,9 +2435,13 @@
         <div class="flex items-center justify-between pb-2 border-b border-white/[0.06] shrink-0">
           <div>
             <h4 class="text-xs font-black uppercase text-white tracking-wide">Pool Kategori ({categories.length})</h4>
-            <span class="text-[10px] font-mono {unscheduledTournamentCount === 0 ? 'text-emerald-400' : 'text-amber-400'}">
-              {unscheduledTournamentCount === 0 ? 'Semua Kategori Terjadwal' : `${unscheduledTournamentCount} Kategori Belum Terjadwal`}
-            </span>
+            {#if isLoading}
+              <span class="text-[10px] font-mono text-zinc-500">Memuat…</span>
+            {:else}
+              <span class="text-[10px] font-mono {unscheduledTournamentCount === 0 ? 'text-emerald-400' : 'text-amber-400'}">
+                {unscheduledTournamentCount === 0 ? 'Semua Kategori Terjadwal' : `${unscheduledTournamentCount} Kategori Belum Terjadwal`}
+              </span>
+            {/if}
           </div>
           <button
             onclick={() => (isSidebarOpen = false)}
@@ -2296,7 +2483,7 @@
 
         <!-- Chips Pool List (Ultra-Compact) -->
         <div class="flex-1 overflow-y-auto space-y-1.5 pt-2 pr-1 scrollbar-thin">
-          {#each poolFilteredCategories as cat}
+          {#each poolSortedCategories as cat}
             {@const isAssigned = assignedCategoryIds.has(cat.id)}
             <div
               class="p-2 rounded-lg border transition {isAssigned ? 'bg-[#14161b]/40 border-white/[0.04] opacity-50' : 'bg-[#14161b] border-white/[0.08] hover:border-white/20'}"
@@ -2307,14 +2494,14 @@
                   <span class="px-1 py-0.2 rounded text-[8.5px] font-mono font-bold uppercase shrink-0 {cat.discipline === 'kata' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'}">
                     {cat.discipline}
                   </span>
-                  <span class="text-[11px] font-bold text-white truncate" title={cat.nama}>
+                  <span class="text-[11px] font-bold text-white leading-snug line-clamp-2" title={cat.nama}>
                     {cat.nama}
                   </span>
                 </div>
 
                 {#if isAssigned}
                   <span class="text-[8.5px] font-mono font-bold text-emerald-400 shrink-0">✓ Terjadwal</span>
-                {:else}
+                {:else if isEditMode}
                   <div class="flex items-center space-x-0.5 shrink-0">
                     {#each tatamis as t}
                       <button
@@ -2481,6 +2668,21 @@
         </div>
       </div>
 
+      {#if moveSource}
+        <div class="mb-2 px-3.5 py-2 rounded-xl border border-sky-500/30 bg-sky-500/10 flex items-center justify-between gap-3 shrink-0" role="status">
+          <span class="text-xs text-sky-200 truncate">
+            Memindahkan <strong class="text-white">{moveSource.name}</strong>. Klik sel tujuan; sel yang sudah terisi akan ditukar.
+          </span>
+          <button
+            type="button"
+            onclick={cancelMove}
+            class="shrink-0 px-2.5 py-1 rounded-lg text-xs font-semibold text-sky-200 border border-sky-500/30 hover:bg-sky-500/20 transition"
+          >
+            Batal <span class="font-mono text-[10px] opacity-70">Esc</span>
+          </button>
+        </div>
+      {/if}
+
       <!-- Timetable Grid Table Container -->
       <div class="flex-1 overflow-y-auto min-h-0 rounded-2xl border border-white/[0.08] bg-[#181a20] shadow-lg flex flex-col scrollbar-thin">
         {#if isLoading}
@@ -2493,7 +2695,10 @@
             <span class="text-sm font-semibold text-zinc-400">Belum Ada Slot Pertandingan di Hari Ini</span>
             <div class="flex items-center space-x-2 mt-3">
               <button
-                onclick={openAutoScheduleModal}
+                onclick={() => {
+                  isEditMode = true;
+                  openAutoScheduleModal();
+                }}
                 class="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-black font-black text-xs rounded-xl shadow-md transition flex items-center space-x-1.5"
               >
                 <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2502,10 +2707,14 @@
                 <span>Auto-Jadwal Cerdas</span>
               </button>
               <button
-                onclick={addSlotRow}
+                onclick={() => {
+                  // Starting a schedule by hand means editing it.
+                  isEditMode = true;
+                  addSlotRow();
+                }}
                 class="px-3.5 py-2 bg-white text-black font-bold text-xs rounded-xl shadow-md transition hover:bg-zinc-200"
               >
-                + Tambah Slot Manual
+                + Tambah Sesi Manual
               </button>
             </div>
           </div>
@@ -2513,7 +2722,7 @@
           <table class="w-full text-left border-collapse">
             <thead class="bg-[#111215] text-zinc-400 font-mono text-[11px] uppercase tracking-wider sticky top-0 z-10 border-b border-white/[0.08]">
               <tr>
-                <th class="py-3 px-4 w-40 font-semibold">Waktu / Sesi</th>
+                <th class="py-3 px-4 w-40 min-w-36 font-semibold">Sesi</th>
                 {#each tatamis as tatami}
                   {@const tMeta = tatamiTimelines[tatami.id]}
                   <th class="py-2.5 px-3 font-semibold border-l border-white/[0.06]">
@@ -2561,7 +2770,7 @@
                   </th>
                 {/each}
                 {#if isEditMode}
-                  <th class="py-3 px-3 w-20 text-center font-semibold border-l border-white/[0.06]">Aksi</th>
+                  <th class="py-3 px-2 w-16 text-center font-semibold border-l border-white/[0.06]">Aksi</th>
                 {/if}
               </tr>
             </thead>
@@ -2571,29 +2780,37 @@
                   <!-- ISHOMA / Break Banner Row -->
                   <tr class="bg-amber-500/[0.04] hover:bg-amber-500/[0.07] transition group">
                     <td class="py-3 px-4 align-middle">
-                      <input
-                        type="text"
-                        bind:value={row.time_label}
-                        onchange={markDirty}
-                        placeholder="Waktu break"
-                        class="w-full bg-[#14161b] text-amber-300 font-mono text-xs px-2.5 py-1.5 rounded-lg border border-amber-500/20 outline-none"
-                      />
+                      {#if isEditMode}
+                        <input
+                          type="text"
+                          bind:value={row.time_label}
+                          onchange={markDirty}
+                          placeholder="Waktu break"
+                          class="w-full bg-[#14161b] text-amber-300 font-mono text-xs px-2.5 py-1.5 rounded-lg border border-amber-500/20 outline-none"
+                        />
+                      {:else}
+                        <span class="font-mono text-xs text-amber-300">{row.time_label || "—"}</span>
+                      {/if}
                     </td>
                     <td colspan={tatamis.length} class="py-3 px-4 align-middle border-l border-white/[0.06]">
                       <div class="flex items-center space-x-2">
                         <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">BREAK</span>
-                        <input
-                          type="text"
-                          bind:value={row.label_text}
-                          onchange={markDirty}
-                          placeholder="Keterangan Break / Upacara"
-                          class="flex-1 bg-[#14161b] text-amber-200 font-bold text-xs px-3 py-1.5 rounded-lg border border-amber-500/20 outline-none uppercase"
-                        />
+                        {#if isEditMode}
+                          <input
+                            type="text"
+                            bind:value={row.label_text}
+                            onchange={markDirty}
+                            placeholder="Keterangan Break / Upacara"
+                            class="flex-1 bg-[#14161b] text-amber-200 font-bold text-xs px-3 py-1.5 rounded-lg border border-amber-500/20 outline-none uppercase"
+                          />
+                        {:else}
+                          <span class="text-amber-200 font-bold text-xs uppercase">{row.label_text || "ISTIRAHAT"}</span>
+                        {/if}
                       </div>
                     </td>
                     {#if isEditMode}
                       <td class="py-3 px-3 text-center align-middle border-l border-white/[0.06]">
-                        <div class="flex items-center justify-center space-x-1 opacity-60 group-hover:opacity-100 transition">
+                        <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
                           <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
                             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
                           </button>
@@ -2611,17 +2828,23 @@
                   <!-- Slot Row -->
                   <tr class="hover:bg-white/[0.02] transition group {row.conflicts.length > 0 ? 'bg-rose-500/[0.03]' : ''}">
                     <!-- Time Column -->
-                    <td class="py-3 px-4 align-top w-40">
+                    <td class="py-3 px-4 align-top w-40 min-w-36">
                       <div class="space-y-1">
-                        <input
-                          type="text"
-                          bind:value={row.time_label}
-                          onchange={markDirty}
-                          class="w-full bg-[#14161b] text-zinc-200 font-mono text-xs px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-white/30 outline-none"
-                        />
-                        <span class="text-[10px] font-mono text-zinc-500 block px-0.5">
-                          Sesi #{rIdx + 1}
+                        <span class="text-xs font-mono font-bold text-zinc-300 block px-0.5">
+                          Sesi <span class="tabular-nums">#{rIdx + 1}</span>
                         </span>
+                        {#if isEditMode}
+                          <input
+                            type="text"
+                            bind:value={row.time_label}
+                            onchange={markDirty}
+                            placeholder="Catatan (opsional)"
+                            title="Label bebas untuk sesi ini. Jam mulai tiap kategori dihitung otomatis."
+                            class="w-full bg-[#14161b] text-zinc-200 font-mono text-[11px] px-2 py-1 rounded-lg border border-white/[0.08] focus:border-white/30 outline-none placeholder:text-zinc-600"
+                          />
+                        {:else if row.time_label && !/^Sesi\s*\d+$/i.test(row.time_label.trim())}
+                          <span class="text-[11px] font-mono text-zinc-500 block px-0.5">{row.time_label}</span>
+                        {/if}
                         {#if row.conflicts.length > 0}
                           <button
                             onclick={() => {
@@ -2642,26 +2865,58 @@
                     <!-- Tatami Cells -->
                     {#each tatamis as tatami}
                       {@const cell = row.cells.find((c) => c.tatami_id === tatami.id)}
-                      <td class="py-2.5 px-3 align-top border-l border-white/[0.06]">
+                      {@const time = cellTimes[`${rIdx}:${tatami.id}`]}
+                      {@const isMoveSource = moveSource?.rowIdx === rIdx && moveSource?.tatamiId === tatami.id}
+                      <td class="py-2.5 px-3 align-top border-l border-white/[0.06] relative">
+                        {#if moveSource && !isMoveSource}
+                          <button
+                            type="button"
+                            onclick={() => dropMoveOn(rIdx, tatami.id)}
+                            class="group/target absolute inset-1.5 z-[5] rounded-xl border-2 border-dashed border-sky-400/40 bg-[#14161b]/60 hover:bg-sky-500/15 hover:border-sky-400 transition flex items-center justify-center"
+                            aria-label="{cellHasContent(cell) ? 'Tukar dengan' : 'Pindahkan ke'} Tatami {tatami.tatami_number} sesi {rIdx + 1}"
+                          >
+                            <span class="px-2 py-0.5 rounded-full bg-sky-500/20 group-hover/target:bg-sky-400 text-sky-200 group-hover/target:text-black text-[10px] font-bold transition">
+                              {cellHasContent(cell) ? "Tukar" : "Pindah ke sini"}
+                            </span>
+                          </button>
+                        {/if}
                         {#if cell && cell.nomor_tanding_id}
                           <!-- Category Card -->
-                          <div class="bg-[#14161b] border border-white/[0.1] rounded-xl p-2.5 relative group/cell hover:border-white/20 transition shadow-sm">
-                            <div class="flex items-center justify-between mb-1">
-                              <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase {cell.discipline === 'kata' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'}">
-                                {cell.discipline}
-                              </span>
+                          <div class="bg-[#14161b] border rounded-xl p-2.5 relative group/cell transition shadow-sm {isMoveSource ? 'border-sky-400 ring-2 ring-sky-400/30' : 'border-white/[0.1] hover:border-white/20'}">
+                            <div class="flex items-center justify-between gap-1.5 mb-1">
+                              <div class="flex items-center gap-1.5 min-w-0">
+                                <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase shrink-0 {cell.discipline === 'kata' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'}">
+                                  {cell.discipline}
+                                </span>
+                                {#if time}
+                                  <span class="text-[10px] font-mono tabular-nums text-zinc-300 truncate" title="Perkiraan {cell.est_duration_minutes} menit">{time.start}–{time.end}</span>
+                                {/if}
+                              </div>
 
-                              <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 transition">
+                              {#if isEditMode}
+                              <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
+                                <button
+                                  onclick={() => startMove(rIdx, tatami.id)}
+                                  class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
+                                  title="Pindah / tukar ke sel lain"
+                                  aria-label="Pindah atau tukar kategori ini"
+                                >
+                                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                                  </svg>
+                                </button>
                                 <button
                                   onclick={() => clearCell(rIdx, tatami.id)}
                                   class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
                                   title="Hapus Dari Tatami"
+                                  aria-label="Hapus kategori dari tatami"
                                 >
                                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                                   </svg>
                                 </button>
                               </div>
+                              {/if}
                             </div>
 
                             <div class="font-bold text-white text-xs leading-snug line-clamp-2">
@@ -2669,8 +2924,8 @@
                             </div>
 
                             <div class="flex items-center justify-between mt-2 pt-1.5 border-t border-white/[0.04] text-[10px] font-mono text-zinc-400">
-                              <span>{cell.atlet_count} Atlet • {cell.matches} Match</span>
-                              <span class="text-zinc-500">~{cell.est_duration_minutes}m</span>
+                              <span class="truncate">{cell.atlet_count} Atlet • {cell.matches} Match</span>
+                              <span class="shrink-0 tabular-nums text-zinc-500">{cell.est_duration_minutes}m</span>
                             </div>
 
                             {#if cell.progress_status === 'selesai'}
@@ -2692,26 +2947,48 @@
                               <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">
                                 {cell.is_festival ? 'FESTIVAL' : cell.is_break ? 'BREAK' : 'CATATAN'}
                               </span>
-                              <button
-                                onclick={() => clearCell(rIdx, tatami.id)}
-                                class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 opacity-0 group-hover/cell:opacity-100 transition"
-                                title="Hapus Dari Tatami"
-                              >
-                                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                              </button>
+                              {#if isEditMode}
+                                <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
+                                  <button
+                                    onclick={() => startMove(rIdx, tatami.id)}
+                                    class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
+                                    title="Pindah / tukar ke sel lain"
+                                    aria-label="Pindah atau tukar isi sel ini"
+                                  >
+                                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onclick={() => clearCell(rIdx, tatami.id)}
+                                    class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
+                                    title="Hapus Dari Tatami"
+                                    aria-label="Hapus isi sel"
+                                  >
+                                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              {/if}
                             </div>
                             <div class="font-bold text-amber-200 text-xs line-clamp-2">
                               {cell.custom_text}
                             </div>
+                            {#if time}
+                              <div class="mt-1.5 text-[10px] font-mono tabular-nums text-amber-300/70">{time.start}–{time.end}</div>
+                            {/if}
                           </div>
                         {:else}
                           <!-- Empty Placeholder -->
                           {#if isEditMode}
-                            <div class="w-full h-18 rounded-xl border border-dashed border-white/[0.08] hover:border-white/[0.2] transition flex items-center justify-center text-zinc-500 text-[11px] font-mono">
-                              <span>Pilih dari Pool Kiri</span>
-                            </div>
+                            <button
+                              type="button"
+                              onclick={() => openPicker(rIdx, tatami.id)}
+                              class="w-full h-18 rounded-xl border border-dashed border-white/[0.1] hover:border-white/30 hover:bg-white/[0.03] text-zinc-500 hover:text-zinc-200 transition flex items-center justify-center text-[11px] font-semibold"
+                            >
+                              + Pilih kategori
+                            </button>
                           {:else}
                             <div class="w-full h-12 rounded-xl border border-white/[0.04] bg-white/[0.01] flex items-center justify-center text-zinc-600 font-mono text-xs">
                               —
@@ -2723,13 +3000,16 @@
 
                     <!-- Row Actions (Only in Edit Mode) -->
                     {#if isEditMode}
-                      <td class="py-3 px-3 text-center align-top border-l border-white/[0.06]">
-                        <div class="flex items-center justify-center space-x-1 opacity-60 group-hover:opacity-100 transition">
+                      <td class="py-3 px-2 text-center align-top border-l border-white/[0.06]">
+                        <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
                           <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
                             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
                           </button>
                           <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Bawah">
                             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                          </button>
+                          <button onclick={() => insertSlotRowAfter(rIdx)} class="p-1 text-zinc-400 hover:text-emerald-300" title="Sisipkan sesi kosong di bawah" aria-label="Sisipkan sesi kosong di bawah">
+                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
                           </button>
                           <button onclick={() => deleteRow(rIdx)} class="p-1 text-zinc-500 hover:text-rose-400" title="Hapus Baris">
                             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
@@ -2742,11 +3022,84 @@
               {/each}
             </tbody>
           </table>
+          {#if isEditMode}
+            <div class="p-3 border-t border-white/[0.06]">
+              <button
+                type="button"
+                onclick={addSlotRow}
+                class="w-full py-2 rounded-xl border border-dashed border-white/[0.12] text-zinc-400 hover:text-white hover:border-white/30 hover:bg-white/[0.03] text-xs font-semibold transition"
+              >
+                + Tambah sesi di akhir hari
+              </button>
+            </div>
+          {/if}
         {/if}
       </div>
     </div>
   </div>
 </div>
+
+<!-- Category Picker (click an empty cell in edit mode) -->
+{#if pickerTarget}
+  {@const pickTatami = tatamis.find((t) => t.id === pickerTarget?.tatamiId)}
+  <div class="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] p-4 bg-black/70 backdrop-blur-xs">
+    <button type="button" class="absolute inset-0 cursor-default" aria-label="Tutup pemilih kategori" onclick={closePicker}></button>
+    <div
+      class="relative bg-[#181a20] border border-white/[0.12] rounded-2xl shadow-2xl w-full max-w-xl flex flex-col max-h-[70vh]"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="picker-title"
+    >
+      <div class="px-4 pt-4 pb-3 border-b border-white/[0.08]">
+        <div class="flex items-center justify-between">
+          <h3 id="picker-title" class="text-sm font-black uppercase tracking-tight text-white">
+            Isi Tatami <span class="font-mono tabular-nums">{pickTatami?.tatami_number}</span> • Sesi <span class="font-mono tabular-nums">#{pickerTarget.rowIdx + 1}</span>
+          </h3>
+          <span class="text-[10px] font-mono text-zinc-500">{pickerOptions.length} belum terjadwal</span>
+        </div>
+        <input
+          use:focusOnMount
+          type="text"
+          bind:value={catPickSearch}
+          onkeydown={(e) => {
+            if (e.key === "Enter" && pickerOptions.length > 0) {
+              e.preventDefault();
+              pickCategory(pickerOptions[0]);
+            }
+          }}
+          placeholder="Cari nama kategori atau kelompok umur… (Enter = pilih teratas)"
+          class="mt-3 w-full bg-[#14161b] text-sm text-white px-3 py-2 rounded-lg border border-white/[0.1] focus:border-white/30 outline-none"
+        />
+        <label class="mt-2 inline-flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer">
+          <input type="checkbox" bind:checked={pickerShowFestival} class="accent-amber-500" />
+          Tampilkan kategori festival
+        </label>
+      </div>
+      <div class="flex-1 overflow-y-auto p-2 scrollbar-thin">
+        {#each pickerOptions as cat (cat.id)}
+          <button
+            type="button"
+            onclick={() => pickCategory(cat)}
+            class="w-full text-left px-3 py-2 rounded-lg hover:bg-white/[0.06] focus:bg-white/[0.06] outline-none transition flex items-center gap-3"
+          >
+            <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase shrink-0 {cat.discipline === 'kata' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'}">{cat.discipline}</span>
+            <span class="flex-1 min-w-0">
+              <span class="block text-xs font-bold text-white leading-snug">{cat.nama}</span>
+              <span class="block text-[10px] font-mono text-zinc-500">{cat.age_group}</span>
+            </span>
+            <span class="shrink-0 text-right text-[10px] font-mono text-zinc-400 tabular-nums">
+              {cat.atlet_count} atlet • {cat.matches} match<br />~{cat.est_duration_minutes} menit
+            </span>
+          </button>
+        {:else}
+          <div class="py-10 text-center text-xs text-zinc-500">
+            {catPickSearch ? "Tidak ada kategori yang cocok." : "Semua kategori sudah terjadwal."}
+          </div>
+        {/each}
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Auto-Jadwal Cerdas Modal -->
 {#if autoScheduleModalOpen}
