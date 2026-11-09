@@ -63,8 +63,9 @@
         score2: "0",
         scorekecil1: null,
         scorekecil2: null,
-        vr1: false,
-        vr2: false,
+        // Card held from the start when ?vr=1 (true = card still held)
+        vr1: page.url.searchParams.get("vr") === "1",
+        vr2: page.url.searchParams.get("vr") === "1",
         kata1: null,
         kata2: null,
         pemenang: null,
@@ -97,7 +98,8 @@
         pool: 1,
         kode: "000",
         is_bob: false,
-        has_vr: false,
+        // Ad hoc match: Video Review on with ?vr=1
+        has_vr: page.url.searchParams.get("vr") === "1",
       };
       isLoading = false;
       return;

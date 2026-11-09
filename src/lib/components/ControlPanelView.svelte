@@ -5,6 +5,9 @@
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput } from "$lib/types";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
   import ServerStatusBadge from "$lib/components/ServerStatusBadge.svelte";
+  import ScoreboardDisplay from "$lib/components/ScoreboardDisplay.svelte";
+  import JudgeStickMonitor from "$lib/components/JudgeStickMonitor.svelte";
+  import { StickTracker, LEVEL_LABEL, LEVEL_SHORT, type StickState, type StickHistoryRow } from "$lib/judgeSticks";
   import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
   import { broadcastLiveMatch, initLiveSync, connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
 
@@ -242,65 +245,229 @@
 
   // Common Match State
   let matchWinner = $state<string>("");
+  // Banner pemenang di scoring board. Hanya muncul saat operator memilih pemenang
+  // (atau kiken) di sesi ini, tidak saat membuka ulang partai yang sudah selesai.
+  let showWinnerBanner = $state<boolean>(false);
   let isMatchFinished = $state<boolean>(false);
   let isSaving = $state<boolean>(false);
   let hasVr1 = $state<boolean>(false);
   let hasVr2 = $state<boolean>(false);
   let isHantei = $state<boolean>(false);
 
-  // Active Video Review (VR) Challenge state
+  // Video Review (VR), as in Ambrilindo Local: the coach asks for a value
+  // (1/2/3), the VR referee tablet decides. Each corner has its own request, so
+  // AKA and AO can be under review at the same time.
+  // hasVr1 / hasVr2 = true means that corner's VR card is used up (hangus).
+  // The match record (vr1 / vr2) uses the opposite meaning, as in Ambrilindo Local
+  // and the bracket: true = the athlete still holds a VR card.
+  type VrSide = "aka" | "ao";
   interface VrChallengeData {
-    side: "aka" | "ao";
+    side: VrSide;
     reason: string;
     timestamp: number;
-    status: "in_progress" | "accepted" | "rejected";
+    status: "in_progress" | "accepted" | "rejected" | "minai";
+    /** value asked for while in progress; points awarded once accepted */
+    points?: number;
   }
-  let activeVrChallenge = $state<VrChallengeData | null>(null);
+  let vrChallenges = $state<{ aka: VrChallengeData | null; ao: VrChallengeData | null }>({ aka: null, ao: null });
+  // Decided requests stay up until every open request is decided, then all clear together
+  let vrClearTimer: ReturnType<typeof setTimeout> | null = null;
+  // First open (or just decided) request, for single-request consumers
+  let activeVrChallenge = $derived(
+    vrChallenges.aka?.status === "in_progress" ? vrChallenges.aka
+    : vrChallenges.ao?.status === "in_progress" ? vrChallenges.ao
+    : vrChallenges.aka ?? vrChallenges.ao
+  );
+  // Category uses Video Review (as in Ambrilindo Local: controls + board logo only then)
+  let vrEnabled = $derived(!!baganInfo?.has_vr);
 
-  async function resolveVrChallengeLocally(decision: "accepted" | "rejected" | "cancelled") {
-    if (!activeVrChallenge) return;
-    const side = activeVrChallenge.side;
-    if (decision === "rejected") {
-      if (side === "aka") hasVr1 = true;
-      if (side === "ao") hasVr2 = true;
-    }
-    const resolvedPayload = {
-      type: "vr_challenge_resolved",
-      tatami: activeTatami,
-      side,
-      decision,
-      timestamp: Date.now(),
-    };
-    if (liveBroadcastChannel) {
-      liveBroadcastChannel.postMessage(resolvedPayload);
-    }
-    try {
-      await fetch(`${getHostBaseUrl()}/api/vr/resolve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tatami: activeTatami, side, decision }),
-      });
-    } catch {}
+  const VR_POINT_NAME: Record<number, string> = { 1: "YUKO", 2: "WAZA-ARI", 3: "IPPON" };
+  function vrReason(points?: number): string {
+    return points && VR_POINT_NAME[points] ? `${VR_POINT_NAME[points]} (${points} POINT)` : "";
+  }
 
-    activeVrChallenge = {
-      ...activeVrChallenge,
-      status: decision === "accepted" ? "accepted" : "rejected",
-    };
-    broadcastLiveState();
-    setTimeout(() => {
-      activeVrChallenge = null;
+  function setVrChallenge(side: VrSide, value: VrChallengeData | null) {
+    vrChallenges = { ...vrChallenges, [side]: value };
+    scheduleVrClear();
+  }
+
+  /**
+   * While any corner is still under review, decided results stay on screen.
+   * Once none is open, all results clear together a few seconds later.
+   */
+  function scheduleVrClear() {
+    if (vrClearTimer) clearTimeout(vrClearTimer);
+    vrClearTimer = null;
+    const list = [vrChallenges.aka, vrChallenges.ao];
+    if (list.some((c) => c?.status === "in_progress") || !list.some(Boolean)) return;
+    vrClearTimer = setTimeout(() => {
+      vrClearTimer = null;
+      vrChallenges = { aka: null, ao: null };
       broadcastLiveState();
-    }, 3500);
+    }, 3000);
+  }
+
+  function clearVrChallenges() {
+    if (vrClearTimer) clearTimeout(vrClearTimer);
+    vrClearTimer = null;
+    vrChallenges = { aka: null, ao: null };
+  }
+
+  /** Card status as stored on the match (true = card still held) */
+  // (only shown / saved when the category uses VR, so this does not depend on baganInfo being loaded yet)
+  function vrUsedFromRecord(held: boolean | null | undefined) {
+    return !held;
+  }
+
+  function isVrCardUsed(side: VrSide) {
+    return side === "aka" ? hasVr1 : hasVr2;
+  }
+
+  /** Open a review for a corner (from the operator, or the coach's tablet) */
+  // The timer keeps running: stopping it stays the operator's call.
+  function startVrChallenge(side: VrSide, points?: number, reason?: string) {
+    setVrChallenge(side, {
+      side,
+      reason: reason || vrReason(points),
+      timestamp: Date.now(),
+      status: "in_progress",
+      points: points && points >= 1 && points <= 3 ? points : undefined,
+    });
+    broadcastLiveState();
+  }
+
+  // Operator asks for a review (same as "Request Review" in Ambrilindo Local)
+  function requestVr(side: VrSide, points?: number) {
+    startVrChallenge(side, points);
+  }
+
+  /**
+   * Apply a decision to a corner's open review:
+   * - "accept" (value, default the value asked for): card kept. The score is NOT
+   *   added here; the operator adds it on the scoring buttons.
+   * - "decline": card lost (hangus)
+   * - "minai": inconclusive, card kept
+   * - "cancel": withdrawn, nothing changes
+   */
+  function applyVrDecision(side: VrSide, decision: "accept" | "decline" | "minai" | "cancel", points?: number) {
+    const current = vrChallenges[side];
+    if (!current || current.status !== "in_progress") return;
+    if (decision === "cancel") {
+      setVrChallenge(side, null);
+      broadcastLiveState();
+      return;
+    }
+    const awarded = decision === "accept" ? (points && points > 0 ? points : current.points || 0) : 0;
+    if (decision === "decline") {
+      if (side === "aka") hasVr1 = true;
+      else hasVr2 = true;
+    }
+    setVrChallenge(side, {
+      ...current,
+      timestamp: Date.now(),
+      status: decision === "accept" ? "accepted" : decision === "decline" ? "rejected" : "minai",
+      points: decision === "accept" ? awarded || undefined : current.points,
+    });
+    broadcastLiveState();
+  }
+
+  /** Operator decides here; the coach and VR tablets are told too */
+  function resolveVr(side: VrSide, decision: "accept" | "decline" | "minai" | "cancel", points?: number) {
+    const current = vrChallenges[side];
+    if (!current || current.status !== "in_progress") return;
+    const awarded = decision === "accept" ? (points && points > 0 ? points : current.points || 0) : undefined;
+    applyVrDecision(side, decision, points);
+    // Contract with the coach / VR devices: accepted | rejected | minai | cancelled
+    const wire = decision === "accept" ? "accepted" : decision === "decline" ? "rejected" : decision === "minai" ? "minai" : "cancelled";
+    const msg = { type: "vr_challenge_resolved", tatami: activeTatami, side, decision: wire, points: awarded, timestamp: Date.now() };
+    if (liveBroadcastChannel) liveBroadcastChannel.postMessage(msg);
+    fetch(`${getHostBaseUrl()}/api/vr/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tatami: activeTatami, side, decision: wire, points: awarded }),
+    }).catch(() => {});
+  }
+
+  // A request from the coach's tablet (via the server or, on the same machine, BroadcastChannel)
+  function applyRemoteVrStarted(data: any) {
+    const side: VrSide = data.side === "ao" ? "ao" : "aka";
+    if (!vrEnabled || isKata || isVrCardUsed(side)) return;
+    const current = vrChallenges[side];
+    const points = Number(data.points) || undefined;
+    // Same request arriving twice (server + BroadcastChannel): only update the value
+    if (current?.status === "in_progress") {
+      if (points && current.points !== points) {
+        setVrChallenge(side, { ...current, points, reason: vrReason(points) });
+        broadcastLiveState();
+      }
+      return;
+    }
+    // New request from the coach: alert the operator (same sound as the 15 s warning)
+    playWarningChime();
+    startVrChallenge(side, points, data.reason);
+  }
+
+  // A decision made on another device (VR referee tablet, or the coach cancelling).
+  // Our own decisions come back from the server too; once the request is no longer
+  // open they are ignored, so the echo can never apply a decision twice.
+  function applyRemoteVrResolved(data: any) {
+    const side: VrSide = data.side === "ao" ? "ao" : "aka";
+    const decision = String(data.decision || "");
+    const points = Number(data.points) || undefined;
+    if (decision === "cancelled") applyVrDecision(side, "cancel");
+    else if (decision === "accepted") applyVrDecision(side, "accept", points);
+    else if (decision === "minai") applyVrDecision(side, "minai");
+    else if (decision === "rejected") applyVrDecision(side, "decline");
+  }
+
+  // Manual correction of a corner's card (e.g. restored after an operator mistake)
+  function toggleVrCard(side: "aka" | "ao") {
+    if (side === "aka") hasVr1 = !hasVr1;
+    else hasVr2 = !hasVr2;
+    broadcastLiveState();
   }
 
   // Reactive Sync when match prop changes (switching bouts in team kumite or festival pairs)
   let lastLoadedMatchKey = $state<string>("");
 
+  // Kata: muat skor 5 juri yang sudah tersimpan untuk partai ini
+  function parseJudgeArray(raw: unknown): string[] | null {
+    if (typeof raw !== "string" || !raw) return null;
+    try {
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return null;
+      return [0, 1, 2, 3, 4].map((i) => (arr[i] == null ? "" : String(arr[i])));
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadSavedJudgeScores(matchId: number) {
+    try {
+      const res: any = await invoke("get_match_juri_scores", { matchId });
+      // Ignore if the operator already moved on, or started typing scores
+      if (match.id !== matchId) return;
+      if ([...akaJudgeScores, ...aoJudgeScores].some((s) => s.trim() !== "")) return;
+      const aka = parseJudgeArray(res?.juri_scores1);
+      const ao = parseJudgeArray(res?.juri_scores2);
+      if (!aka && !ao) return;
+      if (aka) akaJudgeScores = aka;
+      if (ao) aoJudgeScores = ao;
+      broadcastLiveState();
+    } catch (err) {
+      console.warn("Gagal memuat skor juri tersimpan:", err);
+    }
+  }
+
   function syncFromMatch(m: DetailBaganItem) {
     matchWinner = m.pemenang || "";
+    showWinnerBanner = false;
+    stopPrepCountdown(false);
+    clearStickState();
+    clearVrChallenges();
     isMatchFinished = m.selesai || false;
-    hasVr1 = m.vr1 || false;
-    hasVr2 = m.vr2 || false;
+    hasVr1 = vrUsedFromRecord(m.vr1);
+    hasVr2 = vrUsedFromRecord(m.vr2);
     isHantei = m.hantei || false;
 
     akaScore = parseInt(m.score1 || "0", 10) || 0;
@@ -309,10 +476,11 @@
     kataAkaName = m.kata1 || "";
     kataAoName = m.kata2 || "";
 
-    // Reset 5 judges scores and overlays for new match
+    // Reset 5 judges scores and overlays for new match, then restore any saved ones
     akaJudgeScores = ["", "", "", "", ""];
     aoJudgeScores = ["", "", "", "", ""];
     showKataScoreOnBoard = false;
+    if (isKata && m.id) loadSavedJudgeScores(m.id);
 
     akaPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
     aoPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
@@ -347,29 +515,42 @@
   });
 
   // Team Kumite Modal States
+  // Atur atlet partai (kumite beregu): pick from the athletes registered for this
+  // team category and kontingen (team members first), as in Ambrilindo Local
   let isRosterModalOpen = $state(false);
   let rosterAkaId = $state<number | null>(null);
   let rosterAoId = $state<number | null>(null);
-  let rosterAkaCustom = $state<string>("");
-  let rosterAoCustom = $state<string>("");
+  let isSavingRoster = $state(false);
 
   function openRosterModal() {
     rosterAkaId = match.atlet1_id;
     rosterAoId = match.atlet2_id;
-    rosterAkaCustom = match.atlet1_nama || "";
-    rosterAoCustom = match.atlet2_nama || "";
     isRosterModalOpen = true;
   }
 
+  /** Bouts (other than this one) where an athlete already fought for that corner */
+  function rosterPlayedIn(side: "aka" | "ao", atletId: number): number[] {
+    if (!teamMatchInfo) return [];
+    return teamMatchInfo.bouts
+      .filter((b) => b.bout_id !== match.id && (side === "aka" ? b.atlet1_id : b.atlet2_id) === atletId)
+      .map((b) => b.round);
+  }
+
   async function handleSaveRoster() {
-    await onAssignBoutAthletes({
-      bout_id: match.id,
-      aka_atlet_id: rosterAkaId,
-      ao_atlet_id: rosterAoId,
-      aka_custom_name: rosterAkaCustom.trim() || null,
-      ao_custom_name: rosterAoCustom.trim() || null,
-    });
-    isRosterModalOpen = false;
+    if (isSavingRoster) return;
+    isSavingRoster = true;
+    try {
+      await onAssignBoutAthletes({
+        bout_id: match.id,
+        aka_atlet_id: rosterAkaId,
+        ao_atlet_id: rosterAoId,
+        aka_custom_name: null,
+        ao_custom_name: null,
+      });
+      isRosterModalOpen = false;
+    } finally {
+      isSavingRoster = false;
+    }
   }
 
   let isFinishTeamModalOpen = $state(false);
@@ -446,8 +627,8 @@
     publishScoresToBoard();
   }
 
-  // Mini Scoreboard Live Arena Preview State
-  let isMiniMonitorExpanded = $state<boolean>(true);
+  // Last live payload, drawn by the same ScoreboardDisplay template the TV uses
+  let previewState = $state.raw<any>(null);
 
   // Board Published Score State (Do NOT output scores to scoreboard while inputting!)
   let boardAkaScore = $state<number>(0);
@@ -467,10 +648,23 @@
     }, 1500);
   }
 
-  // Button 2: Tampilkan Skor 5 Juri (Versi dengan pop up 5 juri)
+  // Button 1 sebagai toggle: tampilkan / sembunyikan skor besar kata di board
+  // (saat disembunyikan, board menampilkan 0). Menampilkan selalu mengirim nilai terbaru.
+  // (Input bendera manual & kiken tetap langsung menampilkan skor lewat publishScoresToBoard.)
+  function toggleBoardScore() {
+    if (isScorePublished) {
+      isScorePublished = false;
+      broadcastLiveState();
+    } else {
+      publishScoresToBoard();
+    }
+  }
+
+  // Button 2: Pop Up Skor 5 Juri. Membuka pop up juga memaksa skor besar tampil
+  // (scoreboard baru memunculkannya setelah 5 skor juri selesai muncul).
+  // Menutup pop up tidak menyembunyikan skor besar; itu lewat tombol 1.
   function toggleKataScorePopup() {
     showKataScoreOnBoard = !showKataScoreOnBoard;
-    // When opening pop up, also ensure current calculated scores are published
     if (showKataScoreOnBoard) {
       boardAkaScore = effectiveAkaPoints;
       boardAoScore = effectiveAoPoints;
@@ -481,6 +675,46 @@
 
   // Quick Score Picker Popover State (Clean, AKA atas, AO bawah, Horizontal scroll)
   let activeJudgePicker = $state<number | null>(null);
+  // Alarm / bel popover under the timer (kata and kumite)
+  let showTimerSettings = $state<boolean>(false);
+
+  // ==================== KATA: TIMER PERSIAPAN 35 DETIK ====================
+  // Pop up hitung mundur di scoring board agar atlet segera memulai kata.
+  // Setelah habis, board menampilkan "WAKTU HABIS" sampai operator menekan Stop.
+  // Board countdown pop up: kata preparation (35 s) or kumite medical / injury time (3 min)
+  type PrepKind = "kata" | "medis";
+  const PREP_DURATION_MS: Record<PrepKind, number> = { kata: 35000, medis: 180000 };
+  let prepCountdown = $state<{ id: number; side: "aka" | "ao"; kind: PrepKind; durationMs: number; startedAt: number } | null>(null);
+  let prepRemainingMs = $state<number>(0);
+  let prepTicker: ReturnType<typeof setInterval> | null = null;
+
+  function prepRemaining(): number {
+    if (!prepCountdown) return 0;
+    return Math.max(0, prepCountdown.durationMs - (performance.now() - prepCountdown.startedAt));
+  }
+
+  function startPrepCountdown(side: "aka" | "ao", kind: PrepKind = "kata") {
+    const durationMs = PREP_DURATION_MS[kind];
+    prepCountdown = { id: Date.now(), side, kind, durationMs, startedAt: performance.now() };
+    prepRemainingMs = durationMs;
+    if (prepTicker) clearInterval(prepTicker);
+    prepTicker = setInterval(() => {
+      prepRemainingMs = prepRemaining();
+      if (prepRemainingMs <= 0 && prepTicker) {
+        clearInterval(prepTicker);
+        prepTicker = null;
+      }
+    }, 100);
+    broadcastLiveState();
+  }
+
+  function stopPrepCountdown(broadcast = true) {
+    if (prepTicker) clearInterval(prepTicker);
+    prepTicker = null;
+    prepCountdown = null;
+    prepRemainingMs = 0;
+    if (broadcast) broadcastLiveState();
+  }
   const KATA_SCORE_LIST = [
     "0.0",
     ...Array.from({ length: 51 }, (_, i) => (5.0 + i * 0.1).toFixed(1))
@@ -551,8 +785,28 @@
 
   // ==================== MATCH TIMER STATE & PRESETS (MILLISECONDS) ====================
   const TIMER_PRESETS = [30, 60, 90, 120, 150, 180, 300];
-  let selectedPresetSeconds = $state<number>(120);
-  let timerMs = $state<number>(120000);
+
+  // Preset waktu terakhir diingat per disiplin (kata / kumite), jadi partai
+  // berikutnya langsung memakai waktu yang sama tanpa diatur ulang.
+  function presetStorageKey(kata: boolean) {
+    return `ambrilindo.timerPreset.${kata ? "kata" : "kumite"}`;
+  }
+  function readStoredPreset(kata: boolean): number {
+    try {
+      const v = Number(localStorage.getItem(presetStorageKey(kata)));
+      if (Number.isFinite(v) && v > 0) return v;
+    } catch {}
+    return 120;
+  }
+  function storePreset(kata: boolean, seconds: number) {
+    try {
+      localStorage.setItem(presetStorageKey(kata), String(seconds));
+    } catch {}
+  }
+
+  const initialPresetSeconds = readStoredPreset(untrack(() => isKata));
+  let selectedPresetSeconds = $state<number>(initialPresetSeconds);
+  let timerMs = $state<number>(initialPresetSeconds * 1000);
   let isTimerRunning = $state<boolean>(false);
   let animFrameId: number | null = null;
   let lastTickTimestamp: number = 0;
@@ -633,6 +887,7 @@
 
   function selectTimerPreset(seconds: number) {
     selectedPresetSeconds = seconds;
+    storePreset(isKata, seconds);
     timerMs = seconds * 1000;
     resetAlarmTriggerFlags();
     if (isTimerRunning) {
@@ -720,6 +975,10 @@
 
     // 4. Reset match decision flags
     matchWinner = "";
+    showWinnerBanner = false;
+    stopPrepCountdown(false);
+    clearStickState();
+    clearVrChallenges();
     isMatchFinished = false;
     hasVr1 = false;
     hasVr2 = false;
@@ -777,34 +1036,54 @@
   });
 
   // Split-Second Scoreboard Banner Notification State
-  interface LiveScoreBanner {
-    id: number;
+  interface LiveBannerEntry {
     side: "aka" | "ao";
     title: string;
     subtitle: string;
+    /** judge flags to draw (judge stick points) */
+    judges?: number;
+  }
+  interface LiveScoreBanner extends LiveBannerEntry {
+    id: number;
     durationMs: number;
+    /** one or two corners shown side by side (judge sticks: AKA and AO in the same exchange) */
+    entries?: LiveBannerEntry[];
   }
   let activeBanner = $state<LiveScoreBanner | null>(null);
   let bannerClearTimeout: any = null;
+  let lastBannerId = 0;
 
-  function triggerScoreBanner(side: "aka" | "ao", title: string, subtitle: string, durationMs = 1300) {
+  function triggerScoreBanner(
+    side: "aka" | "ao",
+    title: string,
+    subtitle: string,
+    durationMs = 1300,
+    extra: { judges?: number; entries?: LiveBannerEntry[] } = {}
+  ) {
     if (bannerClearTimeout) {
       clearTimeout(bannerClearTimeout);
       bannerClearTimeout = null;
     }
+    // Unique, increasing id: the board only redraws a banner whose id changed, and
+    // judge sticks can fire several updates within the same millisecond
+    lastBannerId = Math.max(Date.now(), lastBannerId + 1);
     activeBanner = {
-      id: Date.now(),
+      id: lastBannerId,
       side,
       title,
       subtitle,
       durationMs,
+      ...extra,
     };
     broadcastLiveState();
 
-    bannerClearTimeout = setTimeout(() => {
-      activeBanner = null;
-      broadcastLiveState();
-    }, durationMs);
+    // durationMs 0 = stays until the operator scores or closes it (judge stick banner)
+    if (durationMs > 0) {
+      bannerClearTimeout = setTimeout(() => {
+        activeBanner = null;
+        broadcastLiveState();
+      }, durationMs);
+    }
   }
 
   function dismissScoreBanner() {
@@ -864,6 +1143,7 @@
       akaBendera = "5";
       matchWinner = "1";
     }
+    showWinnerBanner = true;
     publishScoresToBoard();
   }
 
@@ -908,23 +1188,255 @@
     }
   }
 
-  function togglePenalty(side: "aka" | "ao", code: "c1" | "c2" | "c3" | "hc" | "h") {
-    const isNowActive = side === "aka" ? !akaPenalties[code] : !aoPenalties[code];
-    if (side === "aka") {
-      akaPenalties[code] = isNowActive;
-    } else {
-      aoPenalties[code] = isNowActive;
-    }
+  // Penalties are cumulative steps: C1 → C2 → C3 → HC → H.
+  // Clicking a step sets the level to it (all lower steps on, higher off);
+  // clicking the current top step takes it back one step.
+  const PENALTY_STEPS = ["c1", "c2", "c3", "hc", "h"] as const;
+  const PENALTY_LABEL: Record<(typeof PENALTY_STEPS)[number], string> = {
+    c1: "CHUI 1",
+    c2: "CHUI 2",
+    c3: "CHUI 3",
+    hc: "HANSOKU CHUI",
+    h: "HANSOKU",
+  };
 
-    if (isNowActive) {
-      let critTitle = "C1";
-      if (code === "c2") critTitle = "C2";
-      else if (code === "c3") critTitle = "C3";
-      else if (code === "hc") critTitle = "HANSOKU CHUI";
-      else if (code === "h") critTitle = "HANSOKU";
-      triggerScoreBanner(side, "PELANGGARAN", critTitle, 1500);
+  function togglePenalty(side: "aka" | "ao", code: "c1" | "c2" | "c3" | "hc" | "h") {
+    const current = side === "aka" ? akaPenalties : aoPenalties;
+    const currentLevel = PENALTY_STEPS.filter((p) => current[p]).length;
+    const idx = PENALTY_STEPS.indexOf(code);
+    const newLevel = currentLevel === idx + 1 ? idx : idx + 1;
+
+    const next = { c1: false, c2: false, c3: false, hc: false, h: false };
+    PENALTY_STEPS.forEach((p, i) => (next[p] = i < newLevel));
+    if (side === "aka") akaPenalties = next;
+    else aoPenalties = next;
+
+    if (newLevel > currentLevel) {
+      triggerScoreBanner(side, "PELANGGARAN", PENALTY_LABEL[PENALTY_STEPS[newLevel - 1]], 1500);
     } else {
       dismissScoreBanner();
+    }
+  }
+
+  // Non-toggling winner setter (used by mouse hantei): shows the winner banner once
+  function setWinner(winner: "1" | "2") {
+    if (matchWinner === winner && showWinnerBanner) return;
+    matchWinner = winner;
+    showWinnerBanner = true;
+    broadcastLiveState();
+  }
+
+  // ==================== KUMITE: MODE MOUSE (STICK JURI) ====================
+  // The 4 judges' mice type a–x (see judgeSticks.ts). Everything is computed in
+  // this window; only the resulting banner / check screen goes to the board.
+  function readMouseMode(): boolean {
+    try {
+      return localStorage.getItem("ambrilindo.mouseMode") === "1";
+    } catch {
+      return false;
+    }
+  }
+  let mouseMode = $state<boolean>(readMouseMode());
+  let stickState = $state<StickState | null>(null);
+  let stickCheck = $state<boolean>(false);
+  let stickTested = $state<string[]>([]);
+  let stickLastKey = $state<string | null>(null);
+  let stickHistory = $state<StickHistoryRow[]>([]);
+  // Point banner already shown for the current exchange (so it only ever goes up)
+  let stickBanner = { incidentId: -1, aka: { level: 0, judges: 0 }, ao: { level: 0, judges: 0 }, bannerId: -1 };
+  const stickTracker = new StickTracker(handleStickChange);
+
+  function setMouseMode(on: boolean) {
+    mouseMode = on;
+    try {
+      localStorage.setItem("ambrilindo.mouseMode", on ? "1" : "0");
+    } catch {}
+    if (!on) {
+      clearStickState();
+      broadcastLiveState();
+    }
+  }
+
+  function clearStickState() {
+    clearHanteiDecision();
+    hanteiWinner = null;
+    stickTracker.reset();
+    stickState = null;
+    stickHistory = [];
+    stickCheck = false;
+    stickTested = [];
+    stickLastKey = null;
+    stickBanner = { incidentId: -1, aka: { level: 0, judges: 0 }, ao: { level: 0, judges: 0 }, bannerId: -1 };
+  }
+
+  function toggleStickCheck() {
+    stickCheck = !stickCheck;
+    stickTested = [];
+    stickLastKey = null;
+    stickTracker.reset();
+    stickState = null;
+    broadcastLiveState();
+  }
+
+  function resetStickCheck() {
+    stickTested = [];
+    stickLastKey = null;
+    broadcastLiveState();
+  }
+
+  function logStickIncident(state: StickState, result: string, tone: StickHistoryRow["tone"]) {
+    const row: StickHistoryRow = { incidentId: state.incidentId, time: timerFormatted.full, votes: state.votes, result, tone };
+    if (stickHistory[0]?.incidentId === state.incidentId) {
+      stickHistory = [row, ...stickHistory.slice(1)];
+    } else {
+      stickHistory = [row, ...stickHistory].slice(0, 8);
+    }
+  }
+
+  function handleStickChange(state: StickState) {
+    stickState = state;
+
+    // Stick test: just record which buttons work
+    if (stickCheck) {
+      if (!state.isDecay && state.lastKey) {
+        if (!stickTested.includes(state.lastKey)) stickTested = [...stickTested, state.lastKey];
+        stickLastKey = state.lastKey;
+        broadcastLiveState();
+      }
+      return;
+    }
+    // Expiring votes never change what is already decided
+    if (state.isDecay) return;
+
+    if (isHantei) {
+      handleHanteiVotes(state);
+      return;
+    }
+
+    const voted = state.votes.filter(Boolean).length;
+    const akaLv = state.aka.level;
+    const aoLv = state.ao.level;
+    if (akaLv || aoLv) {
+      const parts = [
+        akaLv ? `AKA ${LEVEL_SHORT[akaLv]}` : "",
+        aoLv ? `AO ${LEVEL_SHORT[aoLv]}` : "",
+      ].filter(Boolean);
+      logStickIncident(state, parts.join(" / "), akaLv && aoLv ? "seri" : akaLv ? "aka" : "ao");
+    } else if (voted >= 2) {
+      logStickIncident(state, "-", "none");
+    }
+
+    // Point banner on the board only while the match clock runs (no output on YAME)
+    if (!isTimerRunning || (!akaLv && !aoLv)) return;
+
+    // The board follows the judges' current votes on every press: a judge who
+    // switches corner moves their flag (4 AKA, then 2 of them press AO → 2 AKA + 2 AO).
+    // Votes that merely expire (isDecay, handled above) never change the board.
+    const nextAka = { level: state.aka.level, judges: state.aka.level ? state.aka.judges : 0 };
+    const nextAo = { level: state.ao.level, judges: state.ao.level ? state.ao.judges : 0 };
+    // Re-send when the result changed, or when our banner is no longer on the
+    // board (closed with Esc, or replaced by the operator's own score banner):
+    // the same combination pressed again must show again.
+    const ourBannerShowing = activeBanner !== null && activeBanner.id === stickBanner.bannerId;
+    const changed =
+      !ourBannerShowing ||
+      stickBanner.incidentId !== state.incidentId ||
+      nextAka.level !== stickBanner.aka.level || nextAka.judges !== stickBanner.aka.judges ||
+      nextAo.level !== stickBanner.ao.level || nextAo.judges !== stickBanner.ao.judges;
+    if (!changed) return;
+
+    // AKA and AO in the same exchange are shown side by side, each with its judge flags
+    const entries = (
+      [
+        ["ao", nextAo],
+        ["aka", nextAka],
+      ] as const
+    )
+      .filter(([, r]) => r.level > 0)
+      .map(([side, r]) => {
+        const [title, subtitle] = LEVEL_LABEL[r.level as 1 | 2 | 3];
+        return { side, title, subtitle, judges: r.judges };
+      });
+    const top = [...entries].sort((x, y) => levelRank(y.subtitle) - levelRank(x.subtitle))[0];
+    // Alert the operator (same sound as the 15 s warning) when a new score comes in,
+    // not when a judge only moves a flag within the same exchange
+    if (!ourBannerShowing || stickBanner.incidentId !== state.incidentId) playWarningChime();
+    // Stays up until the operator adds the score (its own banner replaces it) or closes it
+    triggerScoreBanner(top.side, top.title, top.subtitle, 0, { judges: top.judges, entries });
+    stickBanner = { incidentId: state.incidentId, aka: nextAka, ao: nextAo, bannerId: activeBanner?.id ?? -1 };
+  }
+
+  function levelRank(subtitle: string): number {
+    return subtitle === "IPPON" ? 3 : subtitle === "WAZA-ARI" ? 2 : 1;
+  }
+
+  // ==================== HANTEI (judges' decision, as in Ambrilindo Local) ====================
+  // Hantei on: the board shows "HANTEI". Each judge presses any button of AKA or
+  // AO on their stick (their last press counts, votes do not expire). Nothing is
+  // shown until all 4 judges have voted; then the flags per corner go up, and the
+  // winner follows a few seconds later. 2–2 stays on the board for the operator.
+  const HANTEI_WINNER_DELAY_MS = 4000;
+  let hanteiVotes = $derived((stickState?.hantei.aka ?? 0) + (stickState?.hantei.ao ?? 0));
+  let hanteiLocked = false;
+  let hanteiWinnerTimer: ReturnType<typeof setTimeout> | null = null;
+  // Winner picked by the hantei vote (undone when Hantei is turned off to vote again)
+  let hanteiWinner: "1" | "2" | null = null;
+
+  function clearHanteiDecision() {
+    hanteiLocked = false;
+    if (hanteiWinnerTimer) clearTimeout(hanteiWinnerTimer);
+    hanteiWinnerTimer = null;
+  }
+
+  // Turning Hantei off (e.g. after a wrong press) and on again starts a fresh vote:
+  // votes, the result banner (Esc) and the winner the vote picked are all cleared.
+  function setHantei(on: boolean) {
+    isHantei = on;
+    clearHanteiDecision();
+    if (hanteiWinner && matchWinner === hanteiWinner) {
+      matchWinner = "";
+      showWinnerBanner = false;
+    }
+    hanteiWinner = null;
+    stickTracker.setHold(on);
+    stickTracker.reset();
+    stickState = null;
+    if (bannerClearTimeout) clearTimeout(bannerClearTimeout);
+    bannerClearTimeout = null;
+    activeBanner = null;
+    broadcastLiveState();
+  }
+
+  // Votes stay put while Hantei is on (also when a saved hantei match is reopened)
+  $effect(() => {
+    stickTracker.setHold(isHantei && !isKata);
+  });
+
+  function handleHanteiVotes(state: StickState) {
+    const { aka, ao } = state.hantei;
+    const total = aka + ao;
+    if (total === 0) return;
+    const tone = aka > ao ? "aka" : ao > aka ? "ao" : "seri";
+    logStickIncident(state, aka > ao ? `HANTEI AKA ${aka}–${ao}` : ao > aka ? `HANTEI AO ${ao}–${aka}` : `HANTEI SERI ${aka}–${ao}`, tone);
+    // Wait for all 4 judges; once decided it stays (turn Hantei off/on to vote again)
+    if (hanteiLocked || total < 4) return;
+    hanteiLocked = true;
+    playWarningChime();
+    const entries: LiveBannerEntry[] = [
+      { side: "ao", title: "HANTEI", subtitle: `${ao} JURI`, judges: ao },
+      { side: "aka", title: "HANTEI", subtitle: `${aka} JURI`, judges: aka },
+    ];
+    const top = aka >= ao ? "aka" : "ao";
+    const topVotes = top === "aka" ? aka : ao;
+    triggerScoreBanner(top, "HANTEI", `${topVotes} JURI`, 0, { judges: topVotes, entries });
+    if (aka !== ao) {
+      const winner = aka > ao ? "1" : "2";
+      hanteiWinnerTimer = setTimeout(() => {
+        hanteiWinnerTimer = null;
+        if (!isHantei) return;
+        hanteiWinner = winner;
+        setWinner(winner);
+      }, HANTEI_WINNER_DELAY_MS);
     }
   }
 
@@ -934,13 +1446,13 @@
     } else {
       matchWinner = winner;
     }
+    // Memilih pemenang memunculkan banner pemenang di board; membatalkannya menutup banner
+    showWinnerBanner = matchWinner !== "";
     broadcastLiveState();
   }
 
   // ==================== REALTIME LOCAL IPC BROADCAST ====================
   function broadcastLiveState() {
-    // A window that does not hold the tatami must not overwrite the owner's scoreboard.
-    if (claimStatus !== "owned") return;
     const payload = {
       tatami: activeTatami,
       matchId: match.id,
@@ -978,8 +1490,22 @@
         logo: match.atlet2_logo ? (logoMap[match.atlet2_logo] || match.atlet2_logo) : null,
       },
       winner: isKata ? (isScorePublished ? matchWinner : "") : matchWinner,
+      // Video Review dipakai di kategori ini: board menampilkan logo VR untuk sudut
+      // yang kartunya masih ada (aka.vr / ao.vr = true berarti kartu sudah hangus)
+      vrEnabled: vrEnabled && !isKata,
+      // Banner pemenang layar penuh di scoring board: "1" AKA, "2" AO, "3" seri, "" tutup
+      winnerBanner: showWinnerBanner ? matchWinner : "",
+      // Pop up timer persiapan kata (35 detik); board menghitung sendiri dari remainingMs
+      // Layar uji stick juri di TV (mode mouse)
+      stickCheck: !isKata && mouseMode && stickCheck ? { tested: [...stickTested], last: stickLastKey } : null,
+      // "HANTEI" screen on the board while the judges vote (gone once a winner is set)
+      hanteiMode: !isKata && isHantei && !matchWinner && !isMatchFinished,
+      prepCountdown: prepCountdown
+        ? { id: prepCountdown.id, side: prepCountdown.side, kind: prepCountdown.kind, durationMs: prepCountdown.durationMs, remainingMs: prepRemaining() }
+        : null,
       isFinished: isMatchFinished,
       showKataScoreOverlay: showKataScoreOnBoard,
+      showKataTotal: isKata && isScorePublished,
       isTeamMatch: !!(teamMatchInfo && teamMatchInfo.is_team_match),
       teamAkaName: teamMatchInfo?.team_aka_name || "",
       teamAoName: teamMatchInfo?.team_ao_name || "",
@@ -997,8 +1523,12 @@
             title: activeBanner.title,
             subtitle: activeBanner.subtitle,
             durationMs: activeBanner.durationMs,
+            judges: activeBanner.judges,
+            entries: activeBanner.entries,
           }
         : null,
+      // VR requests per corner (both may be open); vrChallenge kept for older screens
+      vrChallenges: { aka: vrChallenges.aka, ao: vrChallenges.ao },
       vrChallenge: activeVrChallenge,
       alarmSettings: {
         alarm30s: alarm30sEnabled,
@@ -1006,6 +1536,12 @@
         alarm0s: alarm0sEnabled,
       },
     };
+
+    // The preview in this panel draws exactly what the TV gets, without the network
+    previewState = $state.snapshot(payload);
+
+    // A window that does not hold the tatami must not overwrite the owner's scoreboard.
+    if (claimStatus !== "owned") return;
 
     // Universal broadcast to local IPC, local BroadcastChannel, and LAN WebSocket relay
     broadcastLiveMatch($state.snapshot(payload));
@@ -1057,11 +1593,19 @@
         pemenang: effectiveWinner || null,
         kata1: kataAkaName || null,
         kata2: kataAoName || null,
-        vr1: hasVr1,
-        vr2: hasVr2,
+        // Stored as "card still held", as in Ambrilindo Local and the bracket
+        vr1: vrEnabled && !hasVr1,
+        vr2: vrEnabled && !hasVr2,
         hantei: isHantei,
         selesai: isMatchFinished || !!effectiveWinner,
       };
+
+      // Kata: simpan juga skor 5 juri per sudut (hanya bila ada yang diisi)
+      const hasJudgeScores = [...akaJudgeScores, ...aoJudgeScores].some((s) => s.trim() !== "");
+      if (isKata && hasJudgeScores) {
+        input.juri_scores1 = JSON.stringify(akaJudgeScores.map((s) => s.trim()));
+        input.juri_scores2 = JSON.stringify(aoJudgeScores.map((s) => s.trim()));
+      }
 
       await onSave(input);
 
@@ -1111,32 +1655,9 @@
       }
       broadcastLiveState();
     } else if (data.type === "vr_challenge_started") {
-      if (isTimerRunning) {
-        pauseTimer();
-      }
-      activeVrChallenge = {
-        side: data.side,
-        reason: data.reason || "Video Review Challenge",
-        timestamp: data.timestamp || Date.now(),
-        status: "in_progress",
-      };
-      broadcastLiveState();
+      applyRemoteVrStarted(data);
     } else if (data.type === "vr_challenge_resolved") {
-      if (data.decision === "rejected") {
-        if (data.side === "aka") hasVr1 = true;
-        if (data.side === "ao") hasVr2 = true;
-      }
-      activeVrChallenge = {
-        side: data.side,
-        reason: activeVrChallenge?.reason || "Video Review Challenge",
-        timestamp: Date.now(),
-        status: data.decision === "accepted" ? "accepted" : "rejected",
-      };
-      broadcastLiveState();
-      setTimeout(() => {
-        activeVrChallenge = null;
-        broadcastLiveState();
-      }, 3500);
+      applyRemoteVrResolved(data);
     }
   }
 
@@ -1153,8 +1674,8 @@
     initLiveSync(hostUrl);
     matchWinner = match.pemenang || "";
     isMatchFinished = match.selesai || false;
-    hasVr1 = match.vr1 || false;
-    hasVr2 = match.vr2 || false;
+    hasVr1 = vrUsedFromRecord(match.vr1);
+    hasVr2 = vrUsedFromRecord(match.vr2);
     isHantei = match.hantei || false;
 
     akaScore = parseInt(match.score1 || "0", 10) || 0;
@@ -1190,32 +1711,9 @@
         if (!data) return;
         if (data.tatami && data.tatami != activeTatami) return;
         if (data.type === "vr_challenge_started") {
-          if (isTimerRunning) {
-            pauseTimer();
-          }
-          activeVrChallenge = {
-            side: data.side,
-            reason: data.reason || "Video Review Challenge",
-            timestamp: data.timestamp || Date.now(),
-            status: "in_progress",
-          };
-          broadcastLiveState();
+          applyRemoteVrStarted(data);
         } else if (data.type === "vr_challenge_resolved") {
-          if (data.decision === "rejected") {
-            if (data.side === "aka") hasVr1 = true;
-            if (data.side === "ao") hasVr2 = true;
-          }
-          activeVrChallenge = {
-            side: data.side,
-            reason: activeVrChallenge?.reason || "Video Review Challenge",
-            timestamp: Date.now(),
-            status: data.decision === "accepted" ? "accepted" : "rejected",
-          };
-          broadcastLiveState();
-          setTimeout(() => {
-            activeVrChallenge = null;
-            broadcastLiveState();
-          }, 3500);
+          applyRemoteVrResolved(data);
         }
       };
     }
@@ -1269,6 +1767,19 @@
         toggleTimer();
         return;
       }
+      // Mode Mouse: judge sticks type a–x; scored here on the laptop
+      if (
+        mouseMode &&
+        !isKata &&
+        !e.ctrlKey && !e.altKey && !e.metaKey &&
+        /^[a-x]$/i.test(e.key) &&
+        !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement)
+      ) {
+        if (stickTracker.press(e.key)) {
+          e.preventDefault();
+          return;
+        }
+      }
       // Kumite Hotkeys (1/2/3 for AO, 7/8/9 for AKA)
       if (!isKata && !(e.target instanceof HTMLInputElement)) {
         if (e.key === "1") addKumiteScore("ao", 1);
@@ -1295,6 +1806,8 @@
         isTimerRunning: false,
       });
       if (liveBroadcastChannel) liveBroadcastChannel.close();
+      if (prepTicker) clearInterval(prepTicker);
+      stickTracker.dispose();
     };
   });
 </script>
@@ -1346,6 +1859,184 @@
   </div>
 {/if}
 
+<!-- Video Review decisions for a corner's open request (as in Ambrilindo Local).
+     The VR referee normally decides on the tablet; these are the operator's override. -->
+{#snippet vrDecisionButtons(side: "aka" | "ao")}
+  {@const asked = vrChallenges[side]?.points}
+  <div class="flex items-center gap-1.5 shrink-0 flex-wrap font-mono">
+    {#each [1, 2, 3] as pts}
+      <button
+        type="button"
+        onclick={() => resolveVr(side, "accept", pts)}
+        class="h-8 px-2.5 rounded-lg text-white text-xs font-black transition active:scale-95 shadow-sm {asked === pts ? 'bg-emerald-500 ring-2 ring-emerald-200' : 'bg-emerald-700/70 hover:bg-emerald-600'}"
+        title="Terima {pts} poin (kartu tetap ada). Skor tetap ditambah operator."
+      >
+        ✓ {pts}{asked === pts ? " (diminta)" : ""}
+      </button>
+    {/each}
+    <button
+      type="button"
+      onclick={() => resolveVr(side, "decline")}
+      class="h-8 px-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition active:scale-95 shadow-sm"
+      title="Tolak, kartu VR hangus"
+    >
+      ✕ Tolak
+    </button>
+    <button
+      type="button"
+      onclick={() => resolveVr(side, "minai")}
+      class="h-8 px-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold transition active:scale-95 shadow-sm"
+      title="Minai: tidak dapat disimpulkan, kartu tetap ada"
+    >
+      Minai
+    </button>
+    <button
+      type="button"
+      onclick={() => resolveVr(side, "cancel")}
+      class="h-8 px-2 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-semibold transition active:scale-95"
+      title="Batalkan permohonan"
+    >
+      Batal
+    </button>
+  </div>
+{/snippet}
+
+<!-- Shared by the kata and kumite timer rows -->
+{#snippet timerPresetSelect()}
+  <!-- Time preset; remembered per discipline for the next match -->
+  <select
+    value={String(selectedPresetSeconds)}
+    onchange={(e) => selectTimerPreset(Number(e.currentTarget.value))}
+    class="h-9 px-2 bg-[#111216] border border-white/10 hover:border-white/20 text-zinc-200 text-xs font-mono font-bold rounded-lg outline-none cursor-pointer focus:border-[#5865f2]"
+    title="Preset waktu (diingat untuk partai berikutnya)"
+    aria-label="Preset waktu"
+  >
+    {#each TIMER_PRESETS.includes(selectedPresetSeconds) ? TIMER_PRESETS : [...TIMER_PRESETS, selectedPresetSeconds].sort((a, b) => a - b) as preset}
+      <option value={String(preset)} class="bg-[#181a20]">{formatPresetLabel(preset)}</option>
+    {/each}
+  </select>
+{/snippet}
+
+{#snippet timerSettingsButton()}
+  <!-- ⚙: alarms and arena bell. Its parent must be `relative`. -->
+  <button
+    type="button"
+    onclick={() => (showTimerSettings = !showTimerSettings)}
+    class="h-9 w-9 ml-auto shrink-0 flex items-center justify-center rounded-lg border transition {showTimerSettings ? 'bg-white/[0.08] border-white/20 text-white' : 'bg-[#1e2029] border-white/10 text-zinc-400 hover:text-white'}"
+    title="Alarm & bel arena"
+    aria-label="Pengaturan timer"
+    aria-expanded={showTimerSettings}
+  >
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+  </button>
+
+  {#if showTimerSettings}
+    <!-- click outside closes -->
+    <button type="button" class="fixed inset-0 z-30 cursor-default" aria-label="Tutup pengaturan timer" onclick={() => (showTimerSettings = false)}></button>
+    <div class="absolute right-0 top-full mt-2 z-40 w-[260px] bg-[#181a20] border border-white/10 rounded-xl p-3 shadow-2xl flex flex-col gap-3 text-xs font-mono">
+      <div>
+        <div class="text-[10px] text-zinc-500 uppercase font-bold mb-1.5">Alarm</div>
+        <div class="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onclick={() => { alarm30sEnabled = !alarm30sEnabled; broadcastLiveState(); }}
+            class="px-2 py-1 rounded border text-[10.5px] font-bold transition {alarm30sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+            title="Alarm peringatan saat sisa 30 detik"
+          >
+            🔔 30s
+          </button>
+          <button
+            type="button"
+            onclick={() => { alarm15sEnabled = !alarm15sEnabled; broadcastLiveState(); }}
+            class="px-2 py-1 rounded border text-[10.5px] font-bold transition {alarm15sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+            title="Alarm peringatan saat sisa 15 detik (Atoshibaraku)"
+          >
+            🔔 15s
+          </button>
+          <button
+            type="button"
+            onclick={() => { alarm0sEnabled = !alarm0sEnabled; broadcastLiveState(); }}
+            class="px-2 py-1 rounded border text-[10.5px] font-bold transition {alarm0sEnabled ? 'bg-red-500/25 border-red-500 text-red-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
+            title="Buzzer akhir pertandingan saat 0 detik"
+          >
+            🚨 0s
+          </button>
+        </div>
+      </div>
+      <button
+        type="button"
+        onclick={triggerManualBuzzer}
+        class="self-start px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded font-bold transition active:scale-95"
+        title="Bunyikan klakson arena secara manual"
+      >
+        🔊 Bel Arena
+      </button>
+      {#if !isKata}
+        <!-- Judge sticks (mouse → keys a–x), scored on this laptop -->
+        <div class="pt-3 border-t border-white/10">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={mouseMode}
+            onclick={() => setMouseMode(!mouseMode)}
+            class="w-full flex items-center justify-between gap-2 text-left"
+            title="Skor dari stick/mouse 4 juri (tombol a–x)"
+          >
+            <span class="text-[11px] font-bold text-zinc-200">Mode Mouse Juri</span>
+            <span class="relative w-9 h-5 rounded-full transition {mouseMode ? 'bg-emerald-500' : 'bg-white/15'}">
+              <span class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform {mouseMode ? 'translate-x-4' : ''}"></span>
+            </span>
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
+
+<!-- Corner card extras: team score (kumite beregu) and medical time (3 min) -->
+{#snippet cornerExtras(side: "aka" | "ao")}
+  {@const team = teamMatchInfo?.is_team_match ? teamMatchInfo : null}
+  {@const medisActive = prepCountdown?.kind === "medis" && prepCountdown.side === side}
+  {@const medisSec = Math.ceil(prepRemainingMs / 1000)}
+  <div class="flex items-stretch gap-2 {side === 'aka' ? 'flex-row-reverse' : ''}">
+    {#if team}
+      {@const logo = side === "aka" ? team.team_aka_logo : team.team_ao_logo}
+      <div
+        class="flex-1 min-w-0 flex items-center gap-2 rounded-lg border px-2.5 py-1 {side === 'aka' ? 'flex-row-reverse bg-red-950/40 border-red-500/40' : 'bg-blue-950/40 border-blue-500/40'}"
+        title="Skor tim: partai dimenangkan · poin"
+      >
+        {#if logo && logoMap[logo]}
+          <img src={logoMap[logo]} alt="Logo tim" class="w-6 h-6 object-contain rounded shrink-0 bg-black/40 p-0.5" />
+        {/if}
+        <div class="flex-1 min-w-0 {side === 'aka' ? 'text-right' : ''}">
+          <div class="text-[9px] font-mono font-bold uppercase tracking-wider {side === 'aka' ? 'text-red-400' : 'text-blue-400'}">Tim {side === "aka" ? "AKA" : "AO"}</div>
+          <div class="text-[11px] font-black text-white uppercase truncate">{side === "aka" ? team.team_aka_name : team.team_ao_name}</div>
+        </div>
+        <div class="font-mono leading-none {side === 'aka' ? 'text-left' : 'text-right'}">
+          <div class="text-xl font-black {side === 'aka' ? 'text-red-400' : 'text-blue-400'}">{side === "aka" ? team.team_aka_score : team.team_ao_score}</div>
+          <div class="text-[9px] font-bold text-zinc-400">{side === "aka" ? team.team_aka_points : team.team_ao_points} Pts</div>
+        </div>
+      </div>
+    {/if}
+    <button
+      type="button"
+      onclick={() => (medisActive ? stopPrepCountdown() : startPrepCountdown(side, "medis"))}
+      class="min-h-9 px-2.5 rounded-lg font-mono text-xs font-bold transition active:scale-95 flex items-center justify-center gap-1.5 border shrink-0 {team ? '' : 'flex-1'} {medisActive
+        ? (side === 'aka' ? 'bg-red-600 border-red-400 text-white shadow-lg shadow-red-600/40' : 'bg-blue-600 border-blue-400 text-white shadow-lg shadow-blue-600/40')
+        : 'bg-[#1e2029] border-white/10 text-zinc-300 hover:text-white hover:bg-[#2b2d31]'}"
+      title={medisActive ? "Hentikan dan tutup waktu medis" : `Mulai waktu medis 3 menit untuk ${side === "aka" ? "AKA" : "AO"}`}
+    >
+      <svg class="w-3.5 h-3.5 {medisActive ? '' : 'text-emerald-400'}" fill="currentColor" viewBox="0 0 24 24"><path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6z"/></svg>
+      {#if medisActive}
+        <span>{prepRemainingMs > 0 ? `${Math.floor(medisSec / 60)}:${String(medisSec % 60).padStart(2, "0")}` : "HABIS"}</span>
+        <span class="opacity-80">✕</span>
+      {:else}
+        <span>Medis 3:00</span>
+      {/if}
+    </button>
+  </div>
+{/snippet}
+
 <!-- Main Cockpit Container (Discord Palette: #0d0f12 deep background) -->
 <div class="h-full flex flex-col bg-[#0d0f12] text-zinc-100 overflow-hidden font-sans select-none p-3">
   <!-- Top Cockpit Header Bar (Discord Card #181a20, Border #2b2d31) -->
@@ -1376,6 +2067,17 @@
         </svg>
         <span>Reset</span>
       </button>
+
+      {#if teamMatchInfo?.is_team_match}
+        <button
+          type="button"
+          onclick={openFinishTeamModal}
+          class="px-3.5 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black rounded-lg transition shadow-md flex items-center gap-1.5 active:scale-95"
+        >
+          <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
+          <span>Selesaikan Beregu</span>
+        </button>
+      {/if}
     </div>
 
     <!-- Match Identity Badge (Discipline locked automatically, toggleable for festival) -->
@@ -1455,206 +2157,131 @@
     </div>
   </div>
 
-  <!-- ==================== VIDEO REVIEW (VR) CHALLENGE NOTIFICATION ==================== -->
-  {#if activeVrChallenge}
-    <div class="rounded-xl border p-3 flex items-center justify-between gap-4 animate-pulse shadow-lg shrink-0 {activeVrChallenge.status === 'accepted' ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200' : activeVrChallenge.status === 'rejected' ? 'bg-rose-950/80 border-rose-500 text-rose-200' : (activeVrChallenge.side === 'aka' ? 'bg-red-950/80 border-red-500 text-white' : 'bg-blue-950/80 border-blue-500 text-white')}">
-      <div class="flex items-center gap-3 min-w-0">
-        <span class="w-3.5 h-3.5 rounded-full {activeVrChallenge.side === 'aka' ? 'bg-red-500' : 'bg-blue-500'} animate-ping shrink-0"></span>
-        <div class="min-w-0">
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-black uppercase {activeVrChallenge.side === 'aka' ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}">
-              CHALLENGE VR: {activeVrChallenge.side.toUpperCase()}
-            </span>
-            <span class="text-xs font-black truncate">{activeVrChallenge.reason}</span>
-          </div>
-          <span class="text-[10px] opacity-90 font-mono block mt-0.5">
-            {#if activeVrChallenge.status === 'in_progress'}
-              Permohonan Video Review dari Pelatih sedang ditinjau meja wasit...
-            {:else if activeVrChallenge.status === 'accepted'}
-              ✓ CHALLENGE DITERIMA OLEH WASIT (Kartu Pelatih Tetap Aktif)
-            {:else}
-              ✕ CHALLENGE DITOLAK OLEH WASIT (Kartu Pelatih Hangus)
-            {/if}
-          </span>
-        </div>
-      </div>
-
-      <!-- Quick Resolution Action Buttons -->
-      {#if activeVrChallenge.status === 'in_progress'}
-        <div class="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onclick={() => resolveVrChallengeLocally("accepted")}
-            class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1 active:scale-95 shadow-sm"
-          >
-            ✓ Terima (Accept)
-          </button>
-          <button
-            type="button"
-            onclick={() => resolveVrChallengeLocally("rejected")}
-            class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1 active:scale-95 shadow-sm"
-          >
-            ✕ Tolak (Reject)
-          </button>
-          <button
-            type="button"
-            onclick={() => resolveVrChallengeLocally("cancelled")}
-            class="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-zinc-300 text-xs font-semibold transition active:scale-95"
-          >
-            Batal
-          </button>
-        </div>
-      {/if}
-    </div>
-  {/if}
-
-  <!-- ==================== TEAM KUMITE (KUMITE BEREGU) HUB ==================== -->
-  {#if teamMatchInfo && teamMatchInfo.is_team_match}
-    <section class="bg-[#12141a] border border-[#2b2d31] rounded-2xl p-3 shadow-xl shrink-0 flex flex-col gap-2.5">
-      <!-- Team Overview Banner -->
-      <div class="flex items-center justify-between gap-4 flex-wrap">
-        <!-- AKA Team Card -->
-        <div class="flex items-center gap-3 bg-red-950/40 border border-red-500/40 rounded-xl px-3.5 py-2 min-w-[240px]">
-          {#if teamMatchInfo.team_aka_logo && logoMap[teamMatchInfo.team_aka_logo]}
-            <img src={logoMap[teamMatchInfo.team_aka_logo]} alt="Logo AKA" class="w-10 h-10 object-contain rounded-lg shrink-0 bg-black/40 p-1" />
-          {/if}
+  <!-- ==================== VIDEO REVIEW (VR) REQUESTS (one row per corner) ==================== -->
+  {#each ["ao", "aka"] as const as vrSide (vrSide)}
+    {@const ch = vrChallenges[vrSide]}
+    {#if ch}
+      <div class="rounded-xl border p-3 flex items-center justify-between gap-4 shadow-lg shrink-0 mb-3 {ch.status === 'accepted' ? 'bg-emerald-950/80 border-emerald-500 text-emerald-200' : ch.status === 'rejected' ? 'bg-rose-950/80 border-rose-500 text-rose-200' : ch.status === 'minai' ? 'bg-amber-950/70 border-amber-500 text-amber-100' : (vrSide === 'aka' ? 'bg-red-950/80 border-red-500 text-white' : 'bg-blue-950/80 border-blue-500 text-white')}">
+        <div class="flex items-center gap-3 min-w-0">
+          <span class="w-3.5 h-3.5 rounded-full {vrSide === 'aka' ? 'bg-red-500' : 'bg-blue-500'} {ch.status === 'in_progress' ? 'animate-ping' : ''} shrink-0"></span>
           <div class="min-w-0">
-            <span class="text-[9px] font-mono font-bold text-red-400 uppercase tracking-wider block">TIM AKA</span>
-            <div class="text-sm font-black text-white uppercase truncate">{teamMatchInfo.team_aka_name}</div>
-            <div class="text-[10px] text-zinc-400 truncate">{teamMatchInfo.team_aka_utusan}</div>
-          </div>
-          <div class="ml-auto text-right font-mono">
-            <div class="text-2xl font-black text-red-400 leading-none">{teamMatchInfo.team_aka_score}</div>
-            <div class="text-[9px] font-bold text-zinc-400">{teamMatchInfo.team_aka_points} Pts</div>
+            <div class="flex items-center gap-2">
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-black uppercase {vrSide === 'aka' ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}">
+                VIDEO REVIEW: {vrSide.toUpperCase()}
+              </span>
+              {#if ch.status === 'in_progress' && ch.reason}
+                <span class="text-xs font-black truncate">Diminta: {ch.reason}</span>
+              {/if}
+            </div>
+            <span class="text-[11px] opacity-90 font-mono block mt-0.5">
+              {#if ch.status === 'in_progress'}
+                Menunggu keputusan wasit VR di tablet (atau putuskan di sini). Timer tidak dihentikan otomatis.
+              {:else if ch.status === 'accepted'}
+                ✓ DITERIMA{ch.points ? ` ${ch.points} POIN · tambahkan skor ${vrSide.toUpperCase()} secara manual` : ""} (kartu tetap ada)
+              {:else if ch.status === 'minai'}
+                ◐ MINAI · tidak dapat disimpulkan (kartu tetap ada)
+              {:else}
+                ✕ DITOLAK (kartu hangus)
+              {/if}
+            </span>
           </div>
         </div>
 
-        <!-- Center Score Summary & Action Buttons -->
-        <div class="flex flex-col items-center gap-1.5">
-          <div class="flex items-center gap-2 font-mono font-black text-xl">
-            <span class="text-red-400">{teamMatchInfo.team_aka_score}</span>
-            <span class="text-amber-400">-</span>
-            <span class="text-blue-400">{teamMatchInfo.team_ao_score}</span>
-          </div>
-          <div class="text-[10px] font-mono font-semibold text-zinc-400">
-            {teamMatchInfo.team_draw_count > 0 ? `${teamMatchInfo.team_draw_count} Seri • ` : ''}Total {teamMatchInfo.bouts.length} Partai
-          </div>
-          <div class="flex items-center gap-2 mt-0.5">
+        {#if ch.status === 'in_progress'}
+          {@render vrDecisionButtons(vrSide)}
+        {/if}
+      </div>
+    {/if}
+  {/each}
+
+  <!-- ==================== TEAM KUMITE (KUMITE BEREGU): bout bar ==================== -->
+  {#if teamMatchInfo && teamMatchInfo.is_team_match}
+    <div class="flex items-center gap-2 overflow-x-auto mb-3 shrink-0 scrollbar-thin">
+      {#each teamMatchInfo.bouts as bout, bIdx}
+        {@const isCurrent = bout.bout_id === match.id}
+        {@const isLast = bIdx === teamMatchInfo.bouts.length - 1}
+        <div class="shrink-0 flex items-center rounded-xl border transition {isCurrent ? 'bg-amber-500/20 border-amber-400 shadow-md shadow-amber-500/20' : 'bg-[#181a20] border-white/10 hover:border-white/20'}">
+          <button
+            type="button"
+            onclick={() => onSwitchBout(bout.bout_id)}
+            class="pl-3 {isCurrent ? 'pr-1.5' : 'pr-3'} py-1.5 text-xs font-mono font-bold flex items-center gap-2 {isCurrent ? 'text-amber-300' : 'text-zinc-300 hover:text-white'}"
+          >
+            <span>Partai {bout.round}</span>
+            {#if bout.selesai}
+              {#if bout.pemenang === '1'}
+                <span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black">AKA ({bout.score1 || 0}-{bout.score2 || 0})</span>
+              {:else if bout.pemenang === '2'}
+                <span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[9px] font-black">AO ({bout.score1 || 0}-{bout.score2 || 0})</span>
+              {:else if bout.pemenang === '3'}
+                <span class="px-1.5 py-0.5 rounded bg-amber-500 text-black text-[9px] font-black">SERI ({bout.score1 || 0}-{bout.score2 || 0})</span>
+              {:else}
+                <span class="px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-200 text-[9px]">Selesai</span>
+              {/if}
+            {:else}
+              <span class="px-1.5 py-0.5 rounded bg-white/5 text-zinc-400 text-[9px]">Belum</span>
+            {/if}
+          </button>
+          {#if isCurrent}
+            <!-- Atur atlet partai ini -->
             <button
               type="button"
               onclick={openRosterModal}
-              class="px-2.5 py-1 bg-[#1e2029] hover:bg-[#2b2d31] border border-amber-500/40 text-amber-300 text-[11px] font-bold rounded-lg transition flex items-center gap-1"
+              class="mr-1.5 w-6 h-6 flex items-center justify-center rounded-lg text-amber-300 hover:text-white hover:bg-amber-500/30 transition"
+              title="Atur atlet partai {bout.round}"
+              aria-label="Atur atlet partai {bout.round}"
             >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
-              <span>Atur Atlet Partai</span>
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
             </button>
-            <button
-              type="button"
-              onclick={onAddBout}
-              class="px-2.5 py-1 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-zinc-300 hover:text-white text-[11px] font-bold rounded-lg transition flex items-center gap-1"
-              title="Tambah partai extra / playoff bila hasil seri"
-            >
-              <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-              <span>+ Partai</span>
-            </button>
-            <button
-              type="button"
-              onclick={openFinishTeamModal}
-              class="px-3 py-1 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-[11px] font-black rounded-lg transition shadow-md flex items-center gap-1"
-            >
-              <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" /></svg>
-              <span>Selesaikan Beregu</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- AO Team Card -->
-        <div class="flex items-center gap-3 bg-blue-950/40 border border-blue-500/40 rounded-xl px-3.5 py-2 min-w-[240px]">
-          <div class="mr-auto font-mono">
-            <div class="text-2xl font-black text-blue-400 leading-none">{teamMatchInfo.team_ao_score}</div>
-            <div class="text-[9px] font-bold text-zinc-400">{teamMatchInfo.team_ao_points} Pts</div>
-          </div>
-          <div class="text-right min-w-0">
-            <span class="text-[9px] font-mono font-bold text-blue-400 uppercase tracking-wider block">TIM AO</span>
-            <div class="text-sm font-black text-white uppercase truncate">{teamMatchInfo.team_ao_name}</div>
-            <div class="text-[10px] text-zinc-400 truncate">{teamMatchInfo.team_ao_utusan}</div>
-          </div>
-          {#if teamMatchInfo.team_ao_logo && logoMap[teamMatchInfo.team_ao_logo]}
-            <img src={logoMap[teamMatchInfo.team_ao_logo]} alt="Logo AO" class="w-10 h-10 object-contain rounded-lg shrink-0 bg-black/40 p-1" />
           {/if}
         </div>
-      </div>
-
-      <!-- Bout Switcher Pills -->
-      <div class="flex items-center gap-2 overflow-x-auto pb-1 pt-1 border-t border-white/5 scrollbar-thin">
-        {#each teamMatchInfo.bouts as bout, bIdx}
-          {@const isCurrent = bout.bout_id === match.id}
-          <div class="relative shrink-0 flex items-center">
+        {#if isLast}
+          {#if teamMatchInfo.bouts.length > 1 && !bout.selesai}
             <button
               type="button"
-              onclick={() => onSwitchBout(bout.bout_id)}
-              class="px-3 py-1.5 rounded-xl text-xs font-mono font-bold transition flex items-center gap-2 border {isCurrent ? 'bg-amber-500/20 text-amber-300 border-amber-400 shadow-md shadow-amber-500/20' : 'bg-[#181a20] text-zinc-300 hover:text-white border-white/10 hover:border-white/20'}"
+              onclick={() => onDeleteBout(bout.bout_id)}
+              class="shrink-0 w-7 h-7 flex items-center justify-center text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition"
+              title="Hapus partai {bout.round}"
+              aria-label="Hapus partai {bout.round}"
             >
-              <span>Partai {bout.round}</span>
-              {#if bout.selesai}
-                {#if bout.pemenang === '1'}
-                  <span class="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black">AKA ({bout.score1 || 0}-{bout.score2 || 0})</span>
-                {:else if bout.pemenang === '2'}
-                  <span class="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[9px] font-black">AO ({bout.score1 || 0}-{bout.score2 || 0})</span>
-                {:else if bout.pemenang === '3'}
-                  <span class="px-1.5 py-0.5 rounded bg-amber-500 text-black text-[9px] font-black">SERI ({bout.score1 || 0}-{bout.score2 || 0})</span>
-                {:else}
-                  <span class="px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-200 text-[9px]">Selesai</span>
-                {/if}
-              {:else}
-                <span class="px-1.5 py-0.5 rounded bg-white/5 text-zinc-400 text-[9px]">Belum</span>
-              {/if}
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
             </button>
-            {#if teamMatchInfo.bouts.length > 1 && bIdx === teamMatchInfo.bouts.length - 1 && !bout.selesai}
-              <button
-                type="button"
-                onclick={() => onDeleteBout(bout.bout_id)}
-                class="ml-1 w-5 h-5 flex items-center justify-center text-zinc-500 hover:text-red-400 rounded transition"
-                title="Hapus partai ini"
-              >
-                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-              </button>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    </section>
+          {/if}
+          <button
+            type="button"
+            onclick={onAddBout}
+            class="shrink-0 w-7 h-7 flex items-center justify-center text-emerald-400 hover:text-white hover:bg-emerald-600/30 border border-emerald-500/30 rounded-lg transition"
+            title="Tambah partai (extra / playoff bila seri)"
+            aria-label="Tambah partai"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/></svg>
+          </button>
+        {/if}
+      {/each}
+    </div>
   {/if}
 
   <!-- Main View Area (Kata vs Kumite automatically) -->
   {#if isKata}
     <!-- ==================== KATA COMPARATIVE SCORING DASHBOARD ==================== -->
     <div class="flex-1 flex flex-col gap-3 min-h-0 overflow-y-auto pr-1">
-      <!-- Top Row: Match Timer Deck (Presetted 30s..300s, MM:SS) -->
-      <div class="bg-[#181a20] border border-[#2b2d31] rounded-xl p-3 shadow-lg shrink-0">
-        <div class="flex items-center justify-between flex-wrap gap-3">
-          <div class="flex items-center space-x-3">
-            <span class="text-xs font-mono font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1.5">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Timer Penampilan Kata
-            </span>
-            <!-- Digital Clock Display MM:SS.ms -->
+      <!-- Top: compact timer + board controls (left), live board preview (right) -->
+      <div class="grid grid-cols-[minmax(0,1fr)_minmax(320px,480px)] gap-3 shrink-0">
+        <div class="flex flex-col gap-3 min-w-0">
+          <!-- Compact kata timer (presets, alarms and arena bell live under the gear) -->
+          <div class="relative bg-[#181a20] border border-[#2b2d31] rounded-xl p-3 shadow-lg flex items-center gap-2 flex-wrap">
             <div class="bg-[#111216] border px-4 py-1.5 rounded-lg flex items-baseline space-x-1 shadow-inner transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.35)] bg-red-950/20' : isTimerRunning ? 'border-amber-500/50' : 'border-[#2b2d31]'}">
-              <span class="font-mono font-black text-2xl tracking-wider transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse drop-shadow-[0_0_10px_rgba(239,68,68,0.6)]' : isTimerRunning ? 'text-amber-300' : 'text-white'}">
+              <span class="font-mono font-black text-2xl tracking-wider transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse' : isTimerRunning ? 'text-amber-300' : 'text-white'}">
                 {timerFormatted.mmss}
               </span>
               <span class="font-mono text-sm font-bold transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-400' : isTimerRunning ? 'text-amber-400' : 'text-zinc-400'}">.{timerFormatted.msStr}</span>
             </div>
-            <!-- Start/Pause Toggle -->
             <button
               type="button"
               onclick={(e) => {
                 (e.currentTarget as HTMLElement)?.blur();
                 toggleTimer();
               }}
-              class="px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition shadow flex items-center space-x-1.5 {isTimerRunning ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95'}"
+              class="h-9 px-4 rounded-lg text-xs font-black uppercase tracking-wider transition shadow flex items-center space-x-1.5 {isTimerRunning ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white active:scale-95'}"
             >
               {#if isTimerRunning}
                 <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
@@ -1664,135 +2291,101 @@
                 <span>Mulai (Spasi)</span>
               {/if}
             </button>
-            <!-- Reset Button -->
             <button
               type="button"
               onclick={resetTimer}
-              class="px-3 py-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-zinc-300 text-xs font-bold rounded-lg transition"
+              class="h-9 px-3 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-zinc-300 text-xs font-bold rounded-lg transition"
             >
               Reset
             </button>
-            <!-- Offset Steppers -->
-            <div class="flex items-center space-x-1">
-              <button
-                type="button"
-                onclick={() => adjustTimer(-1000)}
-                class="px-2 py-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-xs font-mono font-bold text-zinc-300 rounded-md"
-                title="Kurangi 1 detik"
-              >
-                -1s
-              </button>
-              <button
-                type="button"
-                onclick={() => adjustTimer(1000)}
-                class="px-2 py-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-xs font-mono font-bold text-zinc-300 rounded-md"
-                title="Tambah 1 detik"
-              >
-                +1s
-              </button>
-            </div>
-          </div>
-
-          <!-- Presets Bar: 30, 60, 90, 120, 150, 180, 300 -->
-          <div class="flex items-center space-x-1.5 bg-[#111216] border border-[#2b2d31] rounded-lg p-1 text-xs font-mono">
-            <span class="text-[10px] text-zinc-500 uppercase px-1 font-bold">Preset:</span>
-            {#each TIMER_PRESETS as preset}
-              <button
-                type="button"
-                onclick={() => selectTimerPreset(preset)}
-                class="px-2.5 py-1 rounded-md font-bold transition {selectedPresetSeconds === preset ? 'bg-[#5865f2] text-white shadow' : 'text-zinc-400 hover:text-white hover:bg-white/[0.04]'}"
-              >
-                {formatPresetLabel(preset)}
-              </button>
-            {/each}
-          </div>
-
-          <!-- Kata Alarm & Buzzer Options (30s, 15s, 0s) -->
-          <div class="flex items-center justify-between gap-2 bg-[#111216] border border-white/10 rounded-lg p-1.5 text-xs font-mono mt-1.5">
-            <div class="flex items-center space-x-1.5">
-              <span class="text-[10px] text-zinc-400 font-bold uppercase px-1">Alarm:</span>
-              <button
-                type="button"
-                onclick={() => { alarm30sEnabled = !alarm30sEnabled; broadcastLiveState(); }}
-                class="px-2 py-0.5 rounded border text-[10.5px] font-bold transition flex items-center gap-1 {alarm30sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
-              >
-                <span>🔔 30s</span>
-              </button>
-              <button
-                type="button"
-                onclick={() => { alarm15sEnabled = !alarm15sEnabled; broadcastLiveState(); }}
-                class="px-2 py-0.5 rounded border text-[10.5px] font-bold transition flex items-center gap-1 {alarm15sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
-              >
-                <span>🔔 15s</span>
-              </button>
-              <button
-                type="button"
-                onclick={() => { alarm0sEnabled = !alarm0sEnabled; broadcastLiveState(); }}
-                class="px-2 py-0.5 rounded border text-[10.5px] font-bold transition flex items-center gap-1 {alarm0sEnabled ? 'bg-red-500/25 border-red-500 text-red-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
-              >
-                <span>🚨 0s</span>
-              </button>
-            </div>
             <button
               type="button"
-              onclick={triggerManualBuzzer}
-              class="px-2.5 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded font-bold transition flex items-center gap-1 active:scale-95"
-              title="Bunyikan klakson arena secara manual"
+              onclick={() => adjustTimer(-1000)}
+              class="h-9 px-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-xs font-mono font-bold text-zinc-300 rounded-lg"
+              title="Kurangi 1 detik"
             >
-              <span>🔊 Bel Arena</span>
+              -1s
             </button>
+            <button
+              type="button"
+              onclick={() => adjustTimer(1000)}
+              class="h-9 px-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-xs font-mono font-bold text-zinc-300 rounded-lg"
+              title="Tambah 1 detik"
+            >
+              +1s
+            </button>
+            {@render timerPresetSelect()}
+            {@render timerSettingsButton()}
           </div>
-        </div>
-      </div>
 
-      <!-- KATA 5-JUDGE COMPARATIVE SCORING TABLE -->
-      <div class="flex-1 bg-[#181a20] border border-[#2b2d31] rounded-xl p-4 shadow-xl flex flex-col justify-between relative">
-        <div>
-          <!-- Header Bar with Kiken Overrides (Redundant text removed) -->
-          <div class="flex items-center justify-between pb-3 mb-3 border-b border-[#2b2d31] flex-wrap gap-2">
-            <div>
-              <h2 class="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
-                <svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
-                  <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
-                </svg>
-                Penilaian Komparatif Juri Kata (5 Juri)
-              </h2>
-            </div>
-
-            <!-- Actions: Tampilkan Skor di Board, Pop Up Skor 5 Juri, & Kiken -->
-            <div class="flex items-center space-x-2">
-              <!-- Button 1: Tampilkan Skor di Board (Versi tanpa pop up 5 juri) -->
+          <!-- Board controls: everything that changes what the TV shows -->
+          <div class="flex-1 bg-[#181a20] border border-[#2b2d31] rounded-xl p-3 shadow-lg flex flex-col gap-3">
+            <div class="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400">Kontrol Board</div>
+            <div class="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onclick={publishScoresToBoard}
-                class="px-3.5 py-1.5 rounded-lg text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow active:scale-95 {publishFeedbackActive ? 'bg-emerald-600 text-white shadow-emerald-600/40' : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-600/30'}"
-                title="Kirim skor poin ke scoring board (tanpa pop up)"
+                onclick={toggleBoardScore}
+                class="h-12 px-3 rounded-xl text-xs font-mono font-bold uppercase tracking-wider transition flex items-center justify-center gap-2 shadow active:scale-95 {isScorePublished ? 'bg-[#111216] hover:bg-[#1e2029] text-zinc-300 border border-white/10' : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-600/30'}"
+                title="Tampilkan / sembunyikan skor besar di scoring board"
               >
-                {#if publishFeedbackActive}
-                  <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-                  <span>Skor Terkirim!</span>
+                {#if isScorePublished}
+                  <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>
+                  <span>Sembunyikan Skor</span>
                 {:else}
-                  <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
-                  <span>Tampilkan Skor di Board</span>
+                  <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                  <span>Tampilkan Skor</span>
                 {/if}
               </button>
-
-              <!-- Button 2: Pop Up Skor 5 Juri (Versi dengan pop up overlay) -->
               <button
                 type="button"
                 onclick={toggleKataScorePopup}
-                class="px-3 py-1.5 rounded-lg text-xs font-mono font-bold uppercase tracking-wider transition flex items-center space-x-1.5 shadow active:scale-95 {showKataScoreOnBoard ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-500/20' : 'bg-[#111216] hover:bg-[#1e2029] text-zinc-300 border border-white/10'}"
-                title="Buka / tutup overlay pop up skor 5 juri di scoring board"
+                class="h-12 px-3 rounded-xl text-xs font-mono font-bold uppercase tracking-wider transition flex items-center justify-center gap-2 shadow active:scale-95 {showKataScoreOnBoard ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-500/20' : 'bg-[#111216] hover:bg-[#1e2029] text-zinc-300 border border-white/10'}"
+                title="Buka / tutup pop up skor 5 juri di scoring board"
               >
                 {#if showKataScoreOnBoard}
-                  <svg class="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>
+                  <svg class="w-4 h-4 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>
                   <span>Tutup Pop Up 5 Juri</span>
                 {:else}
-                  <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                  <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                   <span>Pop Up Skor 5 Juri</span>
                 {/if}
               </button>
+            </div>
+            <!-- 35-second preparation countdown on the board (athlete must start the kata) -->
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] font-mono font-bold uppercase text-zinc-500 mr-1 shrink-0">Persiapan</span>
+              {#each [["aka", "AKA"], ["ao", "AO"]] as [side, label]}
+                {@const active = prepCountdown?.side === side}
+                <button
+                  type="button"
+                  onclick={() => startPrepCountdown(side as "aka" | "ao")}
+                  class="flex-1 h-9 px-3 rounded-lg text-xs font-mono font-bold transition active:scale-95 flex items-center justify-center gap-1.5 border {side === 'aka'
+                    ? (active ? 'bg-red-600 border-red-400 text-white shadow-lg shadow-red-600/40' : 'bg-red-600/20 hover:bg-red-600/30 border-red-500/50 text-red-200')
+                    : (active ? 'bg-blue-600 border-blue-400 text-white shadow-lg shadow-blue-600/40' : 'bg-blue-600/20 hover:bg-blue-600/30 border-blue-500/50 text-blue-200')}"
+                  title="Mulai hitung mundur persiapan 35 detik untuk {label}"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  {#if active}
+                    <span>{label} · {prepRemainingMs > 0 ? `${Math.ceil(prepRemainingMs / 1000)}s` : "HABIS"}</span>
+                  {:else}
+                    <span>35s {label}</span>
+                  {/if}
+                </button>
+              {/each}
+              <button
+                type="button"
+                onclick={() => stopPrepCountdown()}
+                disabled={!prepCountdown}
+                class="h-9 px-3 rounded-lg text-xs font-mono font-bold transition border {prepCountdown ? 'bg-[#111216] hover:bg-rose-600/80 border-white/10 hover:border-rose-500/50 text-zinc-200' : 'bg-transparent border-white/5 text-zinc-600 cursor-not-allowed'}"
+                title="Hentikan dan tutup pop up persiapan"
+              >
+                Stop
+              </button>
+            </div>
 
+            <!-- Kiken kept apart from the display buttons so it is not hit by mistake -->
+            <div class="mt-auto pt-3 border-t border-[#2b2d31] flex items-center gap-2">
+              <span class="text-[10px] font-mono font-bold uppercase text-zinc-500 mr-1">Kiken</span>
               <button
                 type="button"
                 onclick={() => applyKiken("aka")}
@@ -1811,7 +2404,17 @@
               </button>
             </div>
           </div>
+        </div>
 
+        <!-- Live board preview: the same template the TV uses -->
+        <div class="w-full aspect-video self-start rounded-xl overflow-hidden border border-[#2b2d31] bg-black shadow-lg">
+          <ScoreboardDisplay liveState={previewState} tatami={activeTatami} connected={claimStatus === "owned"} muted />
+        </div>
+      </div>
+
+      <!-- KATA 5-JUDGE COMPARATIVE SCORING TABLE -->
+      <div class="flex-1 bg-[#181a20] border border-[#2b2d31] rounded-xl p-4 shadow-xl flex flex-col justify-between relative">
+        <div>
           <!-- The Table -->
           <div class="overflow-x-auto">
             <table class="w-full text-center border-collapse">
@@ -2120,15 +2723,15 @@
     <!-- ==================== KUMITE 3-COLUMN COCKPIT ==================== -->
     <div class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3 min-h-0 overflow-hidden">
       <!-- POD KIRI: AO (BLUE) -->
-      <div class="lg:col-span-5 bg-[#181a20] border-t-4 border-t-blue-600 border border-[#2b2d31] rounded-xl p-4 flex flex-col justify-between shadow-xl">
+      <div class="lg:col-span-4 bg-[#181a20] border-t-4 border-t-blue-600 border border-[#2b2d31] rounded-xl p-4 flex flex-col shadow-xl min-h-0 overflow-y-auto cp-pod">
         <div>
           <!-- Header AO -->
-          <div class="flex items-start justify-between gap-2 pb-3 mb-3 border-b border-[#2b2d31]">
+          <div class="flex items-start justify-between gap-2 pb-3 mb-3 border-b border-[#2b2d31] cp-pod-head">
             <div class="min-w-0 flex-1">
               <span class="px-2 py-0.5 bg-blue-600 text-white font-mono font-black text-[10px] rounded tracking-wider uppercase inline-block mb-1">
                 AO • BIRU
               </span>
-              <div class="text-xl md:text-2xl font-black text-white uppercase leading-tight">
+              <div class="text-xl md:text-2xl font-black text-white uppercase leading-tight cp-pod-name">
                 {match.atlet2_nama || "Atlet Biru"}
               </div>
               <!-- NO ELLIPSIS: FULL PERGURUAN & KONTINGEN -->
@@ -2150,9 +2753,9 @@
           </div>
 
           <!-- Score & Senshu Row -->
-          <div class="flex items-center gap-3 mb-4">
-            <div class="flex-1 h-24 bg-[#111216] border-2 border-blue-600 rounded-xl flex items-center justify-center shadow-inner">
-              <span class="text-6xl md:text-7xl font-mono font-black text-blue-400 tracking-tight">
+          <div class="flex items-center gap-3 mb-4 cp-score-row">
+            <div class="cp-score-box flex-1 h-24 bg-[#111216] border-2 border-blue-600 rounded-xl flex items-center justify-center shadow-inner">
+              <span class="cp-score-num text-6xl md:text-7xl font-mono font-black text-blue-400 tracking-tight">
                 {aoScore}
               </span>
             </div>
@@ -2161,23 +2764,23 @@
             <button
               type="button"
               onclick={() => toggleSenshu("ao")}
-              class="w-24 h-24 rounded-xl flex flex-col items-center justify-center gap-1 font-black transition border-2 {aoSenshu ? 'bg-gradient-to-br from-amber-400 to-amber-600 text-slate-950 border-white shadow-lg shadow-amber-500/50' : 'bg-[#1e2029] text-amber-500 border-amber-600/50 hover:bg-[#2b2d31]'}"
+              class="cp-senshu w-24 h-24 rounded-xl flex flex-col items-center justify-center gap-1 font-black transition border-2 {aoSenshu ? 'bg-gradient-to-br from-amber-400 to-amber-600 text-slate-950 border-white shadow-lg shadow-amber-500/50' : 'bg-[#1e2029] text-amber-500 border-amber-600/50 hover:bg-[#2b2d31]'}"
             >
-              <svg class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
+              <svg class="cp-senshu-icon w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
               </svg>
               <span class="text-[11px] tracking-wider font-mono">SENSHU</span>
             </button>
           </div>
 
-          <!-- Fast Score Deck -->
-          <div class="grid grid-cols-4 gap-2 mb-4">
+          <!-- Fast Score Deck (mirror of AKA: values read from the right) -->
+          <div class="grid grid-cols-4 gap-2 mb-4 cp-deck">
             <button
               type="button"
-              onclick={() => addKumiteScore("ao", 1)}
+              onclick={() => addKumiteScore("ao", 3)}
               class="h-12 bg-gradient-to-br from-blue-600 to-blue-800 hover:from-blue-500 hover:to-blue-700 border border-blue-400 text-white font-mono font-black text-sm rounded-lg active:scale-95 transition shadow"
             >
-              +1 YUKO
+              +3 IPPON
             </button>
             <button
               type="button"
@@ -2188,10 +2791,10 @@
             </button>
             <button
               type="button"
-              onclick={() => addKumiteScore("ao", 3)}
+              onclick={() => addKumiteScore("ao", 1)}
               class="h-12 bg-gradient-to-br from-blue-600 to-blue-800 hover:from-blue-500 hover:to-blue-700 border border-blue-400 text-white font-mono font-black text-sm rounded-lg active:scale-95 transition shadow"
             >
-              +3 IPPON
+              +1 YUKO
             </button>
             <button
               type="button"
@@ -2203,173 +2806,163 @@
           </div>
 
           <!-- Penalties (C1..H) -->
-          <div class="bg-[#111216] border border-[#2b2d31] rounded-xl p-3 mb-3">
+          <div class="bg-[#111216] border border-[#2b2d31] rounded-xl p-3 mb-3 cp-pen">
             <div class="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider mb-2">Pelanggaran</div>
             <div class="grid grid-cols-5 gap-1.5 font-mono font-bold text-xs">
-              {#each ["c1", "c2", "c3", "hc", "h"] as pCode}
+              {#each ["h", "hc", "c3", "c2", "c1"] as pCode}
                 {@const isMarked = aoPenalties[pCode as keyof typeof aoPenalties]}
                 <button
                   type="button"
                   onclick={() => togglePenalty("ao", pCode as any)}
-                  class="h-9 rounded-md transition flex items-center justify-center uppercase {isMarked ? (pCode === 'h' ? 'bg-red-600 text-white shadow-lg' : 'bg-amber-500 text-black font-black') : 'bg-[#1e2029] text-zinc-400 hover:text-white border border-white/5'}"
+                  class="h-11 rounded-md transition flex items-center justify-center uppercase {isMarked ? (pCode === 'h' ? 'bg-red-600 text-white shadow-lg' : 'bg-amber-500 text-black font-black') : 'bg-[#1e2029] text-zinc-400 hover:text-white border border-white/5'}"
                 >
                   {pCode.toUpperCase()}
                 </button>
               {/each}
             </div>
           </div>
-        </div>
 
-        <!-- Video Review AO -->
-        <div class="pt-2 border-t border-[#2b2d31] flex items-center justify-between text-xs text-zinc-400">
-          <span>Video Review (VR):</span>
-          <button
-            type="button"
-            onclick={() => (hasVr2 = !hasVr2)}
-            class="px-2.5 py-1 rounded text-[11px] font-bold font-mono transition {hasVr2 ? 'bg-red-600/30 text-red-300 border border-red-500' : 'bg-[#1e2029] text-zinc-400 hover:text-white border border-white/5'}"
-          >
-            {hasVr2 ? "KARTU HANGUS" : "TERSEDIA"}
-          </button>
+          <!-- Video Review AO: right under the penalties -->
+          {#if vrEnabled}
+            {@const reviewing = vrChallenges.ao?.status === "in_progress"}
+            <div class="px-1 flex flex-col gap-2 text-xs text-zinc-400">
+              <div class="flex items-center justify-between gap-2">
+                <span class="flex items-center gap-2">
+                  <img src="/img/vr-ao.png" alt="VR" class="w-6 h-6 {hasVr2 ? 'opacity-30 grayscale' : ''}" />
+                  <span>Video Review</span>
+                  <button
+                    type="button"
+                    onclick={() => toggleVrCard("ao")}
+                    class="px-2 py-0.5 rounded font-mono font-bold text-[10px] border transition {reviewing ? 'bg-amber-500/20 border-amber-500 text-amber-300 animate-pulse' : hasVr2 ? 'bg-rose-600/20 border-rose-500/60 text-rose-300' : 'bg-emerald-600/15 border-emerald-500/50 text-emerald-300'}"
+                    title="Klik untuk mengoreksi status kartu VR secara manual"
+                  >
+                    {reviewing ? "DITINJAU" : hasVr2 ? "HANGUS" : "TERSEDIA"}
+                  </button>
+                </span>
+                {#if !reviewing}
+                  <button
+                    type="button"
+                    onclick={() => requestVr("ao")}
+                    disabled={hasVr2}
+                    class="h-9 px-3 rounded-lg text-[11px] font-bold font-mono transition border disabled:opacity-40 disabled:cursor-not-allowed bg-[#1e2029] border-white/10 text-zinc-200 hover:text-white hover:border-white/30"
+                    title="Ajukan Video Review (timer dijeda)"
+                  >
+                    Ajukan VR
+                  </button>
+                {/if}
+              </div>
+              {#if reviewing}
+                {@render vrDecisionButtons("ao")}
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Team score (beregu) + medical time, under the VR row -->
+          <div class="mt-3 cp-extras">
+            {@render cornerExtras("ao")}
+          </div>
         </div>
       </div>
 
-      <!-- HUB TENGAH: TIMER & STATUS -->
-      <div class="lg:col-span-2 bg-[#181a20] border-t-4 border-t-amber-500 border border-[#2b2d31] rounded-xl p-4 flex flex-col items-center justify-between shadow-xl">
-        <div class="w-full text-center">
-          <span class="text-[10px] font-mono font-bold text-amber-400 uppercase tracking-wider block mb-2">
-            Match Timer
-          </span>
-          <div class="w-full bg-[#111216] border-2 rounded-xl py-3 px-2 shadow-inner mb-3 transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.4)] bg-red-950/20' : isTimerRunning ? 'border-amber-500/70' : 'border-[#2b2d31]'}">
-            <span class="text-4xl md:text-5xl font-mono font-black tracking-wider transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse drop-shadow-[0_0_15px_rgba(239,68,68,0.85)]' : isTimerRunning ? 'text-amber-300' : 'text-white'}">
-              {timerFormatted.mmss}
-            </span>
-            <span class="text-sm font-mono font-bold block mt-0.5 transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-400' : isTimerRunning ? 'text-amber-400' : 'text-zinc-400'}">.{timerFormatted.msStr}</span>
+      <!-- HUB TENGAH: LIVE PREVIEW (the board already shows the timer) + CONTROLS -->
+      <div class="lg:col-span-4 bg-[#181a20] border-t-4 border-t-amber-500 border border-[#2b2d31] rounded-xl p-3 flex flex-col gap-2.5 shadow-xl min-h-0 overflow-y-auto">
+        <!-- Live board preview: the same template the TV uses. It takes the height
+             left by the controls, so the column never needs scrolling. -->
+        <div class="flex-1 min-h-[110px] flex items-start justify-center [container-type:size]">
+          <div class="cp-preview rounded-lg overflow-hidden border border-[#2b2d31] bg-black">
+            <ScoreboardDisplay liveState={previewState} tatami={activeTatami} connected={claimStatus === "owned"} muted />
           </div>
-
-          <button
-            type="button"
-            onclick={(e) => {
-              (e.currentTarget as HTMLElement)?.blur();
-              toggleTimer();
-            }}
-            class="w-full py-3 rounded-xl font-mono font-black text-sm uppercase tracking-wider transition shadow-lg active:scale-95 mb-2 flex items-center justify-center space-x-1.5 {isTimerRunning ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}"
-          >
-            {#if isTimerRunning}
-              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-              <span>PAUSE (SPASI)</span>
-            {:else}
-              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-              <span>START (SPASI)</span>
-            {/if}
-          </button>
-
-          <div class="grid grid-cols-2 gap-1.5 mb-2 font-mono text-xs">
-            <button type="button" onclick={() => adjustTimer(-1000)} class="py-1.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded font-bold text-zinc-300">-1s</button>
-            <button type="button" onclick={() => adjustTimer(1000)} class="py-1.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded font-bold text-zinc-300">+1s</button>
-          </div>
-
-          <div class="grid grid-cols-2 gap-1.5 font-mono text-[11px] mb-2">
-            {#each [60, 90, 120, 180] as p}
-              <button
-                type="button"
-                onclick={() => selectTimerPreset(p)}
-                class="py-1 bg-[#111216] hover:bg-[#1e2029] border border-white/10 rounded text-zinc-300 transition"
-              >
-                {formatPresetLabel(p)}
-              </button>
-            {/each}
-          </div>
-
-          <button
-            type="button"
-            onclick={resetTimer}
-            class="w-full py-1 text-xs font-mono font-bold text-red-400 bg-red-600/10 hover:bg-red-600/20 border border-red-500/30 rounded transition"
-          >
-            Reset
-          </button>
-
-          <!-- Alarm & Buzzer Options (30s, 15s, 0s) -->
-          <div class="w-full mt-2 p-2 bg-[#111216] border border-white/10 rounded-xl flex flex-col gap-1.5 text-xs font-mono">
-            <div class="flex items-center justify-between text-[10px] text-zinc-400 font-bold uppercase tracking-wider px-0.5">
-              <span>Opsi Alarm:</span>
-              <button
-                type="button"
-                onclick={triggerManualBuzzer}
-                class="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded font-bold transition flex items-center gap-1 active:scale-95"
-                title="Bunyikan klakson arena secara manual"
-              >
-                <span>🔊</span>
-                <span>Bel Arena</span>
-              </button>
-            </div>
-            <div class="grid grid-cols-3 gap-1">
-              <button
-                type="button"
-                onclick={() => { alarm30sEnabled = !alarm30sEnabled; broadcastLiveState(); }}
-                class="py-1 px-1 rounded border text-[10.5px] font-bold transition flex items-center justify-center gap-1 {alarm30sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
-                title="Alarm peringatan saat sisa 30 detik"
-              >
-                <span>🔔</span>
-                <span>30s</span>
-              </button>
-              <button
-                type="button"
-                onclick={() => { alarm15sEnabled = !alarm15sEnabled; broadcastLiveState(); }}
-                class="py-1 px-1 rounded border text-[10.5px] font-bold transition flex items-center justify-center gap-1 {alarm15sEnabled ? 'bg-amber-500/25 border-amber-500 text-amber-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
-                title="Alarm peringatan saat sisa 15 detik (Atoshibaraku)"
-              >
-                <span>🔔</span>
-                <span>15s</span>
-              </button>
-              <button
-                type="button"
-                onclick={() => { alarm0sEnabled = !alarm0sEnabled; broadcastLiveState(); }}
-                class="py-1 px-1 rounded border text-[10.5px] font-bold transition flex items-center justify-center gap-1 {alarm0sEnabled ? 'bg-red-500/25 border-red-500 text-red-300' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}"
-                title="Buzzer akhir pertandingan saat 0 detik"
-              >
-                <span>🚨</span>
-                <span>0s</span>
-              </button>
-            </div>
-          </div>
-
-          {#if activeBanner}
-            <button
-              type="button"
-              onclick={dismissScoreBanner}
-              class="w-full mt-2 py-1.5 px-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-lg transition uppercase tracking-wider animate-pulse shadow-lg flex items-center justify-center gap-1.5"
-            >
-              <span>Tutup Banner Score (Esc)</span>
-            </button>
-          {/if}
         </div>
 
-        {#if teamMatchInfo?.is_team_match}
-          <div class="w-full mb-2">
-            <button
-              type="button"
-              onclick={() => selectWinner("3")}
-              class="w-full py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition shrink-0 flex items-center justify-center gap-1.5 shadow {matchWinner === '3' ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 border-2 border-white shadow-amber-500/50' : 'bg-[#1e2029] border border-amber-500/30 text-amber-300 hover:bg-[#2b2d31]'}"
-            >
-              <span>Hikiwake (Seri)</span>
-            </button>
+        <button
+          type="button"
+          onclick={(e) => {
+            (e.currentTarget as HTMLElement)?.blur();
+            toggleTimer();
+          }}
+          class="w-full py-3 shrink-0 rounded-xl font-mono font-black text-sm uppercase tracking-wider transition shadow-lg active:scale-95 flex items-center justify-center gap-2 {isTimerRunning ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}"
+        >
+          {#if isTimerRunning}
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            <span>PAUSE (SPASI)</span>
+          {:else}
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <span>START (SPASI)</span>
+          {/if}
+          <span class="px-2 py-0.5 rounded-md text-xs font-black tabular-nums {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'bg-red-600 text-white animate-pulse' : 'bg-black/25'}">{timerFormatted.mmss}</span>
+        </button>
+
+        <!-- -1s / +1s / Reset / preset / settings -->
+        <div class="relative flex items-center gap-1.5 font-mono text-xs shrink-0">
+          <button type="button" onclick={() => adjustTimer(-1000)} class="h-9 px-2.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded-lg font-bold text-zinc-300" title="Kurangi 1 detik">-1s</button>
+          <button type="button" onclick={() => adjustTimer(1000)} class="h-9 px-2.5 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 rounded-lg font-bold text-zinc-300" title="Tambah 1 detik">+1s</button>
+          <button type="button" onclick={resetTimer} class="h-9 px-3 font-bold text-red-400 bg-red-600/10 hover:bg-red-600/20 border border-red-500/30 rounded-lg transition">Reset</button>
+          {@render timerPresetSelect()}
+          {@render timerSettingsButton()}
+        </div>
+
+        {#if mouseMode}
+          <div class="shrink-0">
+            <JudgeStickMonitor
+              votes={stickState?.votes ?? [null, null, null, null]}
+              aka={stickState?.aka ?? null}
+              ao={stickState?.ao ?? null}
+              hantei={isHantei}
+              hanteiTally={stickState?.hantei ?? { aka: 0, ao: 0 }}
+              timerRunning={isTimerRunning}
+              checkMode={stickCheck}
+              tested={stickTested}
+              lastKey={stickLastKey}
+              history={stickHistory}
+              onToggleCheck={toggleStickCheck}
+              onResetCheck={resetStickCheck}
+            />
           </div>
         {/if}
 
-        <div class="w-full pt-3 border-t border-[#2b2d31] flex flex-col items-center gap-1.5 text-xs text-zinc-400">
-          <label class="flex items-center space-x-2 cursor-pointer font-semibold text-zinc-300">
-            <input type="checkbox" bind:checked={isHantei} class="rounded text-amber-500 focus:ring-amber-400" />
-            <span>Hantei</span>
-          </label>
-          <span class="text-[9px] font-mono text-zinc-500">Hotkeys: 1/2/3 & 7/8/9</span>
+        {#if activeBanner}
+          <button
+            type="button"
+            onclick={dismissScoreBanner}
+            class="w-full py-1.5 px-2 shrink-0 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-lg transition uppercase tracking-wider animate-pulse shadow-lg flex items-center justify-center gap-1.5"
+          >
+            <span>Tutup Banner Score (Esc)</span>
+          </button>
+        {/if}
+
+        <!-- Hantei (judges' decision) and, for kumite beregu, Hikiwake -->
+        <div class="flex items-stretch gap-2 shrink-0">
+          <button
+            type="button"
+            onclick={() => setHantei(!isHantei)}
+            aria-pressed={isHantei}
+            class="flex-1 py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center justify-center gap-1.5 shadow {isHantei ? 'bg-gradient-to-r from-indigo-500 to-violet-600 text-white border-2 border-white/80 shadow-indigo-500/40' : 'bg-[#1e2029] border border-indigo-400/40 text-indigo-200 hover:bg-[#2b2d31]'}"
+            title={isHantei ? "Matikan mode Hantei" : "Mode Hantei: 4 juri memilih AKA / AO lewat stick"}
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>
+            {#if isHantei}
+              <span>Hantei aktif{mouseMode ? ` · ${hanteiVotes}/4 juri` : ""}</span>
+            {:else}
+              <span>Hantei</span>
+            {/if}
+          </button>
+          {#if teamMatchInfo?.is_team_match}
+            <button
+              type="button"
+              onclick={() => selectWinner("3")}
+              class="flex-1 py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center justify-center gap-1.5 shadow {matchWinner === '3' ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 border-2 border-white shadow-amber-500/50' : 'bg-[#1e2029] border border-amber-500/30 text-amber-300 hover:bg-[#2b2d31]'}"
+            >
+              <span>Hikiwake (Seri)</span>
+            </button>
+          {/if}
         </div>
       </div>
 
       <!-- POD KANAN: AKA (RED) -->
-      <div class="lg:col-span-5 bg-[#181a20] border-t-4 border-t-red-600 border border-[#2b2d31] rounded-xl p-4 flex flex-col justify-between shadow-xl">
+      <div class="lg:col-span-4 bg-[#181a20] border-t-4 border-t-red-600 border border-[#2b2d31] rounded-xl p-4 flex flex-col shadow-xl min-h-0 overflow-y-auto cp-pod">
         <div>
           <!-- Header AKA -->
-          <div class="flex items-start justify-between gap-2 pb-3 mb-3 border-b border-[#2b2d31]">
+          <div class="flex items-start justify-between gap-2 pb-3 mb-3 border-b border-[#2b2d31] cp-pod-head">
             <button
               type="button"
               onclick={() => selectWinner("1")}
@@ -2385,7 +2978,7 @@
               <span class="px-2 py-0.5 bg-red-600 text-white font-mono font-black text-[10px] rounded tracking-wider uppercase inline-block mb-1">
                 AKA • MERAH
               </span>
-              <div class="text-xl md:text-2xl font-black text-white uppercase leading-tight">
+              <div class="text-xl md:text-2xl font-black text-white uppercase leading-tight cp-pod-name">
                 {match.atlet1_nama || "Sudut Merah"}
               </div>
               <!-- NO ELLIPSIS: FULL PERGURUAN & KONTINGEN -->
@@ -2396,28 +2989,28 @@
           </div>
 
           <!-- Score & Senshu Row -->
-          <div class="flex items-center gap-3 mb-4">
+          <div class="flex items-center gap-3 mb-4 cp-score-row">
             <!-- Senshu Ribbon -->
             <button
               type="button"
               onclick={() => toggleSenshu("aka")}
-              class="w-24 h-24 rounded-xl flex flex-col items-center justify-center gap-1 font-black transition border-2 {akaSenshu ? 'bg-gradient-to-br from-amber-400 to-amber-600 text-slate-950 border-white shadow-lg shadow-amber-500/50' : 'bg-[#1e2029] text-amber-500 border-amber-600/50 hover:bg-[#2b2d31]'}"
+              class="cp-senshu w-24 h-24 rounded-xl flex flex-col items-center justify-center gap-1 font-black transition border-2 {akaSenshu ? 'bg-gradient-to-br from-amber-400 to-amber-600 text-slate-950 border-white shadow-lg shadow-amber-500/50' : 'bg-[#1e2029] text-amber-500 border-amber-600/50 hover:bg-[#2b2d31]'}"
             >
-              <svg class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
+              <svg class="cp-senshu-icon w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
               </svg>
               <span class="text-[11px] tracking-wider font-mono">SENSHU</span>
             </button>
 
-            <div class="flex-1 h-24 bg-[#111216] border-2 border-red-600 rounded-xl flex items-center justify-center shadow-inner">
-              <span class="text-6xl md:text-7xl font-mono font-black text-red-400 tracking-tight">
+            <div class="cp-score-box flex-1 h-24 bg-[#111216] border-2 border-red-600 rounded-xl flex items-center justify-center shadow-inner">
+              <span class="cp-score-num text-6xl md:text-7xl font-mono font-black text-red-400 tracking-tight">
                 {akaScore}
               </span>
             </div>
           </div>
 
           <!-- Fast Score Deck -->
-          <div class="grid grid-cols-4 gap-2 mb-4">
+          <div class="grid grid-cols-4 gap-2 mb-4 cp-deck">
             <button
               type="button"
               onclick={() => addKumiteScore("aka", -1)}
@@ -2449,7 +3042,7 @@
           </div>
 
           <!-- Penalties (C1..H) -->
-          <div class="bg-[#111216] border border-[#2b2d31] rounded-xl p-3 mb-3">
+          <div class="bg-[#111216] border border-[#2b2d31] rounded-xl p-3 mb-3 cp-pen">
             <div class="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider mb-2 text-right">Pelanggaran</div>
             <div class="grid grid-cols-5 gap-1.5 font-mono font-bold text-xs">
               {#each ["c1", "c2", "c3", "hc", "h"] as pCode}
@@ -2457,146 +3050,58 @@
                 <button
                   type="button"
                   onclick={() => togglePenalty("aka", pCode as any)}
-                  class="h-9 rounded-md transition flex items-center justify-center uppercase {isMarked ? (pCode === 'h' ? 'bg-red-600 text-white shadow-lg' : 'bg-amber-500 text-black font-black') : 'bg-[#1e2029] text-zinc-400 hover:text-white border border-white/5'}"
+                  class="h-11 rounded-md transition flex items-center justify-center uppercase {isMarked ? (pCode === 'h' ? 'bg-red-600 text-white shadow-lg' : 'bg-amber-500 text-black font-black') : 'bg-[#1e2029] text-zinc-400 hover:text-white border border-white/5'}"
                 >
                   {pCode.toUpperCase()}
                 </button>
               {/each}
             </div>
           </div>
-        </div>
 
-        <!-- Video Review AKA -->
-        <div class="pt-2 border-t border-[#2b2d31] flex items-center justify-between text-xs text-zinc-400">
-          <span>Video Review (VR):</span>
-          <button
-            type="button"
-            onclick={() => (hasVr1 = !hasVr1)}
-            class="px-2.5 py-1 rounded text-[11px] font-bold font-mono transition {hasVr1 ? 'bg-red-600/30 text-red-300 border border-red-500' : 'bg-[#1e2029] text-zinc-400 hover:text-white border border-white/5'}"
-          >
-            {hasVr1 ? "KARTU HANGUS" : "TERSEDIA"}
-          </button>
+          <!-- Video Review AKA: right under the penalties -->
+          {#if vrEnabled}
+            {@const reviewing = vrChallenges.aka?.status === "in_progress"}
+            <div class="px-1 flex flex-col gap-2 text-xs text-zinc-400">
+              <div class="flex items-center justify-between gap-2">
+                <span class="flex items-center gap-2">
+                  <img src="/img/vr-aka.png" alt="VR" class="w-6 h-6 {hasVr1 ? 'opacity-30 grayscale' : ''}" />
+                  <span>Video Review</span>
+                  <button
+                    type="button"
+                    onclick={() => toggleVrCard("aka")}
+                    class="px-2 py-0.5 rounded font-mono font-bold text-[10px] border transition {reviewing ? 'bg-amber-500/20 border-amber-500 text-amber-300 animate-pulse' : hasVr1 ? 'bg-rose-600/20 border-rose-500/60 text-rose-300' : 'bg-emerald-600/15 border-emerald-500/50 text-emerald-300'}"
+                    title="Klik untuk mengoreksi status kartu VR secara manual"
+                  >
+                    {reviewing ? "DITINJAU" : hasVr1 ? "HANGUS" : "TERSEDIA"}
+                  </button>
+                </span>
+                {#if !reviewing}
+                  <button
+                    type="button"
+                    onclick={() => requestVr("aka")}
+                    disabled={hasVr1}
+                    class="h-9 px-3 rounded-lg text-[11px] font-bold font-mono transition border disabled:opacity-40 disabled:cursor-not-allowed bg-[#1e2029] border-white/10 text-zinc-200 hover:text-white hover:border-white/30"
+                    title="Ajukan Video Review (timer dijeda)"
+                  >
+                    Ajukan VR
+                  </button>
+                {/if}
+              </div>
+              {#if reviewing}
+                {@render vrDecisionButtons("aka")}
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Team score (beregu) + medical time, under the VR row -->
+          <div class="mt-3 cp-extras">
+            {@render cornerExtras("aka")}
+          </div>
         </div>
       </div>
     </div>
   {/if}
 
-  <!-- ==================== LIVE ARENA SCOREBOARD PREVIEW (BOTTOM-RIGHT) ==================== -->
-  <aside
-    class="fixed bottom-3 right-3 z-40 bg-[#06090e]/95 border-2 {isTimerRunning ? 'border-amber-500/80 shadow-[0_12px_45px_rgba(245,158,11,0.3)]' : 'border-zinc-700/80 shadow-[0_12px_45px_rgba(0,0,0,0.95)]'} rounded-2xl p-2.5 {isMiniMonitorExpanded ? 'w-[350px]' : 'w-auto'} backdrop-blur-md transition-all select-none font-sans"
-    aria-label="Live Arena Scoreboard Preview"
-  >
-    <!-- Header Bar -->
-    <div class="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-white/10">
-      <div class="flex items-center space-x-1.5">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-        <span class="text-[10px] font-mono font-black text-amber-400 tracking-wider uppercase">
-          LIVE ARENA MONITOR
-        </span>
-      </div>
-      <div class="flex items-center space-x-1.5">
-        <span class="px-1.5 py-0.2 rounded bg-amber-500/20 border border-amber-500/40 font-mono font-black text-[9px] text-amber-300">
-          TATAMI {activeTatami}
-        </span>
-        <button
-          type="button"
-          onclick={() => (isMiniMonitorExpanded = !isMiniMonitorExpanded)}
-          class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 rounded transition"
-          title={isMiniMonitorExpanded ? "Kecilkan Monitor" : "Perbesar Monitor"}
-        >
-          <svg class="w-3.5 h-3.5 transition-transform {isMiniMonitorExpanded ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-      </div>
-    </div>
-
-    {#if isMiniMonitorExpanded}
-      <div class="space-y-1.5">
-        <!-- AKA Card (Red) -->
-        <div class="bg-gradient-to-r from-red-950/90 via-[#180f12] to-[#0c0e14] border border-red-500/40 rounded-xl p-2 flex items-center justify-between shadow-inner relative overflow-hidden">
-          <div class="flex-1 min-w-0 pr-2">
-            <div class="flex items-center space-x-1.5">
-              <span class="px-1 py-0.2 bg-red-600 text-white font-mono font-black text-[8px] rounded">AKA</span>
-              <span class="font-black text-xs text-white truncate">{match.atlet1_nama || "Sudut Merah"}</span>
-            </div>
-            <div class="text-[9px] text-red-200/80 font-medium truncate mt-0.5">{match.atlet1_kontingen || "-"}</div>
-            {#if isKata && kataAkaName}
-              <div class="text-[9px] font-black text-amber-400 uppercase tracking-wide truncate mt-0.5">{kataAkaName}</div>
-            {/if}
-            {#if matchWinner === "1"}
-              <div class="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.2 bg-gradient-to-r from-amber-400 to-amber-500 text-black font-mono font-black text-[8px] rounded uppercase shadow-sm">
-                PEMENANG
-              </div>
-            {/if}
-          </div>
-          <!-- AKA Board Score -->
-          <div class="shrink-0 w-11 h-10 bg-black/80 border-2 {boardAkaScore > boardAoScore ? 'border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.6)]' : 'border-[#2b2d31]'} rounded-lg flex items-center justify-center font-mono font-black text-xl text-white shadow-inner">
-            {isKata ? boardAkaScore : akaScore}
-          </div>
-        </div>
-
-        <!-- AO Card (Blue) -->
-        <div class="bg-gradient-to-r from-blue-950/90 via-[#0e1422] to-[#0c0e14] border border-blue-500/40 rounded-xl p-2 flex items-center justify-between shadow-inner relative overflow-hidden">
-          <div class="flex-1 min-w-0 pr-2">
-            <div class="flex items-center space-x-1.5">
-              <span class="px-1 py-0.2 bg-blue-600 text-white font-mono font-black text-[8px] rounded">AO</span>
-              <span class="font-black text-xs text-white truncate">{match.atlet2_nama || "Sudut Biru"}</span>
-            </div>
-            <div class="text-[9px] text-blue-200/80 font-medium truncate mt-0.5">{match.atlet2_kontingen || "-"}</div>
-            {#if isKata && kataAoName}
-              <div class="text-[9px] font-black text-amber-400 uppercase tracking-wide truncate mt-0.5">{kataAoName}</div>
-            {/if}
-            {#if matchWinner === "2"}
-              <div class="inline-flex items-center gap-1 mt-0.5 px-1.5 py-0.2 bg-gradient-to-r from-amber-400 to-amber-500 text-black font-mono font-black text-[8px] rounded uppercase shadow-sm">
-                PEMENANG
-              </div>
-            {/if}
-          </div>
-          <!-- AO Board Score -->
-          <div class="shrink-0 w-11 h-10 bg-black/80 border-2 {boardAoScore > boardAkaScore ? 'border-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.6)]' : 'border-[#2b2d31]'} rounded-lg flex items-center justify-center font-mono font-black text-xl text-white shadow-inner">
-            {isKata ? boardAoScore : aoScore}
-          </div>
-        </div>
-
-        <!-- Digital Timer Bar -->
-        <div class="bg-[#111216] border {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'border-red-500/60 bg-red-950/20' : 'border-white/10'} rounded-xl px-2.5 py-1 flex items-center justify-between font-mono transition-colors">
-          <div class="flex items-center space-x-1.5">
-            <span class="text-[9px] uppercase font-bold {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-400' : 'text-zinc-400'}">TIMER:</span>
-            <span class="text-xs font-black transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse drop-shadow-[0_0_8px_rgba(239,68,68,0.85)]' : isTimerRunning ? 'text-amber-300 drop-shadow-[0_0_8px_rgba(251,191,36,0.85)]' : 'text-white'}">
-              {timerFormatted.full}
-            </span>
-          </div>
-          <div class="flex items-center space-x-1">
-            {#if isKata}
-              {#if showKataScoreOnBoard}
-                <span class="px-1.5 py-0.2 rounded bg-amber-400 text-black font-mono font-black text-[8px] uppercase animate-pulse">
-                  POPUP AKTIF
-                </span>
-              {:else if isScorePublished}
-                <span class="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-mono font-bold text-[8px] uppercase">
-                  SKOR TAMPIL
-                </span>
-              {:else}
-                <span class="px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 font-mono font-bold text-[8px] uppercase">
-                  STANDBY (0-0)
-                </span>
-              {/if}
-            {/if}
-          </div>
-        </div>
-      </div>
-    {:else}
-      <!-- Collapsed Quick Status Bar -->
-      <div class="flex items-center space-x-2 text-xs font-mono py-0.5">
-        <span class="font-black text-red-400">AKA {isKata ? boardAkaScore : akaScore}</span>
-        <span class="text-zinc-500">-</span>
-        <span class="font-black text-blue-400">AO {isKata ? boardAoScore : aoScore}</span>
-        <span class="text-zinc-500">•</span>
-        <span class="font-bold transition-colors {isTimerRunning && timerMs <= 15000 && timerMs > 0 ? 'text-red-500 animate-pulse' : isTimerRunning ? 'text-amber-300' : 'text-white'}">{timerFormatted.mmss}</span>
-      </div>
-    {/if}
-  </aside>
 </div>
 
 <!-- ==================== DISCORD-STYLED KATA SELECT MODAL ==================== -->
@@ -2709,111 +3214,108 @@
 
 
 <!-- ==================== ROSTER ATLET PARTAI MODAL ==================== -->
+<!-- One list per corner (AO left, AKA right as on this panel): members of the team
+     category + kontingen first, other athletes of the kontingen folded below. -->
+{#snippet rosterColumn(side: "aka" | "ao")}
+  {@const info = teamMatchInfo!}
+  {@const all = side === "aka" ? info.candidate_atlets_aka : info.candidate_atlets_ao}
+  {@const members = all.filter((c) => c.same_nomor)}
+  {@const others = all.filter((c) => !c.same_nomor)}
+  {@const selectedId = side === "aka" ? rosterAkaId : rosterAoId}
+  {@const currentName = side === "aka" ? match.atlet1_nama : match.atlet2_nama}
+  {@const selected = all.find((c) => c.id === selectedId)}
+  <div class="min-w-0 flex flex-col rounded-xl border p-3 {side === 'aka' ? 'bg-red-950/20 border-red-500/30' : 'bg-blue-950/20 border-blue-500/30'}">
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <span class="px-2 py-0.5 rounded text-[10px] font-mono font-black text-white {side === 'aka' ? 'bg-red-600' : 'bg-blue-600'}">{side === "aka" ? "AKA" : "AO"}</span>
+      <span class="text-[11px] font-bold text-zinc-300 truncate">{side === "aka" ? info.team_aka_name : info.team_ao_name}</span>
+    </div>
+    <div class="text-[11px] text-zinc-400 mb-2 truncate">
+      Dipilih: <span class="font-bold text-white">{selected?.nama_atlet ?? currentName ?? "-"}</span>
+    </div>
+    <div class="flex-1 min-h-0 max-h-[46vh] overflow-y-auto flex flex-col gap-1.5 pr-0.5">
+      {#if all.length === 0}
+        <div class="text-xs text-zinc-400 py-6 text-center">Tidak ada atlet terdaftar untuk kontingen ini.</div>
+      {:else}
+        {#if members.length === 0}
+          <div class="text-[11px] text-amber-300/90 px-1 pb-1">Belum ada anggota terdaftar di nomor tanding ini.</div>
+        {/if}
+        {#each members as cand (cand.id)}
+          {@render rosterOption(side, cand, selectedId === cand.id)}
+        {/each}
+        {#if others.length > 0}
+          <details class="group" open={members.length === 0}>
+            <summary class="cursor-pointer select-none text-[11px] font-bold text-zinc-400 hover:text-zinc-200 px-1 py-1.5">
+              Atlet lain di kontingen ({others.length})
+            </summary>
+            <div class="flex flex-col gap-1.5 pt-1">
+              {#each others as cand (cand.id)}
+                {@render rosterOption(side, cand, selectedId === cand.id)}
+              {/each}
+            </div>
+          </details>
+        {/if}
+      {/if}
+    </div>
+  </div>
+{/snippet}
+
+{#snippet rosterOption(side: "aka" | "ao", cand: TeamCandidateAthlete, active: boolean)}
+  {@const played = rosterPlayedIn(side, cand.id)}
+  <button
+    type="button"
+    onclick={() => (side === "aka" ? (rosterAkaId = cand.id) : (rosterAoId = cand.id))}
+    aria-pressed={active}
+    class="w-full text-left px-3 py-2 rounded-lg border transition flex items-center gap-2 {active
+      ? (side === 'aka' ? 'bg-red-600 border-red-300 text-white shadow-md' : 'bg-blue-600 border-blue-300 text-white shadow-md')
+      : 'bg-[#111216] border-white/10 text-zinc-200 hover:border-white/30 hover:bg-[#1e2029]'}"
+  >
+    <span class="min-w-0 flex-1">
+      <span class="block text-xs font-black uppercase truncate">{cand.nama_atlet}</span>
+      {#if cand.perguruan_nama}
+        <span class="block text-[10px] truncate {active ? 'text-white/80' : 'text-zinc-500'}">{cand.perguruan_nama}</span>
+      {/if}
+    </span>
+    {#if played.length > 0}
+      <span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold {active ? 'bg-black/30 text-white' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}" title="Sudah bertanding di partai {played.join(', ')}">P{played.join(", P")}</span>
+    {/if}
+    {#if active}
+      <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>
+    {/if}
+  </button>
+{/snippet}
+
 {#if isRosterModalOpen && teamMatchInfo}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
-    <div class="relative w-full max-w-xl bg-[#181a20] border border-[#2b2d31] rounded-2xl shadow-2xl overflow-hidden flex flex-col">
-      <div class="p-4 border-b border-[#2b2d31] flex items-center justify-between bg-[#14161b]">
-        <div>
-          <h3 class="text-sm font-black text-white uppercase tracking-wider">
-            Atur Atlet Partai #{teamMatchInfo.active_bout_round || match.urutan || 1}
-          </h3>
-          <p class="text-xs text-zinc-400 mt-0.5">Pilih nama atlet dari daftar anggota kontingen atau ketik nama langsung.</p>
-        </div>
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+    <div class="relative w-full max-w-3xl max-h-[92vh] bg-[#181a20] border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      <div class="px-5 py-4 border-b border-[#2b2d31] flex items-center justify-between bg-[#14161b] shrink-0">
+        <h3 class="text-sm font-black text-white uppercase tracking-wider">
+          Atur Atlet Partai #{teamMatchInfo.active_bout_round || match.urutan || 1}
+        </h3>
         <button type="button" onclick={() => (isRosterModalOpen = false)} aria-label="Tutup modal roster" class="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white rounded-lg">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
         </button>
       </div>
 
-      <div class="p-5 space-y-4">
-        <!-- AKA Athlete Selection -->
-        <div class="bg-red-950/20 border border-red-500/30 rounded-xl p-3.5">
-          <div class="flex items-center justify-between mb-2">
-            <span class="text-xs font-mono font-bold text-red-400 uppercase">ATLET SUDUT MERAH (AKA)</span>
-            <span class="text-[10px] text-zinc-400">{teamMatchInfo.team_aka_name}</span>
-          </div>
-          {#if teamMatchInfo.candidate_atlets_aka.length > 0}
-            <div class="mb-2">
-              <label for="aka-candidate-select" class="block text-[11px] text-zinc-400 mb-1">Pilih dari Kontingen:</label>
-              <select
-                id="aka-candidate-select"
-                bind:value={rosterAkaId}
-                onchange={(e) => {
-                  const target = teamMatchInfo?.candidate_atlets_aka.find((a: TeamCandidateAthlete) => a.id === Number((e.target as HTMLSelectElement).value));
-                  if (target) rosterAkaCustom = target.nama_atlet;
-                }}
-                class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-red-500"
-              >
-                <option value={null}>-- Pilih Atlet Anggota --</option>
-                {#each teamMatchInfo.candidate_atlets_aka as cand}
-                  <option value={cand.id}>{cand.nama_atlet} {cand.perguruan_nama ? `(${cand.perguruan_nama})` : ''}</option>
-                {/each}
-              </select>
-            </div>
-          {/if}
-          <div>
-            <label for="aka-custom-name" class="block text-[11px] text-zinc-400 mb-1">Nama Tampil / Custom:</label>
-            <input
-              id="aka-custom-name"
-              type="text"
-              bind:value={rosterAkaCustom}
-              placeholder="Ketik nama atlet AKA..."
-              class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-red-500"
-            />
-          </div>
-        </div>
-
-        <!-- AO Athlete Selection -->
-        <div class="bg-blue-950/20 border border-blue-500/30 rounded-xl p-3.5">
-          <div class="flex items-center justify-between mb-2">
-            <span class="text-xs font-mono font-bold text-blue-400 uppercase">ATLET SUDUT BIRU (AO)</span>
-            <span class="text-[10px] text-zinc-400">{teamMatchInfo.team_ao_name}</span>
-          </div>
-          {#if teamMatchInfo.candidate_atlets_ao.length > 0}
-            <div class="mb-2">
-              <label for="ao-candidate-select" class="block text-[11px] text-zinc-400 mb-1">Pilih dari Kontingen:</label>
-              <select
-                id="ao-candidate-select"
-                bind:value={rosterAoId}
-                onchange={(e) => {
-                  const target = teamMatchInfo?.candidate_atlets_ao.find((a: TeamCandidateAthlete) => a.id === Number((e.target as HTMLSelectElement).value));
-                  if (target) rosterAoCustom = target.nama_atlet;
-                }}
-                class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-              >
-                <option value={null}>-- Pilih Atlet Anggota --</option>
-                {#each teamMatchInfo.candidate_atlets_ao as cand}
-                  <option value={cand.id}>{cand.nama_atlet} {cand.perguruan_nama ? `(${cand.perguruan_nama})` : ''}</option>
-                {/each}
-              </select>
-            </div>
-          {/if}
-          <div>
-            <label for="ao-custom-name" class="block text-[11px] text-zinc-400 mb-1">Nama Tampil / Custom:</label>
-            <input
-              id="ao-custom-name"
-              type="text"
-              bind:value={rosterAoCustom}
-              placeholder="Ketik nama atlet AO..."
-              class="w-full bg-[#111216] border border-[#2b2d31] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-            />
-          </div>
-        </div>
+      <div class="p-4 grid grid-cols-2 gap-3 min-h-0 overflow-hidden">
+        {@render rosterColumn("ao")}
+        {@render rosterColumn("aka")}
       </div>
 
-      <div class="p-3 bg-[#14161b] border-t border-[#2b2d31] flex items-center justify-end gap-2">
+      <div class="px-4 py-3 bg-[#14161b] border-t border-[#2b2d31] flex items-center justify-end gap-2 shrink-0">
         <button
           type="button"
           onclick={() => (isRosterModalOpen = false)}
-          class="px-4 py-2 bg-[#1e2029] hover:bg-[#2b2d31] text-zinc-300 text-xs font-bold rounded-lg transition"
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] transition"
         >
           Batal
         </button>
         <button
           type="button"
           onclick={handleSaveRoster}
-          class="px-5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black rounded-lg transition shadow-md"
+          disabled={isSavingRoster}
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition disabled:opacity-50"
         >
-          Simpan Roster Atlet
+          {isSavingRoster ? "Menyimpan..." : "Simpan Atlet"}
         </button>
       </div>
     </div>
@@ -2896,3 +3398,32 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* Board preview in the kumite center column: as large as fits, 16:9, never taller
+     than the space the controls leave (no scrolling in the center column) */
+  .cp-preview {
+    aspect-ratio: 16 / 9;
+    width: min(100cqw, calc(100cqh * 16 / 9));
+  }
+
+  /* Short screens (small operator laptops): compact AO / AKA cards so the whole
+     card fits without scrolling. Component CSS is unlayered, so it wins over the
+     Tailwind utilities on the same elements. */
+  @media (max-height: 760px) {
+    .cp-pod { padding: 0.75rem; }
+    .cp-pod-head { padding-bottom: 0.5rem; margin-bottom: 0.5rem; }
+    .cp-pod-name { font-size: 1.125rem; line-height: 1.25; }
+    .cp-score-row { margin-bottom: 0.625rem; }
+    .cp-score-box { height: 4.25rem; }
+    .cp-score-num { font-size: 3.25rem; line-height: 1; }
+    .cp-senshu { width: 4.25rem; height: 4.25rem; }
+    .cp-senshu-icon { width: 1.25rem; height: 1.25rem; }
+    .cp-deck { margin-bottom: 0.625rem; }
+    .cp-deck > button { height: 2.5rem; }
+    .cp-pen { padding: 0.5rem; margin-bottom: 0.5rem; }
+    .cp-pen > div:first-child { margin-bottom: 0.25rem; }
+    .cp-pen button { height: 2.25rem; }
+    .cp-extras { margin-top: 0.5rem; }
+  }
+</style>

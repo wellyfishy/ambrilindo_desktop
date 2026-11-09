@@ -322,17 +322,33 @@ export interface TatamiSocket {
  * (`/ws/<role>/<tatami>`). The host relays to it only that tatami's traffic plus
  * global messages. `onOpen` runs after every (re)connect.
  */
+export interface TatamiSocketOptions {
+  /**
+   * Watchdog for half-open connections (e.g. Wi-Fi dropped without a close):
+   * after this many ms without any message, `onStale` runs (ask for fresh state);
+   * if nothing arrives within 5 s after that, the socket is dropped and reopened.
+   */
+  staleMs?: number;
+  onStale?: (socket: TatamiSocket) => void;
+}
+
 export function connectTatamiSocket(
   role: string,
   tatami: number,
   onMessage: (msg: any) => void,
   onOpen?: (socket: TatamiSocket) => void,
   /** Runs when the connection drops (it reconnects by itself). */
-  onClose?: () => void
+  onClose?: () => void,
+  options: TatamiSocketOptions = {}
 ): TatamiSocket {
   let ws: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let watchdog: ReturnType<typeof setInterval> | null = null;
   let closed = false;
+  // Reconnect quickly first (0.5 s), then back off to 3 s
+  let retryDelay = 500;
+  let lastMessageAt = 0;
+  let staleAskedAt = 0;
 
   const handle: TatamiSocket = {
     send(data) {
@@ -345,6 +361,11 @@ export function connectTatamiSocket(
     close() {
       closed = true;
       if (retryTimer) clearTimeout(retryTimer);
+      if (watchdog) clearInterval(watchdog);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", reconnectNow);
+        document.removeEventListener("visibilitychange", onVisible);
+      }
       try {
         ws?.close();
       } catch (_) {}
@@ -352,33 +373,102 @@ export function connectTatamiSocket(
     },
   };
 
+  function scheduleRetry() {
+    if (closed || retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      connect();
+    }, retryDelay);
+    retryDelay = Math.min(3000, retryDelay * 2);
+  }
+
+  /** Drop whatever we have and connect again right away */
+  function reconnectNow() {
+    if (closed) return;
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    retryDelay = 500;
+    try {
+      ws?.close();
+    } catch (_) {}
+    ws = null;
+    connect();
+  }
+
+  // A tablet waking up from sleep: check the link immediately
+  function onVisible() {
+    if (document.visibilityState === "visible") reconnectNow();
+  }
+
   function connect() {
     if (closed || typeof window === "undefined") return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     const base = getHostBaseUrl().replace(/^http/, "ws");
+    let sock: WebSocket;
     try {
-      ws = new WebSocket(`${base}/ws/${role}/${tatami}`);
+      sock = new WebSocket(`${base}/ws/${role}/${tatami}`);
     } catch (_) {
-      retryTimer = setTimeout(connect, 3000);
+      scheduleRetry();
       return;
     }
-    ws.onopen = () => onOpen?.(handle);
-    ws.onmessage = (ev) => {
+    ws = sock;
+    sock.onopen = () => {
+      retryDelay = 500;
+      lastMessageAt = Date.now();
+      staleAskedAt = 0;
+      onOpen?.(handle);
+    };
+    sock.onmessage = (ev) => {
+      lastMessageAt = Date.now();
+      staleAskedAt = 0;
       try {
         onMessage(JSON.parse(ev.data));
       } catch (_) {}
     };
-    ws.onclose = () => {
+    sock.onclose = () => {
+      if (ws !== sock) return; // an older socket we already replaced
       ws = null;
       if (!closed) {
         onClose?.();
-        retryTimer = setTimeout(connect, 3000);
+        scheduleRetry();
       }
     };
-    ws.onerror = () => {
+    sock.onerror = () => {
       try {
-        ws?.close();
+        sock.close();
       } catch (_) {}
     };
+  }
+
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", reconnectNow);
+    document.addEventListener("visibilitychange", onVisible);
+    if (options.staleMs && options.staleMs > 0) {
+      const staleMs = options.staleMs;
+      watchdog = setInterval(() => {
+        if (closed || !ws || ws.readyState !== WebSocket.OPEN) return;
+        const quiet = Date.now() - lastMessageAt;
+        if (quiet < staleMs) return;
+        if (!staleAskedAt) {
+          staleAskedAt = Date.now();
+          options.onStale?.(handle);
+        } else if (Date.now() - staleAskedAt > 5000) {
+          // Asked for fresh state and still heard nothing: the link is dead
+          staleAskedAt = 0;
+          const dead = ws;
+          ws = null;
+          try {
+            dead.close();
+          } catch (_) {}
+          onClose?.();
+          retryDelay = 500;
+          connect();
+        }
+      }, 1000);
+    }
   }
 
   connect();

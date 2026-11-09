@@ -497,6 +497,12 @@ pub struct SaveMatchInput {
     pub vr2: bool,
     pub hantei: bool,
     pub selesai: bool,
+    /// Kata: the 5 judges' scores per side as a JSON array of strings
+    /// (e.g. `["8.2","7.9","8.0","8.1","7.6"]`). None leaves the stored value as is.
+    #[serde(default)]
+    pub juri_scores1: Option<String>,
+    #[serde(default)]
+    pub juri_scores2: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -929,6 +935,9 @@ pub struct TeamCandidateAthlete {
     pub nama_atlet: String,
     pub perguruan_nama: Option<String>,
     pub utusan_nama: Option<String>,
+    /// registered in this team category (nomor tanding), i.e. a team member
+    #[serde(default)]
+    pub same_nomor: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

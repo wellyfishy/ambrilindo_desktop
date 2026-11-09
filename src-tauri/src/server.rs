@@ -709,14 +709,21 @@ async fn save_match_kata_api(
 pub struct VrChallengeInput {
     pub tatami: i64,
     pub side: String, // "aka" | "ao"
+    #[serde(default)]
     pub reason: String,
+    /// Point value the coach asks for (1 YUKO, 2 WAZA-ARI, 3 IPPON)
+    #[serde(default)]
+    pub points: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct VrResolveInput {
     pub tatami: i64,
     pub side: String, // "aka" | "ao"
-    pub decision: String, // "accepted" | "rejected" | "cancelled"
+    pub decision: String, // "accepted" | "rejected" | "minai" | "cancelled"
+    /// Points awarded when accepted
+    #[serde(default)]
+    pub points: Option<i64>,
 }
 
 async fn submit_vr_challenge_api(
@@ -736,6 +743,7 @@ async fn submit_vr_challenge_api(
             "tatami": payload.tatami,
             "side": payload.side,
             "reason": payload.reason,
+            "points": payload.points,
             "timestamp": now,
         }),
     };
@@ -765,6 +773,7 @@ async fn resolve_vr_challenge_api(
             "tatami": payload.tatami,
             "side": payload.side,
             "decision": payload.decision,
+            "points": payload.points,
             "timestamp": now,
         }),
     };
@@ -2454,6 +2463,13 @@ async fn dispatch_command_api(
             let t_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]).unwrap_or(1);
             match db.get_tatami_booklet_data(ev_id, d_id, t_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_match_juri_scores" => {
+            let m_id = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            match db.get_match_juri_scores(m_id).await {
+                Ok((s1, s2)) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": { "juri_scores1": s1, "juri_scores2": s2 } }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },

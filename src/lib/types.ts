@@ -306,6 +306,9 @@ export interface SaveMatchInput {
   vr2: boolean;
   hantei: boolean;
   selesai: boolean;
+  /** Kata: 5 judges' scores per side as a JSON array string; omit to keep the stored value */
+  juri_scores1?: string | null;
+  juri_scores2?: string | null;
 }
 
 export interface UpdateMatchAthletesInput {
@@ -720,6 +723,8 @@ export interface TeamCandidateAthlete {
   nama_atlet: string;
   perguruan_nama: string | null;
   utusan_nama: string | null;
+  /** registered in this team category (nomor tanding): a team member */
+  same_nomor: boolean;
 }
 
 export interface TeamMatchInfo {

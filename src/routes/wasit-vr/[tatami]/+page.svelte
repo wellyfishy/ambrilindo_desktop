@@ -1,556 +1,286 @@
 <script lang="ts">
+  // VR referee tablet (as in Ambrilindo Local): shows each corner's open request
+  // from the coach and decides it: ACCEPT (+the value asked for), DECLINE (card
+  // lost) or MINAI (inconclusive, card kept). Both corners can be under review at
+  // once. Everything comes from the control panel's live state, so match changes
+  // and reconnects show the latest data straight away.
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/state";
+  import {
+    connectVrLink,
+    emptyView,
+    mergeLiveState,
+    sendVrDecision,
+    formatClock,
+    POINT_NAME,
+    type LinkStatus,
+    type VrLink,
+    type VrSide,
+    type VrView,
+  } from "$lib/vrLink";
 
   let tatamiNumber = $derived(Number(page.params.tatami || "1"));
 
-  // Connection state
-  let isWsConnected = $state(false);
-  let wsClient: WebSocket | null = null;
-  let reconnectInterval: any = null;
-  let broadcastChannel: BroadcastChannel | null = null;
+  let view = $state<VrView>(emptyView(1));
+  let status = $state<LinkStatus>("connecting");
+  let link: VrLink | null = null;
+  let now = $state(Date.now());
+  let ticker: ReturnType<typeof setInterval> | null = null;
 
-  // Active match data
-  let matchCategory = $state("KUMITE PERORANGAN");
-  let matchRound = $state("BABAK PENYISIHAN");
-  let matchNumber = $state("1");
-  let timerText = $state("02:00");
-  let isTimerRunning = $state(false);
+  // When this tablet first saw each open request (for the review stopwatch;
+  // independent of the operator laptop's clock)
+  const seenAt: Record<VrSide, { ts: number; at: number } | null> = { aka: null, ao: null };
+  let seenTick = $state(0);
 
-  // Combatant & Card Status
-  let akaName = $state("SUDUT MERAH (AKA)");
-  let akaClub = $state("—");
-  let akaScore = $state(0);
-  let hasVr1Burned = $state(false);
+  // Decision sent, waiting for the control panel to confirm it
+  let sending = $state<{ aka: { decision: string; at: number } | null; ao: { decision: string; at: number } | null }>({ aka: null, ao: null });
 
-  let aoName = $state("SUDUT BIRU (AO)");
-  let aoClub = $state("—");
-  let aoScore = $state(0);
-  let hasVr2Burned = $state(false);
-
-  // Active Challenge State
-  interface ActiveChallenge {
-    side: "aka" | "ao";
-    reason: string;
-    timestamp: number;
-    status: "in_progress" | "accepted" | "rejected";
+  // Review log for this match
+  interface LogRow {
+    key: string;
+    time: string;
+    side: VrSide;
+    asked?: number;
+    decision: "accepted" | "rejected" | "minai";
+    points?: number;
   }
-  let activeChallenge = $state<ActiveChallenge | null>(null);
-  let isSubmittingDecision = $state(false);
-  let elapsedReviewSec = $state(0);
-  let reviewTimerInterval: any = null;
+  let log = $state<LogRow[]>([]);
 
-  // Manual Trigger Modal State
-  let showManualModal = $state(false);
-  let manualSide = $state<"aka" | "ao">("aka");
-  let manualReason = $state("IPPON (3 Poin)");
+  // Value the coach asked for, remembered for the log after the decision
+  const askedFor: Record<VrSide, number | undefined> = { aka: undefined, ao: undefined };
 
-  function handleLivePayload(data: any) {
-    if (!data) return;
-    if (data.tatami && data.tatami != tatamiNumber) return;
-
-    if (data.type === "vr_challenge_started") {
-      activeChallenge = {
-        side: data.side,
-        reason: data.reason,
-        timestamp: data.timestamp || Date.now(),
-        status: "in_progress",
-      };
-      elapsedReviewSec = 0;
-      if (reviewTimerInterval) clearInterval(reviewTimerInterval);
-      reviewTimerInterval = setInterval(() => {
-        elapsedReviewSec += 1;
-      }, 1000);
-      return;
+  function applyState(data: any) {
+    const prevMatch = view.matchId;
+    view = mergeLiveState(view, data);
+    if (prevMatch !== null && view.matchId !== prevMatch) {
+      // New match on this tatami: start clean
+      log = [];
+      sending = { aka: null, ao: null };
+      seenAt.aka = null;
+      seenAt.ao = null;
     }
-
-    if (data.type === "vr_challenge_resolved") {
-      if (data.decision === "rejected") {
-        if (data.side === "aka") hasVr1Burned = true;
-        if (data.side === "ao") hasVr2Burned = true;
-      }
-      if (activeChallenge) {
-        activeChallenge = {
-          ...activeChallenge,
-          status: data.decision === "accepted" ? "accepted" : "rejected",
-        };
-        if (reviewTimerInterval) {
-          clearInterval(reviewTimerInterval);
-          reviewTimerInterval = null;
+    for (const side of ["aka", "ao"] as const) {
+      const req = view.requests[side];
+      if (req && req.status === "in_progress") {
+        if (!seenAt[side] || seenAt[side]!.ts !== req.timestamp) {
+          seenAt[side] = { ts: req.timestamp, at: Date.now() };
+          seenTick++;
         }
-        setTimeout(() => {
-          activeChallenge = null;
-        }, 3500);
       }
-      return;
-    }
-
-    // Apply tatami_live_state payload
-    if (data.category) matchCategory = data.category;
-    if (data.round) matchRound = data.round;
-    if (data.matchNumber !== undefined) matchNumber = String(data.matchNumber);
-
-    if (data.timerMs !== undefined) {
-      const totalSec = Math.max(0, Math.floor(data.timerMs / 1000));
-      const m = Math.floor(totalSec / 60);
-      const s = totalSec % 60;
-      timerText = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-    }
-    if (data.isTimerRunning !== undefined) isTimerRunning = data.isTimerRunning;
-
-    if (data.aka) {
-      if (data.aka.name) akaName = data.aka.name;
-      if (data.aka.contingent) akaClub = data.aka.contingent;
-      if (data.aka.score !== undefined) akaScore = data.aka.score;
-      if (data.aka.vr !== undefined) hasVr1Burned = data.aka.vr;
-    }
-
-    if (data.ao) {
-      if (data.ao.name) aoName = data.ao.name;
-      if (data.ao.contingent) aoClub = data.ao.contingent;
-      if (data.ao.score !== undefined) aoScore = data.ao.score;
-      if (data.ao.vr !== undefined) hasVr2Burned = data.ao.vr;
+      if (req && req.status !== "in_progress") {
+        const key = `${side}-${req.timestamp}-${req.status}`;
+        if (!log.some((r) => r.key === key)) {
+          const t = new Date();
+          log = [
+            {
+              key,
+              time: `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}:${String(t.getSeconds()).padStart(2, "0")}`,
+              side,
+              asked: askedFor[side],
+              decision: req.status,
+              points: req.points,
+            },
+            ...log,
+          ].slice(0, 20);
+        }
+      }
+      if (req?.status === "in_progress") askedFor[side] = req.points;
+      // Our decision has landed (or the request is gone): stop "sending"
+      if (sending[side] && (!req || req.status !== "in_progress")) sending = { ...sending, [side]: null };
     }
   }
 
-  function initWebSocket() {
-    if (typeof window === "undefined") return;
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/ws/vr/${tatamiNumber}`;
-
-    try {
-      wsClient = new WebSocket(wsUrl);
-
-      wsClient.onopen = () => {
-        isWsConnected = true;
-      };
-
-      wsClient.onmessage = (event) => {
-        try {
-          const parsed = JSON.parse(event.data);
-          handleLivePayload(parsed);
-        } catch {}
-      };
-
-      wsClient.onclose = () => {
-        isWsConnected = false;
-      };
-
-      wsClient.onerror = () => {
-        isWsConnected = false;
-      };
-    } catch {
-      isWsConnected = false;
-    }
+  function decide(side: VrSide, decision: "accepted" | "rejected" | "minai") {
+    const req = view.requests[side];
+    if (!req || req.status !== "in_progress" || sending[side]) return;
+    sending = { ...sending, [side]: { decision, at: Date.now() } };
+    sendVrDecision(tatamiNumber, side, decision, decision === "accepted" ? req.points : undefined);
+    navigator.vibrate?.(decision === "accepted" ? [100, 50, 100] : [200]);
   }
 
-  async function resolveChallenge(decision: "accepted" | "rejected" | "cancelled") {
-    if (!activeChallenge) return;
-    isSubmittingDecision = true;
-
-    const payload = {
-      tatami: tatamiNumber,
-      side: activeChallenge.side,
-      decision,
-    };
-
-    try {
-      // 1. Send via REST endpoint
-      await fetch("/api/vr/resolve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      // 2. Also send over WebSocket if open
-      if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-        wsClient.send(
-          JSON.stringify({
-            type: "vr_challenge_resolved",
-            tatami: tatamiNumber,
-            side: activeChallenge.side,
-            decision,
-          })
-        );
-      }
-
-      // 3. BroadcastChannel fallback
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({
-          type: "vr_challenge_resolved",
-          tatami: tatamiNumber,
-          side: activeChallenge.side,
-          decision,
-        });
-      }
-
-      if (decision === "rejected") {
-        if (activeChallenge.side === "aka") hasVr1Burned = true;
-        if (activeChallenge.side === "ao") hasVr2Burned = true;
-      }
-
-      activeChallenge.status = decision === "accepted" ? "accepted" : "rejected";
-      if (reviewTimerInterval) {
-        clearInterval(reviewTimerInterval);
-        reviewTimerInterval = null;
-      }
-
-      setTimeout(() => {
-        activeChallenge = null;
-      }, 3500);
-
-      if (typeof navigator !== "undefined" && navigator.vibrate) {
-        navigator.vibrate(decision === "accepted" ? [100, 50, 100] : [200]);
-      }
-    } catch (err) {
-      console.error("Gagal mengirim keputusan VR:", err);
-    } finally {
-      isSubmittingDecision = false;
-    }
-  }
-
-  async function startManualChallenge() {
-    const payload = {
-      tatami: tatamiNumber,
-      side: manualSide,
-      reason: manualReason,
-    };
-
-    try {
-      await fetch("/api/vr/challenge", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-        wsClient.send(
-          JSON.stringify({
-            type: "vr_challenge_started",
-            tatami: tatamiNumber,
-            side: manualSide,
-            reason: manualReason,
-          })
-        );
-      }
-      activeChallenge = {
-        side: manualSide,
-        reason: manualReason,
-        timestamp: Date.now(),
-        status: "in_progress",
-      };
-      showManualModal = false;
-    } catch (err) {
-      console.error(err);
-    }
+  function elapsed(side: VrSide): string {
+    void seenTick;
+    const s = seenAt[side];
+    if (!s) return "00:00";
+    return formatClock(now - s.at);
   }
 
   onMount(() => {
-    initWebSocket();
-    reconnectInterval = setInterval(() => {
-      if (!wsClient || wsClient.readyState === WebSocket.CLOSED) {
-        initWebSocket();
-      }
-    }, 3000);
-
-    if (typeof BroadcastChannel !== "undefined") {
-      broadcastChannel = new BroadcastChannel("ambrilindo_live_sync");
-      broadcastChannel.onmessage = (event) => {
-        handleLivePayload(event.data);
-      };
-    }
+    view = emptyView(tatamiNumber);
+    link = connectVrLink("wasit-vr", tatamiNumber, applyState, (s) => (status = s));
+    ticker = setInterval(() => (now = Date.now()), 500);
   });
 
   onDestroy(() => {
-    if (reconnectInterval) clearInterval(reconnectInterval);
-    if (reviewTimerInterval) clearInterval(reviewTimerInterval);
-    if (wsClient) wsClient.close();
-    if (broadcastChannel) broadcastChannel.close();
+    link?.close();
+    if (ticker) clearInterval(ticker);
   });
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+    else document.exitFullscreen?.().catch(() => {});
+  }
+
+  let bothOpen = $derived(view.requests.aka?.status === "in_progress" && view.requests.ao?.status === "in_progress");
+
+  // Decision table side: AO on the left, AKA on the right (as in Ambrilindo Local)
+  const SIDES: { side: VrSide; label: string }[] = [
+    { side: "ao", label: "AO (BIRU)" },
+    { side: "aka", label: "AKA (MERAH)" },
+  ];
 </script>
 
-<div class="min-h-screen bg-[#0a0c10] text-zinc-100 flex flex-col font-sans select-none overflow-x-hidden">
-  <!-- Top Cockpit Header -->
-  <header class="bg-[#12141a] border-b border-white/10 px-6 py-4 flex items-center justify-between shadow-xl">
-    <div class="flex items-center space-x-3">
-      <div class="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 font-mono font-black flex items-center justify-center text-lg shadow-inner">
-        T{tatamiNumber}
-      </div>
-      <div>
-        <div class="text-[10px] uppercase font-mono font-bold text-amber-500 tracking-wider">
-          Chief Referee • Video Review Table
+<div class="min-h-screen bg-[#0e1014] text-zinc-100 flex flex-col font-sans select-none">
+  <!-- Header -->
+  <header class="bg-[#14161c] border-b border-white/10 px-4 py-3 flex items-center justify-between gap-3 sticky top-0 z-30">
+    <div class="flex items-center gap-3 min-w-0">
+      <div class="px-2.5 py-1 rounded-lg bg-amber-500 text-black font-black text-sm shrink-0">T{tatamiNumber}</div>
+      <div class="min-w-0">
+        <div class="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Wasit Video Review</div>
+        <div class="text-xs font-black text-white uppercase truncate">
+          {view.category || "Menunggu data partai…"}{view.round ? ` · ${view.round}` : ""}{view.matchNumber ? ` · Partai ${view.matchNumber}` : ""}
         </div>
-        <h1 class="text-sm font-black text-white uppercase tracking-tight">
-          TATAMI {tatamiNumber} VIDEO REVIEW CONSOLE
-        </h1>
       </div>
     </div>
-
-    <!-- Right Controls -->
-    <div class="flex items-center gap-3">
-      <!-- Status Badge -->
-      <div class="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-mono {isWsConnected ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'}">
-        <span class="w-2 h-2 rounded-full {isWsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}"></span>
-        <span>{isWsConnected ? 'LAN ONLINE' : 'OFFLINE'}</span>
-      </div>
-
-      <!-- Manual Trigger Button -->
-      {#if !activeChallenge}
-        <button
-          type="button"
-          onclick={() => (showManualModal = true)}
-          class="px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-zinc-300 border border-white/10 text-xs font-bold transition flex items-center gap-1.5 active:scale-95"
-        >
-          <span>+ Uji Manual VR</span>
-        </button>
-      {/if}
+    <div class="flex items-center gap-2 shrink-0">
+      <span class="hidden sm:inline px-2.5 py-1 rounded-lg bg-black/40 border border-white/10 font-mono text-xs font-bold">
+        {formatClock(view.timerMs)}{view.isTimerRunning ? " ▶" : ""}
+      </span>
+      <span class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-bold border
+        {status === 'live' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : status === 'offline' ? 'bg-rose-500/15 text-rose-400 border-rose-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}">
+        <span class="w-2 h-2 rounded-full {status === 'live' ? 'bg-emerald-400' : status === 'offline' ? 'bg-rose-500' : 'bg-amber-400 animate-pulse'}"></span>
+        {status === "live" ? "ONLINE" : status === "offline" ? "OFFLINE" : "MENYAMBUNG ULANG…"}
+      </span>
+      <button type="button" onclick={toggleFullscreen} class="w-8 h-8 rounded-lg border border-white/10 text-zinc-400 hover:text-white flex items-center justify-center" aria-label="Layar penuh">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4h4M20 8V4h-4M4 16v4h4M20 16v4h-4"/></svg>
+      </button>
     </div>
   </header>
 
-  <!-- Main Display Screen -->
-  <main class="flex-1 p-6 max-w-4xl mx-auto w-full flex flex-col justify-center space-y-6">
-    {#if activeChallenge}
-      <!-- ACTIVE CHALLENGE IN PROGRESS SCREEN -->
-      <div class="rounded-3xl border-2 p-8 shadow-2xl space-y-6 transition-all {activeChallenge.status === 'accepted' ? 'bg-emerald-950/40 border-emerald-500/80 shadow-emerald-950/50' : activeChallenge.status === 'rejected' ? 'bg-rose-950/40 border-rose-500/80 shadow-rose-950/50' : (activeChallenge.side === 'aka' ? 'bg-red-950/40 border-red-500 shadow-red-950/50' : 'bg-blue-950/40 border-blue-500 shadow-blue-950/50')}">
-        
-        <!-- Challenge Header Banner -->
-        <div class="flex items-center justify-between pb-4 border-b border-white/10">
-          <div class="flex items-center gap-3">
-            <span class="w-4 h-4 rounded-full {activeChallenge.side === 'aka' ? 'bg-red-500 animate-ping' : 'bg-blue-500 animate-ping'}"></span>
-            <span class="text-sm font-mono font-black uppercase tracking-wider text-white">
-              PERMOHONAN VIDEO REVIEW AKTIF
-            </span>
-          </div>
-
-          <!-- Review Stopwatch -->
-          <div class="px-3 py-1 rounded-xl bg-black/60 border border-white/10 font-mono text-xs font-bold text-amber-400 flex items-center gap-1.5">
-            <span>Durasi Tinjauan:</span>
-            <span class="text-sm font-black text-white">{String(Math.floor(elapsedReviewSec / 60)).padStart(2, '0')}:{String(elapsedReviewSec % 60).padStart(2, '0')}</span>
-          </div>
-        </div>
-
-        <!-- Big Challenged Party Banner -->
-        <div class="text-center py-4 space-y-2">
-          <div class="inline-block px-4 py-1.5 rounded-full font-mono font-black text-xs uppercase tracking-widest {activeChallenge.side === 'aka' ? 'bg-red-500 text-white shadow-lg shadow-red-500/30' : 'bg-blue-500 text-white shadow-lg shadow-blue-500/30'}">
-            CHALLENGE DARI PELATIH {activeChallenge.side.toUpperCase()} ({activeChallenge.side === 'aka' ? 'SUDUT MERAH' : 'SUDUT BIRU'})
-          </div>
-
-          <h2 class="text-3xl font-black text-white tracking-tight uppercase">
-            {activeChallenge.side === 'aka' ? akaName : aoName}
-          </h2>
-          <p class="text-xs text-zinc-400">
-            {activeChallenge.side === 'aka' ? akaClub : aoClub}
-          </p>
-        </div>
-
-        <!-- Reason Card -->
-        <div class="bg-black/50 border border-white/15 rounded-2xl p-5 text-center space-y-1">
-          <span class="text-[11px] font-mono font-bold text-amber-400 uppercase tracking-widest block">
-            ALASAN / POIN YANG DIMINTA:
-          </span>
-          <div class="text-xl font-black text-white tracking-wide">
-            {activeChallenge.reason}
-          </div>
-        </div>
-
-        <!-- Decision Status or Decision Buttons -->
-        {#if activeChallenge.status === 'in_progress'}
-          <div class="space-y-4 pt-2">
-            <div class="text-center text-xs font-mono text-zinc-400 uppercase tracking-wider">
-              Silakan periksa tayangan ulang pada monitor video dan tentukan keputusan:
-            </div>
-
-            <!-- Big Action Buttons -->
-            <div class="grid grid-cols-2 gap-4">
-              <!-- ACCEPT (TERIMA) -->
-              <button
-                type="button"
-                disabled={isSubmittingDecision}
-                onclick={() => resolveChallenge("accepted")}
-                class="py-5 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-base uppercase tracking-wider transition shadow-xl shadow-emerald-950/60 active:scale-98 flex flex-col items-center justify-center gap-1 group"
-              >
-                <div class="flex items-center gap-2">
-                  <svg class="w-6 h-6 fill-current" viewBox="0 0 24 24">
-                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-                  </svg>
-                  <span>TERIMA CHALLENGE</span>
-                </div>
-                <span class="text-[10px] font-normal text-emerald-200 opacity-90 group-hover:opacity-100">
-                  Poin/pelanggaran disahkan • Pelatih tetap simpan kartu
-                </span>
-              </button>
-
-              <!-- REJECT (TOLAK) -->
-              <button
-                type="button"
-                disabled={isSubmittingDecision}
-                onclick={() => resolveChallenge("rejected")}
-                class="py-5 px-6 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-black text-base uppercase tracking-wider transition shadow-xl shadow-rose-950/60 active:scale-98 flex flex-col items-center justify-center gap-1 group"
-              >
-                <div class="flex items-center gap-2">
-                  <svg class="w-6 h-6 fill-current" viewBox="0 0 24 24">
-                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-                  </svg>
-                  <span>TOLAK CHALLENGE</span>
-                </div>
-                <span class="text-[10px] font-normal text-rose-200 opacity-90 group-hover:opacity-100">
-                  Keputusan wasit tatami tetap • Kartu pelatih HANGUS
-                </span>
-              </button>
-            </div>
-
-            <!-- Cancel Button -->
-            <div class="text-center pt-2">
-              <button
-                type="button"
-                disabled={isSubmittingDecision}
-                onclick={() => resolveChallenge("cancelled")}
-                class="text-xs text-zinc-500 hover:text-zinc-300 font-mono underline"
-              >
-                Batalkan Permohonan (Salah Tekan / Dismiss)
-              </button>
-            </div>
-          </div>
-        {:else}
-          <!-- Resolution Banner -->
-          <div class="text-center py-6 space-y-2">
-            {#if activeChallenge.status === 'accepted'}
-              <div class="text-3xl font-black text-emerald-400 uppercase tracking-tight">
-                ✓ CHALLENGE DITERIMA
-              </div>
-              <p class="text-xs text-emerald-200">
-                Poin / koreksi berhasil dikonfirmasi. Pelatih mempertahankan kartu review.
-              </p>
-            {:else}
-              <div class="text-3xl font-black text-rose-400 uppercase tracking-tight">
-                ✕ CHALLENGE DITOLAK
-              </div>
-              <p class="text-xs text-rose-200">
-                Keputusan wasit tatami dipertahankan. Kartu review pelatih hangus.
-              </p>
-            {/if}
-          </div>
-        {/if}
-      </div>
-    {:else}
-      <!-- STANDBY DASHBOARD SCREEN -->
-      <div class="rounded-3xl border border-white/10 bg-[#12141a] p-8 shadow-2xl text-center space-y-8">
-        <div class="space-y-2">
-          <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono font-bold tracking-wider uppercase">
-            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span>SISTEM VR SIAP &amp; TERHUBUNG</span>
-          </div>
-          <h2 class="text-2xl font-black text-white uppercase tracking-tight">
-            STANDBY • MENUNGGU PERMOHONAN PELATIH
-          </h2>
-          <p class="text-xs text-zinc-400">
-            Layar ini akan otomatis menampilkan permohonan challenge begitu pelatih menekan tombol pada Pengawas.
-          </p>
-        </div>
-
-        <!-- Current Match Snapshot -->
-        <div class="bg-black/40 border border-white/10 rounded-2xl p-6 grid grid-cols-3 items-center gap-4">
-          <!-- Aka -->
-          <div class="text-left space-y-1">
-            <div class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded-full bg-red-500"></span>
-              <span class="text-xs font-black text-red-400 uppercase tracking-wider">AKA (MERAH)</span>
-            </div>
-            <div class="text-sm font-bold text-white truncate">{akaName}</div>
-            <div class="text-[10px] text-zinc-400 truncate">{akaClub}</div>
-            <div class="text-xs font-mono font-bold {hasVr1Burned ? 'text-zinc-500' : 'text-emerald-400'}">
-              VR: {hasVr1Burned ? 'HANGUS' : 'TERSEDIA'}
-            </div>
-          </div>
-
-          <!-- Center Timer & Score -->
-          <div class="text-center space-y-2">
-            <div class="text-[10px] font-mono text-zinc-400 uppercase">{matchRound}</div>
-            <div class="text-3xl font-black font-mono text-white tracking-wider">
-              <span class="text-red-400">{akaScore}</span>
-              <span class="text-zinc-600 mx-2">-</span>
-              <span class="text-blue-400">{aoScore}</span>
-            </div>
-            <div class="text-xs font-mono text-amber-400 font-bold">{timerText}</div>
-          </div>
-
-          <!-- Ao -->
-          <div class="text-right space-y-1">
-            <div class="flex items-center justify-end gap-2">
-              <span class="text-xs font-black text-blue-400 uppercase tracking-wider">AO (BIRU)</span>
-              <span class="w-3 h-3 rounded-full bg-blue-500"></span>
-            </div>
-            <div class="text-sm font-bold text-white truncate">{aoName}</div>
-            <div class="text-[10px] text-zinc-400 truncate">{aoClub}</div>
-            <div class="text-xs font-mono font-bold {hasVr2Burned ? 'text-zinc-500' : 'text-emerald-400'}">
-              VR: {hasVr2Burned ? 'HANGUS' : 'TERSEDIA'}
-            </div>
-          </div>
-        </div>
+  <main class="flex-1 p-3 sm:p-4 flex flex-col gap-3">
+    {#if view.hasData && !view.vrEnabled}
+      <div class="rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-300 text-sm font-semibold px-4 py-2 text-center">
+        Kategori pertandingan ini tidak menggunakan Video Review (VR).
       </div>
     {/if}
-  </main>
-
-  <!-- Manual Challenge Trigger Modal -->
-  {#if showManualModal}
-    <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-      <div class="bg-[#16181e] border border-white/10 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4 text-zinc-200">
-        <h3 class="text-sm font-black text-white uppercase tracking-wider font-mono">
-          UJI MANUAL SIMULASI CHALLENGE VR
-        </h3>
-        <p class="text-xs text-zinc-400">
-          Gunakan untuk uji coba simulasi aliran tantangan dari meja wasit:
-        </p>
-
-        <div class="space-y-3">
-          <div>
-            <span class="block text-[11px] font-mono font-bold text-zinc-400 uppercase mb-1">Sudut Pelatih:</span>
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onclick={() => (manualSide = "aka")}
-                class="py-2.5 rounded-xl border text-xs font-bold transition {manualSide === 'aka' ? 'bg-red-500/20 border-red-500 text-white' : 'bg-white/[0.02] border-white/10 text-zinc-400'}"
-              >
-                AKA (MERAH)
-              </button>
-              <button
-                type="button"
-                onclick={() => (manualSide = "ao")}
-                class="py-2.5 rounded-xl border text-xs font-bold transition {manualSide === 'ao' ? 'bg-blue-500/20 border-blue-500 text-white' : 'bg-white/[0.02] border-white/10 text-zinc-400'}"
-              >
-                AO (BIRU)
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label for="manual-vr-reason" class="block text-[11px] font-mono font-bold text-zinc-400 uppercase mb-1">Alasan Tinjauan:</label>
-            <input
-              id="manual-vr-reason"
-              type="text"
-              bind:value={manualReason}
-              class="w-full bg-[#101216] border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-400"
-            />
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 pt-2">
-          <button
-            type="button"
-            onclick={() => (showManualModal = false)}
-            class="flex-1 py-2.5 rounded-xl border border-white/10 bg-white/[0.04] text-xs font-bold text-zinc-300"
-          >
-            Batal
-          </button>
-          <button
-            type="button"
-            onclick={startManualChallenge}
-            class="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-black text-xs uppercase"
-          >
-            Mulai Challenge
-          </button>
-        </div>
+    {#if bothOpen}
+      <div class="rounded-xl border border-amber-400 bg-amber-500/15 text-amber-200 text-sm font-bold px-4 py-2 text-center animate-pulse">
+        🚨 DUA SUDUT MENGAJUKAN REVIEW SEKALIGUS: tinjau rekaman dan putuskan untuk AO dan AKA.
       </div>
+    {/if}
+
+    <div class="flex-1 grid grid-cols-1 md:grid-cols-2 gap-3">
+      {#each SIDES as { side, label } (side)}
+        {@const req = view.requests[side]}
+        {@const corner = view[side]}
+        {@const send = sending[side]}
+        <section class="rounded-2xl border-2 bg-[#14161c] flex flex-col overflow-hidden {side === 'aka' ? 'border-red-600/60' : 'border-blue-600/60'}">
+          <!-- Corner header -->
+          <div class="flex items-center justify-between gap-2 px-4 py-3 {side === 'aka' ? 'bg-red-600' : 'bg-blue-600'}">
+            <span class="font-black tracking-wide">{label}</span>
+            <span class="px-2.5 py-1 rounded-full text-[11px] font-black font-mono {corner.cardUsed ? 'bg-black/40 text-rose-200' : 'bg-white text-black'}">
+              {corner.cardUsed ? "KARTU HANGUS" : "KARTU AKTIF"}
+            </span>
+          </div>
+          <div class="px-4 pt-3 pb-2 flex items-end justify-between gap-3">
+            <div class="min-w-0">
+              <div class="text-2xl font-black uppercase leading-tight truncate">{corner.name}</div>
+              <div class="text-sm text-zinc-400 truncate">{corner.club}</div>
+            </div>
+            <div class="text-4xl font-black font-mono shrink-0">{corner.score}</div>
+          </div>
+
+          <div class="flex-1 px-3 pb-3 flex flex-col gap-2 min-h-[16rem]">
+            {#if !req}
+              <!-- Standby -->
+              <div class="flex-1 rounded-xl border border-dashed border-white/15 flex flex-col items-center justify-center gap-2 text-zinc-500 text-center px-4">
+                <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                <div class="text-sm font-semibold">Menunggu pengajuan Video Review dari pelatih {side === "aka" ? "AKA" : "AO"}</div>
+              </div>
+            {:else if req.status === "in_progress"}
+              <!-- Open request -->
+              <div class="rounded-xl bg-amber-400 text-black px-4 py-3 flex items-center justify-between gap-3">
+                <div>
+                  <div class="text-[11px] font-black uppercase">Pengajuan pelatih</div>
+                  <div class="text-2xl font-black leading-tight">
+                    {req.points ? `${POINT_NAME[req.points]} (${req.points} POINT)` : "VIDEO REVIEW"}
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="text-[10px] font-bold uppercase">Durasi tinjau</div>
+                  <div class="text-xl font-black font-mono">{elapsed(side)}</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onclick={() => decide(side, "accepted")}
+                disabled={!!send}
+                class="flex-1 min-h-[4.5rem] rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black text-xl transition active:scale-[0.98]"
+              >
+                ✓ ACCEPT{req.points ? ` (+${req.points} ${POINT_NAME[req.points]})` : ""}
+              </button>
+              <div class="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onclick={() => decide(side, "rejected")}
+                  disabled={!!send}
+                  class="min-h-[3.75rem] rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black text-base transition active:scale-[0.98]"
+                >
+                  ✕ DECLINE (DITOLAK)
+                </button>
+                <button
+                  type="button"
+                  onclick={() => decide(side, "minai")}
+                  disabled={!!send}
+                  class="min-h-[3.75rem] rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-black text-base transition active:scale-[0.98]"
+                >
+                  MINAI (TIDAK TERLIHAT)
+                </button>
+              </div>
+              {#if send}
+                <div class="text-center text-xs font-bold {now - send.at > 4000 ? 'text-rose-300' : 'text-zinc-400'}">
+                  {now - send.at > 4000 ? "Belum dikonfirmasi control panel, periksa koneksi…" : "Mengirim keputusan…"}
+                </div>
+              {/if}
+            {:else}
+              <!-- Decision locked in (shown for a few seconds) -->
+              <div class="flex-1 rounded-xl border-2 flex flex-col items-center justify-center gap-1 text-center px-4
+                {req.status === 'accepted' ? 'border-emerald-500 bg-emerald-500/15 text-emerald-200' : req.status === 'rejected' ? 'border-rose-500 bg-rose-500/15 text-rose-200' : 'border-amber-500 bg-amber-500/15 text-amber-200'}">
+                <div class="text-xs font-bold uppercase">Keputusan {side === "aka" ? "AKA" : "AO"}</div>
+                <div class="text-3xl font-black">
+                  {req.status === "accepted" ? `✓ ACCEPT${req.points ? ` +${req.points}` : ""}` : req.status === "rejected" ? "✕ DECLINE" : "MINAI"}
+                </div>
+                <div class="text-sm font-semibold">
+                  {req.status === "rejected" ? "Kartu VR hangus" : "Kartu VR tetap aktif"}
+                </div>
+              </div>
+            {/if}
+          </div>
+        </section>
+      {/each}
     </div>
-  {/if}
+
+    <!-- Review log for this match -->
+    <section class="rounded-2xl border border-white/10 bg-[#14161c] overflow-hidden">
+      <div class="px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-zinc-400 border-b border-white/10">Log Video Review partai ini</div>
+      {#if log.length === 0}
+        <div class="px-4 py-3 text-sm text-zinc-500 text-center">Belum ada riwayat Video Review pada partai ini.</div>
+      {:else}
+        <table class="w-full text-sm">
+          <tbody>
+            {#each log as row (row.key)}
+              <tr class="border-t border-white/5">
+                <td class="px-4 py-2 font-mono text-zinc-400">{row.time}</td>
+                <td class="px-2 py-2 font-black {row.side === 'aka' ? 'text-red-400' : 'text-blue-400'}">{row.side === "aka" ? "AKA" : "AO"}</td>
+                <td class="px-2 py-2 text-zinc-300">{row.asked ? `${POINT_NAME[row.asked]} (${row.asked})` : "-"}</td>
+                <td class="px-4 py-2 text-right font-black {row.decision === 'accepted' ? 'text-emerald-400' : row.decision === 'rejected' ? 'text-rose-400' : 'text-amber-300'}">
+                  {row.decision === "accepted" ? `ACCEPT${row.points ? ` +${row.points}` : ""}` : row.decision === "rejected" ? "DECLINE" : "MINAI"}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </section>
+  </main>
 </div>

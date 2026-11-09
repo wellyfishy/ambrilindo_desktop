@@ -615,6 +615,7 @@ async fn open_control_panel_window(
             }
         }
         let _ = win.show();
+        let _ = win.maximize();
         let _ = win.set_focus();
         let _ = win.eval("window.location.reload()");
         return Ok(());
@@ -641,9 +642,11 @@ async fn open_control_panel_window(
 
     let _win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
         .title(title)
-        .inner_size(1366.0, 820.0)
-        .min_inner_size(1024.0, 700.0)
+        .inner_size(1366.0, 768.0)
+        // Smaller operator laptops (1280×720 and up) still fit; opens full window
+        .min_inner_size(960.0, 600.0)
         .center()
+        .maximized(true)
         .build()
         .map_err(|e| format!("Gagal membuka window control panel: {}", e))?;
 
@@ -722,9 +725,11 @@ async fn open_festival_control_panel(
 
     let _win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
         .title(title)
-        .inner_size(1366.0, 820.0)
-        .min_inner_size(1024.0, 700.0)
+        .inner_size(1366.0, 768.0)
+        // Smaller operator laptops (1280×720 and up) still fit; opens full window
+        .min_inner_size(960.0, 600.0)
         .center()
+        .maximized(true)
         .build()
         .map_err(|e| format!("Gagal membuka window control panel festival: {}", e))?;
 
@@ -980,6 +985,16 @@ async fn save_contingent_logo(
 ) -> Result<String, String> {
     let db = state.db.lock().await;
     db.save_contingent_logo(&file_name, &base64_data).await
+}
+
+#[tauri::command]
+async fn get_match_juri_scores(
+    match_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().await;
+    let (s1, s2) = db.get_match_juri_scores(match_id).await?;
+    Ok(serde_json::json!({ "juri_scores1": s1, "juri_scores2": s2 }))
 }
 
 #[tauri::command]
@@ -1958,6 +1973,7 @@ pub fn run() {
             delete_perguruan,
             save_contingent_logo,
             get_team_match_info,
+            get_match_juri_scores,
             assign_bout_athletes,
             add_team_bout,
             delete_team_bout,

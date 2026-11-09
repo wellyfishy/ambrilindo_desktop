@@ -88,6 +88,7 @@ impl DatabaseManager {
             let _ = crate::sync::SyncService::ensure_sync_queue_table(p).await;
             Self::ensure_performance_indexes(p).await;
             Self::ensure_bagan_layout_column(p).await;
+            Self::ensure_detailbagan_juri_columns(p).await;
             Self::auto_heal_legacy_master_data(p).await;
             // Reset stale tatami match state on database mount
             let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL").execute(p).await;
@@ -127,6 +128,26 @@ impl DatabaseManager {
 
         if !has_col {
             let _ = sqlx::query("ALTER TABLE backend_bagan ADD COLUMN layout_type TEXT DEFAULT 'quadrant'").execute(pool).await;
+        }
+    }
+
+    /// Ensures the kata per-judge score columns exist on backend_detailbagan
+    /// (JSON array of the 5 judges' scores for AKA / AO)
+    async fn ensure_detailbagan_juri_columns(pool: &Pool<Sqlite>) {
+        for col in ["juri_scores1", "juri_scores2"] {
+            let has_col: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('backend_detailbagan') WHERE name = ?"
+            )
+            .bind(col)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0) > 0;
+
+            if !has_col {
+                let _ = sqlx::query(&format!("ALTER TABLE backend_detailbagan ADD COLUMN {} TEXT", col))
+                    .execute(pool)
+                    .await;
+            }
         }
     }
 
@@ -1665,6 +1686,19 @@ impl DatabaseManager {
     }
 
     /// Saves assigned Kata names for a match
+    /// Kata: the saved 5-judge scores (JSON arrays) for AKA and AO, if any
+    pub async fn get_match_juri_scores(&self, match_id: i64) -> Result<(Option<String>, Option<String>), String> {
+        let pool = self.get_pool()?;
+        let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT juri_scores1, juri_scores2 FROM backend_detailbagan WHERE id = ?"
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat skor juri: {}", e))?;
+        Ok(row.unwrap_or((None, None)))
+    }
+
     pub async fn save_match_kata(&self, match_id: i64, kata1: Option<String>, kata2: Option<String>) -> Result<(), String> {
         let pool = self.get_pool()?;
         sqlx::query(
@@ -3630,15 +3664,15 @@ impl DatabaseManager {
         let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id, is_team_child_bout) = current_match;
 
         // Fetch bagan metadata to identify pool / multi-pool context
-        let bagan_meta: Option<(i32, Option<i64>, Option<String>, Option<i64>, bool)> = sqlx::query_as(
-            "SELECT pool, nomor_tanding_id, nama_bagan, event_id, round_robin FROM backend_bagan WHERE id = ?"
+        let bagan_meta: Option<(i32, Option<i64>, Option<String>, Option<i64>, bool, bool)> = sqlx::query_as(
+            "SELECT pool, nomor_tanding_id, nama_bagan, event_id, round_robin, COALESCE(has_vr, 0) FROM backend_bagan WHERE id = ?"
         )
         .bind(bagan_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| format!("Gagal memuat info bagan #{}: {}", bagan_id, e))?;
 
-        let (bagan_pool, nomor_tanding_id, nama_bagan, event_id, is_round_robin) = bagan_meta.unwrap_or((1, None, None, None, false));
+        let (bagan_pool, nomor_tanding_id, nama_bagan, event_id, is_round_robin, bagan_has_vr) = bagan_meta.unwrap_or((1, None, None, None, false, false));
         let nama_bagan_upper = nama_bagan.unwrap_or_default().to_uppercase();
         let is_repechage = nama_bagan_upper.contains("REFERCHANGE") || nama_bagan_upper.contains("REPECHAGE");
         let is_festival = nama_bagan_upper.contains("FESTIVAL");
@@ -3739,6 +3773,17 @@ impl DatabaseManager {
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Gagal menyimpan partai: {}", e))?;
+
+        // 2b. Kata: store the 5 judges' scores when the control panel sends them
+        if input.juri_scores1.is_some() || input.juri_scores2.is_some() {
+            sqlx::query("UPDATE backend_detailbagan SET juri_scores1 = ?, juri_scores2 = ? WHERE id = ?")
+                .bind(&input.juri_scores1)
+                .bind(&input.juri_scores2)
+                .bind(input.match_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal menyimpan skor juri: {}", e))?;
+        }
 
         // 3. Handle bracket advancement or reopening
         if is_round_robin {
@@ -3932,6 +3977,9 @@ impl DatabaseManager {
                 _ => None,
             };
 
+            let winner_had_vr = if pemenang_str == "1" { input.vr1 } else { input.vr2 };
+            let next_vr = bagan_has_vr && (round_num + 1 >= 3 || winner_had_vr);
+
             if let Some(w_id) = winner_id {
                 if is_repechage {
                     // Repechage bracket: cascade within pool (urutan 1 = Pool A, urutan 2 = Pool B)
@@ -4001,9 +4049,10 @@ impl DatabaseManager {
                         let next_urutan = (urutan_num + 1) / 2;
                         if urutan_num % 2 == 1 {
                             sqlx::query(
-                                "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                                "UPDATE backend_detailbagan SET atlet1_id = ?, vr1 = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
                             )
                             .bind(w_id)
+                            .bind(next_vr)
                             .bind(bagan_id)
                             .bind(next_round)
                             .bind(next_urutan)
@@ -4012,9 +4061,10 @@ impl DatabaseManager {
                             .map_err(|e| format!("Gagal memajukan pemenang pool: {}", e))?;
                         } else {
                             sqlx::query(
-                                "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                                "UPDATE backend_detailbagan SET atlet2_id = ?, vr2 = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
                             )
                             .bind(w_id)
+                            .bind(next_vr)
                             .bind(bagan_id)
                             .bind(next_round)
                             .bind(next_urutan)
@@ -4041,9 +4091,10 @@ impl DatabaseManager {
                             // Pool A winner -> Final match (Round 4 slot 1, atlet1)
                             if let Some(fb_id) = final_bagan_id {
                                 sqlx::query(
-                                    "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = 4 AND urutan = 1"
+                                    "UPDATE backend_detailbagan SET atlet1_id = ?, vr1 = ? WHERE bagan_id = ? AND round = 4 AND urutan = 1"
                                 )
                                 .bind(w_id)
+                                .bind(bagan_has_vr)
                                 .bind(fb_id)
                                 .execute(&mut *tx)
                                 .await
@@ -4066,9 +4117,10 @@ impl DatabaseManager {
                             // Pool B (or subsequent pool) winner -> Final match (Round 4 slot 2, atlet2)
                             if let Some(fb_id) = final_bagan_id {
                                 sqlx::query(
-                                    "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = 4 AND urutan = 1"
+                                    "UPDATE backend_detailbagan SET atlet2_id = ?, vr2 = ? WHERE bagan_id = ? AND round = 4 AND urutan = 1"
                                 )
                                 .bind(w_id)
+                                .bind(bagan_has_vr)
                                 .bind(fb_id)
                                 .execute(&mut *tx)
                                 .await
@@ -4097,9 +4149,10 @@ impl DatabaseManager {
 
                         if urutan_num % 2 == 1 {
                             sqlx::query(
-                                "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                                "UPDATE backend_detailbagan SET atlet1_id = ?, vr1 = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
                             )
                             .bind(w_id)
+                            .bind(next_vr)
                             .bind(bagan_id)
                             .bind(next_round)
                             .bind(next_urutan)
@@ -4108,9 +4161,10 @@ impl DatabaseManager {
                             .map_err(|e| format!("Gagal memajukan pemenang ke ronde berikutnya: {}", e))?;
                         } else {
                             sqlx::query(
-                                "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                                "UPDATE backend_detailbagan SET atlet2_id = ?, vr2 = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
                             )
                             .bind(w_id)
+                            .bind(next_vr)
                             .bind(bagan_id)
                             .bind(next_round)
                             .bind(next_urutan)
@@ -7452,12 +7506,15 @@ impl DatabaseManager {
             nama_nomor_tanding: Option<String>,
             tipe_tanding: Option<String>,
             event_id: Option<i64>,
+            has_vr: bool,
+            nomor_tanding_id: Option<i64>,
         }
 
         let parent: ParentRow = sqlx::query_as(
             r#"
             SELECT db.bagan_id, db.round, db.urutan, db.atlet1_id, db.atlet2_id, db.assigned_tatami_id,
-                   db.selesai, db.pemenang, b.nama_bagan, nt.nama_nomor_tanding, b.tipe_tanding, b.event_id
+                   db.selesai, db.pemenang, b.nama_bagan, nt.nama_nomor_tanding, b.tipe_tanding, b.event_id,
+                   COALESCE(b.has_vr, 0) AS has_vr, b.nomor_tanding_id
             FROM backend_detailbagan db
             JOIN backend_bagan b ON db.bagan_id = b.id
             LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
@@ -7535,7 +7592,7 @@ impl DatabaseManager {
                         bagan_id, round, urutan, atlet1_id, atlet2_id,
                         score1, score2, vr1, vr2, hantei, team, selesai, assigned_tatami_id
                     )
-                    VALUES (?, 10, ?, ?, ?, '0', '0', 0, 0, 0, 1, 0, ?)
+                    VALUES (?, 10, ?, ?, ?, '0', '0', ?, ?, 0, 1, 0, ?)
                     RETURNING id
                     "#
                 )
@@ -7543,6 +7600,8 @@ impl DatabaseManager {
                 .bind(r)
                 .bind(parent.atlet1_id)
                 .bind(parent.atlet2_id)
+                .bind(parent.has_vr)
+                .bind(parent.has_vr)
                 .bind(parent.assigned_tatami_id)
                 .fetch_one(pool)
                 .await
@@ -7559,6 +7618,23 @@ impl DatabaseManager {
                 .await
                 .map_err(|e| format!("Gagal membuat matchup relasi #{}: {}", r, e))?;
             }
+        }
+
+        // 3b. Bouts created before the fix above were stored without a VR card
+        //     (vr1/vr2 = 0 = "hangus"). Give untouched bouts their card back.
+        if parent.has_vr && existing_bouts_count > 0 {
+            let _ = sqlx::query(
+                r#"
+                UPDATE backend_detailbagan SET vr1 = 1, vr2 = 1
+                WHERE id IN (SELECT db_id FROM backend_matchup WHERE detail_bagan_id = ?)
+                  AND selesai = 0 AND vr1 = 0 AND vr2 = 0
+                  AND COALESCE(score1, '0') IN ('0', '') AND COALESCE(score2, '0') IN ('0', '')
+                  AND COALESCE(pemenang, '') = ''
+                "#
+            )
+            .bind(parent_match_id)
+            .execute(pool)
+            .await;
         }
 
         // 4. Query all child bouts
@@ -7715,27 +7791,41 @@ impl DatabaseManager {
             nama_atlet: String,
             perguruan_nama: Option<String>,
             utusan_nama: Option<String>,
+            same_nomor: bool,
         }
-
-        let mut candidate_atlets_aka: Vec<TeamCandidateAthlete> = Vec::new();
-        if let Some(ut_id) = team_meta.a1_utusan_id {
-            let p_id = parent.atlet1_id.unwrap_or(0);
-            let rows: Vec<CandRow> = sqlx::query_as(
-                r#"
-                SELECT a.id, a.nama_atlet, p.nama_perguruan, u.nama_utusan
+        // Members first: registered in this team category (nomor tanding) for the
+        // same kontingen. Team entries (the bracket rows themselves) are excluded.
+        const CAND_SQL: &str = r#"
+                SELECT a.id, COALESCE(a.nama_atlet, '') AS nama_atlet,
+                       p.nama_perguruan AS perguruan_nama, u.nama_utusan AS utusan_nama,
+                       (COALESCE(a.nomor_tanding_id, -1) = COALESCE(?, -2)) AS same_nomor
                 FROM backend_atlet a
                 LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
                 LEFT JOIN backend_utusan u ON a.utusan_id = u.id
                 WHERE a.event_id = ? AND a.utusan_id = ? AND a.id != ?
-                ORDER BY a.nama_atlet ASC
-                "#
-            )
+                  AND a.id NOT IN (
+                      SELECT d.atlet1_id FROM backend_detailbagan d JOIN backend_bagan bb ON bb.id = d.bagan_id
+                      WHERE bb.nomor_tanding_id = ? AND d.team = 0 AND d.atlet1_id IS NOT NULL
+                      UNION
+                      SELECT d.atlet2_id FROM backend_detailbagan d JOIN backend_bagan bb ON bb.id = d.bagan_id
+                      WHERE bb.nomor_tanding_id = ? AND d.team = 0 AND d.atlet2_id IS NOT NULL
+                  )
+                ORDER BY same_nomor DESC, a.nama_atlet ASC
+                "#;
+
+        let mut candidate_atlets_aka: Vec<TeamCandidateAthlete> = Vec::new();
+        if let Some(ut_id) = team_meta.a1_utusan_id {
+            let p_id = parent.atlet1_id.unwrap_or(0);
+            let rows: Vec<CandRow> = sqlx::query_as(CAND_SQL)
+            .bind(parent.nomor_tanding_id)
             .bind(event_id)
             .bind(ut_id)
             .bind(p_id)
+            .bind(parent.nomor_tanding_id)
+            .bind(parent.nomor_tanding_id)
             .fetch_all(pool)
             .await
-            .unwrap_or_default();
+            .map_err(|e| format!("Gagal memuat daftar atlet tim: {}", e))?;
 
             for r in rows {
                 candidate_atlets_aka.push(TeamCandidateAthlete {
@@ -7743,6 +7833,7 @@ impl DatabaseManager {
                     nama_atlet: r.nama_atlet,
                     perguruan_nama: r.perguruan_nama,
                     utusan_nama: r.utusan_nama,
+                    same_nomor: r.same_nomor,
                 });
             }
         }
@@ -7750,22 +7841,16 @@ impl DatabaseManager {
         let mut candidate_atlets_ao: Vec<TeamCandidateAthlete> = Vec::new();
         if let Some(ut_id) = team_meta.a2_utusan_id {
             let p_id = parent.atlet2_id.unwrap_or(0);
-            let rows: Vec<CandRow> = sqlx::query_as(
-                r#"
-                SELECT a.id, a.nama_atlet, p.nama_perguruan, u.nama_utusan
-                FROM backend_atlet a
-                LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
-                LEFT JOIN backend_utusan u ON a.utusan_id = u.id
-                WHERE a.event_id = ? AND a.utusan_id = ? AND a.id != ?
-                ORDER BY a.nama_atlet ASC
-                "#
-            )
+            let rows: Vec<CandRow> = sqlx::query_as(CAND_SQL)
+            .bind(parent.nomor_tanding_id)
             .bind(event_id)
             .bind(ut_id)
             .bind(p_id)
+            .bind(parent.nomor_tanding_id)
+            .bind(parent.nomor_tanding_id)
             .fetch_all(pool)
             .await
-            .unwrap_or_default();
+            .map_err(|e| format!("Gagal memuat daftar atlet tim: {}", e))?;
 
             for r in rows {
                 candidate_atlets_ao.push(TeamCandidateAthlete {
@@ -7773,6 +7858,7 @@ impl DatabaseManager {
                     nama_atlet: r.nama_atlet,
                     perguruan_nama: r.perguruan_nama,
                     utusan_nama: r.utusan_nama,
+                    same_nomor: r.same_nomor,
                 });
             }
         }
@@ -7955,6 +8041,14 @@ impl DatabaseManager {
 
         let next_round = (count + 1) as i32;
 
+        // Every athlete starts a bout with a VR card when the category uses VR
+        let bagan_has_vr: bool = sqlx::query_scalar("SELECT COALESCE(has_vr, 0) FROM backend_bagan WHERE id = ?")
+            .bind(p.bagan_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(false);
+
         let child_id: i64 = sqlx::query_scalar(
             r#"
             INSERT INTO backend_detailbagan (
@@ -7969,8 +8063,8 @@ impl DatabaseManager {
         .bind(next_round)
         .bind(p.atlet1_id)
         .bind(p.atlet2_id)
-        .bind(p.vr1)
-        .bind(p.vr2)
+        .bind(p.vr1 || bagan_has_vr)
+        .bind(p.vr2 || bagan_has_vr)
         .bind(p.assigned_tatami_id)
         .fetch_one(pool)
         .await
@@ -9931,6 +10025,8 @@ mod festival_tests {
             vr2: false,
             hantei: false,
             selesai: true,
+            juri_scores1: None,
+            juri_scores2: None,
         }).await.expect("save semi 1 failed");
 
         // Verify final match slot 1 has winner_semi1
@@ -9954,6 +10050,8 @@ mod festival_tests {
             vr2: false,
             hantei: false,
             selesai: true,
+            juri_scores1: None,
+            juri_scores2: None,
         }).await.expect("save semi 2 failed");
 
         // Verify final match slot 2 has winner_semi2
@@ -9976,6 +10074,8 @@ mod festival_tests {
             vr2: false,
             hantei: false,
             selesai: true,
+            juri_scores1: None,
+            juri_scores2: None,
         }).await.expect("save final failed");
 
         let bagan_final = db.get_bagan_by_id(fest_bagan.id).await.expect("get bagan failed").unwrap();
