@@ -12,8 +12,8 @@ use crate::models::{
     DrawingCategoryInfo, DrawingSummary, EnrichedAtlet, EnrichedDetailBagan, EnrichedNomorTanding,
     EnrichedPerguruan, EnrichedUtusan,
     EnrichedTimetableCell, EnrichedTimetableDay, EnrichedTimetableRow, Event, FestivalAthlete,
-    FestivalCategory, FestivalMatch, FestivalRosterData, FestivalRosterState, FestivalTatamiSection,
-    FestivalBookletCategory, FestivalBookletData, FestivalMixGroup,
+    FestivalCategory, FestivalFormatInfo, FestivalMatch, FestivalRosterData, FestivalRosterState, FestivalTatamiSection,
+    FestivalBookletCategory, FestivalBookletData, FestivalMixGroup, FestivalMixMember, FestivalSessionTatami,
     KopSurat, NomorTanding, Perguruan, PodiumAthlete, SaveMatchInput, SaveTimetablePayload,
     StandingItem, SummaryBaganItem, SummaryBaganResult, SummaryBaganWinner, SummaryJuaraResult,
     SummaryWinnerAthlete, Tatami, TatamiBookletCategory, TatamiBookletData, TatamiLiveStatus,
@@ -512,6 +512,33 @@ impl DatabaseManager {
         .await
         .map_err(|e| format!("Gagal mereset tatami: {}", e))?;
 
+        // 1b. Rows that reference this category's matches or the category itself; without this the
+        //     delete fails on a foreign key (e.g. a category already placed in the timetable).
+        let category_matches = "SELECT d.id FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id WHERE b.nomor_tanding_id = ?";
+        for sql in [
+            format!("DELETE FROM backend_score WHERE detail_bagan_id IN ({})", category_matches),
+            format!("DELETE FROM backend_wasitdetailbagan WHERE detail_bagan_id IN ({})", category_matches),
+            format!("DELETE FROM backend_matchup WHERE detail_bagan_id IN ({0}) OR db_id IN ({0})", category_matches),
+        ] {
+            let mut q = sqlx::query(&sql).bind(category_id);
+            if sql.contains("db_id") {
+                q = q.bind(category_id);
+            }
+            q.execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal membersihkan data partai kategori: {}", e))?;
+        }
+        sqlx::query("DELETE FROM backend_matchup WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal membersihkan data partai kategori: {}", e))?;
+        sqlx::query("DELETE FROM backend_timetablecell WHERE nomor_tanding_id = ?")
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus kategori dari jadwal: {}", e))?;
+
         // 2. Delete detail bagans
         sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
             .bind(category_id)
@@ -746,8 +773,16 @@ impl DatabaseManager {
 
         // 2. Fetch the Final match of this main bagan (highest round, urutan 1)
         let final_match: Option<(i64, i32, Option<i64>, Option<i64>)> = sqlx::query_as(
-            "SELECT id, round, atlet1_id, atlet2_id FROM backend_detailbagan WHERE bagan_id = ? ORDER BY round DESC, urutan ASC LIMIT 1"
+            // The final is the first round with a single match. The bracket template keeps an extra
+            // single-row round after it (always empty), so "highest round" is not the final.
+            "SELECT id, round, atlet1_id, atlet2_id FROM backend_detailbagan
+             WHERE bagan_id = ? AND team = 0 AND round = (
+                 SELECT round FROM backend_detailbagan WHERE bagan_id = ? AND team = 0
+                 GROUP BY round HAVING COUNT(*) = 1 ORDER BY round ASC LIMIT 1
+             )
+             ORDER BY urutan ASC LIMIT 1"
         )
+        .bind(bagan_id)
         .bind(bagan_id)
         .fetch_optional(pool)
         .await
@@ -796,75 +831,17 @@ impl DatabaseManager {
             finalist2_name = name;
         }
 
-        if is_finalists_ready {
-            let id1 = f1_id.unwrap();
-            for r in 1..max_round {
-                let row: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
-                    "SELECT atlet1_id, atlet2_id, pemenang FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND (atlet1_id = ? OR atlet2_id = ?) AND selesai = 1 LIMIT 1"
-                )
-                .bind(bagan_id)
-                .bind(r)
-                .bind(id1)
-                .bind(id1)
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None);
-
-                if let Some((a1, a2, pemenang)) = row {
-                    let pemenang_str = pemenang.as_deref().unwrap_or("");
-                    let loser_id = if pemenang_str == "1" && a1 == Some(id1) {
-                        a2
-                    } else if pemenang_str == "2" && a2 == Some(id1) {
-                        a1
-                    } else {
-                        None
-                    };
-
-                    if let Some(lid) = loser_id {
-                        let lname: Option<String> = sqlx::query_scalar("SELECT nama_atlet FROM backend_atlet WHERE id = ?")
-                            .bind(lid)
-                            .fetch_optional(pool)
-                            .await
-                            .unwrap_or(None);
-                        if let Some(ln) = lname {
-                            pool_a_losers.push(ln);
-                        }
-                    }
-                }
-            }
-
-            let id2 = f2_id.unwrap();
-            for r in 1..max_round {
-                let row: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
-                    "SELECT atlet1_id, atlet2_id, pemenang FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND (atlet1_id = ? OR atlet2_id = ?) AND selesai = 1 LIMIT 1"
-                )
-                .bind(bagan_id)
-                .bind(r)
-                .bind(id2)
-                .bind(id2)
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None);
-
-                if let Some((a1, a2, pemenang)) = row {
-                    let pemenang_str = pemenang.as_deref().unwrap_or("");
-                    let loser_id = if pemenang_str == "1" && a1 == Some(id2) {
-                        a2
-                    } else if pemenang_str == "2" && a2 == Some(id2) {
-                        a1
-                    } else {
-                        None
-                    };
-
-                    if let Some(lid) = loser_id {
-                        let lname: Option<String> = sqlx::query_scalar("SELECT nama_atlet FROM backend_atlet WHERE id = ?")
-                            .bind(lid)
-                            .fetch_optional(pool)
-                            .await
-                            .unwrap_or(None);
-                        if let Some(ln) = lname {
-                            pool_b_losers.push(ln);
-                        }
+        if let (true, Some(id1), Some(id2)) = (is_finalists_ready, f1_id, f2_id) {
+            let (a_ids, b_ids) = self.repechage_losers(bagan_id, nomor_tanding_id, max_round, id1, id2).await;
+            for (ids, out) in [(a_ids, &mut pool_a_losers), (b_ids, &mut pool_b_losers)] {
+                for lid in ids {
+                    let lname: Option<String> = sqlx::query_scalar("SELECT nama_atlet FROM backend_atlet WHERE id = ?")
+                        .bind(lid)
+                        .fetch_optional(pool)
+                        .await
+                        .unwrap_or(None);
+                    if let Some(ln) = lname {
+                        out.push(ln);
                     }
                 }
             }
@@ -888,6 +865,73 @@ impl DatabaseManager {
     }
 
     /// Automatically generates WKF repechage bracket by tracing opponent ancestry of both finalists
+    /// Athletes who lost to each finalist (finalist 1 -> pool A list, finalist 2 -> pool B list),
+    /// in round order: the repechage field. Searches every elimination bagan of the category,
+    /// because a category split into pools plays its early rounds in the pool bagans.
+    async fn repechage_losers(
+        &self,
+        main_bagan_id: i64,
+        nomor_tanding_id: Option<i64>,
+        max_round: i32,
+        f1_id: i64,
+        f2_id: i64,
+    ) -> (Vec<i64>, Vec<i64>) {
+        let pool = match self.get_pool() {
+            Ok(p) => p,
+            Err(_) => return (Vec::new(), Vec::new()),
+        };
+        // The final is skipped: there the opponent is the other finalist.
+        let mut traced: Vec<Vec<i64>> = Vec::new();
+        for (fid, other) in [(f1_id, f2_id), (f2_id, f1_id)] {
+            let rows: Vec<(Option<i64>, Option<i64>, Option<String>)> = if let Some(nt_id) = nomor_tanding_id {
+                sqlx::query_as(
+                    "SELECT d.atlet1_id, d.atlet2_id, d.pemenang FROM backend_detailbagan d
+                     JOIN backend_bagan b ON d.bagan_id = b.id
+                     WHERE b.nomor_tanding_id = ?
+                       AND NOT (UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REPECHAGE%')
+                       AND d.team = 0 AND d.selesai = 1 AND (d.atlet1_id = ? OR d.atlet2_id = ?)
+                     ORDER BY d.round ASC, b.pool DESC, d.urutan ASC"
+                )
+                .bind(nt_id)
+                .bind(fid)
+                .bind(fid)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default()
+            } else {
+                sqlx::query_as(
+                    "SELECT atlet1_id, atlet2_id, pemenang FROM backend_detailbagan
+                     WHERE bagan_id = ? AND round < ? AND team = 0 AND selesai = 1 AND (atlet1_id = ? OR atlet2_id = ?)
+                     ORDER BY round ASC"
+                )
+                .bind(main_bagan_id)
+                .bind(max_round)
+                .bind(fid)
+                .bind(fid)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default()
+            };
+            let mut losers = Vec::new();
+            for (a1, a2, pemenang) in rows {
+                let loser = match pemenang.as_deref() {
+                    Some("1") if a1 == Some(fid) => a2,
+                    Some("2") if a2 == Some(fid) => a1,
+                    _ => None,
+                };
+                if let Some(lid) = loser {
+                    if lid != other && !losers.contains(&lid) {
+                        losers.push(lid);
+                    }
+                }
+            }
+            traced.push(losers);
+        }
+        let pool_b_losers = traced.pop().unwrap_or_default();
+        let pool_a_losers = traced.pop().unwrap_or_default();
+        (pool_a_losers, pool_b_losers)
+    }
+
     pub async fn generate_repechage_bracket(&self, main_bagan_id: i64) -> Result<RepechageResult, String> {
         let pool = self.get_pool()?;
 
@@ -905,8 +949,16 @@ impl DatabaseManager {
 
         // 2. Fetch the Final match to get Finalist 1 and Finalist 2
         let final_match: Option<(i64, i32, Option<i64>, Option<i64>)> = sqlx::query_as(
-            "SELECT id, round, atlet1_id, atlet2_id FROM backend_detailbagan WHERE bagan_id = ? ORDER BY round DESC, urutan ASC LIMIT 1"
+            // The final is the first round with a single match. The bracket template keeps an extra
+            // single-row round after it (always empty), so "highest round" is not the final.
+            "SELECT id, round, atlet1_id, atlet2_id FROM backend_detailbagan
+             WHERE bagan_id = ? AND team = 0 AND round = (
+                 SELECT round FROM backend_detailbagan WHERE bagan_id = ? AND team = 0
+                 GROUP BY round HAVING COUNT(*) = 1 ORDER BY round ASC LIMIT 1
+             )
+             ORDER BY urutan ASC LIMIT 1"
         )
+        .bind(main_bagan_id)
         .bind(main_bagan_id)
         .fetch_optional(pool)
         .await
@@ -918,63 +970,10 @@ impl DatabaseManager {
         let f1_id = f1_id_opt.ok_or_else(|| "Finalis 1 (Aka) belum ditentukan. Selesaikan semifinal terlebih dahulu.".to_string())?;
         let f2_id = f2_id_opt.ok_or_else(|| "Finalis 2 (Ao) belum ditentukan. Selesaikan semifinal terlebih dahulu.".to_string())?;
 
-        // 3. Trace ancestor losers in round order
-        let mut pool_a_losers: Vec<i64> = Vec::new();
-        let mut pool_b_losers: Vec<i64> = Vec::new();
-
-        for r in 1..max_round {
-            let row: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
-                "SELECT atlet1_id, atlet2_id, pemenang FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND (atlet1_id = ? OR atlet2_id = ?) AND selesai = 1 LIMIT 1"
-            )
-            .bind(main_bagan_id)
-            .bind(r)
-            .bind(f1_id)
-            .bind(f1_id)
-            .fetch_optional(pool)
-            .await
-            .unwrap_or(None);
-
-            if let Some((a1, a2, pemenang)) = row {
-                let pemenang_str = pemenang.as_deref().unwrap_or("");
-                let loser_id = if pemenang_str == "1" && a1 == Some(f1_id) {
-                    a2
-                } else if pemenang_str == "2" && a2 == Some(f1_id) {
-                    a1
-                } else {
-                    None
-                };
-                if let Some(lid) = loser_id {
-                    pool_a_losers.push(lid);
-                }
-            }
-        }
-
-        for r in 1..max_round {
-            let row: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
-                "SELECT atlet1_id, atlet2_id, pemenang FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND (atlet1_id = ? OR atlet2_id = ?) AND selesai = 1 LIMIT 1"
-            )
-            .bind(main_bagan_id)
-            .bind(r)
-            .bind(f2_id)
-            .bind(f2_id)
-            .fetch_optional(pool)
-            .await
-            .unwrap_or(None);
-
-            if let Some((a1, a2, pemenang)) = row {
-                let pemenang_str = pemenang.as_deref().unwrap_or("");
-                let loser_id = if pemenang_str == "1" && a1 == Some(f2_id) {
-                    a2
-                } else if pemenang_str == "2" && a2 == Some(f2_id) {
-                    a1
-                } else {
-                    None
-                };
-                if let Some(lid) = loser_id {
-                    pool_b_losers.push(lid);
-                }
-            }
-        }
+        // 3. Losers to each finalist, in round order (shared with the repechage preview).
+        let (pool_a_losers, pool_b_losers) = self
+            .repechage_losers(main_bagan_id, nomor_tanding_id, max_round, f1_id, f2_id)
+            .await;
 
         if pool_a_losers.is_empty() && pool_b_losers.is_empty() {
             return Err("Tidak ditemukan atlet yang terkualifikasi untuk repechage. Pastikan partai penyisihan dan semifinal telah diisi skor pemenangnya.".to_string());
@@ -1536,7 +1535,7 @@ impl DatabaseManager {
                 d.id, d.bagan_id, d.round, d.urutan, d.atlet1_id, d.atlet2_id,
                 d.score1, d.score2, d.scorekecil1, d.scorekecil2,
                 d.vr1, d.vr2, d.kata1, d.kata2, d.pemenang, d.hantei, d.selesai, d.team,
-                d.assigned_tatami_id, d.kode,
+                COALESCE(t.tatami_number, d.assigned_tatami_id) as assigned_tatami_id, d.kode,
                 a1.nama_atlet as atlet1_nama,
                 CASE 
                     WHEN p1.nama_perguruan IS NOT NULL AND u1.nama_utusan IS NOT NULL AND p1.nama_perguruan != u1.nama_utusan 
@@ -1554,6 +1553,7 @@ impl DatabaseManager {
                 u2.logo as atlet2_logo,
                 a2.is_priority as atlet2_is_priority
             FROM backend_detailbagan d
+            LEFT JOIN backend_tatami t ON d.assigned_tatami_id = t.id
             LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
             LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id
             LEFT JOIN backend_perguruan p1 ON a1.perguruan_id = p1.id
@@ -1571,7 +1571,10 @@ impl DatabaseManager {
     }
 
     /// Fetches the currently active match for a specific tatami number
-    pub async fn get_tatami_current_match(&self, tatami_num: i32) -> Result<Option<EnrichedDetailBagan>, String> {
+    /// Running match of a tatami. With `event_id` only that event's tatami counts; without it the
+    /// newest event that has a running match on this tatami number wins (old events may still
+    /// hold a stale link).
+    pub async fn get_tatami_current_match(&self, tatami_num: i32, event_id: Option<i64>) -> Result<Option<EnrichedDetailBagan>, String> {
         let pool = self.get_pool()?;
         sqlx::query_as::<_, EnrichedDetailBagan>(
             r#"
@@ -1579,7 +1582,7 @@ impl DatabaseManager {
                 d.id, d.bagan_id, d.round, d.urutan, d.atlet1_id, d.atlet2_id,
                 d.score1, d.score2, d.scorekecil1, d.scorekecil2,
                 d.vr1, d.vr2, d.kata1, d.kata2, d.pemenang, d.hantei, d.selesai, d.team,
-                d.assigned_tatami_id, d.kode,
+                COALESCE(t.tatami_number, d.assigned_tatami_id) as assigned_tatami_id, d.kode,
                 a1.nama_atlet as atlet1_nama,
                 CASE 
                     WHEN p1.nama_perguruan IS NOT NULL AND u1.nama_utusan IS NOT NULL AND p1.nama_perguruan != u1.nama_utusan 
@@ -1604,11 +1607,14 @@ impl DatabaseManager {
             LEFT JOIN backend_atlet a2 ON d.atlet2_id = a2.id
             LEFT JOIN backend_utusan u2 ON a2.utusan_id = u2.id
             LEFT JOIN backend_perguruan p2 ON a2.perguruan_id = p2.id
-            WHERE t.tatami_number = ?
+            WHERE t.tatami_number = ? AND (? IS NULL OR t.event_id = ?)
+            ORDER BY t.event_id DESC
             LIMIT 1
             "#
         )
         .bind(tatami_num)
+        .bind(event_id)
+        .bind(event_id)
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("Gagal memuat partai aktif tatami: {}", e))
@@ -1623,7 +1629,7 @@ impl DatabaseManager {
                 d.id, d.bagan_id, d.round, d.urutan, d.atlet1_id, d.atlet2_id,
                 d.score1, d.score2, d.scorekecil1, d.scorekecil2,
                 d.vr1, d.vr2, d.kata1, d.kata2, d.pemenang, d.hantei, d.selesai, d.team,
-                d.assigned_tatami_id, d.kode,
+                COALESCE(t.tatami_number, d.assigned_tatami_id) as assigned_tatami_id, d.kode,
                 a1.nama_atlet as atlet1_nama,
                 CASE 
                     WHEN p1.nama_perguruan IS NOT NULL AND u1.nama_utusan IS NOT NULL AND p1.nama_perguruan != u1.nama_utusan 
@@ -1705,12 +1711,73 @@ impl DatabaseManager {
     }
 
     /// Creates a new athlete
+    /// Finished bouts (both athletes present) in the bagans of a category.
+    async fn category_finished_matches(&self, category_id: i64) -> Result<i64, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id
+             WHERE b.nomor_tanding_id = ? AND d.selesai = 1 AND d.atlet1_id IS NOT NULL AND d.atlet2_id IS NOT NULL"
+        )
+        .bind(category_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal memeriksa status kategori: {}", e))
+    }
+
+    /// A category that already played bouts cannot take new athletes: they would never be in its bracket.
+    async fn ensure_category_open(&self, category_id: Option<i64>) -> Result<(), String> {
+        let Some(cat_id) = category_id else { return Ok(()) };
+        let finished = self.category_finished_matches(cat_id).await?;
+        if finished > 0 {
+            let pool = self.get_pool()?;
+            let name: String = sqlx::query_scalar("SELECT COALESCE(nama_nomor_tanding, '') FROM backend_nomortanding WHERE id = ?")
+                .bind(cat_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            return Err(format!(
+                "Kategori \"{}\" sudah bertanding ({} partai selesai). Atlet baru tidak bisa masuk bagannya. \
+                 Daftarkan ke kategori lain, atau hapus bagan kategori ini lalu undi ulang.",
+                name, finished
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuses to redraw categories that already have results (the drawing would erase them).
+    async fn ensure_no_results(&self, category_ids: &[i64]) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let mut blocked = Vec::new();
+        for &cat_id in category_ids {
+            let finished = self.category_finished_matches(cat_id).await?;
+            if finished > 0 {
+                let name: String = sqlx::query_scalar("SELECT COALESCE(nama_nomor_tanding, '') FROM backend_nomortanding WHERE id = ?")
+                    .bind(cat_id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or_default();
+                blocked.push(format!("{} ({} partai selesai)", name, finished));
+            }
+        }
+        if blocked.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "Drawing ulang dibatalkan: kategori berikut sudah punya hasil pertandingan dan akan terhapus. \
+             Hapus bagannya dulu secara sadar bila memang ingin diundi ulang: {}",
+            blocked.join("; ")
+        ))
+    }
+
     pub async fn create_athlete(&self, input: AthleteMutationInput) -> Result<EnrichedAtlet, String> {
         let pool = self.get_pool()?;
         let clean_name = input.nama_atlet.trim().to_uppercase();
         if clean_name.is_empty() {
             return Err("Nama atlet tidak boleh kosong.".to_string());
         }
+        self.ensure_category_open(input.nomor_tanding_id).await?;
 
         let res = sqlx::query(
             r#"
@@ -1767,6 +1834,32 @@ impl DatabaseManager {
         let clean_name = input.nama_atlet.trim().to_uppercase();
         if clean_name.is_empty() {
             return Err("Nama atlet tidak boleh kosong.".to_string());
+        }
+        // Changing the category: the athlete must not already be in a bracket, and the new
+        // category must not have started.
+        let current_cat: Option<i64> = sqlx::query_scalar("SELECT nomor_tanding_id FROM backend_atlet WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat atlet: {}", e))?
+            .flatten();
+        if current_cat != input.nomor_tanding_id {
+            let in_bagan: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM backend_detailbagan WHERE atlet1_id = ? OR atlet2_id = ?"
+            )
+            .bind(id)
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("Gagal memeriksa bagan atlet: {}", e))?;
+            if in_bagan > 0 {
+                return Err(format!(
+                    "Atlet tidak bisa dipindah kategori karena sudah ada di {} partai bagan kategori lamanya. \
+                     Hapus bagan kategori lama terlebih dahulu.",
+                    in_bagan
+                ));
+            }
+            self.ensure_category_open(input.nomor_tanding_id).await?;
         }
 
         sqlx::query(
@@ -2177,24 +2270,41 @@ impl DatabaseManager {
             has_vr: bool,
             athlete_count: i64,
             bagan_count: i64,
+            athletes_not_in_bagan: i64,
+            finished_matches: i64,
         }
 
         let rows = sqlx::query_as::<_, RawCat>(
             r#"
-            SELECT 
+            SELECT
                 nt.id,
                 nt.event_id,
                 nt.nama_nomor_tanding,
                 nt.has_vr,
                 (
-                    SELECT COUNT(*) FROM backend_atlet a 
-                    WHERE a.nomor_tanding_id = nt.id 
+                    SELECT COUNT(*) FROM backend_atlet a
+                    WHERE a.nomor_tanding_id = nt.id
                       AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
                 ) as athlete_count,
                 (
-                    SELECT COUNT(*) FROM backend_bagan b 
+                    SELECT COUNT(*) FROM backend_bagan b
                     WHERE b.nomor_tanding_id = nt.id
-                ) as bagan_count
+                ) as bagan_count,
+                (
+                    SELECT COUNT(*) FROM backend_atlet a
+                    WHERE a.nomor_tanding_id = nt.id
+                      AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+                      AND EXISTS (SELECT 1 FROM backend_bagan b WHERE b.nomor_tanding_id = nt.id)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id
+                          WHERE b.nomor_tanding_id = nt.id AND (d.atlet1_id = a.id OR d.atlet2_id = a.id)
+                      )
+                ) as athletes_not_in_bagan,
+                (
+                    SELECT COUNT(*) FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id
+                    WHERE b.nomor_tanding_id = nt.id AND d.selesai = 1
+                      AND d.atlet1_id IS NOT NULL AND d.atlet2_id IS NOT NULL
+                ) as finished_matches
             FROM backend_nomortanding nt
             WHERE nt.event_id = ?
               AND (nt.is_bob = 0 OR nt.is_bob IS NULL)
@@ -2221,6 +2331,8 @@ impl DatabaseManager {
                 has_vr: r.has_vr,
                 is_kumite,
                 is_beregu,
+                athletes_not_in_bagan: r.athletes_not_in_bagan,
+                finished_matches: r.finished_matches,
             }
         }).collect();
 
@@ -2282,6 +2394,8 @@ impl DatabaseManager {
                 has_vr: r.has_vr,
                 is_kumite,
                 is_beregu,
+                athletes_not_in_bagan: 0,
+                finished_matches: 0,
             }
         }).collect();
 
@@ -2787,6 +2901,7 @@ impl DatabaseManager {
         shuffle_type: &str,
         vr_category_ids: Vec<i64>,
     ) -> Result<DrawingSummary, String> {
+        self.ensure_no_results(&category_ids).await?;
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
@@ -3161,6 +3276,7 @@ impl DatabaseManager {
         category_ids: Vec<i64>,
         shuffle_type: &str,
     ) -> Result<DrawingSummary, String> {
+        self.ensure_no_results(&category_ids).await?;
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
@@ -3530,6 +3646,73 @@ impl DatabaseManager {
         let is_pool_a = nama_bagan_upper.contains("POOL A") || nama_bagan_upper.contains("POOL 1");
         let _is_pool_b = nama_bagan_upper.contains("POOL B") || nama_bagan_upper.contains("POOL 2");
         let is_final_bagan = bagan_pool == 0 || nama_bagan_upper.ends_with("- FINAL") || nama_bagan_upper.ends_with("FINAL");
+
+        // 1b. Changing (or reopening) a finished result whose winner already played on, or whose
+        //     loser already played the repechage, would leave those later bouts standing on a result
+        //     that no longer exists. Those bouts must be reopened first, latest first.
+        if !is_round_robin && !is_team_child_bout {
+            let previous: Option<(bool, Option<String>)> = sqlx::query_as(
+                "SELECT selesai, pemenang FROM backend_detailbagan WHERE id = ?"
+            )
+            .bind(input.match_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memuat hasil lama: {}", e))?;
+            if let Some((true, Some(prev))) = previous {
+                let changes = !input.selesai || input.pemenang.as_deref() != Some(prev.as_str());
+                let (old_winner, old_loser) = match prev.as_str() {
+                    "1" => (a1_id, a2_id),
+                    "2" => (a2_id, a1_id),
+                    _ => (None, None),
+                };
+                if changes {
+                    let mut blocking: Option<(i64, i32)> = None;
+                    if let Some(w) = old_winner {
+                        blocking = sqlx::query_as(
+                            "SELECT d.id, d.round FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id
+                             WHERE d.id != ? AND d.selesai = 1 AND d.team = 0 AND (d.atlet1_id = ? OR d.atlet2_id = ?)
+                               AND ((d.bagan_id = ? AND d.round > ?)
+                                    OR (? = 1 AND b.nomor_tanding_id = ? AND b.pool = 0 AND b.id != ?))
+                             ORDER BY d.round DESC LIMIT 1"
+                        )
+                        .bind(input.match_id)
+                        .bind(w)
+                        .bind(w)
+                        .bind(bagan_id)
+                        .bind(round_num)
+                        .bind(is_pool_bracket && !is_final_bagan)
+                        .bind(nomor_tanding_id)
+                        .bind(bagan_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(|e| format!("Gagal memeriksa partai lanjutan: {}", e))?;
+                    }
+                    if blocking.is_none() && !is_repechage {
+                        if let (Some(l), Some(nt)) = (old_loser, nomor_tanding_id) {
+                            blocking = sqlx::query_as(
+                                "SELECT d.id, d.round FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id
+                                 WHERE b.nomor_tanding_id = ? AND d.selesai = 1 AND (d.atlet1_id = ? OR d.atlet2_id = ?)
+                                   AND (UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REPECHAGE%')
+                                 LIMIT 1"
+                            )
+                            .bind(nt)
+                            .bind(l)
+                            .bind(l)
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .map_err(|e| format!("Gagal memeriksa partai repechage: {}", e))?;
+                        }
+                    }
+                    if let Some((_, later_round)) = blocking {
+                        return Err(format!(
+                            "Hasil partai ini sudah dipakai di partai berikutnya yang sudah selesai (babak {}). \
+                             Buka ulang partai itu terlebih dahulu, mulai dari babak paling akhir.",
+                            later_round
+                        ));
+                    }
+                }
+            }
+        }
 
         // 2. Update current match in backend_detailbagan
         sqlx::query(
@@ -4312,17 +4495,50 @@ impl DatabaseManager {
     pub async fn notify_match_running(&self, match_id: i64, tatami_number: i32) -> Result<(), String> {
         let pool = self.get_pool()?;
 
-        // 1. Update tatami's active match
-        let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = ? WHERE tatami_number = ?")
-            .bind(match_id)
-            .bind(tatami_number)
-            .execute(pool)
-            .await;
+        // Defensive normalization: If tatami_number was accidentally passed as a backend_tatami.id (e.g. >= 20),
+        // resolve it to its actual tatami_number (e.g. 1).
+        let tatami_number: i32 = if tatami_number >= 20 {
+            sqlx::query_scalar::<_, i32>("SELECT tatami_number FROM backend_tatami WHERE id = ?")
+                .bind(tatami_number as i64)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(tatami_number)
+        } else {
+            tatami_number
+        };
+
+        // 1. Link the match to the tatami of ITS event only (every event has its own tatami 1, 2, ...).
+        let match_event: Option<i64> = sqlx::query_scalar(
+            "SELECT b.event_id FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id WHERE d.id = ?"
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten();
 
         let _ = sqlx::query(
-            "UPDATE backend_detailbagan SET assigned_tatami_id = (SELECT id FROM backend_tatami WHERE tatami_number = ? LIMIT 1) WHERE id = ?"
+            "UPDATE backend_tatami SET detail_bagan_id = ? WHERE tatami_number = ? AND (? IS NULL OR event_id = ?)"
+        )
+        .bind(match_id)
+        .bind(tatami_number)
+        .bind(match_event)
+        .bind(match_event)
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query(
+            "UPDATE backend_detailbagan SET assigned_tatami_id = (
+                 SELECT id FROM backend_tatami WHERE tatami_number = ? AND (? IS NULL OR event_id = ?)
+                 ORDER BY event_id DESC LIMIT 1
+             ) WHERE id = ?"
         )
         .bind(tatami_number)
+        .bind(match_event)
+        .bind(match_event)
         .bind(match_id)
         .execute(pool)
         .await;
@@ -5274,6 +5490,11 @@ impl DatabaseManager {
     /// Memuat data jadwal pertandingan (Timetable Run-Sheet) lengkap dengan deteksi konflik atlet
     pub async fn get_timetable_editor_data(&self, event_id: i64) -> Result<TimetableEditorData, String> {
         let pool = self.get_pool()?;
+        let festival_roster_format = self
+            .get_festival_format(event_id)
+            .await
+            .map(|f| f.format == "roster")
+            .unwrap_or(false);
 
         // 1. Validasi Event
         let event_row: Option<(String,)> = sqlx::query_as("SELECT COALESCE(nama_event, 'Turnamen') FROM backend_event WHERE id = ?")
@@ -5624,7 +5845,11 @@ impl DatabaseManager {
                                     4.0
                                 };
                                 if atlet_cnt > 1 {
-                                    matches = atlet_cnt - 1;
+                                    matches = if is_fest {
+                                        helper_festival_match_count(atlet_cnt, festival_roster_format)
+                                    } else {
+                                        atlet_cnt - 1
+                                    };
                                     est_dur = std::cmp::max(15, (matches as f64 * dur_per_match).round() as i64);
                                 } else if atlet_cnt == 1 {
                                     matches = 0;
@@ -5761,17 +5986,13 @@ impl DatabaseManager {
             let is_kata = upper.contains("KATA");
             let discipline = if is_kata { "kata".to_string() } else { "kumite".to_string() };
             let cnt = athlete_counts.get(nt_id).copied().unwrap_or(0);
-            let dur_per_match = if is_kata {
-                3.5
-            } else if upper.contains("SENIOR") || upper.contains("U-21") || upper.contains("UNDER 21") {
-                6.0
-            } else if upper.contains("CADET") || upper.contains("KADET") || upper.contains("JUNIOR") {
-                4.5
-            } else {
-                4.0
-            };
+            let dur_per_match = helper_minutes_per_match(&upper);
             let (matches, est_dur) = if cnt > 1 {
-                let m = cnt - 1;
+                let m = if is_fest {
+                    helper_festival_match_count(cnt, festival_roster_format)
+                } else {
+                    cnt - 1
+                };
                 (m, std::cmp::max(15, (m as f64 * dur_per_match).round() as i64))
             } else if cnt == 1 {
                 (0, 15)
@@ -5870,6 +6091,40 @@ impl DatabaseManager {
             tatamis_live,
         };
 
+        // Roster-format festival: one session per tatami, sized from the roster's tatami split.
+        let festival_session = if festival_roster_format && categories.iter().any(|c| c.is_festival && c.atlet_count > 0) {
+            match self.get_festival_roster_data(event_id).await {
+                Ok(roster) => Some(
+                    roster
+                        .sections
+                        .iter()
+                        .filter(|sec| sec.total_athletes > 0)
+                        .map(|sec| {
+                            let minutes: f64 = sec
+                                .categories
+                                .iter()
+                                .map(|c| c.match_count as f64 * helper_minutes_per_match(&c.nama.to_uppercase()))
+                                .sum();
+                            FestivalSessionTatami {
+                                tatami_id: sec.tatami_id,
+                                tatami_number: sec.tatami_number,
+                                categories: sec.categories.len(),
+                                athletes: sec.total_athletes,
+                                matches: sec.total_matches,
+                                est_minutes: helper_festival_session_minutes(minutes),
+                            }
+                        })
+                        .collect(),
+                ),
+                Err(e) => {
+                    tracing::warn!("Roster festival tidak bisa dimuat untuk jadwal: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(TimetableEditorData {
             event_id,
             event_name,
@@ -5879,6 +6134,7 @@ impl DatabaseManager {
             summary,
             kop_surat,
             nt_athletes: nt_athletes_map,
+            festival_session,
         })
     }
 
@@ -6180,6 +6436,7 @@ impl DatabaseManager {
                 };
 
                 let matches_count = matches.len() as i64;
+                let (bagan_pool, bagan_layout_type) = Self::bagan_pool_and_layout(pool, bagan_id).await;
 
                 ordered_categories.push(TatamiBookletCategory {
                     match_seq: seq_counter,
@@ -6194,6 +6451,8 @@ impl DatabaseManager {
                     tipe_tanding,
                     winners,
                     matches,
+                    bagan_pool,
+                    bagan_layout_type,
                 });
             } else if let Some(cust) = custom_opt {
                 if !cust.trim().is_empty() {
@@ -6211,6 +6470,8 @@ impl DatabaseManager {
                         tipe_tanding: None,
                         winners: Vec::new(),
                         matches: Vec::new(),
+                        bagan_pool: None,
+                        bagan_layout_type: None,
                     });
                 }
             }
@@ -6468,7 +6729,7 @@ impl DatabaseManager {
         for (a_id, nt_id, a_nama, a_utusan, a_perguruan) in ath_rows {
             if all_nt_ids.contains(&nt_id) {
                 let nt_name = all_nt_map.get(&nt_id).map(|s| s.as_str()).unwrap_or("");
-                let jk = if nt_name.to_lowercase().contains("putri") || nt_name.to_lowercase().contains("pi") {
+                let jk = if helper_is_putri_name(nt_name) {
                     "PUTRI".to_string()
                 } else {
                     "PUTRA".to_string()
@@ -6487,6 +6748,37 @@ impl DatabaseManager {
 
         // 6. Load State
         let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+
+        // Mix groups (Auto Mix Solo / Smart Mix): the athletes of each secondary category play in
+        // their primary category; the secondary is hidden from the roster.
+        let sec_to_primary = helper_festival_mix_map(&state.mix_groups, &all_nt_ids);
+        let mut mix_names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        let mut mix_members: std::collections::HashMap<i64, Vec<FestivalMixMember>> = std::collections::HashMap::new();
+        for mg in &state.mix_groups {
+            let pid = mg.primary_category_id;
+            if mix_names.contains_key(&pid) || !sec_to_primary.values().any(|p| *p == pid) {
+                continue;
+            }
+            mix_names.insert(pid, mg.bagan_name.clone());
+            let mut ids = vec![pid];
+            ids.extend(mg.secondary_category_ids.iter().filter(|s| sec_to_primary.get(s) == Some(&pid)));
+            let members = ids
+                .into_iter()
+                .map(|id| FestivalMixMember {
+                    id,
+                    nama: all_nt_map.get(&id).cloned().unwrap_or_default(),
+                    atlet_count: athletes_by_nt.get(&id).map(|v| v.len()).unwrap_or(0),
+                })
+                .collect();
+            mix_members.insert(pid, members);
+        }
+        for (sec, pid) in &sec_to_primary {
+            if let Some(moved) = athletes_by_nt.remove(sec) {
+                athletes_by_nt.entry(*pid).or_default().extend(moved);
+            }
+        }
+        all_festival_nts.retain(|c| !sec_to_primary.contains_key(&c.0));
+        let all_nt_ids: std::collections::HashSet<i64> = all_festival_nts.iter().map(|c| c.0).collect();
 
         // Sanitize tatami_assignments
         let mut cleaned_assignments: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
@@ -6546,6 +6838,11 @@ impl DatabaseManager {
 
             if curr_id_set == saved_id_set && !saved_order.is_empty() {
                 cleaned_pairings.insert(nt_key, saved_order);
+            } else if !saved_order.is_empty() {
+                // Athletes were added or withdrawn after pairing: keep every pair that is still
+                // complete, fill withdrawn spots with new athletes (or the last athlete), append the rest.
+                let merged = helper_merge_festival_pairing(&saved_order, &current_athletes);
+                cleaned_pairings.insert(nt_key, merged);
             } else {
                 // Run anti-collision auto-pairing
                 let paired = helper_pair_festival_athletes_anti_collision(current_athletes);
@@ -6596,13 +6893,10 @@ impl DatabaseManager {
                         None
                     };
 
-                    let is_clash = if let Some(ref ao_ath) = ao {
-                        let u1 = aka.utusan.trim().to_uppercase();
-                        let u2 = ao_ath.utusan.trim().to_uppercase();
-                        !u1.is_empty() && !u2.is_empty() && u1 == u2
-                    } else {
-                        false
-                    };
+                    let is_clash = ao
+                        .as_ref()
+                        .map(|ao_ath| helper_same_festival_utusan(&aka.utusan, &ao_ath.utusan))
+                        .unwrap_or(false);
 
                     if is_clash {
                         total_clashes += 1;
@@ -6622,7 +6916,10 @@ impl DatabaseManager {
                     "kumite".to_string()
                 };
 
-                let display_name = helper_clean_festival_display_name(&cat_name);
+                let display_name = match mix_names.get(&cat_id) {
+                    Some(n) if !n.trim().is_empty() => helper_clean_festival_display_name(&n.trim().to_uppercase()),
+                    _ => helper_clean_festival_display_name(&cat_name),
+                };
                 let ath_count = cat_athletes.len();
                 let m_count = matches.len();
 
@@ -6638,6 +6935,7 @@ impl DatabaseManager {
                     matches,
                     atlet_count: ath_count,
                     match_count: m_count,
+                    mixed_from: mix_members.get(&cat_id).cloned().unwrap_or_default(),
                 });
             }
 
@@ -6668,7 +6966,78 @@ impl DatabaseManager {
     }
 
     pub async fn save_festival_roster_state(&self, event_id: i64, state: FestivalRosterState) -> Result<(), String> {
-        helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state)
+        // The roster screen only edits tatami assignments and pairings; keep the rest of the file
+        // (mix groups set in the drawing dialog, the chosen festival format).
+        let mut current = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        current.tatami_assignments = state.tatami_assignments;
+        current.athlete_pairings = state.athlete_pairings;
+        helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &current)
+    }
+
+    async fn festival_bagan_counts(&self, event_id: i64) -> Result<(i64, i64), String> {
+        let pool = self.get_pool()?;
+        let festival_bagans = "SELECT id FROM backend_bagan WHERE event_id = ? AND (
+                 UPPER(nama_bagan) LIKE '%FESTIVAL%'
+                 OR UPPER(COALESCE(kode, '')) LIKE 'F%'
+                 OR nomor_tanding_id IN (
+                     SELECT id FROM backend_nomortanding WHERE UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'
+                 )
+             )";
+        let bagans: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM ({})", festival_bagans))
+            .bind(event_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("Gagal menghitung bagan festival: {}", e))?;
+        let finished: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM backend_detailbagan WHERE selesai = 1
+               AND atlet1_id IS NOT NULL AND atlet2_id IS NOT NULL
+               AND bagan_id IN ({})",
+            festival_bagans
+        ))
+        .bind(event_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Gagal menghitung partai festival: {}", e))?;
+        Ok((bagans, finished))
+    }
+
+    /// Festival format of the event: the stored choice, or for events that never chose one,
+    /// "bagan" when festival bagans already exist and "roster" otherwise.
+    pub async fn get_festival_format(&self, event_id: i64) -> Result<FestivalFormatInfo, String> {
+        let state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        let (festival_bagan_count, finished_match_count) = self.festival_bagan_counts(event_id).await?;
+        let format = match state.format.as_deref() {
+            Some("roster") => "roster",
+            Some("bagan") => "bagan",
+            _ if festival_bagan_count > 0 => "bagan",
+            _ => "roster",
+        }
+        .to_string();
+        Ok(FestivalFormatInfo { format, festival_bagan_count, finished_match_count })
+    }
+
+    /// Switches the event's festival format. Switching to "roster" while festival bagans exist
+    /// requires `delete_bagans`, so no hidden bagan keeps scores.
+    pub async fn set_festival_format(&self, event_id: i64, format: String, delete_bagans: bool) -> Result<FestivalFormatInfo, String> {
+        if format != "roster" && format != "bagan" {
+            return Err(format!("Format festival tidak dikenal: {}", format));
+        }
+        if format == "roster" {
+            let (bagans, _) = self.festival_bagan_counts(event_id).await?;
+            if bagans > 0 {
+                if !delete_bagans {
+                    return Err(format!(
+                        "Masih ada {} bagan festival. Hapus bagan festival untuk memakai format roster.",
+                        bagans
+                    ));
+                }
+                self.delete_all_festival_bagans(event_id).await?;
+            }
+        }
+        let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        state.format = Some(format);
+        helper_save_festival_roster_state(self.active_db_path.as_deref(), event_id, &state)?;
+        self.get_festival_format(event_id).await
     }
 
     /// Memperbarui tipe layout template bagan ('quadrant' atau 'bands')
@@ -6849,32 +7218,42 @@ impl DatabaseManager {
     pub async fn auto_pair_festival_category(&self, event_id: i64, nomor_tanding_id: Option<i64>) -> Result<FestivalRosterData, String> {
         let pool = self.pool.as_ref().ok_or("Database tidak terhubung.")?;
 
-        let target_clause = if let Some(nt_id) = nomor_tanding_id {
-            format!("AND a.nomor_tanding_id = {}", nt_id)
-        } else {
-            "AND UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%'".to_string()
-        };
-
-        let sql = format!(
+        let ath_rows: Vec<(i64, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
             "SELECT a.id, a.nomor_tanding_id, a.nama_atlet, nt.nama_nomor_tanding, u.nama_utusan, p.nama_perguruan
              FROM backend_atlet a
              JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
              LEFT JOIN backend_utusan u ON a.utusan_id = u.id
              LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
-             WHERE a.event_id = ? {}",
-            target_clause
-        );
+             WHERE a.event_id = ? AND UPPER(nt.nama_nomor_tanding) LIKE '%FESTIVAL%'",
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
-        let ath_rows: Vec<(i64, i64, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(&sql)
-            .bind(event_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        let festival_ids: std::collections::HashSet<i64> = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM backend_nomortanding WHERE event_id = ? AND UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'",
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+
+        let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
+        // Athletes of a mixed (secondary) category are paired inside their primary category.
+        let sec_to_primary = helper_festival_mix_map(&state.mix_groups, &festival_ids);
+        let target = nomor_tanding_id.map(|id| *sec_to_primary.get(&id).unwrap_or(&id));
 
         let mut athletes_by_nt: std::collections::HashMap<i64, Vec<FestivalAthlete>> = std::collections::HashMap::new();
         for (a_id, nt_id, a_nama, a_nt_name, a_utusan, a_perguruan) in ath_rows {
+            let key = *sec_to_primary.get(&nt_id).unwrap_or(&nt_id);
+            if target.is_some_and(|t| t != key) {
+                continue;
+            }
             let cat_str = a_nt_name.unwrap_or_default();
-            let jk = if cat_str.to_lowercase().contains("putri") || cat_str.to_lowercase().contains("pi") {
+            let jk = if helper_is_putri_name(&cat_str) {
                 "PUTRI".to_string()
             } else {
                 "PUTRA".to_string()
@@ -6886,10 +7265,8 @@ impl DatabaseManager {
                 utusan: a_utusan.unwrap_or_else(|| "-".to_string()),
                 jenis_kelamin: jk,
             };
-            athletes_by_nt.entry(nt_id).or_default().push(fa);
+            athletes_by_nt.entry(key).or_default().push(fa);
         }
-
-        let mut state = helper_load_festival_roster_state(self.active_db_path.as_deref(), event_id);
 
         for (nt_id, athletes) in athletes_by_nt {
             let paired = helper_pair_festival_athletes_anti_collision(athletes);
@@ -7156,9 +7533,9 @@ impl DatabaseManager {
                     r#"
                     INSERT INTO backend_detailbagan (
                         bagan_id, round, urutan, atlet1_id, atlet2_id,
-                        score1, score2, vr1, vr2, team, selesai, assigned_tatami_id
+                        score1, score2, vr1, vr2, hantei, team, selesai, assigned_tatami_id
                     )
-                    VALUES (?, 10, ?, ?, ?, '0', '0', 0, 0, 1, 0, ?)
+                    VALUES (?, 10, ?, ?, ?, '0', '0', 0, 0, 0, 1, 0, ?)
                     RETURNING id
                     "#
                 )
@@ -7582,9 +7959,9 @@ impl DatabaseManager {
             r#"
             INSERT INTO backend_detailbagan (
                 bagan_id, round, urutan, atlet1_id, atlet2_id,
-                score1, score2, vr1, vr2, team, selesai, assigned_tatami_id
+                score1, score2, vr1, vr2, hantei, team, selesai, assigned_tatami_id
             )
-            VALUES (?, 10, ?, ?, ?, '0', '0', ?, ?, 1, 0, ?)
+            VALUES (?, 10, ?, ?, ?, '0', '0', ?, ?, 0, 1, 0, ?)
             RETURNING id
             "#
         )
@@ -8422,6 +8799,20 @@ impl DatabaseManager {
     }
 
     /// Generates complete Official Results Booklet and Minutes of Meeting (Berita Acara)
+    /// Pool and festival layout of a bagan, for printing it like the bagan channel.
+    async fn bagan_pool_and_layout(pool: &Pool<Sqlite>, bagan_id: Option<i64>) -> (Option<i64>, Option<String>) {
+        let Some(id) = bagan_id else {
+            return (None, None);
+        };
+        sqlx::query_as::<_, (Option<i64>, Option<String>)>("SELECT pool, layout_type FROM backend_bagan WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or((None, None))
+    }
+
     pub async fn get_results_booklet_data(&self, event_id: i64) -> Result<ResultsBookletData, String> {
         let pool = self.get_pool()?;
 
@@ -8633,6 +9024,7 @@ impl DatabaseManager {
                 if let Some(a2) = m.atlet2_id { athlete_ids.insert(a2); }
             }
             let athletes_count = athlete_ids.len() as i64;
+            let (bagan_pool, bagan_layout_type) = Self::bagan_pool_and_layout(pool, Some(b.id)).await;
 
             category_brackets.push(TatamiBookletCategory {
                 match_seq: idx + 1,
@@ -8647,6 +9039,8 @@ impl DatabaseManager {
                 tipe_tanding: Some(b.tipe_tanding.clone()),
                 winners: b.winners.clone(),
                 matches,
+                bagan_pool,
+                bagan_layout_type,
             });
         }
 
@@ -8868,8 +9262,8 @@ impl DatabaseManager {
             for match_sched in schedule {
                 sqlx::query(
                     r#"
-                    INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, selesai, team)
-                    VALUES (?, ?, ?, ?, ?, 0, 0)
+                    INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team)
+                    VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 0)
                     "#
                 )
                 .bind(bagan_id)
@@ -9095,6 +9489,82 @@ fn helper_festival_category_sort_key(name: &str) -> (i32, i32, i32, String) {
     (disc_rank, age_rank, gender_rank, name.to_string())
 }
 
+/// Normalised contingent name, or None when the athlete has no contingent ("" or "-").
+fn helper_festival_utusan_key(utusan: &str) -> Option<String> {
+    let u = utusan.trim().to_uppercase();
+    if u.is_empty() || u == "-" {
+        None
+    } else {
+        Some(u)
+    }
+}
+
+/// Two festival athletes clash when they come from the same (known) contingent.
+fn helper_same_festival_utusan(a: &str, b: &str) -> bool {
+    match (helper_festival_utusan_key(a), helper_festival_utusan_key(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// secondary category id -> primary category id for the event's mix groups. Ignores ids that
+/// are not festival categories of the event, a primary listed as someone's secondary, and a
+/// category claimed by two groups (first wins).
+fn helper_festival_mix_map(
+    mix_groups: &[FestivalMixGroup],
+    valid_ids: &std::collections::HashSet<i64>,
+) -> std::collections::HashMap<i64, i64> {
+    let primaries: std::collections::HashSet<i64> = mix_groups.iter().map(|m| m.primary_category_id).collect();
+    let mut map = std::collections::HashMap::new();
+    for mg in mix_groups {
+        let pid = mg.primary_category_id;
+        if !valid_ids.contains(&pid) || map.contains_key(&pid) {
+            continue;
+        }
+        for sid in &mg.secondary_category_ids {
+            if *sid != pid && valid_ids.contains(sid) && !primaries.contains(sid) && !map.contains_key(sid) {
+                map.insert(*sid, pid);
+            }
+        }
+    }
+    map
+}
+
+/// Updates a saved 1-vs-1 order (pairs = consecutive ids) to the current athletes without
+/// reshuffling: withdrawn athletes leave holes that new athletes fill first, then the last
+/// athlete of the list; remaining new athletes are appended (paired among themselves,
+/// avoiding the same contingent where possible).
+fn helper_merge_festival_pairing(saved: &[i64], current: &[FestivalAthlete]) -> Vec<i64> {
+    let current_ids: std::collections::HashSet<i64> = current.iter().map(|a| a.id).collect();
+    let saved_set: std::collections::HashSet<i64> = saved.iter().copied().collect();
+    let mut slots: Vec<Option<i64>> = saved.iter().map(|id| current_ids.contains(id).then_some(*id)).collect();
+    let newcomers: Vec<FestivalAthlete> = current.iter().filter(|a| !saved_set.contains(&a.id)).cloned().collect();
+    let mut newcomer_ids: std::collections::VecDeque<i64> =
+        helper_pair_festival_athletes_anti_collision(newcomers).into_iter().map(|a| a.id).collect();
+    let mut i = 0;
+    while i < slots.len() {
+        if slots[i].is_none() {
+            if let Some(n) = newcomer_ids.pop_front() {
+                slots[i] = Some(n);
+            } else {
+                // No newcomer left: move the last athlete into the hole (or drop trailing holes).
+                while slots.len() > i + 1 && slots.last() == Some(&None) {
+                    slots.pop();
+                }
+                if slots.len() > i + 1 {
+                    slots[i] = slots.pop().flatten();
+                } else {
+                    slots.pop();
+                }
+            }
+        }
+        i += 1;
+    }
+    let mut out: Vec<i64> = slots.into_iter().flatten().collect();
+    out.extend(newcomer_ids);
+    out
+}
+
 fn helper_pair_festival_athletes_anti_collision(athletes: Vec<FestivalAthlete>) -> Vec<FestivalAthlete> {
     if athletes.len() <= 1 {
         return athletes;
@@ -9104,11 +9574,7 @@ fn helper_pair_festival_athletes_anti_collision(athletes: Vec<FestivalAthlete>) 
 
     let mut groups: HashMap<String, Vec<FestivalAthlete>> = HashMap::new();
     for a in athletes {
-        let u = if a.utusan.trim().is_empty() {
-            "UNKNOWN".to_string()
-        } else {
-            a.utusan.trim().to_uppercase()
-        };
+        let u = helper_festival_utusan_key(&a.utusan).unwrap_or_else(|| "UNKNOWN".to_string());
         groups.entry(u).or_default().push(a);
     }
 
@@ -9135,15 +9601,10 @@ fn helper_pair_festival_athletes_anti_collision(athletes: Vec<FestivalAthlete>) 
     }
 
     let count_clashes = |arr: &[FestivalAthlete]| -> usize {
-        let mut clashes = 0;
-        for i in (0..arr.len().saturating_sub(1)).step_by(2) {
-            let u1 = arr[i].utusan.trim().to_uppercase();
-            let u2 = arr[i + 1].utusan.trim().to_uppercase();
-            if !u1.is_empty() && !u2.is_empty() && u1 == u2 {
-                clashes += 1;
-            }
-        }
-        clashes
+        (0..arr.len().saturating_sub(1))
+            .step_by(2)
+            .filter(|&i| helper_same_festival_utusan(&arr[i].utusan, &arr[i + 1].utusan))
+            .count()
     };
 
     let mut best = res;
@@ -9198,7 +9659,51 @@ fn helper_load_festival_roster_state(db_path: Option<&std::path::Path>, event_id
         tatami_assignments: std::collections::HashMap::new(),
         athlete_pairings: std::collections::HashMap::new(),
         mix_groups: Vec::new(),
+        format: None,
     }
+}
+
+/// Estimated minutes per bout, from the (upper-case) category name.
+pub(crate) fn helper_minutes_per_match(upper: &str) -> f64 {
+    if upper.contains("KATA") {
+        3.5
+    } else if upper.contains("SENIOR") || upper.contains("U-21") || upper.contains("UNDER 21") {
+        6.0
+    } else if upper.contains("CADET") || upper.contains("KADET") || upper.contains("JUNIOR") {
+        4.5
+    } else {
+        4.0
+    }
+}
+
+/// A festival session's length: the bouts' minutes rounded up to 5, at least 15.
+pub(crate) fn helper_festival_session_minutes(bout_minutes: f64) -> i64 {
+    let m = (bout_minutes / 5.0).ceil() as i64 * 5;
+    m.max(15)
+}
+
+/// Number of bouts a festival category needs in the chosen format.
+/// roster: 1-vs-1 pairs (an odd athlete still gets a bout); bagan: groups of up to 4,
+/// each group of k athletes needs k - 1 bouts.
+pub(crate) fn helper_festival_match_count(athletes: i64, roster_format: bool) -> i64 {
+    if athletes < 2 {
+        return 0;
+    }
+    if roster_format {
+        (athletes + 1) / 2
+    } else {
+        let groups = (athletes + 3) / 4;
+        athletes - groups
+    }
+}
+
+/// True when a category name marks it as PUTRI ("PUTRI" or the word "PI").
+pub(crate) fn helper_is_putri_name(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    upper.contains("PUTRI")
+        || upper
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|w| w == "PI")
 }
 
 fn helper_save_festival_roster_state(db_path: Option<&std::path::Path>, event_id: i64, state: &FestivalRosterState) -> Result<(), String> {
@@ -9207,6 +9712,145 @@ fn helper_save_festival_roster_state(db_path: Option<&std::path::Path>, event_id
     std::fs::write(&path, json_str).map_err(|e| e.to_string())
 }
 
+
+#[cfg(test)]
+mod festival_format_tests {
+    use super::{
+        helper_festival_match_count, helper_festival_mix_map, helper_is_putri_name,
+        helper_pair_festival_athletes_anti_collision, helper_same_festival_utusan,
+    };
+    use crate::models::{FestivalAthlete, FestivalMixGroup};
+
+    fn ath(id: i64, utusan: &str) -> FestivalAthlete {
+        FestivalAthlete {
+            id,
+            nama: format!("ATLET {}", id),
+            perguruan: "-".into(),
+            utusan: utusan.into(),
+            jenis_kelamin: "PUTRA".into(),
+        }
+    }
+
+    fn clashes(order: &[FestivalAthlete]) -> usize {
+        order
+            .chunks(2)
+            .filter(|p| p.len() == 2 && helper_same_festival_utusan(&p[0].utusan, &p[1].utusan))
+            .count()
+    }
+
+    /// Fewest same-contingent bouts possible: with s athletes in the biggest contingent and
+    /// r = n - s others, the surplus s - r (minus the one athlete left alone when n is odd)
+    /// must meet each other.
+    fn min_clashes(sizes: &[usize]) -> usize {
+        let n: usize = sizes.iter().sum();
+        let s = *sizes.iter().max().unwrap_or(&0);
+        let r = n - s;
+        let odd = n % 2;
+        if s > r + odd { (s - r - odd) / 2 } else { 0 }
+    }
+
+    #[test]
+    fn anti_collision_pairing_reaches_the_minimum() {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        for round in 0..600 {
+            let groups = rng.gen_range(1..=6);
+            let sizes: Vec<usize> = (0..groups).map(|_| rng.gen_range(1..=7)).collect();
+            let mut list = Vec::new();
+            let mut id = 0;
+            for (g, &k) in sizes.iter().enumerate() {
+                for _ in 0..k {
+                    id += 1;
+                    list.push(ath(id, &format!("KONTINGEN {}", g)));
+                }
+            }
+            let n = list.len();
+            let order = helper_pair_festival_athletes_anti_collision(list);
+            assert_eq!(order.len(), n, "round {}: athletes lost", round);
+            let mut ids: Vec<i64> = order.iter().map(|a| a.id).collect();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), n, "round {}: duplicated athlete", round);
+            assert_eq!(clashes(&order), min_clashes(&sizes), "round {} sizes {:?}", round, sizes);
+        }
+    }
+
+    #[test]
+    fn festival_pairing_merge_keeps_existing_pairs() {
+        use super::helper_merge_festival_pairing;
+        let saved = vec![1, 2, 3, 4, 5, 6, 7];
+        // late athlete 8 joins the solo 7
+        let cur: Vec<_> = (1..=8).map(|i| ath(i, &format!("K{}", i))).collect();
+        assert_eq!(helper_merge_festival_pairing(&saved, &cur), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        // athlete 3 withdraws, no newcomer: the last athlete (7) takes the spot
+        let cur: Vec<_> = [1, 2, 4, 5, 6, 7].iter().map(|&i| ath(i, &format!("K{}", i))).collect();
+        assert_eq!(helper_merge_festival_pairing(&saved, &cur), vec![1, 2, 7, 4, 5, 6]);
+        // athlete 3 withdraws and 9 registers: 9 takes the spot
+        let cur: Vec<_> = [1, 2, 4, 5, 6, 7, 9].iter().map(|&i| ath(i, &format!("K{}", i))).collect();
+        assert_eq!(helper_merge_festival_pairing(&saved, &cur), vec![1, 2, 9, 4, 5, 6, 7]);
+        // the last athlete itself withdraws
+        let cur: Vec<_> = (1..=6).map(|i| ath(i, &format!("K{}", i))).collect();
+        assert_eq!(helper_merge_festival_pairing(&saved, &cur), vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn athletes_without_contingent_never_clash() {
+        assert!(!helper_same_festival_utusan("-", "-"));
+        assert!(!helper_same_festival_utusan("", "  "));
+        assert!(!helper_same_festival_utusan("-", "KOTA BONTANG"));
+        assert!(helper_same_festival_utusan(" kota bontang", "KOTA BONTANG "));
+        let order = helper_pair_festival_athletes_anti_collision(vec![ath(1, "-"), ath(2, "-"), ath(3, "A"), ath(4, "A")]);
+        assert_eq!(clashes(&order), 0);
+    }
+
+    #[test]
+    fn mix_map_ignores_invalid_groups() {
+        let valid: std::collections::HashSet<i64> = [1, 2, 3, 4, 5].into_iter().collect();
+        let groups = vec![
+            FestivalMixGroup { primary_category_id: 1, secondary_category_ids: vec![2, 1, 99], bagan_name: "A".into() },
+            FestivalMixGroup { primary_category_id: 3, secondary_category_ids: vec![2, 1, 4], bagan_name: "B".into() },
+            FestivalMixGroup { primary_category_id: 98, secondary_category_ids: vec![5], bagan_name: "C".into() },
+        ];
+        let map = helper_festival_mix_map(&groups, &valid);
+        assert_eq!(map.get(&2), Some(&1)); // first group wins
+        assert_eq!(map.get(&4), Some(&3));
+        assert!(!map.contains_key(&1)); // a primary is never a secondary
+        assert!(!map.contains_key(&5)); // primary 98 is not in the event
+        assert!(!map.contains_key(&99));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn festival_match_count_by_format() {
+        assert_eq!(helper_festival_match_count(0, true), 0);
+        assert_eq!(helper_festival_match_count(1, false), 0);
+        assert_eq!(helper_festival_match_count(2, true), 1);
+        assert_eq!(helper_festival_match_count(5, true), 3);
+        assert_eq!(helper_festival_match_count(8, true), 4);
+        assert_eq!(helper_festival_match_count(4, false), 3);
+        assert_eq!(helper_festival_match_count(5, false), 3); // groups 3 + 2
+        assert_eq!(helper_festival_match_count(12, false), 9);
+    }
+
+    #[test]
+    fn festival_session_minutes_round_up() {
+        use super::{helper_festival_session_minutes, helper_minutes_per_match};
+        assert_eq!(helper_festival_session_minutes(0.0), 15);
+        assert_eq!(helper_festival_session_minutes(15.5), 20);
+        assert_eq!(helper_festival_session_minutes(120.0), 120);
+        assert_eq!(helper_minutes_per_match("FESTIVAL USIA DINI - KATA PERORANGAN PUTRI"), 3.5);
+        assert_eq!(helper_minutes_per_match("FESTIVAL PEMULA - KUMITE -35 KG PUTRA"), 4.0);
+    }
+
+    #[test]
+    fn putri_detection_uses_whole_words() {
+        assert!(helper_is_putri_name("FESTIVAL USIA DINI - KATA PERORANGAN PUTRI"));
+        assert!(helper_is_putri_name("Kumite -40kg PI"));
+        assert!(!helper_is_putri_name("FESTIVAL PRA PEMULA - KATA PERORANGAN PUTRA"));
+        assert!(!helper_is_putri_name("KUMITE PIALA WALIKOTA PA"));
+        assert!(!helper_is_putri_name("OLYMPIC KATA PUTRA"));
+    }
+}
 
 #[cfg(test)]
 mod festival_tests {

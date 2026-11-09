@@ -22,6 +22,7 @@ let wsClient: WebSocket | null = null;
 let wsReconnectTimer: any = null;
 let currentHostUrl: string = "";
 let isInitialized = false;
+let lastBroadcastPayload: TatamiLiveMatchPayload | null = null;
 
 type LiveStateListener = (activeTatamis: Record<number, TatamiLiveMatchPayload>) => void;
 const listeners = new Set<LiveStateListener>();
@@ -145,7 +146,17 @@ function connectWebSocket() {
     wsClient = new WebSocket(wsUrl);
 
     wsClient.onopen = () => {
-      // WebSocket connected
+      if (lastBroadcastPayload && wsClient && wsClient.readyState === WebSocket.OPEN) {
+        try {
+          wsClient.send(
+            JSON.stringify({
+              type: "tatami_live_state",
+              origin: isHostUi() ? "host" : undefined,
+              payload: lastBroadcastPayload,
+            })
+          );
+        } catch (_) {}
+      }
     };
 
     wsClient.onmessage = (ev) => {
@@ -188,6 +199,7 @@ function connectWebSocket() {
  * 3. Axum WebSocket relay (reaches all other laptops on the LAN!)
  */
 export function broadcastLiveMatch(payload: TatamiLiveMatchPayload) {
+  lastBroadcastPayload = payload;
   // Update local memory state immediately
   applyLiveMatchPayload(payload);
 
@@ -314,7 +326,9 @@ export function connectTatamiSocket(
   role: string,
   tatami: number,
   onMessage: (msg: any) => void,
-  onOpen?: (socket: TatamiSocket) => void
+  onOpen?: (socket: TatamiSocket) => void,
+  /** Runs when the connection drops (it reconnects by itself). */
+  onClose?: () => void
 ): TatamiSocket {
   let ws: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -355,7 +369,10 @@ export function connectTatamiSocket(
     };
     ws.onclose = () => {
       ws = null;
-      if (!closed) retryTimer = setTimeout(connect, 3000);
+      if (!closed) {
+        onClose?.();
+        retryTimer = setTimeout(connect, 3000);
+      }
     };
     ws.onerror = () => {
       try {

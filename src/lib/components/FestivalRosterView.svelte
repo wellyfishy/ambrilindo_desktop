@@ -2,10 +2,9 @@
   import { onMount } from "svelte";
   import { invoke } from "$lib/api_client";
   import { printWithOrientation } from "$lib/print_helper";
-  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL, BUSHIDO_LOGO_DATA_URL } from "$lib/assets_base64";
+  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import FestivalSmartMixModal from "$lib/components/FestivalSmartMixModal.svelte";
   import FestivalAutoMixModal from "$lib/components/FestivalAutoMixModal.svelte";
-  import FestivalBracketSheet from "$lib/components/FestivalBracketSheet.svelte";
   import type { FestivalMixGroupData } from "$lib/festival_mix_helper";
   import type {
     FestivalRosterData,
@@ -13,10 +12,6 @@
     FestivalTatamiSection,
     FestivalCategory,
     FestivalMatch,
-    TatamiItem,
-    FestivalBookletData,
-    FestivalBookletCategory,
-    DetailBaganItem,
   } from "$lib/types";
 
   interface Props {
@@ -60,57 +55,6 @@
   // --- Print View State (Table Roster) ---
   let printModalOpen = $state(false);
   let printSelectedTatamiId = $state<number | "all">("all");
-
-  // --- Bagan Booklet Print Modal State (Sampul Resmi + Bagan Festival) ---
-  let baganBookletModalOpen = $state(false);
-  let baganBookletLoading = $state(false);
-  let baganBookletData = $state<FestivalBookletData | null>(null);
-  let baganBookletSelectedTatamiId = $state<number | "all">("all");
-  let sampulDayLabel = $state("DAY 1");
-  let sampulVenue = $state("FESTIVAL BUSHIDO I");
-  let sampulDate = $state("8 OKTOBER 2026");
-  let sampulOrg = $state("FEDERASI OLAHRAGA KARATE-DO INDONESIA PROVINSI KALIMANTAN TIMUR");
-
-  async function openBaganBooklet(tatamiId: number | "all" = "all") {
-    baganBookletSelectedTatamiId = tatamiId;
-    baganBookletLoading = true;
-    baganBookletModalOpen = true;
-    try {
-      const res: FestivalBookletData = await invoke("get_festival_booklet_data", {
-        eventId,
-        tatamiId: tatamiId === "all" ? null : tatamiId,
-      });
-      baganBookletData = res;
-      sampulVenue = "FESTIVAL BUSHIDO I";
-      sampulDate = "8 OKTOBER 2026";
-      if (res.kop_surat?.nama_organisasi) sampulOrg = res.kop_surat.nama_organisasi;
-    } catch (e: any) {
-      console.error("Gagal memuat booklet bagan festival:", e);
-      onShowToast(`Gagal memuat bagan festival: ${e}`, "error");
-    } finally {
-      baganBookletLoading = false;
-    }
-  }
-
-  async function handleFilterBookletTatami(newTatamiId: number | "all") {
-    baganBookletSelectedTatamiId = newTatamiId;
-    await openBaganBooklet(newTatamiId);
-  }
-
-  let coverTatamiTitle = $derived.by(() => {
-    if (baganBookletSelectedTatamiId === "all" || !baganBookletData) {
-      return "BAGAN FESTIVAL";
-    }
-    const t = baganBookletData.tatamis.find((x) => x.id === baganBookletSelectedTatamiId);
-    const num = t?.tatami_number || 1;
-    return `BAGAN FESTIVAL - TATAMI ${num}`;
-  });
-
-
-
-  function triggerBookletPrint() {
-    printWithOrientation("landscape", "5mm");
-  }
 
   $effect(() => {
     if (eventId) {
@@ -183,6 +127,67 @@
     }
     return list;
   });
+
+  // Categories as stored in the DB: a mixed category is split back into its member classes,
+  // so the mix dialogs work with real ids and athlete counts.
+  let rawCategoriesList = $derived.by(() =>
+    allCategoriesList.flatMap((c) =>
+      c.mixed_from.length > 0
+        ? c.mixed_from.map((m) => ({ id: m.id, nama: m.nama, athlete_count: m.atlet_count }))
+        : [{ id: c.id, nama: c.nama, athlete_count: c.atlet_count }]
+    )
+  );
+
+  async function releaseMix(cat: FestivalCategory) {
+    const remaining = mixGroups.filter((g) => g.primary_category_id !== cat.id);
+    try {
+      await invoke("save_festival_mix_groups", { eventId, mixGroups: remaining });
+      onShowToast(`Mix ${cat.display_name} dilepas.`, "success");
+      await loadFestivalData();
+    } catch (e: any) {
+      onShowToast(`Gagal melepas mix: ${e}`, "error");
+    }
+  }
+
+  // --- Print rows: one tatami = category title rows + athlete rows numbered continuously ---
+  type PrintRow =
+    | { kind: "category"; key: string; name: string }
+    | { kind: "athlete"; key: string; no: number; nama: string; perguruan: string; utusan: string; sabuk: "M" | "B" };
+
+  function buildPrintRows(sec: FestivalTatamiSection): PrintRow[] {
+    const rows: PrintRow[] = [];
+    let no = 0;
+    for (const cat of sec.categories) {
+      rows.push({ kind: "category", key: `c${cat.id}`, name: cat.display_name });
+      for (const m of cat.matches) {
+        for (const [ath, sabuk] of [[m.aka, "M"], [m.ao, "B"]] as const) {
+          if (!ath) continue;
+          no += 1;
+          rows.push({
+            kind: "athlete",
+            key: `a${cat.id}-${ath.id}-${sabuk}`,
+            no,
+            nama: ath.nama,
+            perguruan: ath.perguruan,
+            utusan: ath.utusan,
+            sabuk,
+          });
+        }
+      }
+    }
+    return rows;
+  }
+
+  let printOrgName = $derived(data?.kop_surat?.nama_organisasi?.trim() || data?.event_name || "");
+  let printKopMeta = $derived.by(() => {
+    const kop = data?.kop_surat;
+    if (!kop) return "";
+    const alamat = (kop.alamat || "").split("\n").map((l) => l.trim()).filter(Boolean).join(", ");
+    return [alamat, (kop.kontak || "").trim()].filter(Boolean).join("  •  ");
+  });
+  let printEventLine = $derived(
+    data?.kop_surat?.nama_organisasi?.trim() && data?.event_name ? data.event_name : ""
+  );
 
   // --- Actions ---
 
@@ -338,7 +343,7 @@
 
   // Open Mix Modal
   function openMixModal() {
-    const sparseCat = allCategoriesList.find((c) => c.atlet_count <= 2);
+    const sparseCat = allCategoriesList.find((c) => c.atlet_count <= 2 && c.mixed_from.length === 0);
     if (sparseCat) {
       openSmartMixForCategory(sparseCat);
       return;
@@ -416,11 +421,11 @@
   }
 
   function triggerPrint() {
-    window.print();
+    printWithOrientation("portrait", "8mm");
   }
 </script>
 
-<div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative festival-editor-main {baganBookletModalOpen || printModalOpen ? 'hidden print:hidden' : 'print:hidden'}">
+<div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative festival-editor-main {printModalOpen ? 'hidden print:hidden' : 'print:hidden'}">
   <!-- Header Bar -->
   <div class="flex items-center justify-between pb-4 border-b border-white/[0.08] shrink-0">
     <div class="flex items-center space-x-2.5">
@@ -470,18 +475,6 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
         </svg>
         <span>Mix Manual</span>
-      </button>
-
-      <!-- Cetak Bagan Festival (Booklet Lengkap Sampul) -->
-      <button
-        onclick={() => openBaganBooklet("all")}
-        class="h-9 px-3.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-black text-xs rounded-xl shadow-md transition-all active:scale-95 flex items-center space-x-1.5"
-        title="Buka Dokumen Siap Cetak Seluruh Bagan Festival Lengkap Sampul Resmi Landscape"
-      >
-        <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-          <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
-        </svg>
-        <span>Cetak Bagan Festival</span>
       </button>
 
       <!-- Cetak Roster -->
@@ -656,17 +649,6 @@
 
             <div class="flex items-center space-x-1.5">
               <button
-                onclick={() => openBaganBooklet(sec.tatami_id)}
-                class="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-semibold rounded-lg border border-emerald-500/30 transition flex items-center space-x-1"
-                title="Cetak Seluruh Bagan Tatami {sec.tatami_number} Lengkap Sampul Resmi"
-              >
-                <svg class="w-3 h-3 text-emerald-400 fill-current" viewBox="0 0 24 24">
-                  <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
-                </svg>
-                <span>Cetak Bagan T{sec.tatami_number}</span>
-              </button>
-
-              <button
                 onclick={() => {
                   printSelectedTatamiId = sec.tatami_id;
                   printModalOpen = true;
@@ -695,6 +677,14 @@
                     <h4 class="text-xs font-bold text-white truncate" title={cat.nama}>
                       {cat.display_name}
                     </h4>
+                    {#if cat.mixed_from.length > 0}
+                      <span
+                        class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase shrink-0 bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                        title={cat.mixed_from.map((m) => `${m.nama} (${m.atlet_count})`).join("\n")}
+                      >
+                        MIX {cat.mixed_from.length} KELAS
+                      </span>
+                    {/if}
                     <span class="text-[10px] font-mono text-zinc-400 shrink-0">
                       ({cat.atlet_count} Atlet • {cat.match_count} Match)
                     </span>
@@ -734,7 +724,15 @@
                       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </button>
 
-                    {#if cat.atlet_count <= 2}
+                    {#if cat.mixed_from.length > 0}
+                      <button
+                        onclick={() => releaseMix(cat)}
+                        class="px-2 py-0.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.1] text-[10px] font-semibold rounded transition cursor-pointer"
+                        title="Kembalikan kelas-kelas ini menjadi kategori terpisah"
+                      >
+                        Lepas Mix
+                      </button>
+                    {:else if cat.atlet_count <= 2}
                       <button
                         onclick={() => openSmartMixForCategory(cat)}
                         class="px-2 py-0.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[10px] font-bold rounded flex items-center space-x-1 transition active:scale-95 cursor-pointer"
@@ -813,7 +811,7 @@
                               </div>
                             {:else}
                               <div class="text-[11px] font-mono text-zinc-500 italic">
-                                (BYE / TUNGGAL - PERAIH EMAS LANGSUNG)
+                                TANPA LAWAN
                               </div>
                             {/if}
                           </td>
@@ -983,132 +981,116 @@
 <!-- ========================================================================= -->
 {#if printModalOpen && data}
   {@const printSections = data.sections.filter(
-    (s) => printSelectedTatamiId === "all" || s.tatami_id === printSelectedTatamiId
+    (s) => (printSelectedTatamiId === "all" || s.tatami_id === printSelectedTatamiId) && s.categories.length > 0
   )}
   <div class="fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-6 select-text text-black table-roster-modal-wrapper">
-    <!-- Screen-Only Toolbar -->
-    <div class="no-print mb-4 pb-3 border-b border-white/10 flex items-center justify-between text-zinc-200 max-w-5xl mx-auto w-full">
+    <!-- Screen-only toolbar -->
+    <div class="no-print mb-4 pb-3 border-b border-white/10 flex items-center justify-between text-zinc-200 w-full max-w-[210mm] mx-auto">
       <div class="flex items-center space-x-3">
-        <h3 class="text-sm font-bold text-white uppercase">Pratinjau Dokumen Siap Cetak Roster Festival</h3>
+        <h3 class="text-sm font-black text-white uppercase tracking-tight">Cetak Roster Festival</h3>
         <select
           bind:value={printSelectedTatamiId}
-          class="bg-[#181a20] text-xs text-white px-2.5 py-1 rounded-lg border border-white/10 outline-none"
+          class="bg-[#181a20] text-xs text-white px-2.5 py-1.5 rounded-xl border border-white/[0.1] outline-none"
         >
           <option value="all">Semua Tatami</option>
           {#each data.tatamis as t}
-            <option value={t.id}>Tatami {t.tatami_number} Saja</option>
+            <option value={t.id}>Tatami {t.tatami_number}</option>
           {/each}
         </select>
       </div>
       <div class="flex items-center space-x-2">
         <button
-          onclick={triggerPrint}
-          class="h-9 px-4 bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs rounded-xl shadow-md flex items-center space-x-1.5 transition"
-        >
-          <svg class="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-          </svg>
-          <span>Cetak Sekarang (Print)</span>
-        </button>
-        <button
           onclick={() => (printModalOpen = false)}
-          class="h-9 px-3.5 bg-white/[0.08] hover:bg-white/[0.15] text-zinc-300 font-semibold text-xs rounded-xl transition"
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
         >
           Tutup
         </button>
+        <button
+          onclick={triggerPrint}
+          disabled={printSections.length === 0}
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md disabled:opacity-50"
+        >
+          Cetak
+        </button>
       </div>
     </div>
 
-    <!-- Printable Paper Page (A4 Ink-Friendly) -->
-    <div class="bg-white p-6 max-w-5xl mx-auto shadow-2xl rounded-lg text-black font-sans w-full print-page-box">
-      <!-- Kop Surat -->
-      <div class="simple-roster-header">
-        <div class="simple-roster-kop-left">
-          <div class="simple-roster-org-info">
-            <h3 class="simple-roster-org-name">{data.kop_surat?.nama_organisasi || data.event_name}</h3>
-            {#if data.kop_surat?.alamat || data.kop_surat?.kontak}
-              <p class="simple-roster-org-meta">{data.kop_surat.alamat} {data.kop_surat.kontak ? `• ${data.kop_surat.kontak}` : ''}</p>
-            {/if}
-            <div class="simple-roster-doc-title">ROSTER PERTANDINGAN KATEGORI FESTIVAL</div>
-          </div>
-        </div>
-        <div class="simple-roster-day-badge-box">
-          <div class="simple-roster-day-label">FESTIVAL</div>
-          <div class="simple-roster-day-date">{data.total_matches} Partai</div>
-        </div>
-      </div>
+    {#if printSections.length === 0}
+      <div class="no-print text-center text-xs text-zinc-500 py-16">Tidak ada kategori festival di tatami ini.</div>
+    {/if}
 
-      <!-- Sections & Tables -->
-      {#each printSections as sec}
-        <div class="mb-6 break-inside-avoid">
-          <div class="simple-roster-day-bar">
-            <span class="day-bar-title">TATAMI {sec.tatami_number}</span>
-            <span class="day-bar-date">{sec.categories.length} Kategori • {sec.total_athletes} Atlet • {sec.total_matches} Partai</span>
-          </div>
-
-          {#each sec.categories as cat}
-            <div class="mb-4 break-inside-avoid">
-              <div class="bg-zinc-100 border border-zinc-300 px-3 py-1 font-bold text-xs uppercase flex justify-between items-center my-1">
-                <span>[{cat.discipline.toUpperCase()}] {cat.display_name}</span>
-                <span class="text-[10px] font-mono text-zinc-600 font-semibold">{cat.atlet_count} Atlet • {cat.match_count} Match</span>
-              </div>
-
-              <table class="w-full text-left border-collapse border border-zinc-400 text-xs">
-                <thead>
-                  <tr class="bg-zinc-200 text-zinc-800 text-[10px] font-bold">
-                    <th class="border border-zinc-400 p-1.5 w-12 text-center">Partai</th>
-                    <th class="border border-zinc-400 p-1.5 w-5/12">Sudut Merah (AKA)</th>
-                    <th class="border border-zinc-400 p-1.5 w-5/12">Sudut Biru (AO)</th>
-                    <th class="border border-zinc-400 p-1.5 w-16 text-center">Paraf Meja</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each cat.matches as m}
-                    <tr>
-                      <td class="border border-zinc-400 p-1.5 text-center font-bold font-mono">#{m.match_num}</td>
-                      <td class="border border-zinc-400 p-1.5">
-                        <div class="font-bold text-[11px] leading-tight">[M] {m.aka.nama}</div>
-                        <div class="text-[9.5px] text-zinc-600 font-mono mt-0.5">{m.aka.perguruan} • {m.aka.utusan}</div>
-                      </td>
-                      <td class="border border-zinc-400 p-1.5">
-                        {#if m.ao}
-                          <div class="font-bold text-[11px] leading-tight">[B] {m.ao.nama}</div>
-                          <div class="text-[9.5px] text-zinc-600 font-mono mt-0.5">{m.ao.perguruan} • {m.ao.utusan}</div>
-                        {:else}
-                          <div class="text-[10px] text-zinc-500 italic">(BYE / TUNGGAL)</div>
-                        {/if}
-                      </td>
-                      <td class="border border-zinc-400 p-1.5 text-center">
-                        <div class="border border-zinc-400 w-4 h-4 mx-auto rounded"></div>
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
+    <div class="roster-paper-stack">
+      {#each printSections as sec (sec.tatami_id)}
+        {@const rows = buildPrintRows(sec)}
+        <div class="roster-sheet">
+          <!-- div, not <header>: app.css hides every <header> in print -->
+          <div class="roster-kop">
+            <div class="roster-kop-logos">
+              <img src={FORKI_LOGO_DATA_URL} alt="FORKI" class="roster-logo-forki" />
+              <span class="roster-logo-divider"></span>
+              <img src={AMBRILINDO_LOGO_DATA_URL} alt="Ambrilindo" class="roster-logo-ambrilindo" />
             </div>
-          {/each}
+            <div class="roster-kop-text">
+              <div class="roster-kop-org">{printOrgName}</div>
+              {#if printKopMeta}
+                <div class="roster-kop-meta">{printKopMeta}</div>
+              {/if}
+              <div class="roster-kop-doc">
+                ROSTER FESTIVAL{#if printEventLine}<span class="roster-kop-event">  •  {printEventLine}</span>{/if}
+              </div>
+            </div>
+          </div>
+
+          <div class="roster-tatami-banner">
+            <span class="roster-tatami-title">TATAMI {sec.tatami_number}</span>
+            <span class="roster-tatami-meta">{sec.categories.length} KATEGORI  •  {sec.total_athletes} ATLET</span>
+          </div>
+
+          <table class="roster-table">
+            <colgroup>
+              <col class="col-no" />
+              <col class="col-nama" />
+              <col class="col-perguruan" />
+              <col class="col-utusan" />
+              <col class="col-sabuk" />
+              <col class="col-check" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>No</th>
+                <th class="text-left">Nama</th>
+                <th class="text-left">Perguruan</th>
+                <th class="text-left">Utusan</th>
+                <th>Sabuk</th>
+                <th>Checklist</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each rows as r (r.key)}
+                {#if r.kind === "category"}
+                  <tr class="roster-cat-row">
+                    <td colspan="6">{r.name}</td>
+                  </tr>
+                {:else}
+                  <tr class={r.sabuk === "M" ? "roster-row-m" : "roster-row-b"}>
+                    <td class="cell-center cell-bold">{r.no}</td>
+                    <td class="cell-truncate cell-bold" title={r.nama}>{r.nama}</td>
+                    <td class="cell-truncate" title={r.perguruan}>{r.perguruan}</td>
+                    <td class="cell-truncate" title={r.utusan}>{r.utusan}</td>
+                    <td class="cell-center cell-bold">
+                      <span class="sabuk-pill {r.sabuk === 'M' ? 'sabuk-m' : 'sabuk-b'}">{r.sabuk}</span>
+                    </td>
+                    <td class="cell-center"><span class="check-box"></span></td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </table>
         </div>
       {/each}
-
-      <!-- Signatures Footer -->
-      <div class="flex justify-between mt-12 pt-4 text-center text-xs break-inside-avoid">
-        <div class="w-56">
-          <p class="text-zinc-500 mb-14">Technical Delegate,</p>
-          <div class="border-t border-black font-bold pt-1">( ........................................ )</div>
-        </div>
-        <div class="w-56">
-          <p class="text-zinc-500 mb-14">Ketua Panitia Pelaksana,</p>
-          <div class="border-t border-black font-bold pt-1">( ........................................ )</div>
-        </div>
-      </div>
-
-      <div class="simple-roster-footer-line">
-        <span>Dicetak: {new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })} • Ambrilindo</span>
-      </div>
     </div>
   </div>
 {/if}
-
 
 <!-- ========================================================================= -->
 <!-- MODAL: ASISTEN REKOMENDASI MIX CERDAS FESTIVAL                           -->
@@ -1116,11 +1098,7 @@
 {#if autoMixModalOpen && data}
   <FestivalAutoMixModal
     {eventId}
-    categories={data.sections.flatMap((s) => s.categories).map((c) => ({
-      id: c.id,
-      nama: c.nama,
-      athlete_count: c.atlet_count,
-    }))}
+    categories={rawCategoriesList}
     existingMixGroups={mixGroups}
     onClose={() => (autoMixModalOpen = false)}
     onConfirmMix={async (newMixList) => {
@@ -1143,11 +1121,7 @@
       nama: smartMixSourceCategory.nama,
       athlete_count: smartMixSourceCategory.atlet_count,
     }}
-    allCategories={allCategoriesList.map((c) => ({
-      id: c.id,
-      nama: c.nama,
-      athlete_count: c.atlet_count,
-    }))}
+    allCategories={rawCategoriesList}
     onClose={() => {
       smartMixModalOpen = false;
       smartMixSourceCategory = null;
@@ -1159,565 +1133,241 @@
   />
 {/if}
 
-<!-- ========================================================================= -->
-<!-- MODAL: PRATINJAU DOKUMEN CETAK BAGAN FESTIVAL (LENGKAP SAMPUL RESMI)     -->
-<!-- ========================================================================= -->
-{#if baganBookletModalOpen}
-  <div class="fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-4 md:p-6 select-text text-black booklet-modal-wrapper">
-    <!-- Screen-Only Toolbar -->
-    <div class="no-print mb-4 pb-3 border-b border-white/10 flex flex-wrap items-center justify-between text-zinc-200 max-w-6xl mx-auto w-full gap-3">
-      <div class="flex items-center space-x-3 flex-wrap gap-2">
-        <div class="flex items-center space-x-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <h3 class="text-sm font-black text-white uppercase tracking-tight">Cetak Bagan Festival (Lengkap Sampul)</h3>
-          {#if baganBookletData}
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" title="Bagan membaca langsung dari database SQLite (Single Source of Truth)">
-              ⚡ SSoT • {baganBookletData.categories.length} BAGAN
-            </span>
-          {/if}
-        </div>
-
-        <!-- Filter Tatami -->
-        <select
-          value={baganBookletSelectedTatamiId}
-          onchange={(e) => handleFilterBookletTatami(e.currentTarget.value === "all" ? "all" : Number(e.currentTarget.value))}
-          class="bg-[#181a20] text-xs text-white px-2.5 py-1 rounded-lg border border-white/20 outline-none font-bold cursor-pointer"
-        >
-          <option value="all">Semua Tatami</option>
-          {#if baganBookletData}
-            {#each baganBookletData.tatamis as t}
-              <option value={t.id}>Tatami {t.tatami_number} Saja</option>
-            {/each}
-          {/if}
-        </select>
-      </div>
-
-      <!-- Editable Cover Fields in Toolbar -->
-      <div class="flex items-center space-x-2 flex-wrap gap-2">
-        <div class="flex items-center space-x-1 text-[11px] font-mono text-zinc-400">
-          <span>Hari:</span>
-          <input
-            type="text"
-            bind:value={sampulDayLabel}
-            placeholder="DAY 1"
-            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-20 outline-none uppercase font-bold"
-          />
-        </div>
-
-        <div class="flex items-center space-x-1 text-[11px] font-mono text-zinc-400">
-          <span>Event:</span>
-          <input
-            type="text"
-            bind:value={sampulVenue}
-            placeholder="FESTIVAL BUSHIDO I"
-            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-52 outline-none uppercase font-bold"
-          />
-        </div>
-
-        <div class="flex items-center space-x-1 text-[11px] font-mono text-zinc-400">
-          <span>Tanggal:</span>
-          <input
-            type="text"
-            bind:value={sampulDate}
-            placeholder="8 OKTOBER 2026"
-            class="bg-[#181a20] text-white px-2 py-0.5 rounded border border-white/10 text-xs w-36 outline-none uppercase font-bold"
-          />
-        </div>
-
-        <!-- Print Action -->
-        <button
-          onclick={triggerBookletPrint}
-          disabled={baganBookletLoading || !baganBookletData}
-          class="h-9 px-4 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-black font-black text-xs rounded-xl shadow-md flex items-center space-x-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
-        >
-          <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-            <path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>
-          </svg>
-          <span>Cetak Sekarang (Print / PDF)</span>
-        </button>
-
-        <button
-          onclick={() => (baganBookletModalOpen = false)}
-          class="h-9 px-3.5 bg-white/[0.08] hover:bg-white/[0.15] text-zinc-300 font-semibold text-xs rounded-xl transition cursor-pointer"
-        >
-          Tutup
-        </button>
-      </div>
-    </div>
-
-    <!-- Document Preview Content -->
-    {#if baganBookletLoading}
-      <div class="flex items-center justify-center py-32 text-zinc-400">
-        <div class="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin mr-3"></div>
-        <span class="text-sm font-mono">Menyiapkan seluruh bagan festival & sampul resmi...</span>
-      </div>
-    {:else if baganBookletData}
-      {@const targetCategories = baganBookletData.categories}
-      <div class="booklet-preview-container max-w-6xl mx-auto w-full space-y-8 select-text">
-        <!-- ========================================================================= -->
-        <!-- HALAMAN 1: SAMPUL RESMI TURNAMEN (A4 LANDSCAPE)                          -->
-        <!-- ========================================================================= -->
-        <div class="booklet-page booklet-cover-page">
-          <div class="booklet-page-label-bar no-print">
-            <span>Halaman 1 • Sampul Resmi Bagan Festival ({coverTatamiTitle})</span>
-          </div>
-          <div class="sampul-page-container">
-            <img src="/img/cover/cover_clean_template.png" class="absolute inset-0 w-full h-full object-fill pointer-events-none select-none z-0" alt="Cover" />
-            <!-- Top Ribbon Organization Text -->
-            <div class="sampul-org-bar">
-              {sampulOrg}
-            </div>
-
-            <!-- Event Logo Container -->
-            <div class="sampul-logo-container">
-              <img
-                src={BUSHIDO_LOGO_DATA_URL}
-                class="sampul-event-logo"
-                alt="Logo Bushido"
-              />
-            </div>
-
-            <!-- Main Title Group inside Cover -->
-            <div class="sampul-main-group">
-              <div class="sampul-bagan-label">BAGAN:</div>
-              <div class="sampul-tatami-title">{coverTatamiTitle}</div>
-              <div class="sampul-event-title">{sampulVenue}</div>
-              <div class="sampul-event-dates">{sampulDate}</div>
-            </div>
-
-            <!-- Supported by branding -->
-            <div class="sampul-supported-by">
-              SUPPORTED BY:
-            </div>
-          </div>
-        </div>
-
-        <!-- ========================================================================= -->
-        <!-- HALAMAN 2+: BAGAN PER KATEGORI (A4 LANDSCAPE PRESISI 1 LEMBAR PER KELAS) -->
-        <!-- ========================================================================= -->
-        {#if targetCategories.length === 0}
-          <div class="bg-white p-12 text-center text-zinc-600 rounded-2xl shadow-sm border border-slate-200 max-w-lg mx-auto space-y-3">
-            <div class="w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-2xl flex items-center justify-center mx-auto">
-              🎋
-            </div>
-            <h4 class="text-sm font-black text-slate-900 uppercase">Belum Ada Bagan Festival di Database</h4>
-            <p class="text-xs text-slate-500 leading-relaxed">
-              Bagan festival turnamen ini belum dibuat/diundi di database. Silakan buka menu <strong>Drawing Bagan Festival</strong> untuk mengundi bagan terlebih dahulu.
-            </p>
-          </div>
-        {:else}
-          {#each targetCategories as cat, cIdx}
-            <div class="booklet-page booklet-bracket-page">
-              <div class="booklet-page-label-bar no-print">
-                <span>Halaman {cIdx + 2} • Bagan {cIdx + 1}/{targetCategories.length}: [{cat.bagan_kode || 'F'}] {cat.category_name} (Tatami {cat.tatami_number})</span>
-              </div>
-
-              <div class="bracket-page-container print-sheet">
-                <FestivalBracketSheet
-                  baganId={cat.bagan_id || undefined}
-                  baganKode={cat.bagan_kode}
-                  categoryName={cat.category_name}
-                  discipline={cat.discipline}
-                  poolCount={cat.pool}
-                  athletesCount={cat.athletes_count}
-                  tatamiNumber={cat.tatami_number}
-                  venue={sampulVenue}
-                  matches={cat.matches}
-                  layoutTemplate={cat.layout_type || "quadrant"}
-                  showHeader={true}
-                  interactive={false}
-                  isDarkMode={false}
-                />
-              </div>
-            </div>
-          {/each}
-        {/if}
-      </div>
-    {/if}
-  </div>
-{/if}
-
 <style>
-  .simple-roster-header {
+  /* ===================== ROSTER FESTIVAL PRINT (A4 portrait) ===================== */
+  .roster-paper-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  .roster-sheet {
+    width: 210mm;
+    min-height: 297mm;
+    padding: 8mm 10mm;
+    box-sizing: border-box;
+    background: #ffffff;
+    color: #000000;
+    font-family: Arial, Helvetica, sans-serif;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .roster-kop {
+    position: relative;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    border-bottom: 1.5px solid #cbd5e1;
-    padding-bottom: 4px;
-    margin-bottom: 4px;
-    gap: 8px;
+    justify-content: center;
+    min-height: 52px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid #0f172a;
   }
-  .simple-roster-kop-left {
+  .roster-kop-logos {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
     display: flex;
     align-items: center;
     gap: 8px;
   }
-  .simple-roster-org-name {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 800;
-    color: #0f172a;
+  .roster-logo-forki {
+    height: 40px;
+    width: auto;
+    max-width: 44px;
+    object-fit: contain;
+  }
+  .roster-logo-divider {
+    width: 1.2px;
+    height: 28px;
+    background: #cbd5e1;
+  }
+  .roster-logo-ambrilindo {
+    height: 22px;
+    width: auto;
+    max-width: 110px;
+    object-fit: contain;
+  }
+  .roster-kop-text {
+    width: 100%;
+    padding: 0 170px;
+    box-sizing: border-box;
+    text-align: center;
+  }
+  .roster-kop-org {
+    font-size: 14px;
+    font-weight: 900;
     line-height: 1.15;
     text-transform: uppercase;
+    color: #020617;
   }
-  .simple-roster-org-meta {
-    margin: 1px 0 0;
-    font-size: 8.5px;
-    color: #475569;
-    line-height: 1.15;
-  }
-  .simple-roster-doc-title {
+  .roster-kop-meta {
     margin-top: 2px;
+    font-size: 8.5px;
+    color: #334155;
+    line-height: 1.25;
+  }
+  .roster-kop-doc {
+    margin-top: 4px;
     font-size: 10px;
     font-weight: 800;
+    letter-spacing: 0.12em;
     color: #1e293b;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
+    white-space: pre;
   }
-  .simple-roster-day-badge-box {
-    text-align: right;
-    padding: 2px 6px;
-    background: #f8fafc;
-    border: 1px solid #cbd5e1;
-    border-radius: 4px;
-    min-width: 90px;
+  .roster-kop-event {
+    font-weight: 700;
+    letter-spacing: 0.02em;
   }
-  .simple-roster-day-label {
-    font-size: 11.5px;
-    font-weight: 800;
-    color: #b91c1c;
-    text-transform: uppercase;
-  }
-  .simple-roster-day-date {
-    font-size: 8.5px;
-    font-weight: 600;
-    color: #475569;
-    margin-top: 1px;
-  }
-  .simple-roster-day-bar {
+
+  .roster-tatami-banner {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    background: #f8fafc;
-    border: 1px solid #cbd5e1;
-    border-left: 3px solid #b91c1c;
-    padding: 2px 6px;
-    margin: 4px 0 3px 0;
+    justify-content: center;
+    position: relative;
+    margin-top: 6px;
+    padding: 4px 8px;
+    background: #e4dac4;
+    border: 1.5px solid #000000;
+    border-radius: 3px 3px 0 0;
   }
-  .day-bar-title {
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
+  .roster-tatami-title {
+    font-size: 13.5px;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+  }
+  .roster-tatami-meta {
+    position: absolute;
+    right: 8px;
+    font-size: 8.5px;
+    font-weight: 700;
+    color: #3f3a2e;
+    white-space: pre;
+  }
+
+  .roster-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    border: 1.5px solid #000000;
+    border-top: none;
+    font-size: 9.5px;
+  }
+  .roster-table .col-no { width: 32px; }
+  .roster-table .col-nama { width: 35%; }
+  .roster-table .col-perguruan { width: 20%; }
+  .roster-table .col-utusan { width: 30%; }
+  .roster-table .col-sabuk { width: 46px; }
+  .roster-table .col-check { width: 70px; }
+  .roster-table thead {
+    display: table-header-group;
+  }
+  .roster-table th {
+    background: #e4dac4;
+    border: 1px solid #000000;
+    padding: 3px 4px;
     font-size: 9px;
     font-weight: 800;
-    color: #0f172a;
-  }
-  .day-bar-date {
-    font-size: 8px;
-    font-weight: 600;
-    color: #475569;
-  }
-  .simple-roster-footer-line {
-    font-size: 7.5px;
-    color: #94a3b8;
-    text-align: right;
-    margin-top: 4px;
-  }
-  .print-page-box {
-    box-shadow: none;
-    max-width: 100%;
-    padding: 0;
-    border: none;
-  }
-
-  /* ========================================================================= */
-  /* BAGAN BOOKLET PRINT ENGINE STYLES (A4 LANDSCAPE + SAMPUL RESMI)           */
-  /* ========================================================================= */
-  .booklet-preview-container {
-    width: 100%;
-    margin: 0 auto;
-  }
-  .booklet-page {
-    position: relative;
-    width: 100%;
-    background: #ffffff;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-    border-radius: 4px;
-    overflow: hidden;
-  }
-  .booklet-page-label-bar {
-    background: #1e293b;
-    color: #94a3b8;
-    padding: 4px 12px;
-    font-size: 11px;
-    font-family: monospace;
-    font-weight: bold;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  }
-
-  /* Page 1: Sampul */
-  .booklet-cover-page {
-    height: 196mm;
-    max-height: 196mm;
-    min-height: 196mm;
-    background: #111827;
-    box-sizing: border-box;
-  }
-  .sampul-page-container {
-    width: 100%;
-    height: 100%;
-    position: relative;
-    overflow: hidden;
-    background: #111827 url("/img/cover/cover_clean_template.png") no-repeat center center;
-    background-size: 100% 100%;
-    box-sizing: border-box;
-  }
-  .sampul-org-bar {
-    position: absolute;
-    top: 3.2%;
-    height: 9.8%;
-    left: 38%;
-    right: 8%;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    text-align: right;
-    font-family: "Arial Narrow", "Helvetica Neue Condensed", Arial, sans-serif;
-    font-size: 11.5pt;
-    font-weight: 800;
-    color: #ffffff;
-    line-height: 1;
-    letter-spacing: 0.02em;
     text-transform: uppercase;
-    z-index: 10;
+    text-align: center;
+  }
+  .roster-table th.text-left {
+    text-align: left;
+  }
+  .roster-table td {
+    border: 1px solid #000000;
+    padding: 2.2px 4px;
+    height: 18px;
+    line-height: 1.15;
+    vertical-align: middle;
+  }
+  .roster-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .roster-cat-row td {
+    background: #efe8d8;
+    font-size: 10.5px;
+    font-weight: 800;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .sampul-logo-container {
-    position: absolute;
-    top: 15.5%;
-    right: 3.5%;
-    width: 28%;
-    height: 30%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 10;
+  .roster-cat-row {
+    break-after: avoid;
+    page-break-after: avoid;
   }
-  .sampul-event-logo {
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
-    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.45));
-  }
-  .sampul-main-group {
-    position: absolute;
-    top: 66%;
-    left: 57.5%;
-    width: 39%;
-    transform: translateY(-50%);
-    z-index: 10;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 4px;
-  }
-  .sampul-bagan-label {
-    font-family: 'Roboto', 'Oswald', sans-serif;
-    font-size: 26pt;
-    font-weight: 900;
-    color: #ffffff;
-    letter-spacing: 0.04em;
-    line-height: 1.1;
-    text-transform: uppercase;
-    margin: 0;
-  }
-  .sampul-tatami-title {
-    font-family: 'Roboto', 'Oswald', sans-serif;
-    font-size: 26pt;
-    font-weight: 900;
-    color: #ffffff;
-    letter-spacing: 0.03em;
-    line-height: 1.15;
-    text-transform: uppercase;
-    margin: 0 0 6px 0;
-  }
-  .sampul-event-title {
-    font-family: 'Inter', Arial, sans-serif;
-    font-size: 13.5pt;
-    font-weight: 800;
-    color: #facc15;
-    line-height: 1.25;
-    text-transform: uppercase;
-    margin: 0;
-  }
-  .sampul-event-dates {
-    font-family: 'Inter', Arial, sans-serif;
-    font-size: 11.5pt;
-    font-weight: 700;
-    color: #facc15;
-    line-height: 1.2;
-    margin: 0;
-  }
-  .sampul-supported-by {
-    position: absolute;
-    top: 84.0%;
-    left: 81.0%;
-    font-family: 'Calibri', 'Inter', sans-serif;
-    font-size: 11pt;
-    font-weight: 800;
-    color: #ffffff;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    z-index: 10;
-  }
-
-  /* Page 2+: Bagan Sheets */
-  .booklet-bracket-page {
-    height: 196mm;
-    max-height: 196mm;
-    min-height: 196mm;
+  .cell-center { text-align: center; }
+  .cell-bold { font-weight: 700; }
+  .cell-truncate {
+    white-space: nowrap;
     overflow: hidden;
-    box-sizing: border-box;
+    text-overflow: ellipsis;
   }
-  .print-sheet {
-    box-sizing: border-box;
-    width: 100%;
-    height: 100%;
-    padding: 2.5mm 3.5mm;
+  .sabuk-pill {
+    display: inline-block;
+    min-width: 16px;
+    padding: 0 3px;
+    border-radius: 2px;
+    font-size: 9px;
+    font-weight: 900;
+    line-height: 13px;
+  }
+  .sabuk-m { background: #fde2e2; color: #991b1b; }
+  .sabuk-b { background: #dbeafe; color: #1e3a8a; }
+  .check-box {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 1px solid #000000;
+    border-radius: 1.5px;
     background: #ffffff;
-    color: #000000;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+    vertical-align: middle;
   }
 
   @media print {
-    @page {
-      size: landscape;
-      margin: 5mm;
-    }
-
     :global(body) {
       background: #ffffff !important;
-      color: #000000 !important;
-      margin: 0 !important;
-      padding: 0 !important;
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
     }
-
-    /* 1. Strictly hide editor and screen-only controls */
     .festival-editor-main,
     .no-print {
       display: none !important;
     }
-
-    /* 2. De-fix the modal wrappers so they paginate naturally without repeating fixed headers */
-    .booklet-modal-wrapper,
+    /* Un-fix the preview wrapper so the sheets paginate naturally */
     .table-roster-modal-wrapper {
       position: static !important;
       inset: auto !important;
       z-index: auto !important;
       background: transparent !important;
-      background-color: transparent !important;
       padding: 0 !important;
       margin: 0 !important;
       width: 100% !important;
-      max-width: 100% !important;
       height: auto !important;
-      min-height: auto !important;
       max-height: none !important;
       overflow: visible !important;
       display: block !important;
-      box-shadow: none !important;
     }
-
-    .print-page-box {
-      box-shadow: none !important;
-      max-width: 100% !important;
-      padding: 0 !important;
-      border: none !important;
+    .roster-paper-stack {
+      display: block;
+      gap: 0;
     }
-
-    /* 3. Booklet preview container reset */
-    .booklet-preview-container {
-      max-width: 100% !important;
-      width: 100% !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      gap: 0 !important;
-      display: block !important;
+    .roster-sheet {
+      width: 100%;
+      min-height: 0;
+      padding: 0;
+      box-shadow: none;
+      break-after: page;
+      page-break-after: always;
     }
-    .booklet-preview-container > * + * {
-      margin-top: 0 !important;
-    }
-
-    /* 4. Individual Booklet Pages (A4 Landscape) */
-    .booklet-page {
-      box-shadow: none !important;
-      border: none !important;
-      border-radius: 0 !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      width: 100% !important;
-      height: 196mm !important;
-      max-height: 196mm !important;
-      min-height: 196mm !important;
-      overflow: hidden !important;
-      box-sizing: border-box !important;
-      page-break-after: always !important;
-      break-after: page !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-    }
-    .booklet-page:last-child {
-      page-break-after: auto !important;
-      break-after: auto !important;
-    }
-
-    /* 5. Cover Page (Page 1) */
-    .booklet-cover-page {
-      height: 196mm !important;
-      max-height: 196mm !important;
-      min-height: 196mm !important;
-      page-break-after: always !important;
-      break-after: page !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-      overflow: hidden !important;
-    }
-
-    /* 6. Bracket Pages (Page 2+) */
-    .booklet-bracket-page {
-      height: 196mm !important;
-      max-height: 196mm !important;
-      min-height: 196mm !important;
-      page-break-after: always !important;
-      break-after: page !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-      overflow: hidden !important;
-    }
-
-    .print-sheet {
-      box-sizing: border-box !important;
-      width: 100% !important;
-      height: 100% !important;
-      padding: 2.5mm 3.5mm !important;
-      background: #ffffff !important;
-      color: #000000 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      overflow: hidden !important;
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
-    }
-
-    .sampul-page-container {
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
+    .roster-sheet:last-child {
+      break-after: auto;
+      page-break-after: auto;
     }
   }
-
 </style>

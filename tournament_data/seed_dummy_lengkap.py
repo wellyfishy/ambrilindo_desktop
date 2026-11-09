@@ -43,13 +43,27 @@ TEAMS = [
     ("TOURNAMENT SENIOR - KATA BEREGU PUTRI", 3, 3, 0, "3 tim x 3 anggota"),
     ("TOURNAMENT SENIOR - KUMITE BEREGU PUTRA", 2, 4, 1, "2 tim x 4 anggota (langsung final beregu)"),
 ]
+# (nama kategori, jumlah atlet, catatan kasus, pola kontingen)
+# Pola kontingen: None = bergiliran ke 4 kontingen pertama; list = indeks UTUSAN per atlet
+# (None di dalam list = atlet tanpa kontingen).
 FESTIVAL = [
-    ("FESTIVAL PEMULA - KUMITE -30 KG PUTRA", 1, "1 atlet"),
-    ("FESTIVAL PRA PEMULA - KATA PERORANGAN PUTRA", 2, "2 atlet"),
-    ("FESTIVAL USIA DINI - KATA PERORANGAN PUTRA", 4, "4 atlet: 1 grup penuh"),
-    ("FESTIVAL USIA DINI - KUMITE -25 KG PUTRI", 5, "5 atlet: grup ganjil, ada BYE"),
-    ("FESTIVAL PRA PEMULA - KATA PERORANGAN PUTRI", 8, "8 atlet: 2 grup"),
-    ("FESTIVAL PEMULA - KATA PERORANGAN PUTRA", 12, "12 atlet: 3 grup"),
+    ("FESTIVAL PEMULA - KUMITE -30 KG PUTRA", 1, "solo: auto mix ke -35 KG (kelas kecil)", None),
+    ("FESTIVAL PEMULA - KUMITE -35 KG PUTRA", 3, "3 atlet: target auto mix solo -30 KG", None),
+    ("FESTIVAL PRA PEMULA - KATA PERORANGAN PUTRA", 2, "2 atlet", None),
+    ("FESTIVAL USIA DINI - KATA PERORANGAN PUTRA", 4, "4 atlet: 1 grup penuh", None),
+    ("FESTIVAL USIA DINI - KUMITE -25 KG PUTRI", 5, "5 atlet: grup ganjil, ada BYE", None),
+    ("FESTIVAL PRA PEMULA - KATA PERORANGAN PUTRI", 8, "8 atlet: 2 grup", None),
+    ("FESTIVAL PEMULA - KATA PERORANGAN PUTRA", 12, "12 atlet: 3 grup", None),
+    ("FESTIVAL PRA USIA DINI - KUMITE -20 KG PUTRA", 1, "solo: auto mix berat -20/+20", None),
+    ("FESTIVAL PRA USIA DINI - KUMITE +20 KG PUTRA", 1, "solo: auto mix berat -20/+20", None),
+    ("FESTIVAL USIA DINI - KUMITE -20 KG PUTRA", 1, "solo: ikut mix 3 kelas (beda 1 umur)", None),
+    ("FESTIVAL USIA DINI - KUMITE -45 KG PUTRA", 1, "solo tanpa pasangan: selisih berat > 10 kg", None),
+    ("FESTIVAL KADET - KATA PERORANGAN PUTRI", 1, "solo tanpa pasangan: tidak ada kelas umur dekat", None),
+    ("FESTIVAL PRA USIA DINI - KATA PERORANGAN PUTRI", 1, "solo: auto mix ke Usia Dini putri (beda 1 umur)", None),
+    ("FESTIVAL USIA DINI - KATA PERORANGAN PUTRI", 6, "6 atlet: 3 sekontingen, bisa 0 bentrok", [0, 0, 0, 1, 2, 3]),
+    ("FESTIVAL PRA USIA DINI - KATA PERORANGAN PUTRA", 10, "10 atlet: 6 sekontingen, minimal 1 bentrok",
+     [0, 0, 0, 0, 0, 0, 1, 2, 3, 1]),
+    ("FESTIVAL PRA PEMULA - KUMITE -30 KG PUTRI", 4, "4 atlet: 2 tanpa kontingen (bukan bentrok)", [None, None, 1, 2]),
 ]
 
 WASIT = [
@@ -187,7 +201,7 @@ def main():
                 (
                     nama, event_id, cat_id,
                     perguruan_ids[p_idx] if p_idx is not None else None,
-                    utusan_ids[u_idx], additional_code, priority,
+                    utusan_ids[u_idx] if u_idx is not None else None, additional_code, priority,
                 ),
             )
             return cur.lastrowid
@@ -224,11 +238,12 @@ def main():
                     add_atlet(cat_id, nama, u_idx, t % 4, additional_code=f"MEMBER_{code}_{m}")
             summary.append((name, f"{teams} tim", note))
 
-        for name, count, note in FESTIVAL:
+        for name, count, note, pattern in FESTIVAL:
             cat_id = add_category(name, 0)
             g = gender_of(name)
             for i in range(count):
-                add_atlet(cat_id, names.next(g), rot % 4, (rot + 2) % 4)
+                u_idx = pattern[i] if pattern else rot % 4
+                add_atlet(cat_id, names.next(g), u_idx, (rot + 2) % 4)
                 rot += 1
             summary.append((name, count, note))
 

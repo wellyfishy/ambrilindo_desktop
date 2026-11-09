@@ -6,7 +6,10 @@ echo ===================================================
 echo.
 
 cd /d "%~dp0"
-echo Menjalankan mode dev (Hot-Reload aktif)...
+echo [1/2] Menyiapkan bundle web juri & venue (npm run build)...
+call npm.cmd run build
+
+echo [2/2] Menjalankan mode dev desktop (Hot-Reload aktif)...
 call npm.cmd run tauri dev
 
 if %ERRORLEVEL% neq 0 (

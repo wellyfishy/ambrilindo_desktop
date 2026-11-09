@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { invoke, withHostParam } from "$lib/api_client";
   import { listen } from "@tauri-apps/api/event";
-  import type { ActiveChannel, AppMode, BaganItem, EventItem, TatamiItem } from "$lib/types";
+  import type { ActiveChannel, AppMode, BaganItem, EventItem, FestivalFormat, FestivalFormatInfo, TatamiItem } from "$lib/types";
   import { initLiveSync, getLiveTatamisForBagan, subscribeLiveSync } from "$lib/liveSync";
 
   interface MonitorOption {
@@ -27,6 +27,9 @@
     onOpenQrModal: () => void;
     onOpenDrawingModal?: () => void;
     onOpenDrawingFestivalModal?: () => void;
+    /** Festival format switched (bagans may have been deleted): reload the event. */
+    onFestivalFormatChanged?: (format: FestivalFormat) => void;
+    onNotify?: (msg: string) => void;
     onReturnToLanding: () => void;
   }
 
@@ -43,8 +46,62 @@
     onOpenQrModal,
     onOpenDrawingModal,
     onOpenDrawingFestivalModal,
+    onFestivalFormatChanged,
+    onNotify,
     onReturnToLanding,
   }: Props = $props();
+
+  // --- Festival format (one per event): roster 1-vs-1 OR bagan with groups of 4 ---
+  let festivalFormat = $state<FestivalFormatInfo | null>(null);
+  let festivalSwitchConfirm = $state(false);
+  let isBaganFormat = $derived(festivalFormat?.format !== "roster");
+  let isSwitchingFestival = $state(false);
+
+  async function loadFestivalFormat(eventId: number) {
+    try {
+      const info = await invoke<FestivalFormatInfo>("get_festival_format", { eventId });
+      if (activeEvent?.id === eventId) festivalFormat = info;
+    } catch (err) {
+      console.warn("Gagal memuat format festival:", err);
+      festivalFormat = null;
+    }
+  }
+
+  // Reload when the event changes and when festival bagans appear/disappear (drawing, delete).
+  $effect(() => {
+    const id = activeEvent?.id;
+    void festivalBagans.length;
+    if (id) loadFestivalFormat(id);
+    else festivalFormat = null;
+  });
+
+  async function applyFestivalFormat(format: FestivalFormat, deleteBagans: boolean) {
+    if (!activeEvent || isSwitchingFestival) return;
+    isSwitchingFestival = true;
+    try {
+      festivalFormat = await invoke<FestivalFormatInfo>("set_festival_format", {
+        eventId: activeEvent.id,
+        format,
+        deleteBagans,
+      });
+      festivalSwitchConfirm = false;
+      onFestivalFormatChanged?.(format);
+      onNotify?.(format === "roster" ? "Festival memakai format Roster." : "Festival memakai format Bagan Grup.");
+    } catch (err: any) {
+      onNotify?.(`Gagal mengganti format festival: ${err?.message || err}`);
+    } finally {
+      isSwitchingFestival = false;
+    }
+  }
+
+  function requestFestivalFormat(format: FestivalFormat) {
+    if (!festivalFormat || festivalFormat.format === format) return;
+    if (format === "roster" && festivalFormat.festival_bagan_count > 0) {
+      festivalSwitchConfirm = true;
+      return;
+    }
+    applyFestivalFormat(format, false);
+  }
 
   // Live synchronization state version for reactivity
   let liveSyncVersion = $state(0);
@@ -636,21 +693,6 @@
             <span>jadwal-pertandingan</span>
           </button>
 
-          <!-- Roster Festival -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "festival",
-                id: "festival-roster",
-                name: "roster-festival",
-                subtitle: "Manajemen Bagan & Auto-Pairing Festival",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'roster-festival' || activeChannel.type === 'festival' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>roster-festival</span>
-          </button>
-
           <button
             onclick={() =>
               onSelectChannel({
@@ -783,31 +825,70 @@
       {/if}
     </div>
 
-    <!-- Group 5: Bagan Festival ({festivalBagans.length}) -->
+    <!-- Group 5: Festival (one format per event: Roster or Bagan Grup) -->
     <div class="pt-2 border-t border-white/[0.06]">
-      <div class="flex items-center justify-between px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-emerald-400 uppercase transition">
+      <div class="flex items-center justify-between gap-2 px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-emerald-400 uppercase transition">
         <button
           onclick={() => (collapseFestival = !collapseFestival)}
           class="flex items-center space-x-1.5 hover:text-emerald-300 uppercase transition"
         >
-          <span>BAGAN FESTIVAL ({festivalBagans.length})</span>
+          <span class="whitespace-nowrap">FESTIVAL{isBaganFormat ? ` (${festivalBagans.length})` : ""}</span>
           <span class="text-[9px]">{collapseFestival ? '▶' : '▼'}</span>
         </button>
 
-        <button
-          type="button"
-          onclick={(e) => {
-            e.stopPropagation();
-            onOpenDrawingFestivalModal?.();
-          }}
-          title="Buka Drawing Bagan Festival Otomatis (4 Atlet / Grup)"
-          class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10 border border-emerald-500/30 transition flex items-center space-x-1"
-        >
-          <span>+ DRAWING</span>
-        </button>
+        {#if festivalFormat}
+          <div
+            class="flex items-center rounded-md border border-emerald-500/30 overflow-hidden shrink-0"
+            role="radiogroup"
+            aria-label="Format festival"
+            title={activeRole === "admin_utama" ? "Format festival event ini" : "Format festival hanya bisa diganti Admin Utama"}
+          >
+            {#each [["roster", "Roster"], ["bagan", "Bagan Grup"]] as [value, label]}
+              {@const selected = festivalFormat.format === value}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={activeRole !== "admin_utama" || isSwitchingFestival}
+                onclick={() => requestFestivalFormat(value as FestivalFormat)}
+                class="px-1.5 py-0.5 text-[9px] font-mono font-bold transition disabled:cursor-default {selected ? 'bg-emerald-500/20 text-emerald-200' : 'text-zinc-500 hover:text-emerald-300 disabled:hover:text-zinc-500'}"
+              >
+                {label}
+              </button>
+            {/each}
+          </div>
+        {/if}
       </div>
 
-      {#if !collapseFestival}
+      {#if !collapseFestival && !isBaganFormat}
+        <div class="mt-1 space-y-0.5">
+          <button
+            onclick={() =>
+              onSelectChannel({
+                type: "festival",
+                id: "festival-roster",
+                name: "roster-festival",
+                subtitle: "Roster & Auto-Pairing Festival",
+              })}
+            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.type === 'festival' ? 'bg-emerald-500/15 text-emerald-200 font-bold' : 'text-zinc-400 hover:bg-emerald-500/[0.06] hover:text-zinc-200'}"
+          >
+            <span class="text-zinc-500 font-mono">#</span>
+            <span>roster-festival</span>
+          </button>
+        </div>
+      {/if}
+
+      {#if !collapseFestival && isBaganFormat}
+        <div class="px-2 mt-1">
+          <button
+            type="button"
+            onclick={() => onOpenDrawingFestivalModal?.()}
+            title="Drawing bagan festival otomatis (4 atlet per grup)"
+            class="w-full px-2 py-1 rounded-lg text-[10px] font-mono font-bold text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10 border border-emerald-500/30 transition"
+          >
+            + DRAWING
+          </button>
+        </div>
         {#if festivalBagans.length > 5}
           <div class="px-2 my-1">
             <input
@@ -1011,3 +1092,34 @@
     <div class="w-[2px] h-full mx-auto {isResizing ? 'bg-sky-400' : 'group-hover:bg-sky-400/80'} transition-colors"></div>
   </button>
 </aside>
+
+{#if festivalSwitchConfirm && festivalFormat}
+  <div use:portal class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs" role="dialog" aria-modal="true" aria-labelledby="festival-switch-title">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl max-w-md w-full">
+      <h3 id="festival-switch-title" class="text-base font-black text-white uppercase tracking-tight">Pakai Format Roster</h3>
+      <p class="text-xs text-zinc-300 mt-3 leading-relaxed">
+        Event ini masih punya <strong class="text-white">{festivalFormat.festival_bagan_count} bagan festival</strong>{#if festivalFormat.finished_match_count > 0}
+          dengan <strong class="text-rose-300">{festivalFormat.finished_match_count} partai yang sudah selesai</strong>{/if}.
+        Format Roster tidak memakai bagan, jadi semua bagan festival beserta hasilnya akan dihapus.
+      </p>
+      <div class="flex items-center justify-end gap-2 mt-6">
+        <button
+          type="button"
+          onclick={() => (festivalSwitchConfirm = false)}
+          disabled={isSwitchingFestival}
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={() => applyFestivalFormat("roster", true)}
+          disabled={isSwitchingFestival}
+          class="h-9 px-4 bg-rose-500 hover:bg-rose-400 text-white font-bold text-xs rounded-xl shadow-md disabled:opacity-50"
+        >
+          {isSwitchingFestival ? "Menghapus..." : "Hapus Bagan & Pakai Roster"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

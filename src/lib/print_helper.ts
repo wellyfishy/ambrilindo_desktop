@@ -57,6 +57,11 @@ export function printWithOrientation(
     } else {
       styleEl.textContent = `@page { size: A4 ${orientation}; margin: ${margin}; }`;
     }
+
+    // Drop the injected rules once the dialog closes; left in <head> they would override
+    // the @page rules of channels that print with plain window.print() (jadwal, roster).
+    const injected = styleEl;
+    window.addEventListener("afterprint", () => injected.remove(), { once: true });
   }
   window.print();
 }

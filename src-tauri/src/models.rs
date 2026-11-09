@@ -443,6 +443,12 @@ pub struct DrawingCategoryInfo {
     pub has_vr: bool,
     pub is_kumite: bool,
     pub is_beregu: bool,
+    /// Registered after the drawing: in the category but in none of its bagans.
+    #[serde(default)]
+    pub athletes_not_in_bagan: i64,
+    /// Finished bouts in the category's bagans (a redraw would erase them).
+    #[serde(default)]
+    pub finished_matches: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -693,6 +699,22 @@ pub struct TimetableEditorData {
     pub summary: TimetableProgressSummary,
     pub kop_surat: Option<KopSurat>,
     pub nt_athletes: std::collections::HashMap<i64, Vec<String>>,
+    /// Set when the event runs festival in the roster format: festival is then scheduled as
+    /// one "FESTIVAL" session per tatami (from the roster's tatami split), not per category.
+    #[serde(default)]
+    pub festival_session: Option<Vec<FestivalSessionTatami>>,
+}
+
+/// Festival load of one tatami in the roster format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalSessionTatami {
+    pub tatami_id: i64,
+    pub tatami_number: i64,
+    pub categories: usize,
+    pub athletes: usize,
+    /// Roster rows (1-vs-1 pairs, an athlete without opponent counts as one).
+    pub matches: usize,
+    pub est_minutes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -738,6 +760,12 @@ pub struct TatamiBookletCategory {
     pub tipe_tanding: Option<String>,
     pub winners: Vec<SummaryBaganWinner>,
     pub matches: Vec<EnrichedDetailBagan>,
+    /// Bagan pool (0 = final bagan, 1 = single, 2/4 = pool bagan; festival = group count).
+    /// Needed to print the bracket with the same labels as the bagan channel.
+    #[serde(default)]
+    pub bagan_pool: Option<i64>,
+    #[serde(default)]
+    pub bagan_layout_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -784,6 +812,16 @@ pub struct FestivalCategory {
     pub matches: Vec<FestivalMatch>,
     pub atlet_count: usize,
     pub match_count: usize,
+    /// Categories merged into this one by a mix group (primary first). Empty when not mixed.
+    #[serde(default)]
+    pub mixed_from: Vec<FestivalMixMember>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalMixMember {
+    pub id: i64,
+    pub nama: String,
+    pub atlet_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -821,6 +859,17 @@ pub struct FestivalRosterState {
     pub athlete_pairings: std::collections::HashMap<String, Vec<i64>>,  // nt_id -> [athlete_id]
     #[serde(default)]
     pub mix_groups: Vec<FestivalMixGroup>,
+    /// "roster" or "bagan". None = never chosen (older files); resolved from the event's data.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Festival format of an event, plus what switching to the roster format would remove.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FestivalFormatInfo {
+    pub format: String,
+    pub festival_bagan_count: i64,
+    pub finished_match_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,7 +10,7 @@ pub mod tatami_claim;
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Listener, Manager};
 
 use audio::{AudioService, SoundType};
 use db::DatabaseManager;
@@ -26,6 +26,7 @@ pub struct DesktopState {
     pub db: Arc<Mutex<DatabaseManager>>,
     pub audio: AudioService,
     pub server_broadcast: broadcast::Sender<ArenaMessage>,
+    pub live_tatami_cache: Arc<tokio::sync::Mutex<std::collections::HashMap<i64, serde_json::Value>>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -75,6 +76,7 @@ async fn start_arena_server(
         broadcast_tx: state.server_broadcast.clone(),
         db: state.db.clone(),
         app_handle: Some(app),
+        live_tatami_cache: state.live_tatami_cache.clone(),
     });
 
     server::start_server(app_state).await?;
@@ -544,7 +546,21 @@ async fn open_control_panel_window(
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
     let win_label = format!("control-panel-{}", match_id);
-    let t_num = tatami.unwrap_or(1);
+    let mut t_num = tatami.unwrap_or(1);
+
+    // Defensive normalization: if tatami is passed as DB PK (>= 20), resolve to tatami_number
+    if t_num >= 20 {
+        if let Ok(pool) = state.db.lock().await.get_pool() {
+            if let Ok(Some(resolved)) = sqlx::query_scalar::<_, i32>("SELECT tatami_number FROM backend_tatami WHERE id = ?")
+                .bind(t_num)
+                .fetch_optional(pool)
+                .await
+            {
+                t_num = resolved as i64;
+            }
+        }
+    }
+
     // Set when this laptop is an operator tambahan: the window must talk to the host,
     // and the host (not this laptop's DB) records the running match.
     let host_param = host_query_param(host_url.as_deref());
@@ -569,6 +585,24 @@ async fn open_control_panel_window(
                     }
                 }
             });
+        }
+
+        // Immediately build live payload, store into cache, and broadcast to arena server
+        if let Ok(Some(current_m)) = state.db.lock().await.get_tatami_current_match(t_num_i32, None).await {
+            let live_payload = server::build_live_state_from_match(t_num, &current_m);
+            {
+                let mut cache = state.live_tatami_cache.lock().await;
+                cache.insert(t_num, live_payload.clone());
+            }
+            let _ = state.server_broadcast.send(server::ArenaMessage {
+                tatami_pk: t_num,
+                channel: "bracket".to_string(),
+                payload: serde_json::json!({
+                    "type": "tatami_live_state",
+                    "payload": live_payload
+                }),
+            });
+            let _ = app.emit("tatami_live_state", &live_payload);
         }
     }
 
@@ -1346,6 +1380,26 @@ async fn get_festival_booklet_data(
 }
 
 #[tauri::command]
+async fn get_festival_format(
+    event_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::FestivalFormatInfo, String> {
+    let db = state.db.lock().await;
+    db.get_festival_format(event_id).await
+}
+
+#[tauri::command]
+async fn set_festival_format(
+    event_id: i64,
+    format: String,
+    delete_bagans: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::FestivalFormatInfo, String> {
+    let db = state.db.lock().await;
+    db.set_festival_format(event_id, format, delete_bagans).await
+}
+
+#[tauri::command]
 async fn save_festival_roster_state(
     event_id: i64,
     roster_state: models::FestivalRosterState,
@@ -1790,13 +1844,18 @@ async fn export_html_to_pdf(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (broadcast_tx, _rx) = broadcast::channel(server::BROADCAST_CAPACITY);
+    let live_cache_arc = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     let db_arc = Arc::new(Mutex::new(DatabaseManager::new()));
     let desktop_state = DesktopState {
         db: db_arc.clone(),
         audio: AudioService::new(),
-        server_broadcast: broadcast_tx,
+        server_broadcast: broadcast_tx.clone(),
+        live_tatami_cache: live_cache_arc.clone(),
     };
+
+    let bcast_tx_for_setup = broadcast_tx.clone();
+    let live_cache_for_setup = live_cache_arc.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -1804,6 +1863,33 @@ pub fn run() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
             sync::SyncService::spawn_sync_worker(db_arc, Some(app_handle));
+
+            // Native IPC bridge: forward tatami_live_state from any webview to Axum server & cache
+            let bcast_tx = bcast_tx_for_setup.clone();
+            let cache_arc = live_cache_for_setup.clone();
+            app.listen("tatami_live_state", move |event| {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+                    let data = val.get("payload").unwrap_or(&val).clone();
+                    if let Some(t_num) = data.get("tatami").and_then(|v| v.as_i64()) {
+                        let cache_clone = cache_arc.clone();
+                        let data_clone = data.clone();
+                        tokio::spawn(async move {
+                            let mut cache = cache_clone.lock().await;
+                            cache.insert(t_num, data_clone);
+                        });
+
+                        let _ = bcast_tx.send(server::ArenaMessage {
+                            tatami_pk: t_num,
+                            channel: "bracket".to_string(),
+                            payload: serde_json::json!({
+                                "type": "tatami_live_state",
+                                "payload": data
+                            }),
+                        });
+                    }
+                }
+            });
+
             Ok(())
         })
         .manage(desktop_state)
@@ -1903,6 +1989,8 @@ pub fn run() {
             get_festival_roster_data,
             get_festival_booklet_data,
             save_festival_roster_state,
+            get_festival_format,
+            set_festival_format,
             auto_pair_festival_category,
             mix_festival_categories,
             get_festival_mix_groups,

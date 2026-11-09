@@ -334,7 +334,7 @@
       };
 
       if (isEditMode) {
-        await invoke("update_athlete", { input: payload });
+        await invoke("update_athlete", { id: payload.id, input: payload });
         showToast(`Data ${payload.nama_atlet} berhasil diperbarui.`);
       } else {
         await invoke("create_athlete", { input: payload });

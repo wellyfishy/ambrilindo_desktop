@@ -1,6 +1,28 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import { invoke } from "$lib/api_client";
+  import { printWithOrientation } from "$lib/print_helper";
+  import BracketPaperPage from "$lib/components/BracketPaperPage.svelte";
+  import { computePodium, deriveBracketMeta, isFestivalName, winnersToPodium } from "$lib/bracket_layout";
+  import {
+    AUTO_SORT_MODES,
+    computeColumnTimes,
+    customTextAthletes,
+    customTextMatches,
+    customTextMinutes,
+    festivalSessionText,
+    formatMinutesToTime,
+    getAgeGroupRank,
+    isFestivalText,
+    isJedaText,
+    labelRowWindow,
+    parseTimeToMinutes,
+    rowConflicts,
+    runAutoSchedule,
+    textCell,
+    type AutoSortMode,
+  } from "$lib/auto_schedule";
   import type {
     AthleteConflictDetail,
     DetailBaganItem,
@@ -19,6 +41,7 @@
     TimetableCategoryOption,
     TimetableEditorData,
     TimetableProgressSummary,
+    FestivalSessionTatami,
   } from "$lib/types";
 
   interface Props {
@@ -34,14 +57,14 @@
   let isLoading = $state(true);
   let isSaving = $state(false);
   let isDirty = $state(false);
-  let isEditMode = $state(false);
-  let optionsMenuOpen = $state(false);
+  /** Open header dropdown (Cetak, Atur Jadwal, + Sesi). */
+  let openMenu = $state<"cetak" | "atur" | "sesi" | null>(null);
 
   // --- Confirmation Modal State (Explicit Bulletproof Confirmation) ---
   let showConfirmModal = $state(false);
   let isConfirmLoading = $state(false);
   let confirmModalConfig = $state<{
-    action: "reset_all" | "delete_day" | "delete_tatami" | "clear_day" | null;
+    action: "reset_all" | "delete_day" | "delete_tatami" | "clear_day" | "discard_changes" | null;
     title: string;
     message: string;
     confirmText: string;
@@ -57,7 +80,7 @@
   });
 
   function openConfirmModal(config: {
-    action: "reset_all" | "delete_day" | "delete_tatami" | "clear_day";
+    action: "reset_all" | "delete_day" | "delete_tatami" | "clear_day" | "discard_changes";
     title: string;
     message: string;
     confirmText?: string;
@@ -90,7 +113,6 @@
       if (confirmModalConfig.action === "reset_all") {
         await invoke("reset_timetable", { eventId });
         notify("Seluruh jadwal pertandingan berhasil di-reset!");
-        optionsMenuOpen = false;
         showConfirmModal = false;
         await loadTimetable();
       } else if (confirmModalConfig.action === "delete_day") {
@@ -145,8 +167,13 @@
           markDirty();
           notify(`Jadwal pada ${activeDay.label} telah dikosongkan.`);
         }
-        optionsMenuOpen = false;
         showConfirmModal = false;
+      } else if (confirmModalConfig.action === "discard_changes") {
+        showConfirmModal = false;
+        autoResultBanner = null;
+        backupDaysForUndo = null;
+        await loadTimetable();
+        notify("Perubahan yang belum disimpan dibuang.");
       }
     } catch (err: any) {
       notify(`Gagal menjalankan aksi: ${err?.message || err}`);
@@ -159,76 +186,6 @@
   let tatamiBookletLoading = $state(false);
   let tatamiBookletData = $state<TatamiBookletData | null>(null);
   let bookletLogoMap = $state<Record<string, string>>({});
-  let bookletPruneEmptyRounds = $state(true);
-
-  function groupMatchesByRound(matches: DetailBaganItem[], pruneEmptyRounds: boolean = true): Map<number, DetailBaganItem[]> {
-    const map = new Map<number, DetailBaganItem[]>();
-    // Filter out round > 4 (round 5 is final metadata in db, not an active bracket column)
-    const validMatches = matches.filter((m) => !m.round || m.round <= 4);
-
-    let startRound = 1;
-    if (pruneEmptyRounds) {
-      // Find lowest round that has at least 1 real athlete (Prune empty leading BYE rounds)
-      let minActiveRound: number | null = null;
-      for (const m of validMatches) {
-        if (m.atlet1_nama || m.atlet2_nama) {
-          const r = m.round || 1;
-          if (minActiveRound === null || r < minActiveRound) {
-            minActiveRound = r;
-          }
-        }
-      }
-      if (minActiveRound !== null) {
-        startRound = minActiveRound;
-      }
-    }
-
-    validMatches.forEach((m) => {
-      const r = m.round || 1;
-      if (r >= startRound) {
-        if (!map.has(r)) map.set(r, []);
-        map.get(r)!.push(m);
-      }
-    });
-    for (const [_, list] of map) {
-      list.sort((a, b) => (a.urutan || a.id) - (b.urutan || b.id));
-    }
-    return map;
-  }
-
-  function formatRoundTitle(colIdx: number, totalCols: number): string {
-    const stepFromFinal = totalCols - 1 - colIdx;
-    if (stepFromFinal === 0) return "FINAL";
-    if (stepFromFinal === 1 && totalCols > 2) return "SEMI FINAL";
-    if (stepFromFinal === 2 && totalCols > 3) return "PEREMPAT FINAL";
-    return `BABAK ${colIdx + 1}`;
-  }
-
-  function getRoundStepBadge(colIdx: number, totalCols: number): string {
-    const stepFromFinal = totalCols - 1 - colIdx;
-    if (stepFromFinal === 0) return "FN";
-    if (stepFromFinal === 1) return "SF";
-    if (stepFromFinal === 2) return "QF";
-    if (stepFromFinal === 3) return "R1";
-    return `R${colIdx + 1}`;
-  }
-
-  function getRoundTitleText(colIdx: number, totalCols: number): string {
-    const stepFromFinal = totalCols - 1 - colIdx;
-    if (stepFromFinal === 0) return "PARTAI FINAL";
-    if (stepFromFinal === 1) return "SEMI FINAL";
-    if (stepFromFinal === 2) return "PEREMPAT FINAL";
-    if (stepFromFinal === 3) return "BABAK 16 BESAR";
-    return `BABAK ${colIdx + 1}`;
-  }
-
-  function formatMatchTitle(colIdx: number, totalCols: number, match: DetailBaganItem, idx: number): string {
-    const stepFromFinal = totalCols - 1 - colIdx;
-    const num = match.urutan || (idx + 1);
-    if (stepFromFinal === 0) return "PARTAI FINAL";
-    if (stepFromFinal === 1) return `SEMI ${num}`;
-    return `MATCH ${num}`;
-  }
 
   let eventDateRangeStr = $derived.by(() => {
     if (!tatamiBookletData) return "";
@@ -284,124 +241,11 @@
     return "";
   });
 
-  function getElementRelativeCoords(element: HTMLElement, ancestor: HTMLElement) {
-    let x = 0;
-    let y = 0;
-    let curr: HTMLElement | null = element;
-    while (curr && curr !== ancestor) {
-      x += curr.offsetLeft;
-      y += curr.offsetTop;
-      curr = curr.offsetParent as HTMLElement | null;
-    }
-    return {
-      x,
-      y,
-      width: element.offsetWidth,
-      height: element.offsetHeight,
-    };
-  }
-
-  function drawBookletConnectors() {
-    if (!tatamiBookletData) return;
-    const outerEls = document.querySelectorAll<HTMLElement>(".booklet-bracket-outer");
-    outerEls.forEach((outer) => {
-      const svg = outer.querySelector<SVGSVGElement>(".bracket-svg");
-      if (!svg) return;
-      svg.innerHTML = "";
-      const outerRect = outer.getBoundingClientRect();
-      const outerWidth = outer.offsetWidth || outerRect.width;
-      const outerHeight = outer.offsetHeight || outerRect.height;
-      if (outerWidth === 0 || outerHeight === 0) return;
-
-      const isPrint = document.body.classList.contains("is-printing") || (window.matchMedia && window.matchMedia("print").matches);
-      const strokeColor = isPrint ? "#111827" : "#1e293b";
-      const strokeWidth = isPrint ? "1.4" : "1.8";
-
-      const cols = Array.from(outer.querySelectorAll<HTMLElement>(".round-col"));
-      for (let ri = 0; ri < cols.length - 1; ri++) {
-        const fromCards = Array.from(cols[ri].querySelectorAll<HTMLElement>(".match"));
-        const toCards = Array.from(cols[ri + 1].querySelectorAll<HTMLElement>(".match"));
-        if (fromCards.length === 0 || toCards.length === 0) continue;
-
-        const getCardGeometry = (card: HTMLElement) => {
-          const r = card.getBoundingClientRect();
-          if (outerRect.width > 0 && outerRect.height > 0 && r.width > 0 && r.height > 0) {
-            return {
-              xFrom: r.right - outerRect.left,
-              xTo: r.left - outerRect.left,
-              yCenter: r.top + r.height / 2 - outerRect.top,
-            };
-          }
-          const coords = getElementRelativeCoords(card, outer);
-          if (coords.width > 0 && coords.height > 0) {
-            return {
-              xFrom: coords.x + coords.width,
-              xTo: coords.x,
-              yCenter: coords.y + coords.height / 2,
-            };
-          }
-          return {
-            xFrom: r.right - outerRect.left,
-            xTo: r.left - outerRect.left,
-            yCenter: r.top + r.height / 2 - outerRect.top,
-          };
-        };
-
-        // Case 1: 1-to-1 linear connector (e.g. 1 match feeding into final or semi)
-        if (fromCards.length === 1 && toCards.length === 1) {
-          const geomA = getCardGeometry(fromCards[0]);
-          const geomOut = getCardGeometry(toCards[0]);
-          const xMid = geomA.xFrom + (geomOut.xTo - geomA.xFrom) / 2;
-          addSvgLine(svg, geomA.xFrom, geomA.yCenter, xMid, geomA.yCenter, strokeColor, strokeWidth);
-          addSvgLine(svg, xMid, geomA.yCenter, xMid, geomOut.yCenter, strokeColor, strokeWidth);
-          addSvgLine(svg, xMid, geomOut.yCenter, geomOut.xTo, geomOut.yCenter, strokeColor, strokeWidth);
-        } else {
-          // Case 2: Standard elimination bracket tree
-          for (let i = 0; i < toCards.length; i++) {
-            const cardA = fromCards[i * 2];
-            const cardB = fromCards[i * 2 + 1];
-            const cardOut = toCards[i];
-            if (!cardA || !cardOut) continue;
-
-            const geomA = getCardGeometry(cardA);
-            const geomOut = getCardGeometry(cardOut);
-            const xMid = geomA.xFrom + (geomOut.xTo - geomA.xFrom) / 2;
-
-            if (cardB) {
-              const geomB = getCardGeometry(cardB);
-              const yMid = (geomA.yCenter + geomB.yCenter) / 2;
-
-              addSvgLine(svg, geomA.xFrom, geomA.yCenter, xMid, geomA.yCenter, strokeColor, strokeWidth);
-              addSvgLine(svg, geomB.xFrom, geomB.yCenter, xMid, geomB.yCenter, strokeColor, strokeWidth);
-              addSvgLine(svg, xMid, geomA.yCenter, xMid, geomB.yCenter, strokeColor, strokeWidth);
-              addSvgLine(svg, xMid, yMid, xMid, geomOut.yCenter, strokeColor, strokeWidth);
-              addSvgLine(svg, xMid, geomOut.yCenter, geomOut.xTo, geomOut.yCenter, strokeColor, strokeWidth);
-            } else {
-              addSvgLine(svg, geomA.xFrom, geomA.yCenter, xMid, geomA.yCenter, strokeColor, strokeWidth);
-              addSvgLine(svg, xMid, geomA.yCenter, xMid, geomOut.yCenter, strokeColor, strokeWidth);
-              addSvgLine(svg, xMid, geomOut.yCenter, geomOut.xTo, geomOut.yCenter, strokeColor, strokeWidth);
-            }
-          }
-        }
-      }
-    });
-  }
-
-  function addSvgLine(svg: SVGSVGElement, x1: number, y1: number, x2: number, y2: number, strokeColor = "#111827", strokeWidth = "1.4") {
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", x1.toString());
-    line.setAttribute("y1", y1.toString());
-    line.setAttribute("x2", x2.toString());
-    line.setAttribute("y2", y2.toString());
-    line.setAttribute("stroke", strokeColor);
-    line.setAttribute("stroke-width", strokeWidth);
-    line.setAttribute("stroke-linecap", "round");
-    svg.appendChild(line);
-  }
-
   let tatamis = $state<TatamiItem[]>([]);
   let days = $state<EnrichedTimetableDay[]>([]);
   let categories = $state<TimetableCategoryOption[]>([]);
+  /** Roster-format festival: per-tatami load for the single FESTIVAL session (null otherwise). */
+  let festivalSession = $state<FestivalSessionTatami[] | null>(null);
   let kopSurat = $state<KopSurat | null>(null);
   let summary = $state<TimetableProgressSummary>({
     total_matches: 0,
@@ -426,12 +270,11 @@
 
   // --- Auto-Jadwal Cerdas State ---
   let autoScheduleModalOpen = $state(false);
-  let autoStartTime = $state("08:30");
   let autoIncludeFestival = $state(true);
   let autoFestivalDur = $state(45); // in minutes
   let autoIncludeIshoma = $state(true);
   let autoOverwriteExisting = $state(true);
-  let autoSortMode = $state<"wkf_standard" | "kata_first" | "age_asc" | "age_desc" | "balanced">("wkf_standard");
+  let autoSortMode = $state<AutoSortMode>("kata_then_kumite");
   let autoEqualMatches = $state(true);
   let autoPreventConflicts = $state(true);
   let autoSelectedAgeGroups = $state<Record<string, boolean>>({});
@@ -497,7 +340,9 @@
       const data = await invoke<TimetableEditorData>("get_timetable_editor_data", { eventId });
       tatamis = data.tatamis;
       days = data.days;
-      categories = data.categories;
+      festivalSession = data.festival_session ?? null;
+      // In the roster format festival is one session per tatami, never single categories.
+      categories = festivalSession ? data.categories.filter((c) => !c.is_festival) : data.categories;
       summary = data.summary;
       kopSurat = data.kop_surat;
       ntAthletesMap = data.nt_athletes || {};
@@ -549,6 +394,35 @@
     return ids;
   });
 
+  let hasFestivalCategories = $derived(categories.some((c) => c.is_festival));
+
+  function isFestivalSessionCell(c: EnrichedTimetableCell | undefined | null): boolean {
+    return !!c && !c.nomor_tanding_id && isFestivalText(c.custom_text);
+  }
+
+  /** Cells of the roster-format FESTIVAL session, one per tatami (empty where the roster has none). */
+  function buildFestivalSessionCells(): EnrichedTimetableCell[] {
+    return tatamis.map((t) => {
+      const plan = festivalSession?.find((f) => f.tatami_id === t.id);
+      const tNumber = t.tatami_number ?? 1;
+      if (!plan) return { ...textCell(t.id, tNumber, ""), custom_text: "" };
+      return textCell(t.id, tNumber, festivalSessionText(plan.athletes, plan.matches, plan.est_minutes));
+    });
+  }
+
+  /** Printed title / athlete count of a text cell: the roster festival session is just "FESTIVAL". */
+  function textCellTitle(c: EnrichedTimetableCell): string {
+    return isFestivalSessionCell(c) && customTextAthletes(c.custom_text) > 0 ? "FESTIVAL" : c.custom_text;
+  }
+  function textCellAthletes(c: EnrichedTimetableCell): number {
+    return c.atlet_count || (isFestivalSessionCell(c) ? customTextAthletes(c.custom_text) : 0);
+  }
+
+  /** A FESTIVAL session already exists on another day (the roster runs once). */
+  let festivalSessionOnOtherDay = $derived(
+    days.some((d, i) => i !== activeDayIndex && d.rows.some((r) => r.cells.some(isFestivalSessionCell)))
+  );
+
   let unscheduledTournamentCount = $derived.by(() => {
     return categories.filter((c) => !assignedCategoryIds.has(c.id)).length;
   });
@@ -581,94 +455,35 @@
     });
   });
 
-  // Calculate timeline per tatami (Start time -> match durations -> finish time)
-  function parseTimeToMinutes(time: string): number {
-    const parts = (time || "08:30").split(":");
-    const h = parseInt(parts[0], 10) || 8;
-    const m = parseInt(parts[1], 10) || 0;
-    return h * 60 + m;
-  }
-
-  function formatMinutesToTime(min: number): string {
-    const h = Math.floor(min / 60) % 24;
-    const m = Math.floor(min % 60);
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-  }
+  // Start/end of every cell and each tatami's totals, with the same time model the
+  // auto-scheduler plans with (src/lib/auto_schedule.ts).
+  let columnTimes = $derived.by(() => {
+    const out: Record<number, ReturnType<typeof computeColumnTimes>> = {};
+    if (!activeDay) return out;
+    const start = parseTimeToMinutes(startTimeStr);
+    tatamis.forEach((t) => (out[t.id] = computeColumnTimes(activeDay.rows, t.id, start)));
+    return out;
+  });
 
   let tatamiTimelines = $derived.by(() => {
-    if (!activeDay) return {};
     const timelines: Record<number, { totalMatches: number; totalAthletes: number; finishTime: string }> = {};
-
-    tatamis.forEach((t) => {
-      let curMin = parseTimeToMinutes(startTimeStr);
-      let matchCount = 0;
-      let athCount = 0;
-
-      activeDay.rows.forEach((row) => {
-        if (row.row_type === "label") {
-          // Break row
-          if (curMin < 12 * 60) {
-            curMin = 13 * 60; // Advance to 13:00 after ISHOMA
-          } else {
-            curMin += 30;
-          }
-        } else {
-          const cell = row.cells.find((c) => c.tatami_id === t.id);
-          if (cell) {
-            if (cell.nomor_tanding_id) {
-              matchCount += cell.matches;
-              athCount += cell.atlet_count;
-              curMin += cell.est_duration_minutes || 15;
-            } else if (cell.custom_text) {
-              if (cell.is_break) {
-                if (curMin < 12 * 60) curMin = 13 * 60;
-                else curMin += 30;
-              } else {
-                athCount += cell.atlet_count || 10;
-                matchCount += cell.matches || 10;
-                curMin += 45;
-              }
-            }
-          }
-        }
-      });
-
-      timelines[t.id] = {
-        totalMatches: matchCount,
-        totalAthletes: athCount,
-        finishTime: formatMinutesToTime(curMin),
-      };
-    });
-
+    for (const [tid, c] of Object.entries(columnTimes)) {
+      timelines[+tid] = { totalMatches: c.matches, totalAthletes: c.athletes, finishTime: formatMinutesToTime(c.finish) };
+    }
     return timelines;
   });
 
-  // Start/end time of every cell, using the same rules as the per-tatami finish time
-  // above: each tatami runs its column top to bottom from the day's start time.
   let cellTimes = $derived.by(() => {
-    const map: Record<string, { start: string; end: string }> = {};
-    if (!activeDay) return map;
-    tatamis.forEach((t) => {
-      let cur = parseTimeToMinutes(startTimeStr);
-      activeDay.rows.forEach((row, rIdx) => {
-        if (row.row_type === "label") {
-          cur = cur < 12 * 60 ? 13 * 60 : cur + 30;
-          return;
-        }
-        const cell = row.cells.find((c) => c.tatami_id === t.id);
-        if (!cell) return;
-        const start = cur;
-        if (cell.nomor_tanding_id) {
-          cur += cell.est_duration_minutes || 15;
-        } else if (cell.custom_text) {
-          if (cell.is_break) cur = cur < 12 * 60 ? 13 * 60 : cur + 30;
-          else cur += 45;
-        } else {
-          return;
-        }
-        map[`${rIdx}:${t.id}`] = { start: formatMinutesToTime(start), end: formatMinutesToTime(cur) };
-      });
-    });
+    const map: Record<string, { start: string; end: string; minutes: number }> = {};
+    for (const [tid, c] of Object.entries(columnTimes)) {
+      for (const [rIdx, t] of Object.entries(c.slots)) {
+        map[`${rIdx}:${tid}`] = {
+          start: formatMinutesToTime(t.start),
+          end: formatMinutesToTime(t.end),
+          minutes: t.end - t.start,
+        };
+      }
+    }
     return map;
   });
 
@@ -703,6 +518,31 @@
     if (totalRows <= 35) return "density-normal";
     if (totalRows <= 50) return "density-compact";
     return "density-ultra-compact";
+  });
+
+  // "Roster 1 halaman": the sheet has the exact A4-portrait content box used in print, and
+  // the roster is shrunk (CSS zoom) when it is taller than one page.
+  let rosterPageEl = $state<HTMLDivElement | null>(null);
+  let rosterFitZoom = $state(1);
+  /** The kop logo could not be loaded (e.g. a local path on a client laptop): show the default logos. */
+  let kopLogoFailed = $state(false);
+  $effect(() => {
+    void kopLogo;
+    kopLogoFailed = false;
+  });
+
+  $effect(() => {
+    const el = rosterPageEl;
+    if (printMode !== "simple_roster" || !el) return;
+    void activeDay?.rows.length;
+    void simpleRosterDensityClass;
+    rosterFitZoom = 1;
+    const frame = requestAnimationFrame(() => {
+      const need = el.scrollHeight;
+      const have = el.clientHeight;
+      rosterFitZoom = need > have + 1 ? Math.max(0.5, have / need) : 1;
+    });
+    return () => cancelAnimationFrame(frame);
   });
 
   let unassignedCategoriesForPrint = $derived.by(() => {
@@ -743,7 +583,9 @@
         });
       } else {
         const cell = row.cells.find((c) => c.tatami_id === targetId || c.tatami_id === targetNum);
-        if (cell && (cell.nomor_tanding_id || (cell.custom_text && !cell.is_break))) {
+        if (cell && cell.is_break && !cell.nomor_tanding_id && !isJedaText(cell.custom_text)) {
+          list.push({ type: "label", label: cell.custom_text });
+        } else if (cell && (cell.nomor_tanding_id || (cell.custom_text && !cell.is_break))) {
           const seq = getTatamiCellSeq(cell.tatami_id, rIdx);
           const name = cell.nomor_tanding_nama || cell.custom_text || "";
           const isKata = name.toUpperCase().includes("KATA");
@@ -801,729 +643,83 @@
     autoSelectedAgeGroups = updated;
   }
 
-  // --- WKF Hierarchy & Parsing Helpers ---
-  function parseWeightClass(name: string): number {
-    const m = name.match(/([+-]?\d+)\s*kg/i);
-    if (m) {
-      const wStr = m[1];
-      const isPlus = wStr.includes("+");
-      const num = parseInt(wStr.replace(/[^\d]/g, ""), 10) || 0;
-      return isPlus ? 1000 + num : num;
-    }
-    return 999;
-  }
-
-  function getAgeGroupRank(ageGroupStr: string, categoryName: string = ""): number {
-    const raw = (ageGroupStr || "").toLowerCase().trim();
-    const name = (categoryName || "").toLowerCase().trim();
-    const combined = `${raw} ${name}`;
-
-    if (combined.includes("pra usia dini")) return 0;
-    if (combined.includes("usia dini")) return 1;
-    if (combined.includes("pra pemula")) return 2;
-    if (combined.includes("pemula")) return 3;
-    if (combined.includes("kadet") || combined.includes("cadet")) return 4;
-    if (combined.includes("junior")) return 5;
-    if (combined.includes("under-21") || combined.includes("under 21") || combined.includes("u-21") || combined.includes("u21")) return 6;
-    if (combined.includes("senior")) return 7;
-    if (combined.includes("veteran")) return 8;
-
-    return 9; // Lainnya
-  }
-
-  function getCategoryWkfTuple(cat: TimetableCategoryOption) {
-    const lower = cat.nama.toLowerCase();
-
-    // 1. Discipline: Kata (0) vs Kumite (1)
-    const isKata = cat.discipline === "kata" || lower.includes("kata");
-    const discRank = isKata ? 0 : 1;
-
-    // 2. Age group: strictly computed via robust age group matcher (Under-21 is ALWAYS rank 6, Senior ALWAYS rank 7)
-    const ageRank = getAgeGroupRank(cat.age_group, cat.nama);
-
-    // 3. Team type: Perorangan (0) vs Beregu (1)
-    const isBeregu = lower.includes("beregu") || lower.includes("team");
-    const teamRank = isBeregu ? 1 : 0;
-
-    // 4. Gender: Putra (0) vs Putri (1) vs Campuran/Mix (2)
-    let genderRank = 2;
-    if (
-      lower.includes("putra") ||
-      lower.includes(" pa ") ||
-      lower.includes(" pa-") ||
-      lower.includes("pria") ||
-      lower.endsWith(" putra") ||
-      lower.endsWith(" pa")
-    ) {
-      genderRank = 0;
-    } else if (
-      lower.includes("putri") ||
-      lower.includes(" pi ") ||
-      lower.includes(" pi-") ||
-      lower.includes("wanita") ||
-      lower.endsWith(" putri") ||
-      lower.endsWith(" pi")
-    ) {
-      genderRank = 1;
-    }
-
-    // 5. Weight class ascending (for Kumite; 0 for Kata)
-    const weightRank = isKata ? 0 : parseWeightClass(cat.nama);
-
-    return { isKata, discRank, ageRank, teamRank, genderRank, weightRank };
-  }
-
   function detectRowConflicts(cells: EnrichedTimetableCell[]): AthleteConflictDetail[] {
-    const rowConflicts: AthleteConflictDetail[] = [];
-    for (let i = 0; i < cells.length; i++) {
-      for (let j = i + 1; j < cells.length; j++) {
-        const cellA = cells[i];
-        const cellB = cells[j];
-        if (cellA.tatami_id === cellB.tatami_id) continue;
-        if (!cellA.nomor_tanding_id || !cellB.nomor_tanding_id) continue;
-
-        const athA = ntAthletesMap[cellA.nomor_tanding_id];
-        const athB = ntAthletesMap[cellB.nomor_tanding_id];
-        if (!athA || !athB) continue;
-
-        const setB = new Set(athB);
-        for (const ath of athA) {
-          if (setB.has(ath)) {
-            rowConflicts.push({
-              athlete_name: ath,
-              tatami1_number: cellA.tatami_number,
-              category1_id: cellA.nomor_tanding_id,
-              category1_name: cellA.nomor_tanding_nama || "",
-              tatami2_number: cellB.tatami_number,
-              category2_id: cellB.nomor_tanding_id,
-              category2_name: cellB.nomor_tanding_nama || "",
-            });
-          }
-        }
-      }
-    }
-    return rowConflicts;
+    return rowConflicts(cells, ntAthletesMap);
   }
 
   function executeAutoScheduler() {
     if (!activeDay) return;
-
-    // Backup for Undo
-    backupDaysForUndo = JSON.parse(JSON.stringify(days));
-
-    // 1. Gather all candidates (unassigned categories or all if overwrite is active)
-    const candidates = categories.filter((c) => {
-      if (!autoOverwriteExisting && assignedCategoryIds.has(c.id)) return false;
-      if (c.is_festival && !autoIncludeFestival) return false;
-      const rank = getAgeGroupRank(c.age_group, c.nama);
-      const normalizedGroup = ORDERED_GROUPS[rank] || "Lainnya";
-      return autoSelectedAgeGroups[normalizedGroup] !== false && autoSelectedAgeGroups[c.age_group] !== false;
-    });
-
-    if (candidates.length === 0) {
-      notify("Tidak ada kategori yang memenuhi syarat untuk dijadwalkan otomatis.");
-      autoScheduleModalOpen = false;
-      return;
-    }
-
-    const tatamiIds = tatamis.map((t) => t.id);
-    if (tatamiIds.length === 0) {
+    if (tatamis.length === 0) {
       notify("Tidak ada tatami aktif untuk event ini.");
       autoScheduleModalOpen = false;
       return;
     }
 
-    // 2. Sort master candidates based on selected sort mode
-    const sortedCandidates = [...candidates];
-    if (autoSortMode === "wkf_standard") {
-      sortedCandidates.sort((a, b) => {
-        const tA = getCategoryWkfTuple(a);
-        const tB = getCategoryWkfTuple(b);
-        if (tA.discRank !== tB.discRank) return tA.discRank - tB.discRank;
-        if (tA.ageRank !== tB.ageRank) return tA.ageRank - tB.ageRank;
-        if (tA.teamRank !== tB.teamRank) return tA.teamRank - tB.teamRank;
-        if (tA.genderRank !== tB.genderRank) return tA.genderRank - tB.genderRank;
-        if (tA.weightRank !== tB.weightRank) return tA.weightRank - tB.weightRank;
-        return a.id - b.id;
-      });
-    } else if (autoSortMode === "kata_first") {
-      sortedCandidates.sort((a, b) => {
-        const tA = getCategoryWkfTuple(a);
-        const tB = getCategoryWkfTuple(b);
-        if (tA.discRank !== tB.discRank) return tA.discRank - tB.discRank;
-        if (tA.ageRank !== tB.ageRank) return tA.ageRank - tB.ageRank;
-        if (tA.teamRank !== tB.teamRank) return tA.teamRank - tB.teamRank;
-        if (tA.genderRank !== tB.genderRank) return tA.genderRank - tB.genderRank;
-        if (tA.weightRank !== tB.weightRank) return tA.weightRank - tB.weightRank;
-        return a.id - b.id;
-      });
-    } else if (autoSortMode === "age_asc") {
-      sortedCandidates.sort((a, b) => {
-        const tA = getCategoryWkfTuple(a);
-        const tB = getCategoryWkfTuple(b);
-        if (tA.ageRank !== tB.ageRank) return tA.ageRank - tB.ageRank;
-        if (tA.discRank !== tB.discRank) return tA.discRank - tB.discRank;
-        if (tA.teamRank !== tB.teamRank) return tA.teamRank - tB.teamRank;
-        if (tA.genderRank !== tB.genderRank) return tA.genderRank - tB.genderRank;
-        if (tA.weightRank !== tB.weightRank) return tA.weightRank - tB.weightRank;
-        return a.id - b.id;
-      });
-    } else if (autoSortMode === "age_desc") {
-      sortedCandidates.sort((a, b) => {
-        const tA = getCategoryWkfTuple(a);
-        const tB = getCategoryWkfTuple(b);
-        if (tA.ageRank !== tB.ageRank) return tB.ageRank - tA.ageRank;
-        if (tA.discRank !== tB.discRank) return tA.discRank - tB.discRank;
-        if (tA.teamRank !== tB.teamRank) return tA.teamRank - tB.teamRank;
-        if (tA.genderRank !== tB.genderRank) return tA.genderRank - tB.genderRank;
-        if (tA.weightRank !== tB.weightRank) return tA.weightRank - tB.weightRank;
-        return a.id - b.id;
-      });
-    } else {
-      // Balanced: standard WKF ordering as base hierarchy, load-balancing across tatamis
-      sortedCandidates.sort((a, b) => {
-        const tA = getCategoryWkfTuple(a);
-        const tB = getCategoryWkfTuple(b);
-        if (tA.discRank !== tB.discRank) return tA.discRank - tB.discRank;
-        if (tA.ageRank !== tB.ageRank) return tA.ageRank - tB.ageRank;
-        if (tA.teamRank !== tB.teamRank) return tA.teamRank - tB.teamRank;
-        if (tA.genderRank !== tB.genderRank) return tA.genderRank - tB.genderRank;
-        if (tA.weightRank !== tB.weightRank) return tA.weightRank - tB.weightRank;
-        return a.id - b.id;
-      });
-    }
-
-    interface EnrichedCandidate extends TimetableCategoryOption {
-      globalRank: number;
-      waveKey: string;
-      discRank: number;
-      ageRank: number;
-    }
-
-    const enrichedCandidates: EnrichedCandidate[] = sortedCandidates.map((c, idx) => {
-      const t = getCategoryWkfTuple(c);
-      const waveKey = (autoSortMode === "age_asc" || autoSortMode === "age_desc")
-        ? `${t.ageRank}_${t.discRank}`
-        : `${t.discRank}_${t.ageRank}`;
-      return {
-        ...c,
-        globalRank: idx,
-        waveKey,
-        discRank: t.discRank,
-        ageRank: t.ageRank,
-      };
+    const assignedOnOtherDays = new Set<number>();
+    days.forEach((d, dIdx) => {
+      if (dIdx === activeDayIndex) return;
+      d.rows.forEach((r) => r.cells.forEach((c) => c.nomor_tanding_id && assignedOnOtherDays.add(c.nomor_tanding_id)));
     });
 
-    const startMin = parseTimeToMinutes(autoStartTime);
-    const maxEndTime = Infinity; // Jadwalkan seluruh nomor tanding tanpa batasan jam sewenang-wenang
-    const ishomaStartTime = 12 * 60;
-    const ishomaEndTime = 13 * 60;
-
-    // 3. Multi-Trial Simulation Solver (25 trials to achieve optimal match balancing & 0 collisions)
-    interface TrialResult {
-      tatamiRowsList: Record<number, EnrichedTimetableCell[]>;
-      tatamiMinutes: Record<number, number>;
-      tatamiMatches: Record<number, number>;
-      unscheduled: EnrichedCandidate[];
-      scheduledCount: number;
-      score: number;
-    }
-
-    let bestTrial: TrialResult | null = null;
-    const trialCount = 25;
-
-    for (let trialSeed = 0; trialSeed < trialCount; trialSeed++) {
-      let pool = enrichedCandidates.map((c) => ({ ...c }));
-      let stalledIterations = 0;
-      const currentClocks: Record<number, number> = {};
-      const tatamiMatches: Record<number, number> = {};
-      const tatamiAthletes: Record<number, number> = {};
-      const tatamiMinutes: Record<number, number> = {};
-      const tatamiHasKumite: Record<number, boolean> = {};
-      const tatamiLastDisc: Record<number, number> = {};
-      const tatamiLastAge: Record<number, number> = {};
-      const ishomaInserted: Record<number, boolean> = {};
-      const tatamiRowsList: Record<number, EnrichedTimetableCell[]> = {};
-      const activeIntervals: Array<{
-        tid: number;
-        start: number;
-        end: number;
-        athletes: Set<string>;
-      }> = [];
-
-      tatamiIds.forEach((tid) => {
-        currentClocks[tid] = startMin;
-        tatamiMatches[tid] = 0;
-        tatamiAthletes[tid] = 0;
-        tatamiMinutes[tid] = startMin;
-        tatamiHasKumite[tid] = false;
-        tatamiLastDisc[tid] = 0;
-        tatamiLastAge[tid] = 0;
-        ishomaInserted[tid] = false;
-        tatamiRowsList[tid] = [];
-      });
-
-      // Optional: Add initial Festival session across all tatamis (only if no individual festival categories in pool)
-      if (autoIncludeFestival && !pool.some((c) => c.is_festival)) {
-        const festEnd = startMin + autoFestivalDur;
-        const festPerTatami = Math.round(50 / tatamiIds.length);
-        tatamiIds.forEach((tid) => {
-          tatamiRowsList[tid].push({
-            id: 0,
-            row_id: 0,
-            tatami_id: tid,
-            tatami_number: tatamis.find((t) => t.id === tid)?.tatami_number ?? 1,
-            nomor_tanding_id: null,
-            nomor_tanding_nama: null,
-            custom_text: `FESTIVAL (${festPerTatami} Atlet)`,
-            atlet_count: festPerTatami,
-            matches: festPerTatami,
-            discipline: "kata",
-            est_duration_minutes: autoFestivalDur,
-            progress_status: "festival",
-            progress_pct: 0,
-            finished_matches: 0,
-            remaining_matches: festPerTatami,
-            is_festival: true,
-            is_break: false,
-          });
-          currentClocks[tid] = festEnd;
-          tatamiMinutes[tid] = festEnd;
-          tatamiAthletes[tid] += festPerTatami;
-          tatamiMatches[tid] += festPerTatami;
-        });
+    const result = runAutoSchedule(
+      {
+        dayId: activeDay.id,
+        categories: $state.snapshot(categories) as TimetableCategoryOption[],
+        tatamis: tatamis.map((t) => ({ id: t.id, tatami_number: t.tatami_number })),
+        dayRows: $state.snapshot(activeDay.rows) as EnrichedTimetableRow[],
+        assignedOnOtherDays,
+        ntAthletes: $state.snapshot(ntAthletesMap),
+      },
+      {
+        startMin: parseTimeToMinutes(startTimeStr),
+        sortMode: autoSortMode,
+        includeFestival: autoIncludeFestival,
+        festivalSessionMinutes: autoFestivalDur,
+        festivalSession: festivalSession
+          ? festivalSession.map((f) => ({
+              tatamiId: f.tatami_id,
+              text: festivalSessionText(f.athletes, f.matches, f.est_minutes),
+              minutes: f.est_minutes,
+            }))
+          : null,
+        festivalSessionElsewhere: festivalSessionOnOtherDay,
+        includeLunch: autoIncludeIshoma,
+        balanceFinish: autoEqualMatches,
+        preventClashes: autoPreventConflicts,
+        rebuildDay: autoOverwriteExisting,
+        isAgeGroupSelected: (c) => {
+          const grp = ORDERED_GROUPS[getAgeGroupRank(c.age_group, c.nama)] || "Lainnya";
+          return autoSelectedAgeGroups[grp] !== false && autoSelectedAgeGroups[c.age_group] !== false;
+        },
       }
+    );
 
-      function insertIshomaCell(tid: number, start: number) {
-        if (!autoIncludeIshoma || ishomaInserted[tid]) return;
-        const dur = Math.max(1, ishomaEndTime - start);
-        const tNum = tatamis.find((t) => t.id === tid)?.tatami_number ?? 1;
-        tatamiRowsList[tid].push({
-          id: 0,
-          row_id: 0,
-          tatami_id: tid,
-          tatami_number: tNum,
-          nomor_tanding_id: null,
-          nomor_tanding_nama: null,
-          custom_text: "ISHOMA",
-          atlet_count: 0,
-          matches: 0,
-          discipline: "kata",
-          est_duration_minutes: dur,
-          progress_status: "belum_disentuh",
-          progress_pct: 0,
-          finished_matches: 0,
-          remaining_matches: 0,
-          is_festival: false,
-          is_break: true,
-        });
-        currentClocks[tid] = ishomaEndTime;
-        tatamiMinutes[tid] = ishomaEndTime;
-        ishomaInserted[tid] = true;
-      }
-
-      while (pool.length > 0) {
-        // Filter tatamis that are still within maxEndTime
-        const openTatamis = tatamiIds.filter((tid) => currentClocks[tid] < maxEndTime);
-        if (openTatamis.length === 0) break;
-
-        // Check if any open tatami should take ISHOMA
-        let handledIshoma = false;
-        for (const tid of openTatamis) {
-          if (autoIncludeIshoma && !ishomaInserted[tid] && currentClocks[tid] < ishomaEndTime) {
-            const curClock = currentClocks[tid];
-            const canFitBefore13 = pool.some((c) => curClock + (c.est_duration_minutes || 20) <= ishomaEndTime);
-            if (curClock >= 12 * 60 + 30 || (curClock >= 12 * 60 && !canFitBefore13)) {
-              insertIshomaCell(tid, curClock);
-              handledIshoma = true;
-            }
-          }
-        }
-        if (handledIshoma) continue;
-
-        // Sort tatamis by earliest clock, breaking ties by fewer assigned items
-        openTatamis.sort((a, b) => {
-          const cDiff = currentClocks[a] - currentClocks[b];
-          if (cDiff !== 0) return cDiff;
-          if (autoEqualMatches) {
-            const mDiff = tatamiMatches[a] - tatamiMatches[b];
-            if (mDiff !== 0) return mDiff;
-          }
-          return tatamiRowsList[a].length - tatamiRowsList[b].length;
-        });
-
-        const chosenTid = openTatamis[0];
-        const s = currentClocks[chosenTid];
-        const curRowIdx = tatamiRowsList[chosenTid].length;
-
-        // STRICT HIERARCHY RULE:
-        // Urutan progresi kategori usia WAJIB konsisten dan tidak boleh dibalik:
-        // Pra Usia Dini (0) -> Usia Dini (1) -> Pra Pemula (2) -> Pemula (3) -> Kadet (4) -> Junior (5) -> Under-21 (6) -> Senior (7).
-        // Under NO circumstances can a later class (e.g. Senior) leapfrog over an unassigned younger class (e.g. Under-21)!
-        const activeWave = pool[0].waveKey;
-        const currentDisc = pool[0].discRank;
-        const unscheduledAgesOfDisc = pool
-          .filter((c) => c.discRank === currentDisc)
-          .map((c) => c.ageRank);
-        const minUnscheduledAge = unscheduledAgesOfDisc.length > 0
-          ? Math.min(...unscheduledAgesOfDisc)
-          : 0;
-
-        // Collect athletes already participating at curRowIdx across other tatamis
-        const rowAthletes = new Set<string>();
-        if (autoPreventConflicts) {
-          tatamiIds.forEach((otherTid) => {
-            if (otherTid !== chosenTid && curRowIdx < tatamiRowsList[otherTid].length) {
-              const otherCell = tatamiRowsList[otherTid][curRowIdx];
-              if (otherCell.nomor_tanding_id) {
-                const aths = ntAthletesMap[otherCell.nomor_tanding_id] || [];
-                aths.forEach((a) => rowAthletes.add(a));
-              }
-            }
-          });
-        }
-
-        function isValidTatamiOrder(cand: EnrichedCandidate, tid: number): boolean {
-          const cDisc = cand.discRank;
-          const cAge = cand.ageRank;
-          const lDisc = tatamiLastDisc[tid];
-          const lAge = tatamiLastAge[tid];
-          if (cDisc > lDisc) {
-            return true;
-          } else if (cDisc === lDisc) {
-            return cAge >= lAge;
-          }
-          return false;
-        }
-
-        interface CandidateFeasibility {
-          candIdx: number;
-          cand: EnrichedCandidate;
-          dur: number;
-          end: number;
-          score: number;
-        }
-
-        const feasible: CandidateFeasibility[] = [];
-
-        for (let idx = 0; idx < pool.length; idx++) {
-          const cand = pool[idx];
-          // Stop scanning once outside the active wave
-          if (cand.waveKey !== activeWave) break;
-
-          // STRICT: Do not allow selecting an older age group if a younger age group in this discipline remains unassigned!
-          if (cand.discRank === currentDisc && cand.ageRank > minUnscheduledAge) {
-            break;
-          }
-
-          // Tatami must not reverse age progression within the same discipline:
-          if (cand.discRank === tatamiLastDisc[chosenTid] && cand.ageRank < tatamiLastAge[chosenTid]) {
-            continue;
-          }
-
-          if (!isValidTatamiOrder(cand, chosenTid)) {
-            continue;
-          }
-
-          const isCandKata = cand.discipline === "kata" || cand.nama.toLowerCase().includes("kata");
-
-          // Strict WKF Discipline Transition: Tatami that had Kumite cannot take Kata!
-          if (tatamiHasKumite[chosenTid] && isCandKata) {
-            continue;
-          }
-
-          const dur = cand.est_duration_minutes || (cand.matches * 3) || 15;
-          const e = s + dur;
-
-          // Check ISHOMA constraint: category cannot run past 12:45 into ISHOMA
-          if (autoIncludeIshoma && !ishomaInserted[chosenTid] && s < ishomaEndTime && e > ishomaEndTime && s >= 12 * 60) {
-            continue;
-          }
-
-          if (e > maxEndTime) continue;
-
-          // Check active cross-tatami athlete conflicts
-          if (autoPreventConflicts) {
-            const candAthletes = ntAthletesMap[cand.id] || [];
-            let conflictFound = false;
-
-            if (candAthletes.length > 0) {
-              // 1. Same-row collision check
-              for (const ath of candAthletes) {
-                if (rowAthletes.has(ath)) {
-                  conflictFound = true;
-                  break;
-                }
-              }
-
-              // 2. Overlapping time interval collision check
-              if (!conflictFound) {
-                const candSet = new Set(candAthletes);
-                for (const act of activeIntervals) {
-                  if (act.tid !== chosenTid && s < act.end && e > act.start) {
-                    for (const ath of candSet) {
-                      if (act.athletes.has(ath)) {
-                        conflictFound = true;
-                        break;
-                      }
-                    }
-                    if (conflictFound) break;
-                  }
-                }
-              }
-            }
-
-            if (conflictFound) continue;
-          }
-
-          // Candidate is feasible within the current wave!
-          const jitter = trialSeed > 0 ? (Math.random() * 0.8) : 0;
-          const loadBalancingWeight = autoEqualMatches ? (tatamiMatches[chosenTid] * 0.05) : 0;
-          const score = cand.globalRank + jitter + loadBalancingWeight;
-
-          feasible.push({
-            candIdx: idx,
-            cand,
-            dur,
-            end: e,
-            score,
-          });
-        }
-
-        if (feasible.length > 0) {
-          feasible.sort((a, b) => a.score - b.score);
-          const pick = feasible[0];
-          const cat = pool.splice(pick.candIdx, 1)[0];
-          const dur = pick.dur;
-          const end = pick.end;
-          const tNum = tatamis.find((t) => t.id === chosenTid)?.tatami_number ?? 1;
-
-          const isKata = cat.discipline === "kata" || cat.nama.toLowerCase().includes("kata");
-          if (!isKata) {
-            tatamiHasKumite[chosenTid] = true;
-          }
-
-          tatamiLastDisc[chosenTid] = cat.discRank;
-          tatamiLastAge[chosenTid] = cat.ageRank;
-
-          const candAthletesSet = new Set(ntAthletesMap[cat.id] || []);
-          activeIntervals.push({
-            tid: chosenTid,
-            start: s,
-            end: end,
-            athletes: candAthletesSet,
-          });
-
-          tatamiRowsList[chosenTid].push({
-            id: 0,
-            row_id: 0,
-            tatami_id: chosenTid,
-            tatami_number: tNum,
-            nomor_tanding_id: cat.id,
-            nomor_tanding_nama: cat.nama,
-            custom_text: "",
-            atlet_count: cat.atlet_count,
-            matches: cat.matches,
-            discipline: cat.discipline,
-            est_duration_minutes: dur,
-            progress_status: cat.progress_status,
-            progress_pct: cat.progress_pct,
-            finished_matches: 0,
-            remaining_matches: cat.matches,
-            is_festival: cat.is_festival,
-            is_break: false,
-          });
-
-          currentClocks[chosenTid] = end;
-          tatamiMinutes[chosenTid] = end;
-          tatamiMatches[chosenTid] += cat.matches;
-          tatamiAthletes[chosenTid] += cat.atlet_count;
-          stalledIterations = 0;
-        } else {
-          stalledIterations++;
-          // Fallback deadlock resolver: if tatamis are stalled across multiple rounds,
-          // force assign pool[0] to chosenTid to guarantee 100% of categories get scheduled!
-          if (stalledIterations > tatamiIds.length * 2) {
-            const forcedCat = pool.shift()!;
-            const tNum = tatamis.find((t) => t.id === chosenTid)?.tatami_number ?? 1;
-            const dur = forcedCat.est_duration_minutes || (forcedCat.matches * 3) || 15;
-            const end = s + dur;
-
-            const isKata = forcedCat.discipline === "kata" || forcedCat.nama.toLowerCase().includes("kata");
-            if (!isKata) {
-              tatamiHasKumite[chosenTid] = true;
-            }
-
-            tatamiLastDisc[chosenTid] = forcedCat.discRank;
-            tatamiLastAge[chosenTid] = forcedCat.ageRank;
-
-            const candAthletesSet = new Set(ntAthletesMap[forcedCat.id] || []);
-            activeIntervals.push({
-              tid: chosenTid,
-              start: s,
-              end: end,
-              athletes: candAthletesSet,
-            });
-
-            tatamiRowsList[chosenTid].push({
-              id: 0,
-              row_id: 0,
-              tatami_id: chosenTid,
-              tatami_number: tNum,
-              nomor_tanding_id: forcedCat.id,
-              nomor_tanding_nama: forcedCat.nama,
-              custom_text: "",
-              atlet_count: forcedCat.atlet_count,
-              matches: forcedCat.matches,
-              discipline: forcedCat.discipline,
-              est_duration_minutes: dur,
-              progress_status: forcedCat.progress_status,
-              progress_pct: forcedCat.progress_pct,
-              finished_matches: 0,
-              remaining_matches: forcedCat.matches,
-              is_festival: forcedCat.is_festival,
-              is_break: false,
-            });
-
-            currentClocks[chosenTid] = end;
-            tatamiMinutes[chosenTid] = end;
-            tatamiMatches[chosenTid] += forcedCat.matches;
-            tatamiAthletes[chosenTid] += forcedCat.atlet_count;
-            stalledIterations = 0;
-            continue;
-          }
-
-          // Advance clock to wait for active conflicting match to end
-          const futureEnds = activeIntervals
-            .filter((a) => a.end > s)
-            .map((a) => a.end);
-          if (futureEnds.length > 0) {
-            const nextClear = Math.min(...futureEnds);
-            if (nextClear > s && nextClear <= maxEndTime) {
-              currentClocks[chosenTid] = nextClear;
-              continue;
-            }
-          }
-          if (autoIncludeIshoma && !ishomaInserted[chosenTid] && s < 12 * 60) {
-            currentClocks[chosenTid] = 12 * 60;
-            continue;
-          }
-          currentClocks[chosenTid] += 5;
-          if (currentClocks[chosenTid] >= maxEndTime) {
-            break;
-          }
-        }
-      }
-
-      // Calculate trial score
-      const scheduledCount = sortedCandidates.length - pool.length;
-      const matchVals = tatamiIds.map((tid) => tatamiMatches[tid]);
-      const maxM = Math.max(...matchVals);
-      const minM = Math.min(...matchVals);
-      const matchSpread = maxM - minM;
-
-      const clockVals = tatamiIds.map((tid) => currentClocks[tid]);
-      const maxC = Math.max(...clockVals);
-      const minC = Math.min(...clockVals);
-      const clockSpread = maxC - minC;
-
-      // Primary: unscheduled count (lowest)
-      // Secondary: match spread between tatamis (lowest)
-      // Tertiary: clock difference
-      const trialScore = (pool.length * 100000) + (matchSpread * 1000) + (clockSpread * 2);
-
-      const trialResult: TrialResult = {
-        tatamiRowsList,
-        tatamiMinutes,
-        tatamiMatches,
-        unscheduled: pool,
-        scheduledCount,
-        score: trialScore,
-      };
-
-      if (!bestTrial || trialScore < bestTrial.score) {
-        bestTrial = trialResult;
-      }
-    }
-
-    if (!bestTrial) {
-      notify("Gagal menghasilkan simulasi jadwal.");
+    if (result.scheduled === 0 && !result.festivalSessionAdded) {
+      const empty = result.skippedEmpty.length > 0 ? ` (${result.skippedEmpty.length} kategori tanpa atlet dilewati)` : "";
+      notify(`Tidak ada kategori yang bisa dijadwalkan otomatis${empty}.`);
       autoScheduleModalOpen = false;
       return;
     }
 
-    // 4. Construct synchronized grid rows from bestTrial
-    const maxRows = Math.max(...tatamiIds.map((tid) => bestTrial!.tatamiRowsList[tid].length), 1);
-    const newDayRows: EnrichedTimetableRow[] = [];
-
-    for (let r = 0; r < maxRows; r++) {
-      const rowCells: EnrichedTimetableCell[] = tatamiIds.map((tid) => {
-        const list = bestTrial!.tatamiRowsList[tid];
-        if (r < list.length) {
-          return list[r];
-        }
-        return {
-          id: 0,
-          row_id: 0,
-          tatami_id: tid,
-          tatami_number: tatamis.find((t) => t.id === tid)?.tatami_number ?? 1,
-          nomor_tanding_id: null,
-          nomor_tanding_nama: null,
-          custom_text: "",
-          atlet_count: 0,
-          matches: 0,
-          discipline: "kumite",
-          est_duration_minutes: 0,
-          progress_status: "belum_disentuh",
-          progress_pct: 0,
-          finished_matches: 0,
-          remaining_matches: 0,
-          is_festival: false,
-          is_break: false,
-        };
-      });
-
-      const rowConflicts = detectRowConflicts(rowCells);
-
-      newDayRows.push({
-        id: 0,
-        day_id: activeDay.id,
-        order: r,
-        row_type: "slot",
-        time_label: `Sesi ${r + 1}`,
-        label_text: "",
-        cells: rowCells,
-        conflicts: rowConflicts,
-      });
-    }
-
-    activeDay.rows = newDayRows;
-
-    // Recalculate total conflicts across all rows
-    const totalNewConflicts = newDayRows.reduce((acc, row) => acc + row.conflicts.length, 0);
-    summary.total_conflicts = totalNewConflicts;
-
+    backupDaysForUndo = $state.snapshot(days) as EnrichedTimetableDay[];
+    activeDay.rows = result.rows;
+    summary.total_conflicts = days.reduce(
+      (acc, d) => acc + d.rows.reduce((a, r) => a + (r.conflicts?.length || 0), 0),
+      0
+    );
     markDirty();
     autoScheduleModalOpen = false;
 
-    // Build balance summary text
-    const balanceTxt = tatamiIds
-      .map((tid) => {
-        const tObj = tatamis.find((t) => t.id === tid);
-        return `Tatami ${tObj?.tatami_number}: ${bestTrial!.tatamiMatches[tid]} partai (${formatMinutesToTime(bestTrial!.tatamiMinutes[tid])})`;
-      })
-      .join(" • ");
-
-    const unscheduledMsg = bestTrial.unscheduled.length > 0 
-      ? ` (${bestTrial.unscheduled.length} kategori belum masuk batas jam)` 
-      : "";
-
+    const parts = [`${result.scheduled} kategori`, `${result.clashes.length} bentrok atlet`];
+    if (result.festivalSessionAdded) parts.unshift("sesi FESTIVAL");
+    if (result.skippedEmpty.length > 0) parts.push(`${result.skippedEmpty.length} kategori tanpa atlet dilewati`);
     autoResultBanner = {
-      title: `Auto-Jadwal Berhasil Diterapkan (${bestTrial.scheduledCount} Kategori Terjadwal, ${totalNewConflicts} Bentrok Atlet)${unscheduledMsg}`,
-      summary: balanceTxt,
+      title: `Auto-jadwal diterapkan: ${parts.join(" • ")}`,
+      summary: result.perTatami
+        .map((t) => `Tatami ${t.tatamiNumber}: ${t.matches} partai, selesai ${formatMinutesToTime(t.finish)}`)
+        .join(" • "),
     };
-
-    notify(`Auto-jadwal selesai: ${bestTrial.scheduledCount} kategori teralokasi, ${totalNewConflicts} bentrok.`);
+    notify(`Auto-jadwal selesai: ${result.scheduled} kategori, ${result.clashes.length} bentrok.`);
   }
 
   function undoLastAutoSchedule() {
@@ -1537,6 +733,33 @@
   }
 
   // --- Quick Session Prompts ---
+  function openFestivalSessionPrompt() {
+    if (!festivalSession) {
+      festivalPromptOpen = true;
+      return;
+    }
+    if (!activeDay) return;
+    if (activeDay.rows.some((r) => r.cells.some(isFestivalSessionCell)) || festivalSessionOnOtherDay) {
+      notify("Sesi FESTIVAL sudah ada di jadwal.");
+      return;
+    }
+    activeDay.rows = [
+      ...activeDay.rows,
+      {
+        id: 0,
+        day_id: activeDay.id,
+        order: activeDay.rows.length,
+        row_type: "slot",
+        time_label: "",
+        label_text: "",
+        cells: buildFestivalSessionCells(),
+        conflicts: [],
+      },
+    ];
+    markDirty();
+    notify("Sesi FESTIVAL ditambahkan di semua tatami (sesuai roster festival).");
+  }
+
   function insertFestivalSession() {
     if (!activeDay) return;
     const festAthletesPerTatami = Math.round(festivalAthletesInput / Math.max(1, tatamis.length));
@@ -1710,9 +933,6 @@
       tatamiBookletData = data;
       printMode = "booklet";
       await resolveBookletLogos(data);
-      setTimeout(() => {
-        drawBookletConnectors();
-      }, 150);
     } catch (err: any) {
       console.error("Gagal memuat Buku Tatami:", err);
       notify(`Gagal memuat Buku Tatami: ${err}`);
@@ -1777,6 +997,16 @@
       confirmText: "Hapus Hari",
       isDestructive: true,
       dayId: activeDay.id,
+    });
+  }
+
+  function promptDiscardChanges() {
+    openConfirmModal({
+      action: "discard_changes",
+      title: "Batalkan Perubahan",
+      message: "Buang semua perubahan jadwal yang belum disimpan dan muat ulang jadwal terakhir yang tersimpan?",
+      confirmText: "Buang Perubahan",
+      isDestructive: true,
     });
   }
 
@@ -2043,7 +1273,10 @@
 
   function handleEditorKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
-      if (pickerTarget) {
+      if (openMenu) {
+        openMenu = null;
+        e.preventDefault();
+      } else if (pickerTarget) {
         closePicker();
         e.preventDefault();
       } else if (moveSource) {
@@ -2052,19 +1285,11 @@
       }
       return;
     }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && isEditMode) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       if (isDirty && !isSaving) handleSaveTimetable();
     }
   }
-
-  // Leaving edit mode cancels a pending move or pick.
-  $effect(() => {
-    if (!isEditMode) {
-      moveSource = null;
-      pickerTarget = null;
-    }
-  });
 
   function clearCell(rowIdx: number, tatamiId: number) {
     if (!activeDay) return;
@@ -2142,19 +1367,16 @@
 
   // Trigger browser print
   function triggerPrint() {
+    if (printMode === "simple_roster") {
+      printWithOrientation("portrait", "6mm");
+      return;
+    }
     if (printMode === "booklet") {
       document.body.classList.add("is-printing");
       void document.body.offsetHeight;
       setTimeout(() => {
-        drawBookletConnectors();
-        setTimeout(() => {
-          drawBookletConnectors();
-          window.print();
-          setTimeout(() => {
-            document.body.classList.remove("is-printing");
-            drawBookletConnectors();
-          }, 500);
-        }, 120);
+        window.print();
+        setTimeout(() => document.body.classList.remove("is-printing"), 500);
       }, 120);
     } else {
       window.print();
@@ -2167,43 +1389,24 @@
     }
   });
 
-  $effect(() => {
-    // Re-draw bracket connectors when prune toggle changes
-    if (printMode === "booklet" && tatamiBookletData) {
-      const _ = bookletPruneEmptyRounds;
-      setTimeout(() => {
-        drawBookletConnectors();
-      }, 80);
-    }
-  });
-
   onMount(() => {
     loadTimetable();
     const handleBeforePrint = () => {
       if (printMode === "booklet") {
         document.body.classList.add("is-printing");
         void document.body.offsetHeight;
-        drawBookletConnectors();
       }
     };
     const handleAfterPrint = () => {
       if (printMode === "booklet") {
         document.body.classList.remove("is-printing");
-        drawBookletConnectors();
       }
     };
     window.addEventListener("beforeprint", handleBeforePrint);
     window.addEventListener("afterprint", handleAfterPrint);
-    const handleResize = () => {
-      if (printMode === "booklet") {
-        drawBookletConnectors();
-      }
-    };
-    window.addEventListener("resize", handleResize);
     return () => {
       window.removeEventListener("beforeprint", handleBeforePrint);
       window.removeEventListener("afterprint", handleAfterPrint);
-      window.removeEventListener("resize", handleResize);
     };
   });
 </script>
@@ -2238,138 +1441,117 @@
   {/if}
 
   <!-- Header Bar -->
-  <div class="flex items-center justify-between pb-4 border-b border-white/[0.08] shrink-0">
-    <div class="flex items-center space-x-2.5">
-      <h2 class="text-xl font-black text-white tracking-tight uppercase">
+  <div class="flex items-center justify-between gap-3 pb-4 border-b border-white/[0.08] shrink-0">
+    <div class="flex items-center gap-2.5 min-w-0">
+      <h2 class="text-xl font-black text-white tracking-tight uppercase whitespace-nowrap">
         Jadwal Pertandingan
       </h2>
-      <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
+      <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] whitespace-nowrap">
         {days.length} HARI • {totalSlotsCount} SESI
       </span>
       {#if isDirty}
-        <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">
+        <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">
           BELUM DISIMPAN
         </span>
       {/if}
     </div>
 
-    <!-- Actions Toolbar (Clean, Intuitive Edit Mode & Operational Read Mode) -->
-    <div class="flex items-center space-x-2">
-      <!-- Kop Surat -->
-      <button
-        onclick={() => (kopModalOpen = true)}
-        class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-all flex items-center space-x-1.5"
-        title="Pengaturan Kop Surat & Info Panitia"
-      >
-        <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-        <span>Kop Surat</span>
-      </button>
+    <div class="flex items-center gap-2 shrink-0">
+      {#if openMenu}
+        <!-- Click outside closes the open menu -->
+        <div class="fixed inset-0 z-30" onclick={() => (openMenu = null)} aria-hidden="true"></div>
+      {/if}
 
-      <!-- Cetak Roster 1 Halaman -->
-      <button
-        onclick={() => (printMode = "simple_roster")}
-        class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-sky-300 hover:text-white font-semibold text-xs rounded-xl border border-sky-500/20 transition-all flex items-center space-x-1.5"
-        title="Cetak Run Sheet Ringkas 1 Halaman (A4/F4)"
-      >
-        <svg class="w-3.5 h-3.5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
-        <span>Cetak 1 Halaman</span>
-      </button>
-
-      <!-- Mode Edit Toggle Button (Intuitive & Safe) -->
-      <button
-        onclick={() => (isEditMode = !isEditMode)}
-        class="h-9 px-3.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 {isEditMode ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-inner' : 'bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/[0.1]'}"
-        title={isEditMode ? 'Selesai & Kunci Jadwal' : 'Aktifkan Mode Edit untuk mengubah jadwal'}
-      >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-        </svg>
-        <span>{isEditMode ? 'Mode Edit: Aktif' : 'Mode Edit'}</span>
-      </button>
-
-      {#if isEditMode}
-        <!-- Auto-Jadwal Cerdas (Only accessible in Edit Mode) -->
+      <!-- Cetak -->
+      <div class="relative">
         <button
-          onclick={openAutoScheduleModal}
-          class="h-9 px-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-black font-black text-xs rounded-xl shadow-md transition-all active:scale-95 flex items-center space-x-1.5"
+          onclick={() => (openMenu = openMenu === "cetak" ? null : "cetak")}
+          class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition flex items-center gap-1.5 {openMenu === 'cetak' ? 'relative z-40' : ''}"
+          aria-haspopup="menu"
+          aria-expanded={openMenu === "cetak"}
         >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          <span>Auto-Jadwal Cerdas</span>
+          <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+          <span>Cetak</span>
+          <svg class="w-3 h-3 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+        </button>
+        {#if openMenu === "cetak"}
+          <div class="absolute right-0 mt-2 w-60 bg-[#181a20] border border-white/10 rounded-xl shadow-2xl py-1.5 z-40" role="menu">
+            <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" onclick={() => { openMenu = null; printMode = "simple_roster"; }}>
+              Roster 1 halaman
+            </button>
+            {#each tatamis as t}
+              <button
+                role="menuitem"
+                class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none"
+                disabled={!activeDay || tatamiBookletLoading}
+                onclick={() => { openMenu = null; openTatamiBooklet(t); }}
+              >
+                Buku Tatami {t.tatami_number}
+              </button>
+            {/each}
+            <div class="my-1 border-t border-white/[0.08]"></div>
+            <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" onclick={() => { openMenu = null; kopModalOpen = true; }}>
+              Kop Surat…
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Atur Jadwal -->
+      <div class="relative">
+        <button
+          onclick={() => (openMenu = openMenu === "atur" ? null : "atur")}
+          class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition flex items-center gap-1.5 {openMenu === 'atur' ? 'relative z-40' : ''}"
+          aria-haspopup="menu"
+          aria-expanded={openMenu === "atur"}
+        >
+          <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          <span>Atur Jadwal</span>
+          <svg class="w-3 h-3 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+        </button>
+        {#if openMenu === "atur"}
+          <div class="absolute right-0 mt-2 w-60 bg-[#181a20] border border-white/10 rounded-xl shadow-2xl py-1.5 z-40" role="menu">
+            <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" onclick={() => { openMenu = null; openAutoScheduleModal(); }}>
+              <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              <span>Auto-Jadwal…</span>
+            </button>
+            <div class="my-1 border-t border-white/[0.08]"></div>
+            <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" disabled={!activeDay} onclick={() => { openMenu = null; promptClearDaySlots(); }}>
+              Kosongkan {activeDay?.label ?? "hari ini"}
+            </button>
+            <button
+              role="menuitem"
+              class="w-full px-3.5 py-2 text-left text-xs font-semibold text-rose-400 hover:text-rose-200 hover:bg-rose-500/10 transition flex items-center gap-2"
+              onclick={() => { openMenu = null; promptResetAllTimetable(); }}
+            >
+              Reset seluruh jadwal
+            </button>
+          </div>
+        {/if}
+      </div>
+
+      {#if isDirty}
+        <button onclick={promptDiscardChanges} disabled={isSaving} class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition flex items-center gap-1.5 disabled:opacity-50">
+          Batalkan
         </button>
       {/if}
 
-      <!-- Simpan Perubahan (Muncul jika ada perubahan atau saat Mode Edit aktif) -->
-      {#if isDirty || isEditMode}
-        <button
-          onclick={handleSaveTimetable}
-          disabled={isSaving}
-          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-all active:scale-95 flex items-center space-x-1.5 disabled:opacity-50 animate-in fade-in"
-        >
-          {#if isSaving}
-            <span class="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin"></span>
-            <span>Menyimpan...</span>
-          {:else}
-            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
-            </svg>
-            <span>Simpan Perubahan</span>
-          {/if}
-        </button>
-      {/if}
-
-      {#if isEditMode}
-        <!-- Opsi Tambahan / More Actions (···) Dropdown (Only in Edit Mode) -->
-        <div class="relative">
-          <button
-            onclick={() => (optionsMenuOpen = !optionsMenuOpen)}
-            class="h-9 w-9 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white font-bold text-sm rounded-xl border border-white/[0.1] transition-all flex items-center justify-center"
-            title="Opsi Jadwal Lainnya"
-          >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z" />
-            </svg>
-          </button>
-
-          {#if optionsMenuOpen}
-            <!-- Backdrop overlay to dismiss dropdown -->
-            <div
-              class="fixed inset-0 z-30"
-              onclick={() => (optionsMenuOpen = false)}
-              aria-hidden="true"
-            ></div>
-
-            <div class="absolute right-0 mt-2 w-56 bg-[#181a20] border border-white/10 rounded-xl shadow-2xl py-1.5 z-40 animate-in fade-in zoom-in-95">
-              <button
-                onclick={() => {
-                  optionsMenuOpen = false;
-                  promptClearDaySlots();
-                }}
-                class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center space-x-2"
-              >
-                <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                <span>Kosongkan Sesi Hari Ini</span>
-              </button>
-
-              <div class="my-1 border-t border-white/[0.08]"></div>
-
-              <button
-                onclick={() => {
-                  optionsMenuOpen = false;
-                  promptResetAllTimetable();
-                }}
-                class="w-full px-3.5 py-2 text-left text-xs font-semibold text-rose-400 hover:text-rose-200 hover:bg-rose-500/10 transition flex items-center space-x-2"
-              >
-                <svg class="w-3.5 h-3.5 text-rose-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                <span>Reset Seluruh Jadwal</span>
-              </button>
-            </div>
-          {/if}
-        </div>
-      {/if}
+      <button
+        onclick={handleSaveTimetable}
+        disabled={isSaving || !isDirty}
+        title="Simpan (Ctrl+S)"
+        class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition active:scale-95 flex items-center gap-1.5 disabled:opacity-40 disabled:active:scale-100 disabled:hover:bg-white"
+      >
+        {#if isSaving}
+          <span class="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin"></span>
+          <span>Menyimpan...</span>
+        {:else}
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
+          </svg>
+          <span>Simpan</span>
+        {/if}
+      </button>
     </div>
   </div>
 
@@ -2419,11 +1601,9 @@
     <span class="{summary.total_conflicts > 0 ? 'text-rose-400' : 'text-zinc-400'}">
       Bentrok atlet <strong class="font-mono tabular-nums {summary.total_conflicts > 0 ? 'text-rose-400' : 'text-white'}">{summary.total_conflicts}</strong>
     </span>
-    {#if isEditMode}
-      <span class="ml-auto text-[11px] text-zinc-500">
-        Klik sel kosong untuk mengisi • <span class="font-mono">Esc</span> batal • <span class="font-mono">Ctrl+S</span> simpan
-      </span>
-    {/if}
+    <span class="ml-auto text-[11px] text-zinc-500">
+      Klik sel kosong untuk mengisi • <span class="font-mono">Esc</span> batal • <span class="font-mono">Ctrl+S</span> simpan
+    </span>
     {/if}
   </div>
 
@@ -2501,7 +1681,7 @@
 
                 {#if isAssigned}
                   <span class="text-[8.5px] font-mono font-bold text-emerald-400 shrink-0">✓ Terjadwal</span>
-                {:else if isEditMode}
+                {:else}
                   <div class="flex items-center space-x-0.5 shrink-0">
                     {#each tatamis as t}
                       <button
@@ -2551,120 +1731,67 @@
 
     <!-- 2. Right Timetable Workspace Grid -->
     <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
-      <!-- Days Switcher, Quick Sesi Buttons & Tatami Controls -->
+      <!-- Day tabs | start time, date, + Sesi, + Tatami -->
       <div class="flex flex-wrap items-center justify-between gap-2 pb-3 shrink-0">
-        <!-- Day Tabs -->
-        <div class="flex items-center space-x-1.5 overflow-x-auto scrollbar-none">
+        <div class="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
           {#each days as day, idx}
-            <button
-              onclick={() => (activeDayIndex = idx)}
-              class="px-3.5 py-1.5 rounded-xl text-xs font-semibold transition border flex items-center space-x-2 {activeDayIndex === idx ? 'bg-white text-black border-white shadow-sm' : 'bg-white/[0.04] text-zinc-300 border-white/[0.08] hover:bg-white/[0.08]'}"
-            >
-              <span>{day.label}</span>
-              <span class="text-[10px] font-mono opacity-60">({day.rows.length} row)</span>
-            </button>
-          {/each}
-
-          {#if isEditMode}
-            <button
-              onclick={handleAddDay}
-              class="h-8 px-2.5 bg-white/[0.03] hover:bg-white/[0.06] text-zinc-400 hover:text-white text-xs font-semibold rounded-xl border border-dashed border-white/[0.15] transition flex items-center space-x-1 cursor-pointer"
-            >
-              <span>+ Tambah Hari</span>
-            </button>
-
-            {#if days.length > 1}
-              <button
-                onclick={promptDeleteCurrentDay}
-                disabled={isDeletingDay}
-                class="h-8 px-2 bg-rose-500/[0.06] hover:bg-rose-500/20 text-rose-400 text-xs font-semibold rounded-xl border border-rose-500/20 transition flex items-center space-x-1 cursor-pointer"
-                title="Hapus Hari Ini"
-              >
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                <span>Hapus Hari</span>
+            <div class="flex items-center rounded-xl border transition {activeDayIndex === idx ? 'bg-white text-black border-white shadow-sm' : 'bg-white/[0.04] text-zinc-300 border-white/[0.08] hover:bg-white/[0.08]'}">
+              <button onclick={() => (activeDayIndex = idx)} class="h-8 pl-3.5 {activeDayIndex === idx && days.length > 1 ? 'pr-1.5' : 'pr-3.5'} text-xs font-semibold cursor-pointer">
+                {day.label}
               </button>
-            {/if}
-          {/if}
-        </div>
-
-        <!-- Quick Session & Day Toolbar -->
-        <div class="flex items-center space-x-2">
-          {#if isEditMode}
-            <!-- Kosongkan Sesi Hari Ini -->
-            <button
-              onclick={promptClearDaySlots}
-              class="h-8 px-2.5 bg-white/[0.04] hover:bg-rose-500/10 text-zinc-400 hover:text-rose-300 text-xs font-semibold rounded-xl border border-white/[0.08] hover:border-rose-500/30 transition flex items-center space-x-1 cursor-pointer"
-              title="Kosongkan Semua Sesi Pertandingan pada Hari Ini"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              <span>Kosongkan Hari</span>
-            </button>
-
-            <!-- + Sesi Festival Prompt -->
-            <button
-              onclick={() => (festivalPromptOpen = true)}
-              class="h-8 px-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-amber-300 text-xs font-semibold rounded-xl border border-amber-500/20 transition flex items-center space-x-1.5 cursor-pointer"
-              title="Tambah Sesi Festival Serentak di Seluruh Tatami"
-            >
-              <svg class="w-3.5 h-3.5 text-amber-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />
-              </svg>
-              <span>+ Sesi Festival</span>
-            </button>
-
-            <!-- + ISHOMA Prompt -->
-            <button
-              onclick={() => (ishomaPromptOpen = true)}
-              class="h-8 px-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-amber-200 text-xs font-semibold rounded-xl border border-amber-500/20 transition flex items-center space-x-1.5 cursor-pointer"
-              title="Tambah Sesi ISHOMA Serentak di Seluruh Tatami"
-            >
-              <svg class="w-3.5 h-3.5 text-amber-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span>+ ISHOMA</span>
-            </button>
-
-            <!-- + Tambah Tatami -->
-            <button
-              onclick={handleAddTatami}
-              class="h-8 px-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white text-xs font-semibold rounded-xl border border-white/10 transition cursor-pointer"
-              title="Tambah Tatami Baru ke Turnamen"
-            >
-              + Tatami
-            </button>
-
-            <!-- Editable Time & Date in Edit Mode -->
-            <div class="flex items-center space-x-1.5 bg-[#181a20] px-2.5 py-1 rounded-xl border border-white/[0.08]">
-              <span class="text-[10px] font-mono text-zinc-400 uppercase">Mulai:</span>
-              <input
-                type="time"
-                bind:value={startTimeStr}
-                class="bg-transparent text-xs text-white outline-none font-mono cursor-pointer"
-              />
-            </div>
-
-            {#if activeDay}
-              <input
-                type="date"
-                bind:value={activeDay.tanggal}
-                onchange={markDirty}
-                class="bg-[#181a20] border border-white/[0.08] text-xs text-white px-2 py-1 rounded-xl outline-none font-mono cursor-pointer"
-              />
-            {/if}
-          {:else}
-            <!-- Clean Read-Only Time & Date Info Badge in Mode Baca -->
-            <div class="flex items-center space-x-2 text-xs font-mono text-zinc-400 bg-[#181a20] px-3 py-1.5 rounded-xl border border-white/[0.08]">
-              <span>Mulai: <strong class="text-white">{startTimeStr}</strong></span>
-              {#if activeDay?.tanggal}
-                <span class="text-zinc-600">•</span>
-                <span>Tanggal: <strong class="text-white">{activeDay.tanggal}</strong></span>
+              {#if activeDayIndex === idx && days.length > 1}
+                <button
+                  onclick={promptDeleteCurrentDay}
+                  disabled={isDeletingDay}
+                  class="h-8 pr-2.5 pl-1 text-zinc-500 hover:text-rose-600 transition cursor-pointer"
+                  title="Hapus {day.label}"
+                  aria-label="Hapus {day.label}"
+                >
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
               {/if}
             </div>
+          {/each}
+          <button
+            onclick={handleAddDay}
+            class="h-8 px-2.5 bg-white/[0.03] hover:bg-white/[0.06] text-zinc-400 hover:text-white text-xs font-semibold rounded-xl border border-dashed border-white/[0.15] transition cursor-pointer whitespace-nowrap"
+          >
+            + Hari
+          </button>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <label class="h-8 flex items-center gap-1.5 bg-[#181a20] px-2.5 rounded-xl border border-white/[0.08]">
+            <span class="text-[10px] font-mono text-zinc-400 uppercase">Mulai</span>
+            <input type="time" bind:value={startTimeStr} class="bg-transparent text-xs text-white outline-none font-mono cursor-pointer" />
+          </label>
+          {#if activeDay}
+            <label class="h-8 flex items-center gap-1.5 bg-[#181a20] px-2.5 rounded-xl border border-white/[0.08]">
+              <span class="text-[10px] font-mono text-zinc-400 uppercase">Tanggal</span>
+              <input type="date" bind:value={activeDay.tanggal} onchange={markDirty} class="bg-transparent text-xs text-white outline-none font-mono cursor-pointer" />
+            </label>
           {/if}
+
+          <div class="relative">
+            <button
+              onclick={() => (openMenu = openMenu === "sesi" ? null : "sesi")}
+              class="h-8 px-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white text-xs font-semibold rounded-xl border border-white/[0.08] transition flex items-center gap-1.5 cursor-pointer {openMenu === 'sesi' ? 'relative z-40' : ''}"
+              aria-haspopup="menu"
+              aria-expanded={openMenu === "sesi"}
+            >
+              <span>+ Sesi</span>
+              <svg class="w-3 h-3 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            {#if openMenu === "sesi"}
+              <div class="absolute right-0 mt-2 w-48 bg-[#181a20] border border-white/10 rounded-xl shadow-2xl py-1.5 z-40" role="menu">
+                <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" disabled={!activeDay} onclick={() => { openMenu = null; addSlotRow(); }}>Sesi kosong</button>
+                <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" disabled={!activeDay} onclick={() => { openMenu = null; openFestivalSessionPrompt(); }}>{festivalSession ? "Sesi Festival" : "Sesi Festival…"}</button>
+                <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" disabled={!activeDay} onclick={() => { openMenu = null; ishomaPromptOpen = true; }}>ISHOMA…</button>
+              </div>
+            {/if}
+          </div>
+
+          <button onclick={handleAddTatami} class="h-8 px-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white text-xs font-semibold rounded-xl border border-white/[0.08] transition flex items-center gap-1.5 cursor-pointer">+ Tatami</button>
         </div>
       </div>
 
@@ -2695,10 +1822,7 @@
             <span class="text-sm font-semibold text-zinc-400">Belum Ada Slot Pertandingan di Hari Ini</span>
             <div class="flex items-center space-x-2 mt-3">
               <button
-                onclick={() => {
-                  isEditMode = true;
-                  openAutoScheduleModal();
-                }}
+                onclick={openAutoScheduleModal}
                 class="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-black font-black text-xs rounded-xl shadow-md transition flex items-center space-x-1.5"
               >
                 <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2707,11 +1831,7 @@
                 <span>Auto-Jadwal Cerdas</span>
               </button>
               <button
-                onclick={() => {
-                  // Starting a schedule by hand means editing it.
-                  isEditMode = true;
-                  addSlotRow();
-                }}
+                onclick={addSlotRow}
                 class="px-3.5 py-2 bg-white text-black font-bold text-xs rounded-xl shadow-md transition hover:bg-zinc-200"
               >
                 + Tambah Sesi Manual
@@ -2754,7 +1874,7 @@
                           <span>Buku</span>
                         </button>
 
-                        {#if isEditMode && tatamis.length > 1}
+                        {#if tatamis.length > 1}
                           <button
                             onclick={() => promptRemoveTatami(tatami.id)}
                             class="text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition cursor-pointer"
@@ -2769,9 +1889,7 @@
                     </div>
                   </th>
                 {/each}
-                {#if isEditMode}
-                  <th class="py-3 px-2 w-16 text-center font-semibold border-l border-white/[0.06]">Aksi</th>
-                {/if}
+                <th class="py-3 px-2 w-16 text-center font-semibold border-l border-white/[0.06]">Aksi</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-white/[0.04] text-xs">
@@ -2780,49 +1898,39 @@
                   <!-- ISHOMA / Break Banner Row -->
                   <tr class="bg-amber-500/[0.04] hover:bg-amber-500/[0.07] transition group">
                     <td class="py-3 px-4 align-middle">
-                      {#if isEditMode}
-                        <input
-                          type="text"
-                          bind:value={row.time_label}
-                          onchange={markDirty}
-                          placeholder="Waktu break"
-                          class="w-full bg-[#14161b] text-amber-300 font-mono text-xs px-2.5 py-1.5 rounded-lg border border-amber-500/20 outline-none"
-                        />
-                      {:else}
-                        <span class="font-mono text-xs text-amber-300">{row.time_label || "—"}</span>
-                      {/if}
+                      <input
+                        type="text"
+                        bind:value={row.time_label}
+                        onchange={markDirty}
+                        placeholder="Waktu break"
+                        class="w-full bg-[#14161b] text-amber-300 font-mono text-xs px-2.5 py-1.5 rounded-lg border border-amber-500/20 outline-none"
+                      />
                     </td>
                     <td colspan={tatamis.length} class="py-3 px-4 align-middle border-l border-white/[0.06]">
                       <div class="flex items-center space-x-2">
                         <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">BREAK</span>
-                        {#if isEditMode}
-                          <input
-                            type="text"
-                            bind:value={row.label_text}
-                            onchange={markDirty}
-                            placeholder="Keterangan Break / Upacara"
-                            class="flex-1 bg-[#14161b] text-amber-200 font-bold text-xs px-3 py-1.5 rounded-lg border border-amber-500/20 outline-none uppercase"
-                          />
-                        {:else}
-                          <span class="text-amber-200 font-bold text-xs uppercase">{row.label_text || "ISTIRAHAT"}</span>
-                        {/if}
+                        <input
+                          type="text"
+                          bind:value={row.label_text}
+                          onchange={markDirty}
+                          placeholder="Keterangan Break / Upacara"
+                          class="flex-1 bg-[#14161b] text-amber-200 font-bold text-xs px-3 py-1.5 rounded-lg border border-amber-500/20 outline-none uppercase"
+                        />
                       </div>
                     </td>
-                    {#if isEditMode}
-                      <td class="py-3 px-3 text-center align-middle border-l border-white/[0.06]">
-                        <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
-                          <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
-                          </button>
-                          <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Bawah">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                          </button>
-                          <button onclick={() => deleteRow(rIdx)} class="p-1 text-zinc-500 hover:text-rose-400" title="Hapus Baris">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                          </button>
-                        </div>
-                      </td>
-                    {/if}
+                    <td class="py-3 px-3 text-center align-middle border-l border-white/[0.06]">
+                      <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
+                        <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+                        </button>
+                        <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Bawah">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <button onclick={() => deleteRow(rIdx)} class="p-1 text-zinc-500 hover:text-rose-400" title="Hapus Baris">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 {:else}
                   <!-- Slot Row -->
@@ -2833,18 +1941,14 @@
                         <span class="text-xs font-mono font-bold text-zinc-300 block px-0.5">
                           Sesi <span class="tabular-nums">#{rIdx + 1}</span>
                         </span>
-                        {#if isEditMode}
-                          <input
-                            type="text"
-                            bind:value={row.time_label}
-                            onchange={markDirty}
-                            placeholder="Catatan (opsional)"
-                            title="Label bebas untuk sesi ini. Jam mulai tiap kategori dihitung otomatis."
-                            class="w-full bg-[#14161b] text-zinc-200 font-mono text-[11px] px-2 py-1 rounded-lg border border-white/[0.08] focus:border-white/30 outline-none placeholder:text-zinc-600"
-                          />
-                        {:else if row.time_label && !/^Sesi\s*\d+$/i.test(row.time_label.trim())}
-                          <span class="text-[11px] font-mono text-zinc-500 block px-0.5">{row.time_label}</span>
-                        {/if}
+                        <input
+                          type="text"
+                          bind:value={row.time_label}
+                          onchange={markDirty}
+                          placeholder="Catatan (opsional)"
+                          title="Label bebas untuk sesi ini. Jam mulai tiap kategori dihitung otomatis."
+                          class="w-full bg-[#14161b] text-zinc-200 font-mono text-[11px] px-2 py-1 rounded-lg border border-white/[0.08] focus:border-white/30 outline-none placeholder:text-zinc-600"
+                        />
                         {#if row.conflicts.length > 0}
                           <button
                             onclick={() => {
@@ -2893,30 +1997,28 @@
                                 {/if}
                               </div>
 
-                              {#if isEditMode}
-                              <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
-                                <button
-                                  onclick={() => startMove(rIdx, tatami.id)}
-                                  class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
-                                  title="Pindah / tukar ke sel lain"
-                                  aria-label="Pindah atau tukar kategori ini"
-                                >
-                                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-                                  </svg>
-                                </button>
-                                <button
-                                  onclick={() => clearCell(rIdx, tatami.id)}
-                                  class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
-                                  title="Hapus Dari Tatami"
-                                  aria-label="Hapus kategori dari tatami"
-                                >
-                                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </button>
-                              </div>
-                              {/if}
+                            <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
+                              <button
+                                onclick={() => startMove(rIdx, tatami.id)}
+                                class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
+                                title="Pindah / tukar ke sel lain"
+                                aria-label="Pindah atau tukar kategori ini"
+                              >
+                                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                                </svg>
+                              </button>
+                              <button
+                                onclick={() => clearCell(rIdx, tatami.id)}
+                                class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
+                                title="Hapus Dari Tatami"
+                                aria-label="Hapus kategori dari tatami"
+                              >
+                                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            </div>
                             </div>
 
                             <div class="font-bold text-white text-xs leading-snug line-clamp-2">
@@ -2941,98 +2043,94 @@
                             {/if}
                           </div>
                         {:else if cell && cell.custom_text}
+                          {@const festCard = isFestivalSessionCell(cell)}
                           <!-- Custom Text Card -->
-                          <div class="bg-[#14161b] border border-amber-500/20 rounded-xl p-2.5 relative group/cell hover:border-amber-500/40 transition">
+                          <div class="rounded-xl p-2.5 relative group/cell transition {festCard ? 'bg-emerald-500/[0.12] border border-emerald-500/40 hover:border-emerald-400/70' : 'bg-[#14161b] border border-amber-500/20 hover:border-amber-500/40'}">
                             <div class="flex items-center justify-between mb-1">
-                              <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">
-                                {cell.is_festival ? 'FESTIVAL' : cell.is_break ? 'BREAK' : 'CATATAN'}
+                              <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold {festCard ? 'bg-emerald-500/25 text-emerald-200' : 'bg-amber-500/20 text-amber-300'}">
+                                {cell.is_festival ? 'FESTIVAL' : isJedaText(cell.custom_text) ? 'JEDA' : cell.is_break ? 'ISTIRAHAT' : 'CATATAN'}
                               </span>
-                              {#if isEditMode}
-                                <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
-                                  <button
-                                    onclick={() => startMove(rIdx, tatami.id)}
-                                    class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
-                                    title="Pindah / tukar ke sel lain"
-                                    aria-label="Pindah atau tukar isi sel ini"
-                                  >
-                                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    onclick={() => clearCell(rIdx, tatami.id)}
-                                    class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
-                                    title="Hapus Dari Tatami"
-                                    aria-label="Hapus isi sel"
-                                  >
-                                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                                    </svg>
-                                  </button>
-                                </div>
-                              {/if}
+                              <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
+                                <button
+                                  onclick={() => startMove(rIdx, tatami.id)}
+                                  class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
+                                  title="Pindah / tukar ke sel lain"
+                                  aria-label="Pindah atau tukar isi sel ini"
+                                >
+                                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+                                  </svg>
+                                </button>
+                                <button
+                                  onclick={() => clearCell(rIdx, tatami.id)}
+                                  class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
+                                  title="Hapus Dari Tatami"
+                                  aria-label="Hapus isi sel"
+                                >
+                                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
                             </div>
-                            <div class="font-bold text-amber-200 text-xs line-clamp-2">
-                              {cell.custom_text}
-                            </div>
+                            {#if festCard}
+                              <div class="font-black text-emerald-100 text-sm tracking-wide">FESTIVAL</div>
+                              <div class="mt-1 text-[10px] font-mono text-emerald-300/80">
+                                {customTextAthletes(cell.custom_text)} Atlet • {customTextMatches(cell.custom_text)} Partai • {customTextMinutes(cell.custom_text)}m
+                              </div>
+                            {:else}
+                              <div class="font-bold text-amber-200 text-xs line-clamp-2">
+                                {cell.custom_text}
+                              </div>
+                            {/if}
                             {#if time}
-                              <div class="mt-1.5 text-[10px] font-mono tabular-nums text-amber-300/70">{time.start}–{time.end}</div>
+                              <div class="mt-1.5 text-[10px] font-mono tabular-nums {festCard ? 'text-emerald-300/70' : 'text-amber-300/70'}">{time.start}–{time.end}</div>
                             {/if}
                           </div>
                         {:else}
                           <!-- Empty Placeholder -->
-                          {#if isEditMode}
-                            <button
-                              type="button"
-                              onclick={() => openPicker(rIdx, tatami.id)}
-                              class="w-full h-18 rounded-xl border border-dashed border-white/[0.1] hover:border-white/30 hover:bg-white/[0.03] text-zinc-500 hover:text-zinc-200 transition flex items-center justify-center text-[11px] font-semibold"
-                            >
-                              + Pilih kategori
-                            </button>
-                          {:else}
-                            <div class="w-full h-12 rounded-xl border border-white/[0.04] bg-white/[0.01] flex items-center justify-center text-zinc-600 font-mono text-xs">
-                              —
-                            </div>
-                          {/if}
+                          <button
+                            type="button"
+                            onclick={() => openPicker(rIdx, tatami.id)}
+                            class="w-full h-18 rounded-xl border border-dashed border-white/[0.1] hover:border-white/30 hover:bg-white/[0.03] text-zinc-500 hover:text-zinc-200 transition flex items-center justify-center text-[11px] font-semibold"
+                          >
+                            + Pilih kategori
+                          </button>
                         {/if}
                       </td>
                     {/each}
 
                     <!-- Row Actions (Only in Edit Mode) -->
-                    {#if isEditMode}
-                      <td class="py-3 px-2 text-center align-top border-l border-white/[0.06]">
-                        <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
-                          <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
-                          </button>
-                          <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Bawah">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                          </button>
-                          <button onclick={() => insertSlotRowAfter(rIdx)} class="p-1 text-zinc-400 hover:text-emerald-300" title="Sisipkan sesi kosong di bawah" aria-label="Sisipkan sesi kosong di bawah">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
-                          </button>
-                          <button onclick={() => deleteRow(rIdx)} class="p-1 text-zinc-500 hover:text-rose-400" title="Hapus Baris">
-                            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                          </button>
-                        </div>
-                      </td>
-                    {/if}
+                    <td class="py-3 px-2 text-center align-top border-l border-white/[0.06]">
+                      <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
+                        <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+                        </button>
+                        <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Bawah">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                        </button>
+                        <button onclick={() => insertSlotRowAfter(rIdx)} class="p-1 text-zinc-400 hover:text-emerald-300" title="Sisipkan sesi kosong di bawah" aria-label="Sisipkan sesi kosong di bawah">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
+                        </button>
+                        <button onclick={() => deleteRow(rIdx)} class="p-1 text-zinc-500 hover:text-rose-400" title="Hapus Baris">
+                          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 {/if}
               {/each}
             </tbody>
           </table>
-          {#if isEditMode}
-            <div class="p-3 border-t border-white/[0.06]">
-              <button
-                type="button"
-                onclick={addSlotRow}
-                class="w-full py-2 rounded-xl border border-dashed border-white/[0.12] text-zinc-400 hover:text-white hover:border-white/30 hover:bg-white/[0.03] text-xs font-semibold transition"
-              >
-                + Tambah sesi di akhir hari
-              </button>
-            </div>
-          {/if}
+          <div class="p-3 border-t border-white/[0.06]">
+            <button
+              type="button"
+              onclick={addSlotRow}
+              class="w-full py-2 rounded-xl border border-dashed border-white/[0.12] text-zinc-400 hover:text-white hover:border-white/30 hover:bg-white/[0.03] text-xs font-semibold transition"
+            >
+              + Tambah sesi di akhir hari
+            </button>
+          </div>
         {/if}
       </div>
     </div>
@@ -3128,7 +2226,7 @@
           <input
             id="auto-start-time-input"
             type="time"
-            bind:value={autoStartTime}
+            bind:value={startTimeStr}
             class="w-full bg-[#14161b] text-white text-xs px-3 py-2 rounded-xl border border-white/10 outline-none"
           />
         </div>
@@ -3138,8 +2236,12 @@
           <label class="flex items-start space-x-2.5 cursor-pointer">
             <input type="checkbox" bind:checked={autoOverwriteExisting} class="rounded accent-amber-500 mt-0.5" />
             <div>
-              <span class="text-xs font-semibold text-white block">Timpa / Reset Jadwal Hari Ini</span>
-              <span class="text-[10px] text-zinc-400 font-mono block mt-0.5">Jadwalkan ulang seluruh kategori dari awal (menimpa slot kategori yang sudah ada).</span>
+              <span class="text-xs font-semibold text-white block">Susun Ulang Hari Ini</span>
+              <span class="text-[10px] text-zinc-400 font-mono block mt-0.5">
+                {autoOverwriteExisting
+                  ? "Seluruh isi hari ini diganti. Kategori di hari lain tidak dipindah."
+                  : "Isi hari ini dipertahankan; kategori yang belum terjadwal ditambahkan di bawahnya."}
+              </span>
             </div>
           </label>
         </div>
@@ -3148,9 +2250,15 @@
         <div class="p-3 rounded-xl bg-[#14161b] border border-white/[0.06] space-y-2">
           <label class="flex items-center space-x-2 cursor-pointer">
             <input type="checkbox" bind:checked={autoIncludeFestival} class="rounded accent-amber-500" />
-            <span class="text-xs font-semibold text-white">Sertakan Sesi Festival Serentak di Tatami</span>
+            <span class="text-xs font-semibold text-white">
+              {festivalSession
+                ? "Sertakan Sesi FESTIVAL (1 sesi per tatami, dari roster festival)"
+                : hasFestivalCategories
+                  ? "Sertakan Kategori Festival"
+                  : "Sertakan Sesi Festival Serentak di Tatami"}
+            </span>
           </label>
-          {#if autoIncludeFestival}
+          {#if autoIncludeFestival && !hasFestivalCategories && !festivalSession}
             <div class="pl-6">
               <label for="auto-festival-dur-select" class="block text-[10px] font-mono text-zinc-400 mb-1">Durasi Sesi Festival (Menit):</label>
               <select
@@ -3180,7 +2288,7 @@
           <div class="p-3 rounded-xl bg-[#14161b] border border-white/[0.06]">
             <label class="flex items-center space-x-2 cursor-pointer">
               <input type="checkbox" bind:checked={autoEqualMatches} class="rounded accent-amber-500" />
-              <span class="text-xs font-semibold text-white">Partai Sama Rata Tiap Arena</span>
+              <span class="text-xs font-semibold text-white">Ratakan Jam Selesai Antar Tatami</span>
             </label>
           </div>
           <div class="p-3 rounded-xl bg-[#14161b] border border-white/[0.06]">
@@ -3199,11 +2307,9 @@
             bind:value={autoSortMode}
             class="w-full bg-[#14161b] text-xs text-white px-3 py-2 rounded-xl border border-white/10 outline-none"
           >
-            <option value="wkf_standard">Standar WKF: Usia Rendah ke Besar, Kata Perorangan/Beregu ke Kumite Perorangan/Beregu</option>
-            <option value="kata_first">Kata Dahulu, Lalu Kumite</option>
-            <option value="age_asc">Urut Usia: Usia Dini ke Senior</option>
-            <option value="age_desc">Urut Usia: Senior ke Usia Dini</option>
-            <option value="balanced">Beban Merata Antar Arena</option>
+            {#each AUTO_SORT_MODES as m}
+              <option value={m.value}>{m.label}</option>
+            {/each}
           </select>
         </div>
 
@@ -3384,9 +2490,16 @@
 <!-- Printable Document Views (Simple Roster, Call Sheet, Booklet) -->
   <div class="print-overlay-wrapper fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-6 select-text text-black">
     <!-- Screen-Only Toolbar -->
-    <div class="no-print mb-4 pb-3 border-b border-white/10 flex items-center justify-between text-zinc-200 max-w-5xl mx-auto w-full">
+    <div class="no-print mb-4 pb-3 border-b border-white/10 flex items-center justify-between text-zinc-200 mx-auto w-full {printMode === 'simple_roster' ? 'max-w-[210mm]' : 'max-w-5xl'}">
       <div class="flex items-center space-x-3">
-        <h3 class="text-sm font-bold text-white uppercase tracking-tight">Pratinjau Dokumen Siap Cetak</h3>
+        <h3 class="text-sm font-black text-white uppercase tracking-tight">
+          {printMode === "simple_roster" ? "Cetak Roster" : "Pratinjau Dokumen Siap Cetak"}
+        </h3>
+        {#if printMode === "simple_roster"}
+          <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
+            A4 PORTRAIT{rosterFitZoom < 1 ? ` • DIPERKECIL ${Math.round(rosterFitZoom * 100)}%` : ""}
+          </span>
+        {/if}
         {#if printMode === "booklet" && tatamiBookletData}
           <span class="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">
             TATAMI {tatamiBookletData.tatami_number} • {2 + tatamiBookletData.ordered_categories.filter((c) => c.bagan_id && c.matches && c.matches.length > 0).length} HALAMAN (A4 LANDSCAPE)
@@ -3409,62 +2522,44 @@
           </div>
         {/if}
 
-        {#if printMode === "booklet"}
-          <!-- Option: Ringkas Babak BYE vs Bagan Penuh -->
-          <div class="flex items-center bg-white/[0.04] p-1 rounded-xl border border-white/10 space-x-1">
-            <button
-              type="button"
-              onclick={() => (bookletPruneEmptyRounds = true)}
-              class="px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 {bookletPruneEmptyRounds ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-white/[0.08]'}"
-              title="Sembunyikan babak awal yang 100% BYE (misal langsung mulai dari Semi Final)"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              <span>Ringkas (Tanpa BYE)</span>
-            </button>
-            <button
-              type="button"
-              onclick={() => (bookletPruneEmptyRounds = false)}
-              class="px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 {!bookletPruneEmptyRounds ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-white hover:bg-white/[0.08]'}"
-              title="Tampilkan seluruh babak bagan penuh termasuk babak yang seluruhnya BYE"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-              <span>Bagan Penuh</span>
-            </button>
-          </div>
-        {/if}
-
+        <button
+          onclick={() => (printMode = "none")}
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
+        >
+          Tutup
+        </button>
         <button
           onclick={triggerPrint}
-          class="h-9 px-4 bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs rounded-xl shadow-md flex items-center space-x-1.5 transition active:scale-95"
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md flex items-center space-x-1.5"
         >
-          <svg class="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
           </svg>
           <span>Cetak / Simpan PDF</span>
-        </button>
-        <button
-          onclick={() => (printMode = "none")}
-          class="h-9 px-3.5 bg-white/[0.08] hover:bg-white/[0.15] text-zinc-300 font-semibold text-xs rounded-xl transition"
-        >
-          Tutup
         </button>
       </div>
     </div>
 
     <!-- Print Paper Page Container (White Paper A4 Landscape) -->
-    <div class="max-w-5xl mx-auto w-full print-page-box {printMode === 'booklet' ? 'booklet-preview-container' : 'bg-white p-6 shadow-2xl rounded-lg text-black font-sans'}">
+    <div class="print-page-box {printMode === 'simple_roster' ? 'roster-a4-sheet' : printMode === 'booklet' ? 'max-w-5xl mx-auto w-full booklet-preview-container' : 'max-w-5xl mx-auto w-full bg-white p-6 shadow-2xl rounded-lg text-black font-sans'}">
       {#if printMode === "simple_roster" && activeDay}
         <!-- Simple 1-Page Synchronized Roster Table (1:1 Ambrilindo Local Spec) -->
-        <div class="simple-roster-page {simpleRosterDensityClass}">
+        <div
+          class="simple-roster-page {simpleRosterDensityClass}"
+          bind:this={rosterPageEl}
+          style="zoom: {rosterFitZoom}; height: {100 / rosterFitZoom}%;"
+        >
           <!-- Kop Surat -->
           <div class="simple-roster-header">
             <div class="simple-roster-kop-left">
-              {#if kopLogo}
-                <img src={kopLogo} class="simple-roster-logo" alt="Logo Event" />
+              {#if kopLogo && !kopLogoFailed}
+                <img src={kopLogo} class="simple-roster-logo" alt="" onerror={() => (kopLogoFailed = true)} />
+              {:else}
+                <div class="simple-roster-brand-logos">
+                  <img src={FORKI_LOGO_DATA_URL} alt="FORKI" class="brand-logo-forki" />
+                  <span class="brand-logo-divider"></span>
+                  <img src={AMBRILINDO_LOGO_DATA_URL} alt="Ambrilindo" class="brand-logo-ambrilindo" />
+                </div>
               {/if}
               <div class="simple-roster-org-info">
                 <h3 class="simple-roster-org-name">{kopNama || eventName}</h3>
@@ -3486,13 +2581,6 @@
 
           <!-- Day Section -->
           <div class="simple-roster-day-section">
-            <div class="simple-roster-day-bar">
-              <span class="day-bar-title">{activeDay.label}</span>
-              {#if activeDay.tanggal}
-                <span class="day-bar-date">{activeDay.tanggal}</span>
-              {/if}
-            </div>
-
             <!-- Synchronized Run Sheet Table -->
             <table class="simple-roster-table">
               <thead>
@@ -3544,9 +2632,9 @@
                             <td class="roster-match-cell {isFest ? 'is-festival' : ''}">
                               <div class="roster-item-line">
                                 <span class="roster-num-badge">#{seq}</span>
-                                <span class="roster-item-title">{cell.custom_text}</span>
-                                {#if cell.atlet_count > 0}
-                                  <span class="roster-atlet-count">({cell.atlet_count})</span>
+                                <span class="roster-item-title">{textCellTitle(cell)}</span>
+                                {#if textCellAthletes(cell) > 0}
+                                  <span class="roster-atlet-count">({textCellAthletes(cell)})</span>
                                 {/if}
                               </div>
                             </td>
@@ -3636,19 +2724,21 @@
                   <div class="detailed-col-body">
                     {#each activeDay.rows as row, rIdx}
                       {#if row.row_type === "label"}
+                        {@const win = labelRowWindow(row)}
                         <div class="detailed-card is-break">
                           <div class="detailed-time">
-                            {row.time_label || "12:00 - 13:00"} <span class="detailed-dur">(60 menit)</span>
+                            {row.time_label || "12:00 - 13:00"} <span class="detailed-dur">({win.end - win.start} menit)</span>
                           </div>
                           <div class="detailed-title">{row.label_text || "ISHOMA / ISTIRAHAT SIANG"}</div>
                         </div>
                       {:else}
                         {@const cell = row.cells.find((c) => c.tatami_id === t.id)}
+                        {@const time = cellTimes[`${rIdx}:${t.id}`]}
                         {#if cell && cell.nomor_tanding_id}
                           {@const seq = getTatamiCellSeq(t.id, rIdx)}
                           <div class="detailed-card">
                             <div class="detailed-time">
-                              {row.time_label || `Sesi ${rIdx + 1}`} <span class="detailed-dur">({cell.est_duration_minutes || 15} menit)</span>
+                              {time ? `${time.start}–${time.end}` : `Sesi ${rIdx + 1}`} <span class="detailed-dur">({time?.minutes ?? cell.est_duration_minutes} menit)</span>
                             </div>
                             <div class="detailed-title">
                               <span class="roster-num-badge">#{seq}</span>
@@ -3660,11 +2750,11 @@
                           {@const seq = getTatamiCellSeq(t.id, rIdx)}
                           <div class="detailed-card {isFest ? 'is-festival' : ''}">
                             <div class="detailed-time">
-                              {row.time_label || `Sesi ${rIdx + 1}`} <span class="detailed-dur">({cell.est_duration_minutes || 45} menit)</span>
+                              {time ? `${time.start}–${time.end}` : `Sesi ${rIdx + 1}`} <span class="detailed-dur">({time?.minutes ?? 0} menit)</span>
                             </div>
                             <div class="detailed-title">
                               <span class="roster-num-badge">#{seq}</span>
-                              {cell.custom_text}
+                              {textCellTitle(cell)}
                             </div>
                           </div>
                         {/if}
@@ -3855,10 +2945,10 @@
                                       <div class="roster-item-line">
                                         <span class="roster-num-badge">#{seq}</span>
                                         <span class="roster-item-title">
-                                          {isFest ? '🥊 ' : ''}{cell.custom_text}
+                                          {isFest ? '🥊 ' : ''}{textCellTitle(cell)}
                                         </span>
-                                        {#if cell.atlet_count > 0}
-                                          <span class="roster-atlet-count">({cell.atlet_count})</span>
+                                        {#if textCellAthletes(cell) > 0}
+                                          <span class="roster-atlet-count">({textCellAthletes(cell)})</span>
                                         {/if}
                                       </div>
                                     </td>
@@ -3906,190 +2996,30 @@
 
           <!-- ================= HALAMAN 3+: BAGAN-BAGAN PERTANDINGAN TERJADWAL ================= -->
           {#each tatamiBookletData.ordered_categories.filter((c) => c.bagan_id && c.matches && c.matches.length > 0) as bCat, bIdx}
-            {@const roundMap = groupMatchesByRound(bCat.matches, bookletPruneEmptyRounds)}
-            {@const sortedRounds = Array.from(roundMap.keys()).sort((a, b) => a - b)}
-            {@const totalRounds = sortedRounds.length}
-            {@const subParts = [
-              tatamiBookletData.event_name,
-              venueLine1 || 'Samarinda',
-              tatamiBookletData.day_date || activeDay?.tanggal || eventDateRangeStr
-            ].filter(Boolean)}
+            {@const bName = bCat.bagan_nama || bCat.category_name}
+            {@const bMeta = deriveBracketMeta(bName, bCat.bagan_pool)}
             <div class="booklet-page booklet-bracket-page">
               <div class="booklet-page-label-bar no-print">
                 <span>Halaman {bIdx + 3} • Bagan {bIdx + 1}/{tatamiBookletData.ordered_categories.filter((c) => c.bagan_id && c.matches && c.matches.length > 0).length}: ({bCat.bagan_kode || bCat.category_id}) {bCat.category_name}</span>
               </div>
-              <div class="bracket-page-container">
-                <!-- 1. Print Header -->
-                <div class="bracket-print-header">
-                  <div class="bracket-print-logo-left">
-                    <img
-                      src={bookletLogoMap[tatamiBookletData.kop_surat?.logo || ""] || tatamiBookletData.kop_surat?.logo || kopLogo || "/img/cover/wkf_logo.png"}
-                      alt="Logo Event"
-                      onerror={(e) => { (e.currentTarget as HTMLImageElement).src = '/img/cover/wkf_logo.png'; }}
-                    />
-                  </div>
-                  <div class="bracket-print-title">
-                    <h2>({bCat.bagan_kode || bCat.category_id}) {bCat.category_name}</h2>
-                    <p><i class="fas fa-trophy"></i> {subParts.join(' • ')}</p>
-                  </div>
-                  <div class="bracket-print-spacer"></div>
-                </div>
-
-                <!-- 2. Elimination Grid with exact geometry -->
-                <div class="bracket-scroll-viewport">
-                  <div class="bracket-outer booklet-bracket-outer" id="bracket-outer-{bCat.category_id}">
-                    <svg class="bracket-svg"></svg>
-                    <div class="bracket-grid rounds-{sortedRounds.length} {sortedRounds.length === 1 ? 'is-single-round' : ''}">
-                      {#each sortedRounds as rNum, rIdx}
-                        {@const isFinalRound = (rIdx === sortedRounds.length - 1)}
-                        {@const rMatches = roundMap.get(rNum) || []}
-                        <div class="round-col {isFinalRound ? 'is-final' : ''}" data-round={rNum}>
-                          <div class="round-label {isFinalRound ? 'text-amber-800' : ''}">
-                            <span class="round-step {isFinalRound ? 'is-final-step' : ''}">
-                              {getRoundStepBadge(rIdx, totalRounds)}
-                            </span>
-                            <span>{getRoundTitleText(rIdx, totalRounds)}</span>
-                          </div>
-                          <div class="round-matches">
-                            {#each rMatches as m, mIdx}
-                              <div class="match {isFinalRound ? 'is-final-card' : ''}" data-id="r{rNum}m{m.urutan || mIdx + 1}">
-                                <div class="match-header">
-                                  <span class="match-num">{formatMatchTitle(rIdx, totalRounds, m, mIdx)}</span>
-                                </div>
-
-                                <!-- AKA row -->
-                                <div class="player player-aka {m.pemenang === '1' ? 'is-winner' : ''}">
-                                  <div class="player-side aka" title="Aka">Aka</div>
-                                  {#if m.atlet1_logo}
-                                    <img src={bookletLogoMap[m.atlet1_logo] || m.atlet1_logo} class="player-dojo-logo" alt="Logo Dojo" />
-                                  {/if}
-                                  <div class="player-info">
-                                    <div class="player-name {!m.atlet1_nama ? 'empty' : ''}">
-                                      <span>
-                                        {#if m.pemenang === '1'}<span class="winner-crown" title="Pemenang">👑</span>{/if}
-                                        {#if m.atlet1_is_priority}<span class="priority-star" title="Unggulan">★</span>{/if}
-                                        {m.atlet1_nama || 'BYE'}
-                                      </span>
-                                      {#if m.vr1}
-                                        <span class="meta-vr-badge aka">VR</span>
-                                      {/if}
-                                    </div>
-                                    <div class="player-sub">
-                                      {m.atlet1_kontingen || (m.atlet1_nama ? '-' : '—')}
-                                    </div>
-                                    {#if m.selesai && m.kata1 && m.kata1 !== '0 - Blank'}
-                                      <div class="player-meta-extra">
-                                        <span class="meta-kata aka">{m.kata1}</span>
-                                      </div>
-                                    {/if}
-                                  </div>
-                                  <div class="player-score-wrap">
-                                    <div class="player-score">{m.score1 ?? '-'}</div>
-                                    {#if m.scorekecil1}
-                                      <span class="player-score-small">({m.scorekecil1})</span>
-                                    {/if}
-                                  </div>
-                                </div>
-
-                                <!-- AO row -->
-                                <div class="player player-ao {m.pemenang === '2' ? 'is-winner' : ''}">
-                                  <div class="player-side ao" title="Ao">Ao</div>
-                                  {#if m.atlet2_logo}
-                                    <img src={bookletLogoMap[m.atlet2_logo] || m.atlet2_logo} class="player-dojo-logo" alt="Logo Dojo" />
-                                  {/if}
-                                  <div class="player-info">
-                                    <div class="player-name {!m.atlet2_nama ? 'empty' : ''}">
-                                      <span>
-                                        {#if m.pemenang === '2'}<span class="winner-crown" title="Pemenang">👑</span>{/if}
-                                        {#if m.atlet2_is_priority}<span class="priority-star" title="Unggulan">★</span>{/if}
-                                        {m.atlet2_nama || 'BYE'}
-                                      </span>
-                                      {#if m.vr2}
-                                        <span class="meta-vr-badge ao">VR</span>
-                                      {/if}
-                                    </div>
-                                    <div class="player-sub">
-                                      {m.atlet2_kontingen || (m.atlet2_nama ? '-' : '—')}
-                                    </div>
-                                    {#if m.selesai && m.kata2 && m.kata2 !== '0 - Blank'}
-                                      <div class="player-meta-extra">
-                                        <span class="meta-kata ao">{m.kata2}</span>
-                                      </div>
-                                    {/if}
-                                  </div>
-                                  <div class="player-score-wrap">
-                                    <div class="player-score">{m.score2 ?? '-'}</div>
-                                    {#if m.scorekecil2}
-                                      <span class="player-score-small">({m.scorekecil2})</span>
-                                    {/if}
-                                  </div>
-                                </div>
-                              </div>
-                            {/each}
-                          </div>
-
-                          <!-- Column 4 / Final Column: Absolute Bottom Right Podium Card + Logo -->
-                          {#if isFinalRound}
-                            {@const w1 = bCat.winners.find((w) => w.juara === '1')}
-                            {@const w2 = bCat.winners.find((w) => w.juara === '2')}
-                            {@const w3a = bCat.winners.find((w) => w.juara === '3a' || (w.juara === '3' && w !== w1 && w !== w2))}
-                            {@const w3b = bCat.winners.find((w) => w.juara === '3b' || (w.juara === '3' && w !== w1 && w !== w2 && w !== w3a))}
-                            <div class="cal-final-podium-wrap">
-                              <div class="cal-podium-brand">
-                                <img src="/img/ambrilindo-logo.png" class="podium-brand-logo" alt="Ambrilindo" />
-                              </div>
-                              <div class="cal-podium-card">
-                                <div class="cal-podium-header">
-                                  <div class="cal-podium-header-title">
-                                    <i class="fas fa-award text-warning"></i>
-                                    <span>Hasil Juara</span>
-                                  </div>
-                                </div>
-                                <div class="cal-podium-body">
-                                  <!-- Juara 1 -->
-                                  <div class="cal-podium-row">
-                                    <div class="cal-podium-rank"><span class="medal gold">1</span></div>
-                                    <div class="cal-podium-meta">
-                                      <div class="cal-podium-name">{w1?.nama_atlet || 'Belum Ditentukan'}</div>
-                                      <div class="cal-podium-sub">{w1 ? (w1.perguruan_nama || w1.utusan_nama || '-') : '—'}</div>
-                                    </div>
-                                  </div>
-
-                                  <!-- Juara 2 -->
-                                  <div class="cal-podium-row">
-                                    <div class="cal-podium-rank"><span class="medal silver">2</span></div>
-                                    <div class="cal-podium-meta">
-                                      <div class="cal-podium-name">{w2?.nama_atlet || 'Belum Ditentukan'}</div>
-                                      <div class="cal-podium-sub">{w2 ? (w2.perguruan_nama || w2.utusan_nama || '-') : '—'}</div>
-                                    </div>
-                                  </div>
-
-                                  <!-- Juara 3A -->
-                                  <div class="cal-podium-row">
-                                    <div class="cal-podium-rank"><span class="medal bronze">3</span></div>
-                                    <div class="cal-podium-meta">
-                                      <div class="cal-podium-name">{w3a?.nama_atlet || 'Belum Ditentukan'}</div>
-                                      <div class="cal-podium-sub">{w3a ? (w3a.perguruan_nama || w3a.utusan_nama || '-') : '—'}</div>
-                                    </div>
-                                  </div>
-
-                                  <!-- Juara 3B -->
-                                  <div class="cal-podium-row">
-                                    <div class="cal-podium-rank"><span class="medal bronze">3</span></div>
-                                    <div class="cal-podium-meta">
-                                      <div class="cal-podium-name">{w3b?.nama_atlet || 'Belum Ditentukan'}</div>
-                                      <div class="cal-podium-sub">{w3b ? (w3b.perguruan_nama || w3b.utusan_nama || '-') : '—'}</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          {/if}
-                        </div>
-                      {/each}
-                    </div>
-                  </div>
-                </div>
+              <!-- Same page as printing from the bagan channel (BracketPaperPage). -->
+              <div class="bracket-page-container bracket-page-paper">
+                <BracketPaperPage
+                  kind={isFestivalName(bName) ? "festival" : "elim"}
+                  matches={bCat.matches}
+                  categoryName={bName}
+                  baganKode={bCat.bagan_kode}
+                  eventName={tatamiBookletData.event_name}
+                  eventVenue={venueLine1}
+                  eventDate={tatamiBookletData.day_date || activeDay?.tanggal || eventDateRangeStr}
+                  logoMap={bookletLogoMap}
+                  meta={bMeta}
+                  podium={computePodium(bCat.matches, bMeta, winnersToPodium(bCat.winners))}
+                  festivalGroupCount={bCat.bagan_pool ?? 0}
+                  festivalLayout={bCat.bagan_layout_type}
+                  widthMm={262}
+                  heightMm={184}
+                />
               </div>
             </div>
           {/each}
@@ -4242,6 +3172,107 @@
     color: #0f172a !important;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     page-break-inside: avoid;
+  }
+
+  /* A4 portrait sheet for "Roster 1 halaman": 210 x 297 mm with the 6 mm print margin,
+     so the preview is the printed page. The roster fills the 198 x 285 mm content box. */
+  .roster-a4-sheet {
+    width: 210mm;
+    height: 297mm;
+    padding: 6mm;
+    margin: 0 auto;
+    box-sizing: border-box;
+    background: #ffffff;
+    color: #0f172a;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.45);
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .roster-a4-sheet .simple-roster-page {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+  }
+  /* Compact roster: rows as tall as their text plus a little breathing room; large bold text. */
+  .roster-a4-sheet .simple-roster-day-section {
+    margin-bottom: 0;
+  }
+  .roster-a4-sheet .simple-roster-bottom-section {
+    margin-top: 4px;
+  }
+  .roster-a4-sheet .simple-roster-table th {
+    padding: 3px 4px;
+    font-size: 11px;
+    font-weight: 900;
+    line-height: 1.15;
+  }
+  .roster-a4-sheet .simple-roster-table th .th-sub {
+    font-size: 8.5px;
+    font-weight: 700;
+  }
+  .roster-a4-sheet .simple-roster-page td.roster-match-cell {
+    padding: 3px 4px;
+    font-size: 10.5px;
+    line-height: 1.2;
+    vertical-align: middle;
+  }
+  .roster-a4-sheet .roster-item-line {
+    gap: 4px;
+    align-items: center;
+    line-height: 1.2;
+  }
+  .roster-a4-sheet .roster-item-title {
+    font-weight: 800;
+    margin-top: 0;
+    line-height: 1.2;
+  }
+  .roster-a4-sheet .roster-atlet-count {
+    font-weight: 800;
+    margin-top: 0;
+    line-height: 1.2;
+    align-self: center;
+  }
+  .roster-a4-sheet .roster-num-badge {
+    min-width: 18px;
+    margin-top: 0;
+    padding: 1px 3px;
+    font-size: 9px;
+    font-weight: 900;
+    border-radius: 2px;
+    line-height: 1.15;
+  }
+  .roster-a4-sheet .roster-match-cell.is-empty {
+    font-size: 9px;
+  }
+  .roster-a4-sheet .roster-ishoma-cell {
+    padding: 2px 4px !important;
+  }
+  .roster-a4-sheet .roster-ishoma-bar {
+    font-size: 10px;
+  }
+  .simple-roster-brand-logos {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+  }
+  .brand-logo-forki {
+    height: 36px;
+    width: auto;
+    max-width: 40px;
+    object-fit: contain;
+  }
+  .brand-logo-divider {
+    width: 1.2px;
+    height: 26px;
+    background: #cbd5e1;
+  }
+  .brand-logo-ambrilindo {
+    height: 20px;
+    width: auto;
+    max-width: 100px;
+    object-fit: contain;
   }
 
   /* Kop Surat in Simple Roster */
@@ -4448,15 +3479,17 @@
 
   /* Festival Session */
   .roster-match-cell.is-festival {
-    background: #fef9c3 !important;
-    border-color: #fde047 !important;
+    background: #dcfce7 !important;
+    border-color: #86efac !important;
   }
   .roster-match-cell.is-festival .roster-item-title {
-    color: #854d0e !important;
+    color: #14532d !important;
+    font-weight: 900 !important;
+    letter-spacing: 0.04em;
   }
   .roster-match-cell.is-festival .roster-num-badge {
-    background: #fef08a !important;
-    color: #713f12 !important;
+    background: #bbf7d0 !important;
+    color: #14532d !important;
   }
 
   /* Empty Cell */
@@ -5024,6 +4057,12 @@
     overflow: hidden;
   }
 
+  .bracket-page-container.bracket-page-paper {
+    padding: 0;
+    display: flex;
+    justify-content: center;
+  }
+
   .bracket-page-container {
     width: 100%;
     aspect-ratio: 285 / 198;
@@ -5065,18 +4104,6 @@
     text-align: center;
     width: 100%;
     margin: 0 auto;
-  }
-
-  .bracket-print-title h2 {
-    font-size: 13px;
-    font-weight: 800;
-    color: #111827;
-    margin: 0;
-    line-height: 1.15;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .bracket-print-title p {
@@ -5148,40 +4175,20 @@
     justify-content: center;
     align-items: center;
   }
-  .bracket-grid.rounds-1 .round-col,
-  .bracket-grid.is-single-round .round-col {
-    flex: 0 0 320px;
-    max-width: 320px;
-    width: 320px;
-    margin: 0 auto;
-  }
 
   .bracket-grid.rounds-2 {
     justify-content: center;
     gap: 48px;
-  }
-  .bracket-grid.rounds-2 .round-col {
-    flex: 0 0 240px;
-    max-width: 240px;
-    width: 240px;
   }
 
   .bracket-grid.rounds-3 {
     justify-content: center;
     gap: 24px;
   }
-  .bracket-grid.rounds-3 .round-col {
-    flex: 1 1 0;
-    max-width: 260px;
-  }
 
   .bracket-grid.rounds-4 {
     justify-content: space-between;
     gap: 14px;
-  }
-  .bracket-grid.rounds-4 .round-col {
-    flex: 1 1 0;
-    max-width: none;
   }
 
   .round-col {
@@ -5248,15 +4255,6 @@
     padding: 0;
   }
 
-  .round-col.is-final .round-matches {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-around;
-    padding-top: 0;
-    padding-bottom: 0;
-    height: 100%;
-  }
-
   .match {
     background: #ffffff;
     border: 1px solid #475569;
@@ -5301,26 +4299,9 @@
     box-sizing: border-box;
   }
 
-  .player + .player {
-    border-top: 1px solid #e2e8f0;
-  }
-
   .player.is-winner {
     background: #fef3c7 !important;
     border-left: 3.5px solid #d97706 !important;
-  }
-
-  .player.is-winner .player-name span,
-  .player.is-winner .player-name {
-    color: #78350f !important;
-    font-weight: 800 !important;
-  }
-
-  .player.is-winner .player-score {
-    color: #92400e !important;
-    font-weight: 800 !important;
-    border-color: #d97706 !important;
-    background: #fde68a !important;
   }
 
   .player-side {
@@ -5975,23 +4956,9 @@
     align-items: center !important;
   }
 
-  :global(body.is-printing) .bracket-grid.rounds-1 .round-col,
-  :global(body.is-printing) .bracket-grid.is-single-round .round-col {
-    flex: 0 0 340px !important;
-    max-width: 340px !important;
-    width: 340px !important;
-    margin: 0 auto !important;
-  }
-
   :global(body.is-printing) .bracket-grid.rounds-2 {
     justify-content: center !important;
     gap: 56px !important;
-  }
-
-  :global(body.is-printing) .bracket-grid.rounds-2 .round-col {
-    flex: 0 0 250px !important;
-    max-width: 250px !important;
-    width: 250px !important;
   }
 
   :global(body.is-printing) .bracket-grid.rounds-3 {
@@ -5999,19 +4966,9 @@
     gap: 24px !important;
   }
 
-  :global(body.is-printing) .bracket-grid.rounds-3 .round-col {
-    flex: 1 1 0 !important;
-    max-width: 260px !important;
-  }
-
   :global(body.is-printing) .bracket-grid.rounds-4 {
     justify-content: space-between !important;
     gap: 14px !important;
-  }
-
-  :global(body.is-printing) .bracket-grid.rounds-4 .round-col {
-    flex: 1 1 0 !important;
-    max-width: none !important;
   }
 
   :global(body.is-printing) .round-col {
@@ -6037,14 +4994,6 @@
     gap: 2px !important;
     height: 100% !important;
     padding: 0 !important;
-  }
-
-  :global(body.is-printing) .round-col.is-final .round-matches {
-    display: flex !important;
-    flex-direction: column !important;
-    justify-content: space-around !important;
-    padding: 0 !important;
-    height: 100% !important;
   }
 
   :global(body.is-printing) .cal-final-podium-wrap {
@@ -6243,6 +5192,23 @@
       margin: 0 !important;
       display: block !important;
       gap: 0 !important;
+    }
+
+    .print-page-box.roster-a4-sheet {
+      width: 100% !important;
+      height: 285mm !important;
+      padding: 0 !important;
+      overflow: hidden !important;
+      display: block !important;
+    }
+    /* Compact roster: never stretch the table to fill the page (the booklet roster does). */
+    .roster-a4-sheet .simple-roster-day-section {
+      flex: 0 0 auto !important;
+      display: block !important;
+    }
+    .roster-a4-sheet .simple-roster-table {
+      height: auto !important;
+      flex: none !important;
     }
 
     /* Common Booklet Page Base */
@@ -6543,18 +5509,6 @@
       margin: 0 auto !important;
     }
 
-    .bracket-print-title h2 {
-      font-size: 14px !important;
-      font-weight: 800 !important;
-      color: #111827 !important;
-      margin: 0 !important;
-      line-height: 1.15 !important;
-      text-align: center !important;
-      white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
-
     .bracket-print-title p {
       font-size: 9.5px !important;
       color: #4b5563 !important;
@@ -6610,23 +5564,9 @@
       align-items: center !important;
     }
 
-    .bracket-grid.rounds-1 .round-col,
-    .bracket-grid.is-single-round .round-col {
-      flex: 0 0 340px !important;
-      max-width: 340px !important;
-      width: 340px !important;
-      margin: 0 auto !important;
-    }
-
     .bracket-grid.rounds-2 {
       justify-content: center !important;
       gap: 56px !important;
-    }
-
-    .bracket-grid.rounds-2 .round-col {
-      flex: 0 0 250px !important;
-      max-width: 250px !important;
-      width: 250px !important;
     }
 
     .bracket-grid.rounds-3 {
@@ -6634,19 +5574,9 @@
       gap: 24px !important;
     }
 
-    .bracket-grid.rounds-3 .round-col {
-      flex: 1 1 0 !important;
-      max-width: 260px !important;
-    }
-
     .bracket-grid.rounds-4 {
       justify-content: space-between !important;
       gap: 14px !important;
-    }
-
-    .bracket-grid.rounds-4 .round-col {
-      flex: 1 1 0 !important;
-      max-width: none !important;
     }
 
     .round-col {
@@ -6672,15 +5602,6 @@
       gap: 2px !important;
       height: 100% !important;
       padding: 0 !important;
-    }
-
-    .round-col.is-final .round-matches {
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-around !important;
-      padding-top: 0 !important;
-      padding-bottom: 0 !important;
-      height: 100% !important;
     }
 
     .match {
@@ -6726,28 +5647,11 @@
       flex-wrap: nowrap !important;
     }
 
-    .player + .player {
-      border-top: 1px solid #e2e8f0 !important;
-    }
-
     .player.is-winner {
       background: #fef3c7 !important;
       border-left: 3.5px solid #d97706 !important;
       -webkit-print-color-adjust: exact !important;
       print-color-adjust: exact !important;
-    }
-
-    .player.is-winner .player-name span,
-    .player.is-winner .player-name {
-      color: #78350f !important;
-      font-weight: 800 !important;
-    }
-
-    .player.is-winner .player-score {
-      color: #92400e !important;
-      font-weight: 800 !important;
-      border-color: #d97706 !important;
-      background: #fde68a !important;
     }
 
     .player-side {
@@ -6967,37 +5871,6 @@
 
     .cal-podium-rank {
       flex-shrink: 0 !important;
-    }
-
-    .cal-podium-rank .medal {
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      width: 14px !important;
-      height: 14px !important;
-      border-radius: 50% !important;
-      font-size: 7px !important;
-      font-weight: 800 !important;
-      font-family: var(--font-mono) !important;
-      line-height: 1 !important;
-    }
-
-    .cal-podium-rank .medal.gold {
-      background: #fde047 !important;
-      color: #854d0e !important;
-      border: 1px solid #ca8a04 !important;
-    }
-
-    .cal-podium-rank .medal.silver {
-      background: #e2e8f0 !important;
-      color: #334155 !important;
-      border: 1px solid #94a3b8 !important;
-    }
-
-    .cal-podium-rank .medal.bronze {
-      background: #fed7aa !important;
-      color: #9a3412 !important;
-      border: 1px solid #f97316 !important;
     }
 
     .cal-podium-meta {

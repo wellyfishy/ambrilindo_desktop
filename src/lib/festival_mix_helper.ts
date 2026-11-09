@@ -482,26 +482,11 @@ export function computeAutoMixProposals(
     let matchedProposal: AutoMixProposal | null = null;
 
     for (const p of proposals) {
-      const pp = parseFestivalCategory(p.sourceCategory.nama);
-      if (sp.discipline !== pp.discipline || sp.gender !== pp.gender) continue;
-
-      // Check age tier compatibility: tier difference <= 1 with either source or any target
+      // The solo must satisfy the mixing rules (discipline, gender, age tier <= 1, weight <= 10 kg)
+      // against EVERY class already in the proposal, not just one of them.
       const allProposalCategories = [p.sourceCategory, ...p.targetCategories];
-      const allTiers = allProposalCategories
-        .map((c) => parseFestivalCategory(c.nama).ageTier)
-        .filter((t) => t > 0);
-      const isTierCompatible = allTiers.some((t) => Math.abs(sp.ageTier - t) <= 1);
-      if (!isTierCompatible) continue;
-
-      // Kumite safety: weight difference <= 10kg with at least one category
-      if (sp.discipline === "kumite" && sp.weightVal !== null) {
-        const hasSafeWeight = allProposalCategories.some((c) => {
-          const cp = parseFestivalCategory(c.nama);
-          if (cp.weightVal === null) return true;
-          return Math.abs(sp.weightVal! - cp.weightVal) <= 10;
-        });
-        if (!hasSafeWeight) continue;
-      }
+      const compatible = getFestivalMixRecommendations(soloA, allProposalCategories);
+      if (compatible.length !== allProposalCategories.length) continue;
 
       // Check max combined athletes (limit to 16 athletes)
       const soloCnt = soloA.athlete_count ?? soloA.atlet_count ?? 1;

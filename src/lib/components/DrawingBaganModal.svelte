@@ -82,7 +82,14 @@
     return categories.filter((c) => c.is_kumite && selectedCategoryIds.includes(c.id));
   });
 
+  /** A category that already played bouts is locked: redrawing would erase its results. */
+  function isLocked(c: { finished_matches?: number }) {
+    return (c.finished_matches ?? 0) > 0;
+  }
+
   function toggleCategory(id: number) {
+    const cat = categories.find((c) => c.id === id);
+    if (cat && isLocked(cat) && !selectedCategoryIds.includes(id)) return;
     if (selectedCategoryIds.includes(id)) {
       selectedCategoryIds = selectedCategoryIds.filter((x) => x !== id);
     } else {
@@ -91,7 +98,7 @@
   }
 
   function selectAll() {
-    selectedCategoryIds = categories.filter((c) => c.athlete_count > 0).map((c) => c.id);
+    selectedCategoryIds = categories.filter((c) => c.athlete_count > 0 && !isLocked(c)).map((c) => c.id);
   }
 
   function selectUndrawnOnly() {
@@ -335,7 +342,9 @@
                   tabindex="0"
                   onclick={() => toggleCategory(cat.id)}
                   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCategory(cat.id); } }}
-                  class="w-full flex items-center justify-between p-2.5 rounded-xl border transition text-left cursor-pointer {isSelected ? 'bg-white/[0.04] border-white/20' : 'bg-[#181a20]/40 border-white/[0.04] hover:border-white/[0.08]'}"
+                  aria-disabled={isLocked(cat)}
+                  title={isLocked(cat) ? `Sudah ${cat.finished_matches} partai selesai. Hapus bagannya dulu bila memang ingin diundi ulang.` : undefined}
+                  class="w-full flex items-center justify-between p-2.5 rounded-xl border transition text-left {isLocked(cat) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} {isSelected ? 'bg-white/[0.04] border-white/20' : 'bg-[#181a20]/40 border-white/[0.04] hover:border-white/[0.08]'}"
                 >
                   <div class="flex items-center space-x-3 truncate">
                     <input
@@ -386,7 +395,19 @@
                       </button>
                     {/if}
 
-                    {#if cat.bagan_count > 0}
+                    {#if (cat.athletes_not_in_bagan ?? 0) > 0}
+                      <span
+                        class="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30"
+                        title="Atlet didaftarkan setelah drawing dan belum ada di bagan"
+                      >
+                        {cat.athletes_not_in_bagan} BELUM MASUK BAGAN
+                      </span>
+                    {/if}
+                    {#if isLocked(cat)}
+                      <span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                        SUDAH BERTANDING
+                      </span>
+                    {:else if cat.bagan_count > 0}
                       <span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                         ADA {cat.bagan_count} BAGAN
                       </span>

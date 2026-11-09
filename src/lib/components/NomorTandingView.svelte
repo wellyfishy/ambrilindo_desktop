@@ -78,102 +78,14 @@
     if (!eventId) return;
     isLoading = true;
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        categories = await invoke<EnrichedNomorTanding[]>("get_enriched_categories", { eventId });
-      } else {
-        categories = getMockCategories();
-      }
+      categories = await invoke<EnrichedNomorTanding[]>("get_enriched_categories", { eventId });
+
     } catch (err: any) {
-      console.warn("get_enriched_categories failed, loading fallback mock:", err);
-      categories = getMockCategories();
+      console.error("Gagal memuat nomor tanding:", err);
+      showToast(`Gagal memuat nomor tanding: ${err?.message || err}`);
     } finally {
       isLoading = false;
     }
-  }
-
-  function getMockCategories(): EnrichedNomorTanding[] {
-    return [
-      {
-        id: 1,
-        event_id: eventId,
-        nama_nomor_tanding: "TOURNAMENT PRA USIA DINI - KATA PERORANGAN PUTRI",
-        is_bob: false,
-        has_vr: false,
-        athlete_count: 8,
-        bagan_count: 1,
-        first_bagan_id: 101,
-      },
-      {
-        id: 2,
-        event_id: eventId,
-        nama_nomor_tanding: "TOURNAMENT PRA USIA DINI - KUMITE -25 KG PUTRA",
-        is_bob: false,
-        has_vr: true,
-        athlete_count: 14,
-        bagan_count: 1,
-        first_bagan_id: 102,
-      },
-      {
-        id: 3,
-        event_id: eventId,
-        nama_nomor_tanding: "FESTIVAL USIA DINI - KATA PERORANGAN PUTRA",
-        is_bob: false,
-        has_vr: false,
-        athlete_count: 18,
-        bagan_count: 2,
-        first_bagan_id: 103,
-      },
-      {
-        id: 4,
-        event_id: eventId,
-        nama_nomor_tanding: "TOURNAMENT PEMULA - KATA PERORANGAN PUTRI",
-        is_bob: false,
-        has_vr: false,
-        athlete_count: 22,
-        bagan_count: 3,
-        first_bagan_id: 104,
-      },
-      {
-        id: 5,
-        event_id: eventId,
-        nama_nomor_tanding: "TOURNAMENT KADET - KUMITE -52 KG PUTRA",
-        is_bob: false,
-        has_vr: true,
-        athlete_count: 16,
-        bagan_count: 1,
-        first_bagan_id: 105,
-      },
-      {
-        id: 6,
-        event_id: eventId,
-        nama_nomor_tanding: "TOURNAMENT SENIOR - KATA BEREGU PUTRA",
-        is_bob: false,
-        has_vr: false,
-        athlete_count: 6,
-        bagan_count: 0,
-        first_bagan_id: null,
-      },
-      {
-        id: 7,
-        event_id: eventId,
-        nama_nomor_tanding: "BEST OF THE BEST - KUMITE SENIOR PUTRA",
-        is_bob: true,
-        has_vr: true,
-        athlete_count: 8,
-        bagan_count: 1,
-        first_bagan_id: 106,
-      },
-      {
-        id: 8,
-        event_id: eventId,
-        nama_nomor_tanding: "TOURNAMENT JUNIOR - KUMITE +68 KG PUTRI",
-        is_bob: false,
-        has_vr: false,
-        athlete_count: 0,
-        bagan_count: 0,
-        first_bagan_id: null,
-      },
-    ];
   }
 
   // Statistics derived
@@ -241,9 +153,8 @@
   async function handleToggleVr(c: EnrichedNomorTanding) {
     const nextVal = !c.has_vr;
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        await invoke("toggle_category_vr", { category_id: c.id, has_vr: nextVal });
-      }
+      await invoke("toggle_category_vr", { categoryId: c.id, hasVr: nextVal });
+
       categories = categories.map((item) => (item.id === c.id ? { ...item, has_vr: nextVal } : item));
       showToast(`VR ${c.nama_nomor_tanding} di${nextVal ? "aktifkan" : "nonaktifkan"}.`);
     } catch (err: any) {
@@ -286,58 +197,32 @@
     formError = null;
 
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        if (isEditMode && formInput.id) {
-          const updated = await invoke<EnrichedNomorTanding>("update_category", {
-            input: {
-              id: formInput.id,
-              event_id: eventId,
-              nama_nomor_tanding: cleanName,
-              is_bob: formInput.is_bob,
-              has_vr: formInput.has_vr,
-            },
-          });
-          categories = categories.map((c) => (c.id === updated.id ? updated : c));
-          showToast(`Kategori "${cleanName}" berhasil diperbarui!`);
-        } else {
-          const created = await invoke<EnrichedNomorTanding>("create_category", {
-            input: {
-              id: null,
-              event_id: eventId,
-              nama_nomor_tanding: cleanName,
-              is_bob: formInput.is_bob,
-              has_vr: formInput.has_vr,
-            },
-          });
-          categories = [created, ...categories];
-          showToast(`Kategori baru "${cleanName}" berhasil ditambahkan!`);
-        }
+      if (isEditMode && formInput.id) {
+        const updated = await invoke<EnrichedNomorTanding>("update_category", {
+          input: {
+            id: formInput.id,
+            event_id: eventId,
+            nama_nomor_tanding: cleanName,
+            is_bob: formInput.is_bob,
+            has_vr: formInput.has_vr,
+          },
+        });
+        categories = categories.map((c) => (c.id === updated.id ? updated : c));
+        showToast(`Kategori "${cleanName}" berhasil diperbarui!`);
       } else {
-        // Fallback for dev preview
-        if (isEditMode && formInput.id) {
-          categories = categories.map((c) =>
-            c.id === formInput.id
-              ? { ...c, nama_nomor_tanding: cleanName, is_bob: formInput.is_bob, has_vr: formInput.has_vr }
-              : c
-          );
-        } else {
-          const newId = Math.max(0, ...categories.map((c) => c.id)) + 1;
-          categories = [
-            {
-              id: newId,
-              event_id: eventId,
-              nama_nomor_tanding: cleanName,
-              is_bob: formInput.is_bob,
-              has_vr: formInput.has_vr,
-              athlete_count: 0,
-              bagan_count: 0,
-              first_bagan_id: null,
-            },
-            ...categories,
-          ];
-        }
-        showToast(`Kategori "${cleanName}" berhasil disimpan!`);
+        const created = await invoke<EnrichedNomorTanding>("create_category", {
+          input: {
+            id: null,
+            event_id: eventId,
+            nama_nomor_tanding: cleanName,
+            is_bob: formInput.is_bob,
+            has_vr: formInput.has_vr,
+          },
+        });
+        categories = [created, ...categories];
+        showToast(`Kategori baru "${cleanName}" berhasil ditambahkan!`);
       }
+
 
       categoryModalOpen = false;
     } catch (err: any) {
@@ -357,9 +242,8 @@
     if (!categoryToDelete) return;
     isDeleting = true;
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        await invoke("delete_category", { category_id: categoryToDelete.id });
-      }
+      await invoke("delete_category", { categoryId: categoryToDelete.id });
+
       categories = categories.filter((c) => c.id !== categoryToDelete!.id);
       showToast(`Kategori "${categoryToDelete.nama_nomor_tanding}" berhasil dihapus.`);
       deleteModalOpen = false;
@@ -378,48 +262,8 @@
     isLoadingAthletes = true;
 
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        categoryAthletes = await invoke<EnrichedAtletItem[]>("get_category_athletes", { category_id: c.id });
-      } else {
-        categoryAthletes = [
-          {
-            id: 101,
-            event_id: eventId,
-            nama_atlet: "MUHAMMAD ADRIAN PUTRA",
-            nik: "6472010101010001",
-            kode_atlet: "ATL-001",
-            additional_code: null,
-            is_priority: true,
-            perguruan_id: 1,
-            perguruan_nama: "INKANAS",
-            utusan_id: 1,
-            utusan_nama: "DOJO ZERO 5",
-            utusan_logo: null,
-            nomor_tanding_id: c.id,
-            nomor_tanding_nama: c.nama_nomor_tanding,
-            nomor_tanding_tipe: "Tournament",
-            is_bob: c.is_bob,
-          },
-          {
-            id: 102,
-            event_id: eventId,
-            nama_atlet: "KYLIAN MALEAKHI JOSE",
-            nik: "6472010101010002",
-            kode_atlet: "ATL-002",
-            additional_code: null,
-            is_priority: false,
-            perguruan_id: 2,
-            perguruan_nama: "SHOKAIDO",
-            utusan_id: 2,
-            utusan_nama: "DOJO COMBAT",
-            utusan_logo: null,
-            nomor_tanding_id: c.id,
-            nomor_tanding_nama: c.nama_nomor_tanding,
-            nomor_tanding_tipe: "Tournament",
-            is_bob: c.is_bob,
-          },
-        ];
-      }
+      categoryAthletes = await invoke<EnrichedAtletItem[]>("get_category_athletes", { categoryId: c.id });
+
     } catch (err) {
       categoryAthletes = [];
     } finally {

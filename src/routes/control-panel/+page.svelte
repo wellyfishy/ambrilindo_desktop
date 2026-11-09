@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { page } from "$app/state";
-  import { invoke, setConnectionConfig } from "$lib/api_client";
+  import { invoke, setConnectionConfig, getHostBaseUrl } from "$lib/api_client";
   import { emit } from "@tauri-apps/api/event";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, AssignBoutAthletesInput } from "$lib/types";
@@ -38,8 +38,10 @@
       setConnectionConfig("client", qHost);
     }
 
-    const urlTatami = parseInt(page.url.searchParams.get("tatami") || "1", 10);
-    tatamiNumber = !isNaN(urlTatami) && urlTatami > 0 ? urlTatami : 1;
+    const rawParamTatami = page.url.searchParams.get("tatami");
+    const parsedTatami = parseInt(rawParamTatami || "1", 10);
+    const hasExplicitTatami = !!rawParamTatami && !isNaN(parsedTatami) && parsedTatami > 0;
+    tatamiNumber = hasExplicitTatami ? parsedTatami : 1;
 
     // Handle stateless Festival match (no database required when matchId and baganId are 0)
     if (matchId === 0 && baganId === 0) {
@@ -123,12 +125,18 @@
           const foundBout = matches.find((m) => m.id === targetBoutId);
           if (foundBout) {
             currentMatch = foundBout;
-            tatamiNumber = foundBout.assigned_tatami_id || 1;
+            if (!hasExplicitTatami && foundBout.assigned_tatami_id) {
+              const assigned = foundBout.assigned_tatami_id;
+              tatamiNumber = assigned < 20 ? assigned : tatamiNumber;
+            }
           } else {
             const foundParent = matches.find((m) => m.id === matchId);
             if (foundParent) {
               currentMatch = foundParent;
-              tatamiNumber = foundParent.assigned_tatami_id || 1;
+              if (!hasExplicitTatami && foundParent.assigned_tatami_id) {
+                const assigned = foundParent.assigned_tatami_id;
+                tatamiNumber = assigned < 20 ? assigned : tatamiNumber;
+              }
             }
           }
         } else {
@@ -138,7 +146,10 @@
             throw new Error(`Partai dengan ID ${matchId} tidak ditemukan dalam bagan #${baganId}.`);
           }
           currentMatch = found;
-          tatamiNumber = found.assigned_tatami_id || 1;
+          if (!hasExplicitTatami && found.assigned_tatami_id) {
+            const assigned = found.assigned_tatami_id;
+            tatamiNumber = assigned < 20 ? assigned : tatamiNumber;
+          }
         }
       } catch (e) {
         console.warn("get_team_match_info check:", e);
@@ -147,7 +158,10 @@
           throw new Error(`Partai dengan ID ${matchId} tidak ditemukan dalam bagan #${baganId}.`);
         }
         currentMatch = found;
-        tatamiNumber = found.assigned_tatami_id || 1;
+        if (!hasExplicitTatami && found.assigned_tatami_id) {
+          const assigned = found.assigned_tatami_id;
+          tatamiNumber = assigned < 20 ? assigned : tatamiNumber;
+        }
       }
 
       // 3. Fetch bagan info directly by baganId
@@ -269,7 +283,6 @@
     const target = allMatchesInBagan.find((m) => m.id === boutId);
     if (target) {
       currentMatch = target;
-      tatamiNumber = target.assigned_tatami_id || tatamiNumber;
     } else {
       try {
         const matches: DetailBaganItem[] = await invoke("get_detail_bagan", { baganId });
@@ -277,7 +290,6 @@
         const found = matches.find((m) => m.id === boutId);
         if (found) {
           currentMatch = found;
-          tatamiNumber = found.assigned_tatami_id || tatamiNumber;
         }
       } catch (_) {}
     }
@@ -416,6 +428,7 @@
       baganName={baganName}
       eventName={eventName}
       tatamiNumber={tatamiNumber}
+      hostUrl={getHostBaseUrl()}
       logoMap={logoMap}
       teamMatchInfo={teamMatchInfo}
       onBack={handleCloseWindow}

@@ -373,6 +373,32 @@
     }
   }
 
+  /**
+   * Re-reads the event list. Events can change outside this window (another laptop on the
+   * host, a seed script, a restored backup), and the list is otherwise loaded only once.
+   */
+  async function refreshEventList(): Promise<EventItem[] | null> {
+    if (!databaseSummary) return null;
+    try {
+      const list = await invoke<EventItem[]>("get_events");
+      if (databaseSummary) databaseSummary = { ...databaseSummary, events: list };
+      return list;
+    } catch (err) {
+      console.warn("Gagal memperbarui daftar event:", err);
+      return null;
+    }
+  }
+
+  /** Refresh the list; if the open event no longer exists, move to the first remaining one. */
+  async function syncEventList() {
+    const list = await refreshEventList();
+    if (!list || selectedEventId === null) return;
+    if (!list.some((e) => e.id === selectedEventId)) {
+      await handleEventDeleted(selectedEventId);
+      showToast("Event yang dibuka sudah tidak ada di database. Daftar event diperbarui.");
+    }
+  }
+
   async function handleCreateEvent(nama: string, kode?: string) {
     isCreatingEvent = true;
     try {
@@ -517,13 +543,30 @@
           activeChannel = JSON.parse(savedChannel);
         } catch (_) {}
       }
-      if (!isNaN(eid)) {
+      // Skip an event that no longer exists (deleted or re-created under a new id meanwhile);
+      // the first event selected by autoMountDefaultDb stays open instead.
+      const eventStillExists = !databaseSummary || databaseSummary.events.some((e) => e.id === eid);
+      if (!isNaN(eid) && eventStillExists) {
         // Also validates the restored role and channel against this event.
         await selectEvent(eid);
       }
     } catch (_) {}
 
     isSessionLoaded = true;
+  });
+
+  // Pick up events added or removed elsewhere whenever the window comes back to the front.
+  $effect(() => {
+    if (!isSessionLoaded) return;
+    const onWindowFocus = () => {
+      if (document.visibilityState === "visible") syncEventList();
+    };
+    window.addEventListener("focus", onWindowFocus);
+    document.addEventListener("visibilitychange", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+      document.removeEventListener("visibilitychange", onWindowFocus);
+    };
   });
 
   $effect(() => {
@@ -587,6 +630,11 @@
       onOpenQrModal={() => (qrModal = true)}
       onOpenDrawingModal={() => (drawingModal = true)}
       onOpenDrawingFestivalModal={() => (drawingFestivalModal = true)}
+      onFestivalFormatChanged={async (format) => {
+        if (format === "bagan" && activeChannel.type === "festival") activeChannel = { ...DEFAULT_CHANNEL };
+        if (selectedEventId) await selectEvent(selectedEventId);
+      }}
+      onNotify={showToast}
       onReturnToLanding={() => {
         appMode = "landing";
         setConnectionConfig("solo");
@@ -623,6 +671,7 @@
             eventName={activeEvent?.nama_event || ""}
             hostUrl={hostUrl}
             {tatamis}
+            {activeRole}
             onBaganUpdated={() => selectedEventId && selectEvent(selectedEventId)}
           />
         {:else if activeChannel.type === "sync"}

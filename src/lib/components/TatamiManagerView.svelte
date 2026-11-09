@@ -66,27 +66,7 @@
     onShowToast?.(msg);
   }
 
-  // Fallback Mock Tatamis for browser dev/testing
-  function getMockTatamis(): TatamiItem[] {
-    return [
-      { id: 1, event_id: eventId, tatami_number: 1, detail_bagan_id: 104, nama_bagan: "KATA PERORANGAN PUTRA" },
-      { id: 2, event_id: eventId, tatami_number: 2, detail_bagan_id: null, nama_bagan: null },
-      { id: 3, event_id: eventId, tatami_number: 3, detail_bagan_id: null, nama_bagan: null },
-      { id: 4, event_id: eventId, tatami_number: 4, detail_bagan_id: 208, nama_bagan: "KUMITE -67KG SENIOR PUTRA" },
-      { id: 5, event_id: eventId, tatami_number: 5, detail_bagan_id: null, nama_bagan: null },
-    ];
-  }
-
-  // Effective Tatamis list (using props or mock fallback in web mode)
-  let effectiveTatamis = $derived.by(() => {
-    if (tatamis && tatamis.length > 0) {
-      return tatamis;
-    }
-    if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
-      return getMockTatamis();
-    }
-    return [];
-  });
+  let effectiveTatamis = $derived(tatamis ?? []);
 
   // KPI Metrics Calculation
   let totalTatamis = $derived(effectiveTatamis.length);
@@ -154,12 +134,11 @@
     isSubmitting = true;
     addError = null;
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        await invoke("create_tatami", {
-          eventId,
-          tatamiNumber: newTatamiNumber,
-        });
-      }
+      await invoke("create_tatami", {
+        eventId,
+        tatamiNumber: newTatamiNumber,
+      });
+
       isAddingModal = false;
       onRefreshTatamis();
       showToast(`Tatami ${newTatamiNumber} berhasil ditambahkan!`);
@@ -183,12 +162,11 @@
     isEditing = true;
     editError = null;
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        await invoke("update_tatami_number", {
-          tatamiId: editModalTatami.id,
-          newNumber: editTatamiNumber,
-        });
-      }
+      await invoke("update_tatami_number", {
+        tatamiId: editModalTatami.id,
+        newNumber: editTatamiNumber,
+      });
+
       const updatedNum = editTatamiNumber;
       editModalTatami = null;
       onRefreshTatamis();
@@ -209,9 +187,8 @@
     if (!tatamiToDelete) return;
     isDeleting = true;
     try {
-      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-        await invoke("delete_tatami", { tatamiId: tatamiToDelete.id });
-      }
+      await invoke("delete_tatami", { tatamiId: tatamiToDelete.id });
+
       const deletedNum = tatamiToDelete.tatami_number;
       tatamiToDelete = null;
       onRefreshTatamis();

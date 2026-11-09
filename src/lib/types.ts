@@ -279,6 +279,10 @@ export interface DrawingCategoryInfo {
   has_vr: boolean;
   is_kumite: boolean;
   is_beregu: boolean;
+  /** Registered after the drawing: in the category but not in its bagan. */
+  athletes_not_in_bagan?: number;
+  /** Finished bouts; such a category cannot be redrawn. */
+  finished_matches?: number;
 }
 
 export interface DrawingSummary {
@@ -520,6 +524,17 @@ export interface TimetableEditorData {
   summary: TimetableProgressSummary;
   kop_surat: KopSurat | null;
   nt_athletes?: Record<number, string[]>;
+  /** Roster-format festival: one FESTIVAL session per tatami instead of festival categories. */
+  festival_session?: FestivalSessionTatami[] | null;
+}
+
+export interface FestivalSessionTatami {
+  tatami_id: number;
+  tatami_number: number;
+  categories: number;
+  athletes: number;
+  matches: number;
+  est_minutes: number;
 }
 
 export interface SaveTimetableCellInput {
@@ -560,6 +575,9 @@ export interface TatamiBookletCategory {
   tipe_tanding: string | null;
   winners: SummaryBaganWinner[];
   matches: DetailBaganItem[];
+  /** 0 = final bagan, 1 = single, 2/4 = pool; festival = group count. */
+  bagan_pool?: number | null;
+  bagan_layout_type?: string | null;
 }
 
 export interface TatamiBookletData {
@@ -603,6 +621,14 @@ export interface FestivalCategory {
   matches: FestivalMatch[];
   atlet_count: number;
   match_count: number;
+  /** Categories merged into this one by a mix group (primary first); empty when not mixed. */
+  mixed_from: FestivalMixMember[];
+}
+
+export interface FestivalMixMember {
+  id: number;
+  nama: string;
+  atlet_count: number;
 }
 
 export interface FestivalTatamiSection {
@@ -628,6 +654,15 @@ export interface FestivalRosterData {
 export interface FestivalRosterState {
   tatami_assignments: Record<string, number[]>;
   athlete_pairings: Record<string, number[]>;
+}
+
+export type FestivalFormat = "roster" | "bagan";
+
+/** Festival format of an event and what switching to "roster" would delete. */
+export interface FestivalFormatInfo {
+  format: FestivalFormat;
+  festival_bagan_count: number;
+  finished_match_count: number;
 }
 
 export interface FestivalBookletCategory {

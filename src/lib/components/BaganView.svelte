@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { flushSync, onMount, tick } from "svelte";
   import { invoke, withHostParam } from "$lib/api_client";
   import { printWithOrientation } from "$lib/print_helper";
   import { listen } from "@tauri-apps/api/event";
@@ -23,6 +23,9 @@
   import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import FestivalBracketSheet from "./FestivalBracketSheet.svelte";
+  import BracketTree from "./BracketTree.svelte";
+  import BracketPaperPage from "./BracketPaperPage.svelte";
+  import { computePodium, deriveBracketMeta, groupRounds } from "$lib/bracket_layout";
 
   interface Props {
     baganId: number;
@@ -33,6 +36,7 @@
     eventDate?: string;
     hostUrl?: string;
     tatamis?: TatamiItem[];
+    activeRole?: string;
     onDispatchToTatami?: (tatamiNum: number, matchId: number) => void;
     onBaganUpdated?: () => void;
     onShowToast?: (message: string, type?: "success" | "error" | "info") => void;
@@ -47,6 +51,7 @@
     eventDate = "",
     hostUrl = "",
     tatamis = [],
+    activeRole = "",
     onDispatchToTatami,
     onBaganUpdated,
     onShowToast = () => {},
@@ -335,58 +340,37 @@
       await loadBracketData();
     } catch (err: any) {
       console.error("Gagal menyimpan hasil partai:", err);
-      // Fallback for browser mode / test harness
-      const m = matches.find((x) => x.id === input.match_id);
-      if (m) {
-        m.score1 = input.score1;
-        m.score2 = input.score2;
-        m.pemenang = input.pemenang;
-        m.selesai = input.selesai;
-        m.kata1 = input.kata1 || null;
-        m.kata2 = input.kata2 || null;
-        m.vr1 = input.vr1;
-        m.vr2 = input.vr2;
-        m.hantei = input.hantei;
-
-        if (isFestivalBagan && input.selesai && input.pemenang && m.round === 1) {
-          const winnerId = input.pemenang === "1" ? m.atlet1_id : m.atlet2_id;
-          const winnerName = input.pemenang === "1" ? m.atlet1_nama : m.atlet2_nama;
-          const winnerKontingen = input.pemenang === "1" ? m.atlet1_kontingen : m.atlet2_kontingen;
-          const winnerLogo = input.pemenang === "1" ? m.atlet1_logo : m.atlet2_logo;
-          const groupIdx = Math.floor(((m.urutan ?? 1) + 1) / 2);
-          const finalMatch = matches.find((x) => x.round === 2 && x.urutan === groupIdx);
-          if (finalMatch) {
-            if ((m.urutan ?? 1) % 2 === 1) {
-              finalMatch.atlet1_id = winnerId;
-              finalMatch.atlet1_nama = winnerName;
-              finalMatch.atlet1_kontingen = winnerKontingen;
-              finalMatch.atlet1_logo = winnerLogo;
-            } else {
-              finalMatch.atlet2_id = winnerId;
-              finalMatch.atlet2_nama = winnerName;
-              finalMatch.atlet2_kontingen = winnerKontingen;
-              finalMatch.atlet2_logo = winnerLogo;
-            }
-          }
-        }
-      }
-      activeMatchForControl = null;
-      onBaganUpdated?.();
+      // Never show an unsaved result as saved: the operator must see that it was refused.
+      onShowToast?.(`Hasil partai tidak tersimpan: ${err?.message || err}`, "error");
+      alert(`Hasil partai tidak tersimpan. ${err?.message || err}`);
     }
   }
 
+  function resolveTatamiNumber(assignedTatamiId: number | null | undefined): number {
+    if (!assignedTatamiId) return 1;
+    const found = tatamis?.find((t) => t.id === assignedTatamiId || t.tatami_number === assignedTatamiId);
+    return found?.tatami_number ?? (assignedTatamiId < 20 ? assignedTatamiId : 1);
+  }
+
   async function handleOpenMatchControl(match: DetailBaganItem) {
+    let targetTatamiNum = 1;
+    if (activeRole && activeRole.startsWith("admin_tatami_")) {
+      targetTatamiNum = parseInt(activeRole.replace("admin_tatami_", ""), 10) || 1;
+    } else {
+      targetTatamiNum = resolveTatamiNumber(match.assigned_tatami_id);
+    }
+
     try {
       await invoke("open_control_panel_window", {
         matchId: match.id,
         baganId: match.bagan_id || baganId,
-        tatami: match.assigned_tatami_id || 1,
+        tatami: targetTatamiNum,
       });
     } catch (err) {
       console.warn("Tauri open_control_panel_window failed, fallback to window.open or in-page:", err);
       if (typeof window !== "undefined" && window.open) {
         window.open(
-          withHostParam(`/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}&tatami=${match.assigned_tatami_id || 1}`),
+          withHostParam(`/control-panel?matchId=${match.id}&baganId=${match.bagan_id || baganId}&tatami=${targetTatamiNum}`),
           "control_panel",
           "width=1366,height=820"
         );
@@ -573,6 +557,18 @@
   // App Theme state: Dark mode by default for desktop app, white for print
   let isDarkMode = $state(true);
 
+  /**
+   * Bracket/festival print the light paper page. Round robin prints its screen view, so
+   * render it in the light palette for the duration of the print dialog.
+   */
+  function printBagan() {
+    if (isRoundRobin && isDarkMode) {
+      flushSync(() => (isDarkMode = false));
+      window.addEventListener("afterprint", () => (isDarkMode = true), { once: true });
+    }
+    printWithOrientation("landscape", "5mm");
+  }
+
   // Zoom & Viewport adaptivity state
   let zoom = $state(1.0);
   let userHasZoomed = $state(false);
@@ -580,7 +576,6 @@
   let contentHeight = $state(692);
 
   let viewportEl = $state<HTMLDivElement | null>(null);
-  let svgEl = $state<SVGSVGElement | null>(null);
   let gridEl = $state<HTMLDivElement | null>(null);
 
   function updateContentDimensions() {
@@ -732,19 +727,7 @@
   }
 
   // Group matches by round (1 = Babak 16 Besar, 2 = Perempat Final, 3 = Semi Final, 4 = Final)
-  let rounds = $derived.by(() => {
-    const map = new Map<number, DetailBaganItem[]>();
-    for (const m of matches) {
-      const r = m.round || 1;
-      if (!map.has(r)) map.set(r, []);
-      map.get(r)!.push(m);
-    }
-    // Sort matches within each round by urutan
-    for (const [_, list] of map) {
-      list.sort((a, b) => (a.urutan || a.id) - (b.urutan || b.id));
-    }
-    return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
-  });
+  let rounds = $derived(groupRounds(matches));
 
   // Main elimination tree rounds (1 to 4)
   let elimRounds = $derived(rounds.filter(([r]) => r <= 4));
@@ -779,289 +762,16 @@
     return name.endsWith("- FINAL") || name.endsWith("FINAL");
   });
 
-  function getRoundBadge(roundNum: number, totalElimRounds: number): string {
-    if (isRepechageBagan) {
-      if (roundNum === totalElimRounds) return "BR";
-      return `R${roundNum}`;
-    }
-    if (poolCount === 2 && !isFinalBagan) {
-      if (roundNum === 4) return "SF";
-      if (roundNum === 3) return "R3";
-      if (roundNum === 2) return "R2";
-      return "R1";
-    }
-    if (poolCount === 4 && !isFinalBagan) {
-      if (roundNum === 4) return "R4";
-      if (roundNum === 3) return "R3";
-      if (roundNum === 2) return "R2";
-      return "R1";
-    }
-    if (roundNum === 4) return "FN";
-    if (roundNum === 3) return totalElimRounds >= 4 ? "SF" : "FN";
-    if (roundNum === 2) return totalElimRounds >= 4 ? "R2" : "SF";
-    return "R1";
-  }
 
-  function getRoundTitle(roundNum: number, totalElimRounds: number): string {
-    if (isRepechageBagan) {
-      if (roundNum === totalElimRounds) return "FINAL REPECHAGE (JUARA 3)";
-      return `BABAK ${roundNum} REPECHAGE`;
-    }
-    if (poolCount === 2 && !isFinalBagan) {
-      if (roundNum === 4) return "SEMI FINAL";
-      if (roundNum === 3) return "BABAK 8 BESAR";
-      if (roundNum === 2) return "BABAK 16 BESAR";
-      return "BABAK 32 BESAR";
-    }
-    if (poolCount === 4 && !isFinalBagan) {
-      if (roundNum === 4) return "BABAK 8 BESAR";
-      if (roundNum === 3) return "BABAK 16 BESAR";
-      if (roundNum === 2) return "BABAK 32 BESAR";
-      return "BABAK 64 BESAR";
-    }
-    if (roundNum === 4) return "PARTAI FINAL";
-    if (roundNum === 3) return totalElimRounds >= 4 ? "SEMI FINAL" : "PARTAI FINAL";
-    if (roundNum === 2) return totalElimRounds >= 4 ? "PEREMPAT FINAL" : "SEMI FINAL";
-    return "BABAK 16 BESAR";
-  }
-
-  function getSlotCountForRound(roundNum: number): number {
-    switch (roundNum) {
-      case 1: return 8;
-      case 2: return 4;
-      case 3: return 2;
-      case 4: return 1;
-      default: return 1;
-    }
-  }
-
-  function getSlotHeightClass(roundNum: number): string {
-    switch (roundNum) {
-      case 1: return "h-[82px]";
-      case 2: return "h-[164px]";
-      case 3: return "h-[328px]";
-      case 4: return "h-[656px]";
-      default: return "h-[82px]";
-     }
-   }
-
-  function getMatchForSlot(roundMatches: DetailBaganItem[], slotNum: number): DetailBaganItem | undefined {
-    return roundMatches.find((m) => (m.urutan || 0) === slotNum) || roundMatches[slotNum - 1];
-  }
-
-  // Calculate podium / Hasil Juara standings (Juara 1, 2, 3A, 3B for Juara 3 Bersama)
-  let podium = $derived.by(() => {
-    // 1. Initial values from dbPodium if loaded from backend
-    let j1 = dbPodium?.j1
-      ? {
-          name: dbPodium.j1.name,
-          contingent: dbPodium.j1.contingent,
-          logo: dbPodium.j1.logo,
-          is_priority: dbPodium.j1.is_priority,
-        }
-      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
-
-    let j2 = dbPodium?.j2
-      ? {
-          name: dbPodium.j2.name,
-          contingent: dbPodium.j2.contingent,
-          logo: dbPodium.j2.logo,
-          is_priority: dbPodium.j2.is_priority,
-        }
-      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
-
-    let j3a = dbPodium?.j3a
-      ? {
-          name: dbPodium.j3a.name,
-          contingent: dbPodium.j3a.contingent,
-          logo: dbPodium.j3a.logo,
-          is_priority: dbPodium.j3a.is_priority,
-        }
-      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
-
-    let j3b = dbPodium?.j3b
-      ? {
-          name: dbPodium.j3b.name,
-          contingent: dbPodium.j3b.contingent,
-          logo: dbPodium.j3b.logo,
-          is_priority: dbPodium.j3b.is_priority,
-        }
-      : { name: "Belum Ditentukan", contingent: "—", logo: null as string | null, is_priority: false };
-
-    // 2. Real-time in-memory calculation from matches (reactive instant update)
-    if (poolCount === 2 && !isFinalBagan) {
-      // 2-pool preliminary: Round 4 is the pool Semifinal!
-      const semiMatch = matches.find((m) => m.round === 4);
-      if (semiMatch && semiMatch.selesai && semiMatch.pemenang) {
-        const loserIsA1 = semiMatch.pemenang === "2";
-        const loserName = loserIsA1
-          ? semiMatch.atlet1_nama || (semiMatch.atlet1_id ? `Atlet #${semiMatch.atlet1_id}` : "BYE")
-          : semiMatch.atlet2_nama || (semiMatch.atlet2_id ? `Atlet #${semiMatch.atlet2_id}` : "BYE");
-        const loserContingent = loserIsA1 ? semiMatch.atlet1_kontingen || "—" : semiMatch.atlet2_kontingen || "—";
-        const loserLogo = loserIsA1 ? semiMatch.atlet1_logo || null : semiMatch.atlet2_logo || null;
-        const loserPriority = !!(loserIsA1 ? semiMatch.atlet1_is_priority : semiMatch.atlet2_is_priority);
-
-        const isPoolA = (baganName || "").toLowerCase().includes("pool a") || (baganName || "").toLowerCase().includes("pool 1");
-        if (isPoolA) {
-          if (j3a.name === "Belum Ditentukan") {
-            j3a = { name: loserName, contingent: loserContingent, logo: loserLogo, is_priority: loserPriority };
-          }
-        } else {
-          if (j3b.name === "Belum Ditentukan") {
-            j3b = { name: loserName, contingent: loserContingent, logo: loserLogo, is_priority: loserPriority };
-          }
-        }
-      }
-    } else {
-      // Single pool or Final bagan:
-      const finalMatch = matches.find((m) => m.round === 4) || elimRounds[elimRounds.length - 1]?.[1]?.[0];
-      const semiMatches = matches
-        .filter((m) => m.round === 3)
-        .sort((a, b) => (a.urutan || 0) - (b.urutan || 0));
-      const semi1 = semiMatches[0];
-      const semi2 = semiMatches[1];
-
-      if (finalMatch && finalMatch.selesai) {
-        if (finalMatch.pemenang === "1") {
-          if (j1.name === "Belum Ditentukan") {
-            j1 = {
-              name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
-              contingent: finalMatch.atlet1_kontingen || "—",
-              logo: finalMatch.atlet1_logo || null,
-              is_priority: !!finalMatch.atlet1_is_priority,
-            };
-          }
-          if (j2.name === "Belum Ditentukan") {
-            j2 = {
-              name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
-              contingent: finalMatch.atlet2_kontingen || "—",
-              logo: finalMatch.atlet2_logo || null,
-              is_priority: !!finalMatch.atlet2_is_priority,
-            };
-          }
-        } else if (finalMatch.pemenang === "2") {
-          if (j1.name === "Belum Ditentukan") {
-            j1 = {
-              name: finalMatch.atlet2_nama || (finalMatch.atlet2_id ? `Atlet #${finalMatch.atlet2_id}` : "BYE"),
-              contingent: finalMatch.atlet2_kontingen || "—",
-              logo: finalMatch.atlet2_logo || null,
-              is_priority: !!finalMatch.atlet2_is_priority,
-            };
-          }
-          if (j2.name === "Belum Ditentukan") {
-            j2 = {
-              name: finalMatch.atlet1_nama || (finalMatch.atlet1_id ? `Atlet #${finalMatch.atlet1_id}` : "BYE"),
-              contingent: finalMatch.atlet1_kontingen || "—",
-              logo: finalMatch.atlet1_logo || null,
-              is_priority: !!finalMatch.atlet1_is_priority,
-            };
-          }
-        }
-      }
-
-      // Semifinal 1 loser -> Juara 3A
-      if (semi1 && semi1.selesai) {
-        if (semi1.pemenang === "1") {
-          if (j3a.name === "Belum Ditentukan") {
-            j3a = {
-              name: semi1.atlet2_nama || (semi1.atlet2_id ? `Atlet #${semi1.atlet2_id}` : "BYE"),
-              contingent: semi1.atlet2_kontingen || "—",
-              logo: semi1.atlet2_logo || null,
-              is_priority: !!semi1.atlet2_is_priority,
-            };
-          }
-        } else if (semi1.pemenang === "2") {
-          if (j3a.name === "Belum Ditentukan") {
-            j3a = {
-              name: semi1.atlet1_nama || (semi1.atlet1_id ? `Atlet #${semi1.atlet1_id}` : "BYE"),
-              contingent: semi1.atlet1_kontingen || "—",
-              logo: semi1.atlet1_logo || null,
-              is_priority: !!semi1.atlet1_is_priority,
-            };
-          }
-        }
-      }
-
-      // Semifinal 2 loser -> Juara 3B
-      if (semi2 && semi2.selesai) {
-        if (semi2.pemenang === "1") {
-          if (j3b.name === "Belum Ditentukan") {
-            j3b = {
-              name: semi2.atlet2_nama || (semi2.atlet2_id ? `Atlet #${semi2.atlet2_id}` : "BYE"),
-              contingent: semi2.atlet2_kontingen || "—",
-              logo: semi2.atlet2_logo || null,
-              is_priority: !!semi2.atlet2_is_priority,
-            };
-          }
-        } else if (semi2.pemenang === "2") {
-          if (j3b.name === "Belum Ditentukan") {
-            j3b = {
-              name: semi2.atlet1_nama || (semi2.atlet1_id ? `Atlet #${semi2.atlet1_id}` : "BYE"),
-              contingent: semi2.atlet1_kontingen || "—",
-              logo: semi2.atlet1_logo || null,
-              is_priority: !!semi2.atlet1_is_priority,
-            };
-          }
-        }
-      }
-    }
-
-    return { j1, j2, j3a, j3b };
+  // Shared bracket metadata + Hasil Juara (same rules as the booklets; see bracket_layout.ts)
+  let bracketMeta = $derived({
+    poolCount,
+    isFinalBagan,
+    isRepechageBagan,
+    baganName: baganName || "",
   });
+  let podium = $derived(computePodium(matches, bracketMeta, dbPodium));
 
-  interface ConnectorLine {
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-  }
-
-  // Exact mathematical bracket connectors (zero DOM measurement jitter, 100% print/screen alignment)
-  let connectorLines = $derived.by(() => {
-    const list: ConnectorLine[] = [];
-    if (elimRounds.length < 2) return list;
-
-    if (isRepechageBagan) {
-      // Linear orthogonal 1-to-1 connectors between sequential repechage rounds
-      // Round 1 (x: 242 -> 274) into Round 2
-      list.push({ x1: 242, y1: 159, x2: 274, y2: 159 }); // Pool A linear line
-      list.push({ x1: 242, y1: 487, x2: 274, y2: 487 }); // Pool B linear line
-      if (elimRounds.length >= 3) {
-        // Round 2 (x: 516 -> 548) into Round 3
-        list.push({ x1: 516, y1: 159, x2: 548, y2: 159 });
-        list.push({ x1: 516, y1: 487, x2: 548, y2: 487 });
-      }
-      return list;
-    }
-
-    const addFork = (xFrom: number, xTo: number, yA: number, yB: number, yOut: number) => {
-      const xMid = Math.round((xFrom + xTo) / 2);
-      list.push({ x1: xFrom, y1: yA, x2: xMid, y2: yA });
-      list.push({ x1: xFrom, y1: yB, x2: xMid, y2: yB });
-      list.push({ x1: xMid, y1: yA, x2: xMid, y2: yB });
-      list.push({ x1: xMid, y1: yOut, x2: xTo, y2: yOut });
-    };
-
-    // Column width = 242px, gap = 32px (gap-8)
-    // Round 1 (x: 0 -> 242) into Round 2 (x: 274 -> 516)
-    addFork(242, 274, 77, 159, 118);
-    addFork(242, 274, 241, 323, 282);
-    addFork(242, 274, 405, 487, 446);
-    addFork(242, 274, 569, 651, 610);
-
-    if (elimRounds.length >= 3) {
-      // Round 2 (x: 274 -> 516) into Round 3 (x: 548 -> 790)
-      addFork(516, 548, 118, 282, 200);
-      addFork(516, 548, 446, 610, 528);
-    }
-
-    if (elimRounds.length >= 4) {
-      // Round 3 (x: 548 -> 790) into Round 4 (x: 822 -> 1064)
-      addFork(790, 822, 200, 528, 364);
-    }
-
-    return list;
-  });
 
   $effect(() => {
     if (baganId) {
@@ -1157,14 +867,14 @@
     baganInfo={currentBaganInfo || baganInfo}
     baganName={displayBaganName || baganName || currentBaganInfo?.nama_bagan || ""}
     eventName={eventName}
-    tatamiNumber={activeMatchForControl.assigned_tatami_id || 1}
+    tatamiNumber={activeRole && activeRole.startsWith("admin_tatami_") ? (parseInt(activeRole.replace("admin_tatami_", ""), 10) || 1) : resolveTatamiNumber(activeMatchForControl.assigned_tatami_id)}
     hostUrl={hostUrl}
     logoMap={logoMap}
     onBack={() => { activeMatchForControl = null; }}
     onSave={handleSaveMatchResult}
   />
 {:else}
-<div class="h-full flex flex-col p-4 select-none {isDarkMode ? 'bg-[#14161b] text-zinc-200' : 'bg-slate-100 text-slate-800'} overflow-hidden font-sans print-sheet">
+<div class="h-full flex flex-col p-4 select-none {isDarkMode ? 'bg-[#14161b] text-zinc-200' : 'bg-slate-100 text-slate-800'} overflow-hidden font-sans print-sheet {isRoundRobin ? '' : 'has-paper-print'}">
   <!-- Top Control Bar (Hidden on Print) -->
   <div class="no-print flex items-center justify-between pb-2.5 mb-2 border-b {isDarkMode ? 'border-white/[0.08]' : 'border-slate-300'} shrink-0">
     <div class="flex items-center space-x-2">
@@ -1232,7 +942,7 @@
       <!-- Print Button -->
       <button
         type="button"
-        onclick={() => printWithOrientation("landscape", "5mm")}
+        onclick={printBagan}
         class="px-3 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
         title="Cetak format kertas A4 Landscape"
       >
@@ -1439,7 +1149,7 @@
 
         <button
           type="button"
-          onclick={() => printWithOrientation('landscape', '5mm')}
+          onclick={printBagan}
           class="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs transition flex items-center space-x-1.5 shadow-sm active:scale-95 cursor-pointer"
           title="Cetak format kertas A4 Landscape (1 Lembar Presisi)"
         >
@@ -1742,7 +1452,7 @@
                     </span>
                   {:else if m.assigned_tatami_id}
                     <span class="px-1.5 py-0.5 rounded font-bold uppercase bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
-                      Tatami {m.assigned_tatami_id}
+                      Tatami {resolveTatamiNumber(m.assigned_tatami_id)}
                     </span>
                   {:else}
                     <span class="px-1.5 py-0.5 rounded uppercase {isDarkMode ? 'bg-zinc-800 text-zinc-400' : 'bg-slate-200 text-slate-600'}">
@@ -1835,7 +1545,7 @@
                   SELESAI
                 </span>
               {:else if liveSyncVersion >= 0 && isMatchLive(m.id, tatamis)}
-                {@const liveTNum = getRunningTatamiForMatch(m.id, tatamis) || m.assigned_tatami_id || 1}
+                {@const liveTNum = getRunningTatamiForMatch(m.id, tatamis) || resolveTatamiNumber(m.assigned_tatami_id)}
                 <span class="text-[7.5px] font-black text-white bg-red-600 px-1 py-0.2 rounded tracking-wide animate-pulse shadow-xs">
                   LIVE T{liveTNum}
                 </span>
@@ -1970,437 +1680,48 @@
           class="bracket-outer relative flex origin-top-left transition-transform duration-100 ease-out"
           style="transform: scale({zoom}); transform-origin: top left; width: {contentWidth}px; height: {contentHeight}px;"
         >
-          <!-- Dynamic SVG Connector Canvas -->
-          <svg
-            bind:this={svgEl}
-            class="bracket-svg absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible"
-            viewBox="0 0 1064 692"
-          >
-            {#each connectorLines as line}
-              <line
-                x1={line.x1}
-                y1={line.y1}
-                x2={line.x2}
-                y2={line.y2}
-                class="connector-line"
-                stroke={isDarkMode ? "rgba(255, 255, 255, 0.75)" : "#0f172a"}
-                stroke-width="1.6"
-                stroke-linecap="round"
-              />
-            {/each}
-          </svg>
-
-          <!-- Bracket Columns Grid Container -->
-          <div bind:this={gridEl} class="bracket-grid flex items-start gap-8 relative z-10 min-w-max pb-2 pr-2">
-            {#each elimRounds as [roundNum, roundMatches]}
-              {@const slotCount = getSlotCountForRound(roundNum)}
-              {@const slotHeightClass = getSlotHeightClass(roundNum)}
-
-              <div class="round-col round-col-elim w-[242px] shrink-0 flex flex-col relative">
-                <!-- Column Header with Black/Dark Circle Step Badge (Centered) -->
-                <div class="col-header-line h-8 shrink-0 flex items-center justify-center pb-1 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1">
-                  <div class="flex items-center justify-center space-x-2 text-center w-full">
-                    <span class="col-header-badge w-5 h-5 rounded-full {isDarkMode ? 'bg-zinc-800 border border-white/40 text-white' : 'bg-slate-900 text-white'} text-[10px] font-black font-mono flex items-center justify-center shrink-0">
-                      {getRoundBadge(roundNum, elimRounds.length)}
-                    </span>
-                    <span class="col-header-title text-[12px] font-black uppercase tracking-tight text-center {isDarkMode ? 'text-white' : 'text-slate-950'}">
-                      {getRoundTitle(roundNum, elimRounds.length)}
-                    </span>
-                  </div>
-                </div>
-
-                <!-- Matches Slots in this Round (Exact 656px height across rounds for perfect alignment) -->
-                <div class="round-slots flex flex-col h-[656px] relative">
-                  {#each Array.from({ length: slotCount }, (_, i) => i + 1) as slotNum}
-                    {@const match = getMatchForSlot(roundMatches, slotNum)}
-                    <div data-slot={slotNum} class="{slotHeightClass} flex items-center justify-center">
-                      {#if match}
-                        <div
-                          class="match-card w-full {isEditMode ? 'cursor-default ring-1 ring-amber-500/50' : 'cursor-pointer hover:ring-2 hover:ring-amber-500/80'} transition-all {isDarkMode ? 'bg-[#181a20] border-zinc-700 hover:border-zinc-500' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
-                          onclick={() => { if (!isEditMode) handleOpenMatchControl(match); }}
-                          role="button"
-                          tabindex="0"
-                          onkeydown={(e) => { if (e.key === 'Enter' && !isEditMode) handleOpenMatchControl(match); }}
-                          title={isEditMode ? "Mode Edit: Pilih atlet peserta partai" : "Klik untuk membuka Kontrol Pertandingan (Control Panel)"}
-                        >
-                          <!-- Match Card Header -->
-                          <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
-                            <span class="flex items-center space-x-1">
-                              {#if isRepechageBagan}
-                                <span class="font-black {match.urutan === 1 ? 'text-amber-400' : 'text-blue-400'}">
-                                  {match.urutan === 1 ? 'POOL A' : 'POOL B'} • {roundNum === elimRounds.length ? 'PERUNGGU' : `M${match.urutan || slotNum}`}
-                                </span>
-                              {:else if roundNum === 4}
-                                <span class="final-title {isDarkMode ? 'text-amber-300' : 'text-amber-800'} font-black flex items-center gap-1">
-                                  <svg class="w-2.5 h-2.5 fill-current shrink-0" viewBox="0 0 24 24">
-                                    <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
-                                  </svg>
-                                  <span>{roundNum === 4 && poolCount === 2 && !isFinalBagan ? "SEMI FINAL" : "PARTAI FINAL"}</span>
-                                </span>
-                              {:else if roundNum === 3}
-                                <span class="font-black">SEMI {match.urutan || slotNum}</span>
-                              {:else}
-                                <span class="font-black">MATCH {match.urutan || slotNum}</span>
-                              {/if}
-                            </span>
-                            {#if isEditMode}
-                              <span class="text-[7.5px] font-black text-amber-300 bg-amber-500/20 border border-amber-500/40 px-1 py-0.2 rounded tracking-wide">
-                                EDIT
-                              </span>
-                            {:else if match.selesai}
-                              <span class="text-[7.5px] font-black text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-1 rounded">
-                                SELESAI
-                              </span>
-                            {:else if liveSyncVersion >= 0 && isMatchLive(match.id, tatamis)}
-                              {@const liveTNum = getRunningTatamiForMatch(match.id, tatamis) || match.assigned_tatami_id || 1}
-                              <span class="text-[7.5px] font-black text-white bg-red-600 px-1 py-0.2 rounded tracking-wide animate-pulse shadow-xs">
-                                LIVE T{liveTNum}
-                              </span>
-                            {/if}
-                          </div>
-
-                          {#if isEditMode && editedMatchups[match.id]}
-                            <!-- Edit Mode AKA Dropdown -->
-                            <div class="player-row flex items-center px-1.5 py-1 min-h-[30px] {isDarkMode ? 'bg-[#14161a]' : 'bg-slate-50'}">
-                              <div class="flex items-center space-x-1 w-full min-w-0">
-                                <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
-                                  AKA
-                                </span>
-                                <select
-                                  bind:value={editedMatchups[match.id].atlet1_id}
-                                  onclick={(e) => e.stopPropagation()}
-                                  class="w-full text-[10px] font-bold py-0.5 px-1 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
-                                >
-                                  <option value={null}>- Kosong / BYE -</option>
-                                  {#if match.atlet1_id && !categoryAthletes.some((a) => a.id === match.atlet1_id)}
-                                    <option value={match.atlet1_id}>
-                                      {match.atlet1_nama || `Atlet #${match.atlet1_id}`} ({match.atlet1_kontingen || '-'}) [Saat ini]
-                                    </option>
-                                  {/if}
-                                  {#each categoryAthletes as a (a.id)}
-                                    <option value={a.id}>
-                                      {a.nama_atlet} ({a.perguruan_nama || a.utusan_nama || '-'}{a.is_priority ? ' ★' : ''})
-                                    </option>
-                                  {/each}
-                                </select>
-                              </div>
-                            </div>
-                          {:else}
-                            <!-- Regular AKA (Red) Row -->
-                            <div class="player-row {match.pemenang === '1' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative">
-                              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-                                <span class="side-pill-aka w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#dc2626] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
-                                  AKA
-                                </span>
-                                {#if (match.atlet1_logo && logoMap[match.atlet1_logo]) || match.atlet1_is_priority}
-                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet1_is_priority ? 'has-priority mr-[2px]' : ''}">
-                                    {#if match.atlet1_logo && logoMap[match.atlet1_logo]}
-                                      <img
-                                        src={logoMap[match.atlet1_logo]}
-                                        alt="Logo"
-                                        class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
-                                      />
-                                    {/if}
-                                    {#if match.atlet1_is_priority}
-                                      <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                          <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                        </svg>
-                                      </span>
-                                    {/if}
-                                  </div>
-                                {/if}
-                                <div class="min-w-0 flex-1 leading-tight">
-                                  <div class="flex items-center space-x-1 min-w-0">
-                                    {#if match.pemenang === '1'}
-                                      <span class="text-amber-400 shrink-0" title="Pemenang">
-                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="0 0 24 24">
-                                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
-                                        </svg>
-                                      </span>
-                                    {/if}
-                                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {match.atlet1_nama ? (isDarkMode ? (match.pemenang === '1' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
-                                      {match.atlet1_nama || (match.atlet1_id ? `Atlet #${match.atlet1_id}` : 'BYE')}
-                                    </span>
-                                    {#if match.vr1}
-                                      <span class="text-[7px] font-mono font-black px-0.5 bg-red-600 text-white rounded shrink-0">VR</span>
-                                    {/if}
-                                  </div>
-                                  <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
-                                    {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
-                                  </div>
-                                  {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
-                                    <div class="kata-row flex items-center leading-none mt-[0.5px]">
-                                      <span
-                                        class="kata-badge-aka text-[6px] font-black px-1 py-0 inline-flex items-center leading-[7.5px] {isDarkMode ? 'bg-red-500/25 text-red-200 border-red-500/50' : 'bg-red-100 text-red-900 border-red-400'} border rounded max-w-[130px] truncate"
-                                        title="Kata: {match.kata1}"
-                                      >
-                                        {match.kata1}
-                                      </span>
-                                    </div>
-                                  {/if}
-                                </div>
-                              </div>
-                              <div class="shrink-0 flex items-center">
-                                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
-                                  {match.score1 ?? '-'}
-                                </span>
-                              </div>
-                            </div>
-                          {/if}
-
-                          {#if isEditMode && editedMatchups[match.id]}
-                            <!-- Edit Mode AO Dropdown -->
-                            <div class="player-row flex items-center px-1.5 py-1 min-h-[30px] border-t {isDarkMode ? 'border-zinc-700/60 bg-[#14161a]' : 'border-slate-200 bg-slate-50'}">
-                              <div class="flex items-center space-x-1 w-full min-w-0">
-                                <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-0.5 rounded shrink-0 tracking-wider shadow-xs">
-                                  AO
-                                </span>
-                                <select
-                                  bind:value={editedMatchups[match.id].atlet2_id}
-                                  onclick={(e) => e.stopPropagation()}
-                                  class="w-full text-[10px] font-bold py-0.5 px-1 rounded border {isDarkMode ? 'bg-[#1e2024] text-zinc-100 border-amber-500/50 focus:border-amber-400' : 'bg-white text-slate-900 border-amber-500/70 focus:border-amber-600'} focus:outline-none focus:ring-1 focus:ring-amber-500 truncate"
-                                >
-                                  <option value={null}>- Kosong / BYE -</option>
-                                  {#if match.atlet2_id && !categoryAthletes.some((a) => a.id === match.atlet2_id)}
-                                    <option value={match.atlet2_id}>
-                                      {match.atlet2_nama || `Atlet #${match.atlet2_id}`} ({match.atlet2_kontingen || '-'}) [Saat ini]
-                                    </option>
-                                  {/if}
-                                  {#each categoryAthletes as a (a.id)}
-                                    <option value={a.id}>
-                                      {a.nama_atlet} ({a.perguruan_nama || a.utusan_nama || '-'}{a.is_priority ? ' ★' : ''})
-                                    </option>
-                                  {/each}
-                                </select>
-                              </div>
-                            </div>
-                          {:else}
-                            <!-- Regular AO (Blue) Row -->
-                            <div class="player-row {match.pemenang === '2' ? 'player-row-winner ' + (isDarkMode ? 'bg-amber-500/15 border-l-4 border-amber-500' : 'bg-[#fef3c7] border-l-4 border-amber-500') : (isDarkMode ? 'bg-transparent text-zinc-100' : 'bg-white text-slate-900')} flex items-center justify-between px-1.5 py-[0.5px] min-h-[17px] transition relative border-t {isDarkMode ? 'border-zinc-700/60' : 'border-slate-300'}">
-                              <div class="flex items-center space-x-1 mr-1 min-w-0 flex-1">
-                                <span class="side-pill-ao w-[22px] inline-flex items-center justify-center text-[7px] font-mono font-black text-white bg-[#2563eb] py-[0.5px] rounded shrink-0 tracking-wider shadow-xs">
-                                  AO
-                                </span>
-                                {#if (match.atlet2_logo && logoMap[match.atlet2_logo]) || match.atlet2_is_priority}
-                                  <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {match.atlet2_is_priority ? 'has-priority mr-[2px]' : ''}">
-                                    {#if match.atlet2_logo && logoMap[match.atlet2_logo]}
-                                      <img
-                                        src={logoMap[match.atlet2_logo]}
-                                        alt="Logo"
-                                        class="player-dojo-logo w-3 h-3 max-w-3 max-h-3 object-contain shrink-0"
-                                      />
-                                    {/if}
-                                    {#if match.atlet2_is_priority}
-                                      <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                          <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                        </svg>
-                                      </span>
-                                    {/if}
-                                  </div>
-                                {/if}
-                                <div class="min-w-0 flex-1 leading-tight">
-                                  <div class="flex items-center space-x-1 min-w-0">
-                                    {#if match.pemenang === '2'}
-                                      <span class="text-amber-400 shrink-0" title="Pemenang">
-                                        <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                          <path d="M5 16L3 5l5.5 5L12 4l3.5 6L21 5l-2 11H5zm14 3c0 .6-.4 1-1 1H6c-.6 0-1-.4-1-1v-1h14v1z"/>
-                                        </svg>
-                                      </span>
-                                    {/if}
-                                    <span class="player-name-text truncate block text-[8.5px] leading-[10px] {match.atlet2_nama ? (isDarkMode ? (match.pemenang === '2' ? 'font-black text-amber-300' : 'font-black text-white') : 'font-black text-black') : (isDarkMode ? 'italic text-zinc-400 font-bold' : 'italic text-slate-600 font-bold')}">
-                                      {match.atlet2_nama || (match.atlet2_id ? `Atlet #${match.atlet2_id}` : 'BYE')}
-                                    </span>
-                                    {#if match.vr2}
-                                      <span class="text-[7px] font-mono font-black px-0.5 bg-blue-600 text-white rounded shrink-0">VR</span>
-                                    {/if}
-                                  </div>
-                                  <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
-                                    {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
-                                  </div>
-                                  {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
-                                    <div class="kata-row flex items-center leading-none mt-[0.5px]">
-                                      <span
-                                        class="kata-badge-ao text-[6px] font-black px-1 py-0 inline-flex items-center leading-[7.5px] {isDarkMode ? 'bg-blue-500/25 text-blue-200 border-blue-500/50' : 'bg-blue-100 text-blue-900 border-blue-400'} border rounded max-w-[130px] truncate"
-                                        title="Kata: {match.kata2}"
-                                      >
-                                        {match.kata2}
-                                      </span>
-                                    </div>
-                                  {/if}
-                                </div>
-                              </div>
-                              <div class="shrink-0 flex items-center">
-                                <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
-                                  {match.score2 ?? '-'}
-                                </span>
-                              </div>
-                            </div>
-                          {/if}
-                        </div>
-                      {:else}
-                        <div class="empty-slot w-full border border-dashed {isDarkMode ? 'border-zinc-700 text-zinc-400 bg-white/[0.02]' : 'border-slate-400 text-slate-600 bg-white/40'} rounded-md h-9 flex items-center justify-center text-[9px] font-mono font-bold">
-                          Kosong
-                        </div>
-                      {/if}
-                    </div>
-                  {/each}
-
-                  <!-- Column 4 Bottom Section: Ambrilindo Logo + Hasil Juara Podium Card -->
-                  {#if roundNum === 4}
-                    <div class="absolute bottom-0 right-0 w-full flex flex-col items-end z-20">
-                      <!-- Ambrilindo Brand Logo (Enlarged, Right-Aligned) -->
-                      <div class="mb-2.5 flex items-center justify-end w-full pr-1">
-                        <img
-                          src="/img/ambrilindo-logo.webp"
-                          alt="Ambrilindo"
-                          class="podium-brand-logo h-11 max-w-[180px] object-contain"
-                        />
-                      </div>
-
-                      <!-- Hasil Juara Podium Card -->
-                      <div class="podium-card w-full {isDarkMode ? 'bg-[#181a20] border-amber-500/80 shadow-lg' : 'bg-white border-amber-500 shadow-sm'} border-2 rounded-lg overflow-hidden">
-                        <div class="podium-header px-2.5 py-1 {isDarkMode ? 'bg-amber-500/20 border-amber-500/40' : 'bg-[#fef3c7] border-amber-300'} border-b flex items-center justify-between">
-                          <div class="flex items-center space-x-1.5">
-                            <span class="{isDarkMode ? 'text-amber-400' : 'text-amber-700'} flex items-center">
-                              <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-                                <path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0011 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 003.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/>
-                              </svg>
-                            </span>
-                            <span class="text-[11px] font-black {isDarkMode ? 'text-amber-300' : 'text-amber-950'} tracking-tight">Hasil Juara</span>
-                          </div>
-                        </div>
-
-                        <div class="divide-y {isDarkMode ? 'divide-zinc-700/60' : 'divide-slate-200'} text-[10px]">
-                          <!-- Juara 1 (Gold) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-amber-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
-                              1
-                            </span>
-                            {#if (podium.j1.logo && logoMap[podium.j1.logo]) || podium.j1.is_priority}
-                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j1.is_priority ? 'has-priority mr-[3px]' : ''}">
-                                {#if podium.j1.logo && logoMap[podium.j1.logo]}
-                                  <img
-                                    src={logoMap[podium.j1.logo]}
-                                    alt="Logo"
-                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
-                                  />
-                                {/if}
-                                {#if podium.j1.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                    </svg>
-                                  </span>
-                                {/if}
-                              </div>
-                            {/if}
-                            <div class="min-w-0 truncate">
-                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j1.name}</div>
-                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j1.contingent}</div>
-                            </div>
-                          </div>
-
-                          <!-- Juara 2 (Silver) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
-                              2
-                            </span>
-                            {#if (podium.j2.logo && logoMap[podium.j2.logo]) || podium.j2.is_priority}
-                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j2.is_priority ? 'has-priority mr-[3px]' : ''}">
-                                {#if podium.j2.logo && logoMap[podium.j2.logo]}
-                                  <img
-                                    src={logoMap[podium.j2.logo]}
-                                    alt="Logo"
-                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
-                                  />
-                                {/if}
-                                {#if podium.j2.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                    </svg>
-                                  </span>
-                                {/if}
-                              </div>
-                            {/if}
-                            <div class="min-w-0 truncate">
-                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j2.name}</div>
-                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j2.contingent}</div>
-                            </div>
-                          </div>
-
-                          <!-- Juara 3A (Bronze) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
-                              3
-                            </span>
-                            {#if (podium.j3a.logo && logoMap[podium.j3a.logo]) || podium.j3a.is_priority}
-                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j3a.is_priority ? 'has-priority mr-[3px]' : ''}">
-                                {#if podium.j3a.logo && logoMap[podium.j3a.logo]}
-                                  <img
-                                    src={logoMap[podium.j3a.logo]}
-                                    alt="Logo"
-                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
-                                  />
-                                {/if}
-                                {#if podium.j3a.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                    </svg>
-                                  </span>
-                                {/if}
-                              </div>
-                            {/if}
-                            <div class="min-w-0 truncate">
-                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j3a.name}</div>
-                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j3a.contingent}</div>
-                            </div>
-                          </div>
-
-                          <!-- Juara 3B (Bronze) -->
-                          <div class="podium-row px-2 py-1 flex items-center space-x-1.5 {isDarkMode ? 'bg-transparent' : 'bg-white'}">
-                            <span class="w-4 h-4 rounded-full bg-gradient-to-br from-orange-200 to-amber-600 text-orange-950 font-black font-mono text-[9px] flex items-center justify-center shrink-0 shadow-xs">
-                              3
-                            </span>
-                            {#if (podium.j3b.logo && logoMap[podium.j3b.logo]) || podium.j3b.is_priority}
-                              <div class="logo-star-wrapper flex items-center shrink-0 space-x-0.5 {podium.j3b.is_priority ? 'has-priority mr-[3px]' : ''}">
-                                {#if podium.j3b.logo && logoMap[podium.j3b.logo]}
-                                  <img
-                                    src={logoMap[podium.j3b.logo]}
-                                    alt="Logo"
-                                    class="podium-dojo-logo w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0"
-                                  />
-                                {/if}
-                                {#if podium.j3b.is_priority}
-                                  <span class="seed-star-icon inline-flex items-center text-amber-500 shrink-0" title="Unggulan / Seeded">
-                                    <svg class="w-2.5 h-2.5 fill-current" viewBox="2 2 20 20">
-                                      <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
-                                    </svg>
-                                  </span>
-                                {/if}
-                              </div>
-                            {/if}
-                            <div class="min-w-0 truncate">
-                              <div class="podium-name font-black {isDarkMode ? 'text-white' : 'text-slate-950'} truncate leading-tight">{podium.j3b.name}</div>
-                              <div class="podium-sub text-[8.5px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} truncate leading-tight">{podium.j3b.contingent}</div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
+          <BracketTree
+            {matches}
+            meta={bracketMeta}
+            {podium}
+            theme={isDarkMode ? "dark" : "light"}
+            interactive
+            {logoMap}
+            {isEditMode}
+            bind:editedMatchups
+            {categoryAthletes}
+            {tatamis}
+            {liveSyncVersion}
+            onMatchClick={handleOpenMatchControl}
+            bind:gridEl
+          />
         </div>
       </div>
     {/if}
   </div>
 </div>
+{/if}
+
+<!-- Print-only page: identical to the bracket pages in the results/tatami booklets -->
+{#if !isRoundRobin && matches.length > 0}
+  <div class="bagan-print-page" aria-hidden="true">
+    <BracketPaperPage
+      kind={isFestivalBagan ? "festival" : "elim"}
+      {matches}
+      categoryName={displayBaganName}
+      baganKode={currentBaganInfo?.kode || baganInfo?.kode}
+      {eventName}
+      {eventVenue}
+      {eventDate}
+      {logoMap}
+      meta={bracketMeta}
+      {podium}
+      festivalGroupCount={festivalGroupCount}
+      festivalLayout={currentBaganInfo?.layout_type || "quadrant"}
+      widthMm={287}
+      heightMm={200}
+    />
+  </div>
 {/if}
 
 <!-- Festival Quick Score Modal -->
@@ -2529,796 +1850,37 @@
 />
 
 <style>
+  .bagan-print-page {
+    display: none;
+  }
+
   @media print {
     @page {
       size: A4 landscape;
-      margin: 4mm 6mm;
-    }
-    :global(html), :global(body) {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      color: #000000 !important;
-      width: 285mm !important;
-      max-width: 285mm !important;
-      height: 198mm !important;
-      max-height: 198mm !important;
-      overflow: hidden !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
+      margin: 5mm;
     }
     :global(.no-print) {
       display: none !important;
     }
-    .print-sheet {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      color: #000000 !important;
-      width: 287mm !important;
-      max-width: 287mm !important;
-      height: 198mm !important;
-      max-height: 198mm !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      overflow: hidden !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-      page-break-after: avoid !important;
-      break-after: avoid !important;
+    /* The screen view stays on screen; the paper page is what gets printed. */
+    .print-sheet.has-paper-print {
+      display: none !important;
     }
-    .bracket-banner {
-      position: relative !important;
-      border-bottom: 2px solid #000000 !important;
-      padding: 1mm 3mm !important;
-      margin-bottom: 1.5mm !important;
-      height: 15mm !important;
-      min-height: 14mm !important;
-      max-height: 15.5mm !important;
-      box-sizing: border-box !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      width: 287mm !important;
-      max-width: 287mm !important;
-    }
-    .banner-logos-left {
-      position: absolute !important;
-      left: 2mm !important;
-      top: 2.5mm !important;
-      transform: none !important;
-      bottom: auto !important;
-      display: flex !important;
-      align-items: center !important;
-      gap: 1.8mm !important;
-      background: transparent !important;
-      border: none !important;
-      padding: 0 !important;
-      box-shadow: none !important;
-      z-index: 10 !important;
-    }
-    .banner-logo-forki {
-      height: 9.5mm !important;
-      max-height: 9.5mm !important;
-      max-width: 11mm !important;
-      object-fit: contain !important;
+    .bagan-print-page {
       display: block !important;
+      position: fixed;
+      top: 0;
+      left: 0;
     }
-    .banner-logo-divider {
-      height: 7.5mm !important;
-      width: 1.2px !important;
-      background: #94a3b8 !important;
-      display: block !important;
-    }
-    .banner-logo-ambrilindo {
-      height: 5.5mm !important;
-      max-height: 5.5mm !important;
-      max-width: 25mm !important;
-      object-fit: contain !important;
-      display: block !important;
-    }
-    .banner-title-wrapper {
-      width: 100% !important;
-      text-align: center !important;
-      padding-left: 44mm !important;
-      padding-right: 44mm !important;
-    }
-    .bracket-banner h1 {
-      font-size: 12.5pt !important;
-      font-weight: 950 !important;
-      line-height: 1.15 !important;
-      color: #000000 !important;
-      text-transform: uppercase !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      letter-spacing: 0.3px !important;
-      text-align: center !important;
-    }
-    .bracket-banner p,
-    .bracket-banner span {
-      font-size: 8pt !important;
-      font-weight: 800 !important;
-      color: #1e293b !important;
-      text-align: center !important;
-    }
-    .bracket-viewport {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      border: none !important;
-      overflow: hidden !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      width: 287mm !important;
-      max-width: 287mm !important;
-      height: calc(200mm - 18mm) !important;
-      max-height: calc(200mm - 18mm) !important;
-    }
-    .zoom-container {
-      width: 1064px !important;
-      height: 692px !important;
-      min-width: 0 !important;
-      min-height: 0 !important;
-      background: #ffffff !important;
-      overflow: hidden !important;
-      display: block !important;
-    }
-    .bracket-outer {
-      position: relative !important;
-      transform: none !important;
-      width: 1064px !important;
-      height: 692px !important;
-      background: #ffffff !important;
-      overflow: hidden !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-      page-break-after: avoid !important;
-      break-after: avoid !important;
-    }
-    .bracket-svg {
-      position: absolute !important;
-      top: 0 !important;
-      left: 0 !important;
-      width: 100% !important;
-      height: 100% !important;
-      pointer-events: none !important;
+    /* Round robin prints its screen view: let it flow instead of clipping to the viewport. */
+    .print-sheet:not(.has-paper-print),
+    .print-sheet:not(.has-paper-print) .bracket-viewport {
+      height: auto !important;
       overflow: visible !important;
-      display: block !important;
-      z-index: 1 !important;
-    }
-    /* Festival Print Canvas & Layout Containers on A4 Landscape (Single Sheet - 100% Fill) */
-    .festival-canvas-wrapper {
-      width: 287mm !important;
-      max-width: 287mm !important;
-      height: 178mm !important;
-      max-height: 178mm !important;
       padding: 0 !important;
-      margin: 0 !important;
-      overflow: hidden !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-      page-break-after: avoid !important;
-      break-after: avoid !important;
-      display: flex !important;
-      flex-direction: column !important;
-      background: #ffffff !important;
-      color: #000000 !important;
-    }
-    .festival-split-canvas {
-      width: 100% !important;
-      max-width: 287mm !important;
-      height: 100% !important;
-      max-height: 100% !important;
-      border: 2px solid #000000 !important;
-      background: #ffffff !important;
-      overflow: hidden !important;
-      box-shadow: none !important;
-      border-radius: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-      page-break-after: avoid !important;
-      break-after: avoid !important;
-    }
-
-    /* 2-Column Grid (When 4 to 6 Groups exist - 100% Vertical Fill) */
-    .festival-quadrants-grid {
-      display: grid !important;
-      grid-template-columns: 1fr 1fr !important;
-      height: 100% !important;
-      max-height: 100% !important;
-      flex: 1 !important;
-      overflow: hidden !important;
-      border-collapse: collapse !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-    }
-    .festival-quadrants-grid-4 {
-      grid-template-rows: repeat(2, 1fr) !important;
-    }
-    .festival-quadrants-grid-6 {
-      grid-template-rows: repeat(3, 1fr) !important;
-    }
-    .group-quadrant-empty {
-      border: 1.5px dashed #94a3b8 !important;
-      background: #f8fafc !important;
-    }
-    .group-quadrant {
-      background: #ffffff !important;
-      color: #000000 !important;
-      border: 1px solid #000000 !important;
-      padding: 1.2mm 2mm !important;
-      box-sizing: border-box !important;
-      overflow: hidden !important;
-      flex: 1 !important;
-      height: 100% !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-    }
-    .group-quadrant-empty {
-      background: #f8fafc !important;
-      border: 1.5px dashed #475569 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      align-items: center !important;
-      justify-content: center !important;
-      text-align: center !important;
-      height: 100% !important;
-      width: 100% !important;
-      box-sizing: border-box !important;
-      padding: 3mm !important;
-    }
-    .group-quadrant-empty .empty-group-badge {
-      border: 1.8px solid #000000 !important;
-      color: #000000 !important;
-      background: #e2e8f0 !important;
-      font-weight: 950 !important;
-      font-size: 8.5pt !important;
-      width: 6mm !important;
-      height: 6mm !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      margin-bottom: 1.2mm !important;
-      border-radius: 9999px !important;
-    }
-    .group-quadrant-empty .empty-group-title {
-      color: #000000 !important;
-      font-weight: 950 !important;
-      font-size: 8.5pt !important;
-      letter-spacing: 0.3px !important;
-      line-height: 1.2 !important;
-      text-transform: uppercase !important;
-      display: block !important;
-    }
-    .group-quadrant-empty .empty-group-desc {
-      color: #1e293b !important;
-      font-weight: 850 !important;
-      font-size: 7pt !important;
-      line-height: 1.2 !important;
-      margin-top: 1mm !important;
-      display: block !important;
-    }
-
-    /* Full-Width Horizontal Bands (When 1, 2, or 3 Groups exist - Zero Wasted Space) */
-    .festival-bands-grid {
-      display: flex !important;
-      flex-direction: column !important;
-      height: 100% !important;
-      max-height: 100% !important;
-      width: 100% !important;
-      overflow: hidden !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-    }
-    .group-band {
-      flex: 1 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
-      border-bottom: 2px solid #000000 !important;
-      padding: 1.5mm 3mm !important;
-      box-sizing: border-box !important;
-      overflow: hidden !important;
-      background: #ffffff !important;
-      color: #000000 !important;
-      page-break-inside: avoid !important;
-      break-inside: avoid !important;
-    }
-    .group-band:last-child {
-      border-bottom: none !important;
-    }
-
-    .bracket-grid {
-      position: relative !important;
-      background: transparent !important;
-      z-index: 2 !important;
-    }
-
-    /* Print Column Headers */
-    .col-header-badge {
-      background: #000000 !important;
-      background-color: #000000 !important;
-      color: #ffffff !important;
-      border: 1.5px solid #000000 !important;
-      font-weight: 900 !important;
-    }
-    .col-header-title {
-      color: #000000 !important;
-      text-align: center !important;
-      font-weight: 900 !important;
-    }
-    .col-header-line {
-      height: 32px !important;
-      padding-bottom: 4px !important;
-      margin-bottom: 4px !important;
-      border-bottom: 2px solid #000000 !important;
-      justify-content: center !important;
-      text-align: center !important;
-    }
-
-    /* Print Match Cards */
-    .match-card {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      border: 1.8px solid #000000 !important;
-      box-shadow: none !important;
-    }
-    .match-card-bye {
-      border: 1.5px dashed #475569 !important;
-      background: #f8fafc !important;
-      background-color: #f8fafc !important;
-    }
-    .card-header-bar {
-      background: #e2e8f0 !important;
-      background-color: #e2e8f0 !important;
-      border-bottom: 1.5px solid #000000 !important;
-      color: #000000 !important;
-      padding: 0 4px !important;
-      height: 14px !important;
-      min-height: 14px !important;
-      line-height: 14px !important;
-      font-size: 8pt !important;
-      font-weight: 900 !important;
-    }
-    .card-header-bar span {
-      color: #000000 !important;
-      font-weight: 900 !important;
-    }
-    .card-header-bar .final-title {
-      color: #92400e !important;
-      font-weight: 950 !important;
-    }
-
-    /* Player Rows */
-    .player-row {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      border-color: #000000 !important;
-      min-height: 19px !important;
-      padding: 0.8mm 2.5mm !important;
-    }
-    .player-name-text {
-      color: #000000 !important;
-      font-weight: 950 !important;
-      font-size: 9.5pt !important;
-      line-height: 11.5pt !important;
-    }
-    .player-sub-text {
-      color: #0f172a !important;
-      font-weight: 800 !important;
-      font-size: 8pt !important;
-      line-height: 9.5pt !important;
-      margin-top: 0.3mm !important;
-      display: block !important;
-      white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
-    .kata-row {
-      margin-top: 0.5px !important;
-      line-height: 1 !important;
-    }
-    .score-box {
-      background: #f8fafc !important;
-      background-color: #f8fafc !important;
-      border: 1.5px solid #000000 !important;
-      color: #000000 !important;
-      font-weight: 950 !important;
-      min-width: 20px !important;
-      height: 16px !important;
-      font-size: 9pt !important;
-      padding: 0 1px !important;
-    }
-
-    /* Winner Row Highlighting in Print */
-    .player-row-winner {
-      background: #fef3c7 !important;
-      background-color: #fef3c7 !important;
-      border-left: 5px solid #000000 !important;
-    }
-    .player-row-winner .player-name-text {
-      color: #000000 !important;
-      font-weight: 950 !important;
-    }
-    .player-row-winner .player-sub-text {
-      color: #451a03 !important;
-      font-weight: 800 !important;
-    }
-    .player-row-winner .score-box {
-      background: #fde047 !important;
-      background-color: #fde047 !important;
-      border: 2px solid #000000 !important;
-      color: #000000 !important;
-      font-weight: 950 !important;
-    }
-
-    /* Side Pills in Print */
-    .side-pill-aka {
-      background: #b91c1c !important;
-      background-color: #b91c1c !important;
-      color: #ffffff !important;
-      font-weight: 950 !important;
-      font-size: 7.5pt !important;
-      width: 24px !important;
-      min-width: 24px !important;
-      max-width: 24px !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      padding: 0.5px 0 !important;
-      text-align: center !important;
-    }
-    .side-pill-ao {
-      background: #1d4ed8 !important;
-      background-color: #1d4ed8 !important;
-      color: #ffffff !important;
-      font-weight: 950 !important;
-      font-size: 7.5pt !important;
-      width: 24px !important;
-      min-width: 24px !important;
-      max-width: 24px !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      padding: 0.5px 0 !important;
-      text-align: center !important;
-    }
-
-    /* Empty Slots */
-    .empty-slot {
-      background: #ffffff !important;
-      background-color: #ffffff !important;
-      border: 1.5px dashed #64748b !important;
-      color: #334155 !important;
-      font-weight: 800 !important;
-    }
-
-    /* Kata Badges in Print */
-    .kata-badge-aka {
-      background: #fee2e2 !important;
-      background-color: #fee2e2 !important;
-      color: #7f1d1d !important;
-      border: 1px solid #991b1b !important;
-      font-size: 6px !important;
-      font-weight: 900 !important;
-      line-height: 7.5px !important;
-      padding: 0.5px 2px !important;
-      margin-top: 0px !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      flex-shrink: 0 !important;
-      max-width: 125px !important;
-    }
-    .kata-badge-ao {
-      background: #dbeafe !important;
-      background-color: #dbeafe !important;
-      color: #1e3a8a !important;
-      border: 1px solid #1e40af !important;
-      font-size: 6px !important;
-      font-weight: 900 !important;
-      line-height: 7.5px !important;
-      padding: 0.5px 2px !important;
-      margin-top: 0px !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      flex-shrink: 0 !important;
-      max-width: 125px !important;
-    }
-
-    /* Connector SVG Lines in Print */
-    :global(svg line.connector-line) {
-      stroke: #000000 !important;
-      stroke-width: 1.6px !important;
-    }
-
-    /* Banner Festival Print Styles - High Contrast */
-    .bracket-banner .festival-tag-badge {
-      color: #065f46 !important;
-      background: #ecfdf5 !important;
-      border: 1.2px solid #059669 !important;
-      font-weight: 900 !important;
-    }
-    .bracket-banner .festival-type-badge {
-      color: #000000 !important;
-      background: #f1f5f9 !important;
-      border: 1.2px solid #000000 !important;
-      font-weight: 900 !important;
-    }
-    .bracket-banner .festival-count-badge {
-      color: #000000 !important;
-      font-weight: 900 !important;
-    }
-    .bracket-banner p,
-    .bracket-banner p span {
-      color: #000000 !important;
-      font-weight: 800 !important;
-    }
-
-    /* Festival Detailed Layout in Print (Shared between 4-Quadrant and Bands) */
-    .group-header-line {
-      height: 4.8mm !important;
-      min-height: 4.8mm !important;
-      padding-bottom: 0.4mm !important;
-      margin-bottom: 0.8mm !important;
-      border-bottom: 1.5px solid #000000 !important;
-      line-height: 1 !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: space-between !important;
-    }
-    .group-header-badge {
-      background: #000000 !important;
-      color: #ffffff !important;
-      font-weight: 900 !important;
-    }
-    .group-header-title {
-      color: #000000 !important;
-      font-weight: 950 !important;
-      font-size: 8pt !important;
-    }
-
-    /* Stage Header (Semifinal / Final) in Print */
-    .stage-header-line {
-      height: 4mm !important;
-      min-height: 4mm !important;
-      padding-bottom: 0.3mm !important;
-      margin-bottom: 0.8mm !important;
-      border-bottom: 1.2px solid #000000 !important;
-      line-height: 1 !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-    }
-    .stage-header-spacer {
-      height: 4mm !important;
-      min-height: 4mm !important;
-      margin-bottom: 0.8mm !important;
-    }
-    .stage-header-badge {
-      background: #000000 !important;
-      color: #ffffff !important;
-      font-weight: 900 !important;
-      font-size: 6.5pt !important;
-    }
-    .stage-header-title {
-      color: #000000 !important;
-      font-weight: 900 !important;
-      font-size: 7.2pt !important;
-    }
-    .col-final .stage-header-title {
-      color: #92400e !important;
-      font-weight: 950 !important;
-    }
-    .col-final .stage-header-badge {
-      background: #d97706 !important;
-      color: #ffffff !important;
       border: none !important;
+      background: #ffffff !important;
     }
-
-    /* 2-Column Balanced Bracket (Semifinal -> Fork -> Final) */
-    .quadrant-grid-2col,
-    .band-grid-2col {
-      display: flex !important;
-      flex-direction: row !important;
-      align-items: stretch !important;
-      justify-content: space-between !important;
-      height: calc(100% - 5.6mm) !important;
-      width: 100% !important;
-      gap: 0 !important;
-    }
-    .group-quadrant .col-semi,
-    .group-quadrant .col-final {
-      flex: 1 !important;
-      width: auto !important;
-      min-width: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
-      height: 100% !important;
-    }
-    .group-quadrant .connector-fork-col,
-    .group-quadrant .quadrant-connector-fork {
-      width: 7mm !important;
-      min-width: 7mm !important;
-      max-width: 7mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      height: 100% !important;
-    }
-    .band-connector-fork {
-      width: 12mm !important;
-      min-width: 12mm !important;
-      max-width: 12mm !important;
-      flex-shrink: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      height: 100% !important;
-    }
-    .connector-slot {
-      height: 18mm !important;
-      min-height: 18mm !important;
-      max-height: 18mm !important;
-      box-sizing: border-box !important;
-    }
-    .connector-spine-track {
-      top: 9mm !important;
-      bottom: 9mm !important;
-    }
-    .connector-arm-left,
-    .connector-arm-right {
-      border-bottom-width: 1.8px !important;
-      border-bottom-color: #000000 !important;
-      border-bottom-style: solid !important;
-    }
-    .connector-spine-bar {
-      border-left-width: 1.8px !important;
-      border-left-color: #000000 !important;
-      border-left-style: solid !important;
-    }
-
-    /* Cards, Rows, and Badges in Print */
-    .group-quadrant .semi-cards-flex,
-    .group-band .semi-cards-flex {
-      flex: 1 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: space-between !important;
-      height: 100% !important;
-      gap: 1mm !important;
-    }
-    .group-quadrant .final-card-centered,
-    .group-band .final-card-centered {
-      flex: 1 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      justify-content: center !important;
-      height: 100% !important;
-    }
-
-    .group-quadrant .festival-match-card,
-    .group-band .festival-match-card {
-      height: 18mm !important;
-      min-height: 18mm !important;
-      max-height: 18mm !important;
-      flex: none !important;
-      display: flex !important;
-      flex-direction: column !important;
-      border: 1.5px solid #000000 !important;
-      border-radius: 0.8mm !important;
-      overflow: hidden !important;
-      box-sizing: border-box !important;
-    }
-    .group-quadrant .card-header-bar,
-    .group-band .card-header-bar {
-      height: 3.8mm !important;
-      min-height: 3.8mm !important;
-      font-size: 7pt !important;
-      font-weight: 950 !important;
-      padding: 0 1.5mm !important;
-    }
-    .group-quadrant .player-row,
-    .group-band .player-row {
-      min-height: 6.8mm !important;
-      padding: 0.4mm 1.5mm !important;
-      flex: 1 !important;
-    }
-    .group-quadrant .player-name-text,
-    .group-band .player-name-text {
-      font-size: 8pt !important;
-      line-height: 9.5pt !important;
-      font-weight: 950 !important;
-      color: #000000 !important;
-      letter-spacing: -0.1px !important;
-    }
-    .group-band .player-sub-text,
-    .group-quadrant .player-sub-text {
-      font-size: 6.8pt !important;
-      line-height: 8pt !important;
-      font-weight: 700 !important;
-      color: #1e293b !important;
-      margin-top: 0.2mm !important;
-      padding-bottom: 0.1mm !important;
-      white-space: nowrap !important;
-      overflow: hidden !important;
-      text-overflow: ellipsis !important;
-    }
-    .group-quadrant .side-pill-aka,
-    .group-quadrant .side-pill-ao,
-    .group-band .side-pill-aka,
-    .group-band .side-pill-ao {
-      font-size: 6.5pt !important;
-      font-weight: 950 !important;
-      padding: 0.3mm 1mm !important;
-      border-radius: 0.5mm !important;
-      width: 20px !important;
-      min-width: 20px !important;
-      max-width: 20px !important;
-    }
-    .group-quadrant .score-box,
-    .group-band .score-box {
-      width: 5.5mm !important;
-      height: 4.8mm !important;
-      font-size: 8pt !important;
-      font-weight: 950 !important;
-    }
-
-    /* Connector SVG Lines in Print (Pure lines, fill: none) */
-    :global(svg line.connector-line) {
-      stroke: #000000 !important;
-      stroke-width: 2.2px !important;
-      stroke-linecap: round !important;
-      fill: none !important;
-    }
-
-    /* Contingent Dojo Logos in Print */
-    .player-dojo-logo {
-      width: 12px !important;
-      height: 12px !important;
-      max-width: 12px !important;
-      max-height: 12px !important;
-      object-fit: contain !important;
-      flex-shrink: 0 !important;
-      display: inline-block !important;
-      border: none !important;
-    }
-    .podium-brand-logo {
-      height: 38px !important;
-      max-height: 42px !important;
-      max-width: 180px !important;
-      object-fit: contain !important;
-      display: block !important;
-      margin: 0 0 6px auto !important;
-    }
-    .seed-star-icon svg {
-      width: 9.5px !important;
-      height: 9.5px !important;
-      fill: #d97706 !important;
-      color: #d97706 !important;
-    }
-    .logo-star-wrapper.has-priority {
-      margin-right: 3px !important;
-    }
-  }
-
-  .kata-row {
-    display: flex;
-    align-items: center;
-    line-height: 1;
-    margin-top: 0.5px;
-  }
-
-  .player-dojo-logo {
-    width: 12px;
-    height: 12px;
-    max-width: 12px;
-    max-height: 12px;
-    object-fit: contain;
-    flex-shrink: 0;
   }
 
   /* Screen Classes for Festival Bands & Quadrants */

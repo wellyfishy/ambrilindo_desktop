@@ -7,6 +7,8 @@
   import DaftarJuaraPrintSheet from "$lib/components/DaftarJuaraPrintSheet.svelte";
   import KlasemenMedaliPrintSheet from "$lib/components/KlasemenMedaliPrintSheet.svelte";
   import ResultCoverSheet from "$lib/components/ResultCoverSheet.svelte";
+  import BracketPaperPage from "$lib/components/BracketPaperPage.svelte";
+  import { computePodium, deriveBracketMeta, isFestivalName, winnersToPodium } from "$lib/bracket_layout";
   import { loadCoverSettings, resolveCoverText, type CoverSettings } from "$lib/cover_settings";
 
   interface Props {
@@ -32,7 +34,6 @@
   let printMode = $state<"combined" | "portrait" | "landscape">("combined");
   let viewFilter = $state<"all" | "portrait" | "landscape">("all");
   let zoomLevel = $state<"100" | "85" | "fit">("100");
-  let bookletPruneEmptyRounds = $state(true);
   let isJumpMenuOpen = $state(false);
   let isExportingPdf = $state(false);
   let exportSuccessMessage = $state<string | null>(null);
@@ -375,6 +376,11 @@ ${inlinedCss}
       margin: 0 !important;
       padding: 0 !important;
     }
+    /* Nothing follows the last bracket page: a forced break there spills a blank sheet. */
+    .booklet-section-landscape > .booklet-page-landscape:last-of-type {
+      break-after: auto !important;
+      page-break-after: auto !important;
+    }
     ${mode === "portrait" ? ".booklet-section-landscape, .booklet-page-landscape, .paper-sheet-landscape { display: none !important; }" : ""}
     ${mode === "landscape" ? ".booklet-section-portrait, .booklet-page-portrait, .paper-sheet-portrait, .booklet-page-cover { display: none !important; }" : ""}
   </style>
@@ -454,107 +460,11 @@ ${inlinedCss}
     }
   }
 
-// Bracket Helpers for Landscape Attachment
-  function groupMatchesByRound(matches: DetailBaganItem[], pruneEmpty: boolean = true): Map<number, DetailBaganItem[]> {
-    const map = new Map<number, DetailBaganItem[]>();
-    const validMatches = matches.filter((m) => !m.round || m.round <= 4);
-
-    let startRound = 1;
-    if (pruneEmpty) {
-      let minActiveRound: number | null = null;
-      for (const m of validMatches) {
-        if (m.atlet1_nama || m.atlet2_nama) {
-          const r = m.round || 1;
-          if (minActiveRound === null || r < minActiveRound) {
-            minActiveRound = r;
-          }
-        }
-      }
-      if (minActiveRound !== null) {
-        startRound = minActiveRound;
-      }
-    }
-
-    validMatches.forEach((m) => {
-      const r = m.round || 1;
-      if (r >= startRound) {
-        if (!map.has(r)) map.set(r, []);
-        map.get(r)!.push(m);
-      }
-    });
-    for (const [_, list] of map) {
-      list.sort((a, b) => (a.urutan || a.id) - (b.urutan || b.id));
-    }
-    return map;
-  }
-
-  function getRoundTitleText(colIdx: number, totalCols: number): string {
-    const stepFromFinal = totalCols - 1 - colIdx;
-    if (stepFromFinal === 0) return "PARTAI FINAL";
-    if (stepFromFinal === 1) return "SEMI FINAL";
-    if (stepFromFinal === 2) return "PEREMPAT FINAL";
-    if (stepFromFinal === 3) return "BABAK 16 BESAR";
-    return `BABAK ${colIdx + 1}`;
-  }
-
-  function formatMatchTitle(colIdx: number, totalCols: number, match: DetailBaganItem, idx: number): string {
-    const stepFromFinal = totalCols - 1 - colIdx;
-    const num = match.urutan || (idx + 1);
-    if (stepFromFinal === 0) return "PARTAI FINAL";
-    if (stepFromFinal === 1) return `SEMI ${num}`;
-    return `MATCH ${num}`;
-  }
-
   // Filtered brackets that actually have matches
   let activeBrackets = $derived.by(() => {
     if (!bookletData?.category_brackets) return [];
     return bookletData.category_brackets.filter((b) => b.matches && b.matches.length > 0);
   });
-  function getFestivalGroups(matches: DetailBaganItem[]) {
-    const groups = [];
-    for (let g = 1; g <= 6; g++) {
-      const semi1 = matches.find((m) => m.round === 1 && m.urutan === 2 * g - 1) || null;
-      const semi2 = matches.find((m) => m.round === 1 && m.urutan === 2 * g) || null;
-      const finalMatch = matches.find((m) => m.round === 2 && m.urutan === g) || null;
-      if (!semi1 && !semi2 && !finalMatch) continue;
-
-      let emas: { name: string; contingent: string; logo: string | null } | null = null;
-      let perak: { name: string; contingent: string; logo: string | null } | null = null;
-      let perunggu1: { name: string; contingent: string; logo: string | null } | null = null;
-      let perunggu2: { name: string; contingent: string; logo: string | null } | null = null;
-
-      if (finalMatch && finalMatch.selesai && finalMatch.pemenang) {
-        if (finalMatch.pemenang === "1") {
-          emas = { name: finalMatch.atlet1_nama || "-", contingent: finalMatch.atlet1_kontingen || "-", logo: finalMatch.atlet1_logo || null };
-          perak = { name: finalMatch.atlet2_nama || "-", contingent: finalMatch.atlet2_kontingen || "-", logo: finalMatch.atlet2_logo || null };
-        } else if (finalMatch.pemenang === "2") {
-          emas = { name: finalMatch.atlet2_nama || "-", contingent: finalMatch.atlet2_kontingen || "-", logo: finalMatch.atlet2_logo || null };
-          perak = { name: finalMatch.atlet1_nama || "-", contingent: finalMatch.atlet1_kontingen || "-", logo: finalMatch.atlet1_logo || null };
-        }
-      }
-
-      if (semi1 && semi1.selesai && semi1.pemenang) {
-        const loserName = semi1.pemenang === "1" ? semi1.atlet2_nama : semi1.atlet1_nama;
-        const loserKont = semi1.pemenang === "1" ? semi1.atlet2_kontingen : semi1.atlet1_kontingen;
-        const loserLogo = semi1.pemenang === "1" ? semi1.atlet2_logo : semi1.atlet1_logo;
-        if (loserName && !loserName.toUpperCase().includes("BYE")) {
-          perunggu1 = { name: loserName, contingent: loserKont || "-", logo: loserLogo || null };
-        }
-      }
-
-      if (semi2 && semi2.selesai && semi2.pemenang) {
-        const loserName = semi2.pemenang === "1" ? semi2.atlet2_nama : semi2.atlet1_nama;
-        const loserKont = semi2.pemenang === "1" ? semi2.atlet2_kontingen : semi2.atlet1_kontingen;
-        const loserLogo = semi2.pemenang === "1" ? semi2.atlet2_logo : semi2.atlet1_logo;
-        if (loserName && !loserName.toUpperCase().includes("BYE")) {
-          perunggu2 = { name: loserName, contingent: loserKont || "-", logo: loserLogo || null };
-        }
-      }
-
-      groups.push({ groupNum: g, semi1, semi2, finalMatch, podium: { emas, perak, perunggu1, perunggu2 } });
-    }
-    return groups;
-  }
 </script>
 
 
@@ -958,9 +868,8 @@ ${inlinedCss}
               </div>
             {:else}
               {#each activeBrackets as bCat, bIdx}
-                {@const roundMap = groupMatchesByRound(bCat.matches, bookletPruneEmptyRounds)}
-                {@const sortedRounds = Array.from(roundMap.keys()).sort((a, b) => a - b)}
-                {@const totalRounds = sortedRounds.length}
+                {@const bName = bCat.bagan_nama || bCat.category_name}
+                {@const bMeta = deriveBracketMeta(bName, bCat.bagan_pool)}
                 <section id="page-bagan-{bCat.category_id}" class="booklet-page booklet-page-landscape">
                   <div class="no-print max-w-[297mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
                     <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 font-bold">
@@ -968,265 +877,24 @@ ${inlinedCss}
                     </span>
                     <span class="text-zinc-500">Lampiran Bagan {bIdx + 1} dari {activeBrackets.length} • {bCat.category_name}</span>
                   </div>
-                  <div class="paper-sheet paper-sheet-landscape">
-                    <!-- 1. Header Lembar Bagan -->
-                    <div class="border-b-2 border-slate-900 pb-2 mb-3 flex items-center justify-between">
-                      <div class="flex items-center space-x-3 min-w-0">
-                        <div class="flex items-center space-x-2 shrink-0 bg-white p-0.5 rounded">
-                          <img
-                            src={FORKI_LOGO_DATA_URL}
-                            alt="Logo FORKI"
-                            class="h-7 w-auto max-w-[32px] max-h-7 object-contain shrink-0" style="max-height: 28px; max-width: 32px; width: auto; height: auto;"
-                          />
-                          <div class="h-6 w-[1px] bg-slate-300 shrink-0"></div>
-                          {#if bookletData.event_info.logo && logoMap[bookletData.event_info.logo]}
-                            <img
-                              src={logoMap[bookletData.event_info.logo]}
-                              alt="Logo Event"
-                              class="h-7 w-auto max-w-[70px] max-h-7 object-contain shrink-0" style="max-height: 28px; max-width: 70px; width: auto; height: auto;"
-                              onerror={(e) => { (e.currentTarget as HTMLImageElement).src = FORKI_LOGO_DATA_URL; }}
-                            />
-                          {:else}
-                            <img
-                              src={AMBRILINDO_LOGO_DATA_URL}
-                              alt="Ambrilindo"
-                              class="h-5 w-auto object-contain shrink-0"
-                            />
-                          {/if}
-                        </div>
-                        <div class="min-w-0">
-                          <h2 class="text-sm font-black text-slate-950 uppercase tracking-tight truncate">
-                            {bCat.bagan_kode ? `(${bCat.bagan_kode}) ` : ''}{bCat.category_name}
-                          </h2>
-                          <p class="text-[10px] text-slate-600 font-medium truncate">
-                            {editableEventName} • {editableTempat} • {editableTanggal}
-                          </p>
-                        </div>
-                      </div>
-                      <div class="flex items-center space-x-2 shrink-0">
-                        <span class="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-slate-900 text-white">
-                          {bCat.discipline.toUpperCase()}
-                        </span>
-                        <span class="px-2 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                          {bCat.matches.length} PARTAI
-                        </span>
-                      </div>
-                    </div>
-
-                    <!-- 2. Bracket Grid Columns -->
-                    {#if bCat.category_name.toUpperCase().includes("FESTIVAL") || (bCat.bagan_nama && bCat.bagan_nama.toUpperCase().includes("FESTIVAL"))}
-                      {@const festGroups = getFestivalGroups(bCat.matches)}
-                      {@const totalSlots = festGroups.length <= 4 ? 4 : 6}
-                      <!-- Festival 4/6 Quadrant Grid in Booklet -->
-                      <div class="festival-split-canvas flex-1 border-2 border-slate-900 rounded overflow-hidden my-1 flex flex-col justify-between">
-                        <div class="grid grid-cols-2 divide-x-2 divide-y-2 divide-slate-900 h-full {totalSlots === 4 ? 'grid-rows-2' : 'grid-rows-3'}">
-                          {#each Array.from({ length: totalSlots }) as _, idx}
-                            {@const gNum = idx + 1}
-                            {@const fg = festGroups.find((g) => g.groupNum === gNum)}
-                            <div class="p-1.5 flex flex-col justify-between bg-white text-[9px] {totalSlots === 4 ? 'min-h-[145px]' : 'min-h-[95px]'}">
-                              <!-- Group Title Bar -->
-                              <div class="flex items-center justify-between pb-0.5 border-b border-slate-800 font-mono font-bold {fg ? '' : 'opacity-40'}">
-                                <span>GRUP {gNum} (POOL {String.fromCharCode(64 + gNum)})</span>
-                                {#if fg}
-                                  <span class="text-[7.5px] px-1 rounded {fg.finalMatch?.selesai ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-900'}">
-                                    {fg.finalMatch?.selesai ? 'SELESAI' : 'BERJALAN'}
-                                  </span>
-                                {:else}
-                                  <span class="text-[7.5px] px-1 rounded bg-slate-100 text-slate-500 font-normal">
-                                    KOSONG
-                                  </span>
-                                {/if}
-                              </div>
-
-                              {#if fg}
-                                <div class="flex items-stretch justify-between gap-2 mt-1 flex-1">
-                                  <!-- Semifinals -->
-                                  <div class="w-[48%] flex flex-col justify-around space-y-1">
-                                    {#if fg.semi1}
-                                      <div class="border border-slate-400 rounded p-1 {fg.semi1.pemenang ? 'bg-slate-50' : ''}">
-                                        <div class="text-[7px] text-slate-500 font-mono flex justify-between">
-                                          <span>SEMI 1</span>
-                                          <span>P-{fg.semi1.id}</span>
-                                        </div>
-                                        <div class="flex justify-between items-center text-[8px] {fg.semi1.pemenang === '1' ? 'font-black bg-amber-100' : ''}">
-                                          <span class="truncate">{fg.semi1.atlet1_nama || 'BYE'}</span>
-                                          <span class="font-mono ml-1">{fg.semi1.score1 ?? '-'}</span>
-                                        </div>
-                                        <div class="flex justify-between items-center text-[8px] {fg.semi1.pemenang === '2' ? 'font-black bg-amber-100' : ''}">
-                                          <span class="truncate">{fg.semi1.atlet2_nama || 'BYE'}</span>
-                                          <span class="font-mono ml-1">{fg.semi1.score2 ?? '-'}</span>
-                                        </div>
-                                      </div>
-                                    {/if}
-                                    {#if fg.semi2}
-                                      <div class="border border-slate-400 rounded p-1 {fg.semi2.pemenang ? 'bg-slate-50' : ''}">
-                                        <div class="text-[7px] text-slate-500 font-mono flex justify-between">
-                                          <span>SEMI 2</span>
-                                          <span>P-{fg.semi2.id}</span>
-                                        </div>
-                                        <div class="flex justify-between items-center text-[8px] {fg.semi2.pemenang === '1' ? 'font-black bg-amber-100' : ''}">
-                                          <span class="truncate">{fg.semi2.atlet1_nama || 'BYE'}</span>
-                                          <span class="font-mono ml-1">{fg.semi2.score1 ?? '-'}</span>
-                                        </div>
-                                        <div class="flex justify-between items-center text-[8px] {fg.semi2.pemenang === '2' ? 'font-black bg-amber-100' : ''}">
-                                          <span class="truncate">{fg.semi2.atlet2_nama || 'BYE'}</span>
-                                          <span class="font-mono ml-1">{fg.semi2.score2 ?? '-'}</span>
-                                        </div>
-                                      </div>
-                                    {/if}
-                                  </div>
-
-                                  <!-- Final & Podium -->
-                                  <div class="w-[50%] flex flex-col justify-between">
-                                    {#if fg.finalMatch}
-                                      <div class="border-1.5 border-amber-600 rounded p-1 bg-amber-50/20">
-                                        <div class="text-[7px] text-amber-900 font-mono font-bold flex justify-between">
-                                          <span>FINAL GRUP {gNum}</span>
-                                          <span>P-{fg.finalMatch.id}</span>
-                                        </div>
-                                        <div class="flex justify-between items-center text-[8px] {fg.finalMatch.pemenang === '1' ? 'font-black bg-amber-200' : ''}">
-                                          <span class="truncate">{fg.finalMatch.atlet1_nama || 'Pemenang S1'}</span>
-                                          <span class="font-mono ml-1">{fg.finalMatch.score1 ?? '-'}</span>
-                                        </div>
-                                        <div class="flex justify-between items-center text-[8px] {fg.finalMatch.pemenang === '2' ? 'font-black bg-amber-200' : ''}">
-                                          <span class="truncate">{fg.finalMatch.atlet2_nama || 'Pemenang S2'}</span>
-                                          <span class="font-mono ml-1">{fg.finalMatch.score2 ?? '-'}</span>
-                                        </div>
-                                      </div>
-                                    {/if}
-
-                                    <!-- Mini Podium Card -->
-                                    <div class="border border-amber-500 rounded bg-white text-[7.5px] overflow-hidden mt-1">
-                                      <div class="bg-amber-100 text-amber-950 font-bold px-1 py-0.2 uppercase text-[7px]">Hasil Juara</div>
-                                      <div class="px-1 py-0.5 divide-y divide-slate-100">
-                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-400 text-black font-bold flex items-center justify-center text-[6px]">1</span><span class="truncate font-bold">{fg.podium.emas?.name || '—'}</span></div>
-                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-slate-300 text-black font-bold flex items-center justify-center text-[6px]">2</span><span class="truncate">{fg.podium.perak?.name || '—'}</span></div>
-                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-700 text-white font-bold flex items-center justify-center text-[6px]">3</span><span class="truncate">{fg.podium.perunggu1?.name || '—'}</span></div>
-                                        <div class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-amber-700 text-white font-bold flex items-center justify-center text-[6px]">3</span><span class="truncate">{fg.podium.perunggu2?.name || '—'}</span></div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              {:else}
-                                <div class="flex-1 flex flex-col items-center justify-center p-3 text-center my-1 rounded border border-dashed border-slate-300 bg-slate-50/50">
-                                  <div class="w-6 h-6 rounded-full border border-slate-400 text-slate-400 font-black text-[10px] flex items-center justify-center mb-1">
-                                    {gNum}
-                                  </div>
-                                  <span class="text-[9px] font-mono font-black text-slate-400 tracking-wider">
-                                    [GRUP {gNum} TIDAK DIGUNAKAN]
-                                  </span>
-                                  <span class="text-[7.5px] text-slate-400 mt-0.5">
-                                    Peserta terakomodasi pada grup sebelumnya
-                                  </span>
-                                </div>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      </div>
-                    {:else}
-                    <div class="bracket-grid-wrapper flex-1 overflow-x-auto py-2">
-                      <div class="flex items-stretch space-x-3 min-w-max h-full">
-                        {#each sortedRounds as rNum, rIdx}
-                          {@const isFinalRound = (rIdx === sortedRounds.length - 1)}
-                          {@const rMatches = roundMap.get(rNum) || []}
-                          <div class="bracket-col flex flex-col justify-around min-w-[210px] max-w-[240px]">
-                            <!-- Column Title -->
-                            <div class="text-center pb-2 mb-2 border-b border-slate-300 font-mono text-[10px] font-bold text-slate-700 uppercase">
-                              <span class="{isFinalRound ? 'text-amber-800 font-black' : ''}">
-                                {getRoundTitleText(rIdx, totalRounds)}
-                              </span>
-                            </div>
-
-                            <!-- Match Cards in Column -->
-                            <div class="flex flex-col justify-around flex-1 space-y-2">
-                              {#each rMatches as m, mIdx}
-                                <div class="bracket-card border {isFinalRound ? 'border-amber-500 bg-amber-50/40' : 'border-slate-300 bg-white'} rounded shadow-xs p-1.5 text-xs">
-                                  <div class="flex items-center justify-between pb-1 mb-1 border-b border-slate-200 text-[9px] font-mono text-slate-500">
-                                    <span class="font-bold">{formatMatchTitle(rIdx, totalRounds, m, mIdx)}</span>
-                                    <span>Partai #{m.urutan || m.id}</span>
-                                  </div>
-
-                                  <!-- AKA Row -->
-                                  <div class="flex items-center justify-between p-1 rounded mb-0.5 {m.pemenang === '1' ? 'bg-red-50 border-l-2 border-red-600 font-bold' : ''}">
-                                    <div class="flex items-center space-x-1.5 min-w-0 pr-1">
-                                      <span class="w-1.5 h-1.5 rounded-full bg-red-600 shrink-0"></span>
-                                      {#if m.atlet1_logo && logoMap[m.atlet1_logo]}
-                                        <img src={logoMap[m.atlet1_logo]} alt="" class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14" />
-                                      {/if}
-                                      <div class="min-w-0">
-                                        <div class="text-[10px] truncate leading-tight {m.pemenang === '1' ? 'text-red-950 font-black' : 'text-slate-800'}">
-                                          {#if m.pemenang === '1'}<span>👑 </span>{/if}
-                                          {m.atlet1_nama || 'BYE'}
-                                        </div>
-                                        <div class="text-[8.5px] text-slate-500 truncate leading-none">
-                                          {m.atlet1_kontingen || '—'}
-                                        </div>
-                                      </div>
-                                    </div>
-                                    <div class="font-mono text-xs font-black text-right shrink-0">
-                                      {m.score1 ?? '-'}
-                                    </div>
-                                  </div>
-
-                                  <!-- AO Row -->
-                                  <div class="flex items-center justify-between p-1 rounded {m.pemenang === '2' ? 'bg-blue-50 border-l-2 border-blue-600 font-bold' : ''}">
-                                    <div class="flex items-center space-x-1.5 min-w-0 pr-1">
-                                      <span class="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0"></span>
-                                      {#if m.atlet2_logo && logoMap[m.atlet2_logo]}
-                                        <img src={logoMap[m.atlet2_logo]} alt="" class="w-3.5 h-3.5 max-w-3.5 max-h-3.5 object-contain shrink-0" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px; object-fit: contain;" width="14" height="14" />
-                                      {/if}
-                                      <div class="min-w-0">
-                                        <div class="text-[10px] truncate leading-tight {m.pemenang === '2' ? 'text-blue-950 font-black' : 'text-slate-800'}">
-                                          {#if m.pemenang === '2'}<span>👑 </span>{/if}
-                                          {m.atlet2_nama || 'BYE'}
-                                        </div>
-                                        <div class="text-[8.5px] text-slate-500 truncate leading-none">
-                                          {m.atlet2_kontingen || '—'}
-                                        </div>
-                                      </div>
-                                    </div>
-                                    <div class="font-mono text-xs font-black text-right shrink-0">
-                                      {m.score2 ?? '-'}
-                                    </div>
-                                  </div>
-                                </div>
-                              {/each}
-                            </div>
-                          </div>
-                        {/each}
-                      </div>
-                    </div>
-
-                    {/if}
-
-                    <!-- 3. Podium Rekapan Juara Kategori (Jika Ada) -->
-                    {#if bCat.winners && bCat.winners.length > 0}
-                      <div class="mt-2 pt-2 border-t border-slate-200 flex items-center space-x-4 bg-slate-50/80 p-2 rounded text-[10px]">
-                        <span class="font-black text-slate-900 uppercase">PODIUM AKHIR:</span>
-                        <div class="flex flex-wrap items-center gap-3">
-                          {#each bCat.winners as w}
-                            <div class="flex items-center space-x-1">
-                              {#if w.juara === '1'}
-                                <span class="px-1.5 py-0.2 rounded bg-amber-500 text-slate-950 font-black font-mono">1</span>
-                              {:else if w.juara === '2'}
-                                <span class="px-1.5 py-0.2 rounded bg-slate-300 text-slate-950 font-black font-mono">2</span>
-                              {:else}
-                                <span class="px-1.5 py-0.2 rounded bg-amber-700 text-white font-black font-mono">3</span>
-                              {/if}
-                              <span class="font-bold text-slate-900">{w.nama_atlet}</span>
-                              <span class="text-slate-500">({w.utusan_nama || w.perguruan_nama || '-'})</span>
-                            </div>
-                          {/each}
-                        </div>
-                      </div>
-                    {/if}
-
-                    <!-- 4. Footer Lembar Bagan -->
-                    <div class="mt-3 pt-2 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500 font-mono">
-                      <span>Official Tournament Results • Lampiran Bagan Pertandingan</span>
-                      <span>Lampiran {bIdx + 1}/{activeBrackets.length} • ({bCat.bagan_kode || bCat.category_id}) {bCat.category_name}</span>
-                    </div>
+                  <!-- Same page as printing from the bagan channel (BracketPaperPage). -->
+                  <div class="paper-sheet paper-sheet-landscape paper-sheet-bracket">
+                    <BracketPaperPage
+                      kind={isFestivalName(bName) ? "festival" : "elim"}
+                      matches={bCat.matches}
+                      categoryName={bName}
+                      baganKode={bCat.bagan_kode}
+                      eventName={editableEventName}
+                      eventVenue={editableTempat}
+                      eventDate={editableTanggal}
+                      {logoMap}
+                      meta={bMeta}
+                      podium={computePodium(bCat.matches, bMeta, winnersToPodium(bCat.winners))}
+                      festivalGroupCount={bCat.bagan_pool ?? 0}
+                      festivalLayout={bCat.bagan_layout_type}
+                      widthMm={281}
+                      heightMm={194}
+                    />
                   </div>
                 </section>
               {/each}
@@ -1404,6 +1072,12 @@ ${inlinedCss}
       border: none !important;
       margin: 0 !important;
       padding: 0 !important;
+      break-after: auto !important;
+      page-break-after: auto !important;
+    }
+
+    /* Nothing follows the last bracket page: a forced break there spills a blank sheet. */
+    .booklet-section-landscape > .booklet-page-landscape:last-of-type {
       break-after: auto !important;
       page-break-after: auto !important;
     }

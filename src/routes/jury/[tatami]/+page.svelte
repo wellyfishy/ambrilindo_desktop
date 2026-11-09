@@ -1,621 +1,825 @@
+<!--
+  Jury tablet (browser, via http://<host-ip>:<port>/jury/<tatami>): one judge scores the kata
+  of AKA and AO, the scores go to the tatami's control panel.
+
+  The control panel gives this judge's flag to the higher score; equal scores give no flag,
+  so a tie asks for confirmation. A submitted score shows "diterima meja" only once the
+  control panel's live state carries it back.
+-->
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import { page } from "$app/state";
+  import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
+  import { getHostBaseUrl } from "$lib/api_client";
 
-  // Derive tatami number from route params (e.g. /jury/1 -> 1)
+  type Side = "aka" | "ao";
+  /** One side's score: integer part 5..10 plus a tenth, or 0 (DQ / kiken); null = not entered. */
+  interface Entry {
+    whole: number | null;
+    tenth: number;
+  }
+
+  const JUDGE_SEATS = [1, 2, 3, 4, 5];
+  const WHOLES = [5, 6, 7, 8, 9, 10];
+  const TENTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
   let tatamiNumber = $derived(Number(page.params.tatami || "1"));
+  /** Event of this tatami (from the tatami picker); every event has its own tatami 1, 2, ... */
+  let eventId = $derived(Number(page.url.searchParams.get("event")) || null);
+  let seatKey = $derived(`ambrilindo_judge_seat_t${tatamiNumber}`);
 
-  // Judge seat state (1 to 5)
-  let selectedJudge = $state<number>(1);
-  let isJudgeSelectorOpen = $state(false);
+  // --- seat ---
+  let seat = $state<number | null>(null);
+  let seatPickerOpen = $state(false);
+  let exitConfirmOpen = $state(false);
 
-  // Connection state
-  let isWsConnected = $state(false);
-  let wsClient: WebSocket | null = null;
-  let reconnectInterval: any = null;
+  function exitToLanding() {
+    window.location.href = "/";
+  }
 
-  // Match state received from Control Panel / Server
+  // --- seats used by the other jury tablets of this tatami (they announce themselves) ---
+  const PRESENCE_EVERY_MS = 10000;
+  const PRESENCE_STALE_MS = 25000;
+  let tabletId = "";
+  let otherTablets = $state<Record<string, { seat: number; at: number }>>({});
+  let now = $state(Date.now());
+  let seatsTakenElsewhere = $derived(
+    new Set(
+      Object.values(otherTablets)
+        .filter((t) => now - t.at < PRESENCE_STALE_MS)
+        .map((t) => t.seat)
+    )
+  );
+  let seatClash = $derived(seat !== null && seatsTakenElsewhere.has(seat));
+
+  // --- connection & safeguards ---
+  let socket: TatamiSocket | null = null;
+  let connection = $state<"connecting" | "live" | "offline">("connecting");
+  let lastMessageAt = $state(Date.now());
+  let isFetchingHttp = false;
+
+  // --- match (from the control panel's live state) ---
   let matchId = $state<number | null>(null);
-  let eventName = $state("AMBRILINDO KARATE CHAMPIONSHIP");
-  let categoryName = $state("MEMUAT PARTAI...");
-  let matchRound = $state("BABAK PENYISIHAN");
-  let matchNumber = $state<number | string>(1);
+  let categoryName = $state("");
+  let roundLabel = $state("");
+  let matchNumber = $state<number | string>("");
   let isKata = $state(true);
-  let isMatchFinished = $state(false);
+  let isFinished = $state(false);
+  let akaName = $state("");
+  let akaContingent = $state("");
+  let akaKata = $state("");
+  let aoName = $state("");
+  let aoContingent = $state("");
+  let aoKata = $state("");
+  let deskAka = $state<string[]>([]);
+  let deskAo = $state<string[]>([]);
 
-  // AKA (Red) combatant state
-  let akaName = $state("SUDUT MERAH (AKA)");
-  let akaContingent = $state("-");
-  let akaKataName = $state("");
-  let akaScore = $state<number>(7.5);
+  // --- scoring ---
+  let aka = $state<Entry>({ whole: null, tenth: 0 });
+  let ao = $state<Entry>({ whole: null, tenth: 0 });
+  let dqConfirm = $state<Side | null>(null);
+  let tieConfirm = $state(false);
+  let sending = $state(false);
+  let sent = $state<{ matchId: number | null; aka: string; ao: string } | null>(null);
+  let sentAt = 0;
+  let toast = $state<{ text: string; kind: "ok" | "error" } | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // AO (Blue) combatant state
-  let aoName = $state("SUDUT BIRU (AO)");
-  let aoContingent = $state("-");
-  let aoKataName = $state("");
-  let aoScore = $state<number>(7.5);
+  function value(e: Entry): number | null {
+    if (e.whole === null) return null;
+    if (e.whole === 0) return 0;
+    return e.whole === 10 ? 10 : e.whole + e.tenth / 10;
+  }
 
-  // Kumite Corner Flag State
-  let activeKumiteFlag = $state<string | null>(null);
+  function fmt(v: number | null): string {
+    return v === null ? "—" : v.toFixed(1);
+  }
 
-  // Submission lock state
-  let isSubmitted = $state(false);
-  let lastSubmittedMatchId = $state<number | null>(null);
-  let isSending = $state(false);
-  let toastMessage = $state<string | null>(null);
-  let toastTimer: any = null;
+  let akaValue = $derived(value(aka));
+  let aoValue = $derived(value(ao));
+  let ready = $derived(akaValue !== null && aoValue !== null);
+  let isTie = $derived(ready && akaValue === aoValue);
+  let locked = $derived(sent !== null && sent.matchId === matchId);
+  let hasMatch = $derived(Boolean(matchId !== null || akaName || aoName));
 
-  function showToast(msg: string) {
-    toastMessage = msg;
+  /** The control panel echoed this judge's scores back in its live state. */
+  let confirmedByDesk = $derived(
+    !!sent &&
+      seat !== null &&
+      deskAka[seat - 1] !== undefined &&
+      Number(deskAka[seat - 1]) === Number(sent.aka) &&
+      Number(deskAo[seat - 1]) === Number(sent.ao)
+  );
+
+  function showToast(text: string, kind: "ok" | "error" = "ok") {
+    toast = { text, kind };
     if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toastMessage = null;
-    }, 2500);
+    toastTimer = setTimeout(() => (toast = null), kind === "error" ? 4500 : 2500);
   }
 
-  // Score adjustments (Kata: 5.0 - 10.0 or 0.0 for DQ)
-  function adjustScore(side: "aka" | "ao", delta: number) {
-    if (isSubmitted) return;
-    if (side === "aka") {
-      let next = Math.round((akaScore + delta) * 10) / 10;
-      if (next < 5.0 && next > 0) next = 5.0;
-      if (next > 10.0) next = 10.0;
-      akaScore = next;
+  function setEntry(side: Side, next: Entry) {
+    if (locked) return;
+    if (side === "aka") aka = next;
+    else ao = next;
+    tieConfirm = false;
+  }
+
+  function pickWhole(side: Side, whole: number) {
+    const cur = side === "aka" ? aka : ao;
+    setEntry(side, { whole, tenth: whole === 10 || cur.whole === 0 || cur.whole === null ? 0 : cur.tenth });
+  }
+
+  function pickTenth(side: Side, tenth: number) {
+    const cur = side === "aka" ? aka : ao;
+    if (cur.whole === null || cur.whole === 0 || cur.whole === 10) return;
+    setEntry(side, { whole: cur.whole, tenth });
+  }
+
+  function requestDq(side: Side) {
+    if (locked) return;
+    if (dqConfirm === side) {
+      setEntry(side, { whole: 0, tenth: 0 });
+      dqConfirm = null;
     } else {
-      let next = Math.round((aoScore + delta) * 10) / 10;
-      if (next < 5.0 && next > 0) next = 5.0;
-      if (next > 10.0) next = 10.0;
-      aoScore = next;
+      dqConfirm = side;
     }
   }
 
-  function setPresetScore(side: "aka" | "ao", val: number) {
-    if (isSubmitted) return;
-    if (side === "aka") akaScore = val;
-    else aoScore = val;
+  function chooseSeat(n: number) {
+    seat = n;
+    seatPickerOpen = false;
+    sent = null;
+    try {
+      localStorage.setItem(seatKey, String(n));
+    } catch (_) {}
+    announceSeat();
   }
 
-  // Kumite flag toggle
-  function toggleKumiteFlag(flagName: string) {
-    if (isSubmitted) return;
-    if (activeKumiteFlag === flagName) {
-      activeKumiteFlag = null;
-    } else {
-      activeKumiteFlag = flagName;
+  function announceSeat() {
+    if (seat === null || !tabletId) return;
+    socket?.send({ type: "jury_presence", tatami: tatamiNumber, seat, tablet: tabletId });
+  }
+
+  function resetScores() {
+    aka = { whole: null, tenth: 0 };
+    ao = { whole: null, tenth: 0 };
+    dqConfirm = null;
+    tieConfirm = false;
+  }
+
+  async function submit() {
+    if (!ready || seat === null || sending || locked) return;
+    if (isTie && !tieConfirm) {
+      tieConfirm = true;
+      return;
     }
-    // Instant broadcast for kumite corner flags
-    sendKumiteFlag(activeKumiteFlag);
-  }
-
-  async function sendKumiteFlag(flag: string | null) {
-    const payload = {
-      type: "judge_kumite_flag",
-      tatami: tatamiNumber,
-      juri: selectedJudge,
-      flag: flag || "none",
-    };
-
-    if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-      wsClient.send(JSON.stringify(payload));
+    if (connection === "offline") {
+      showToast("Koneksi sedang offline. Nilai Anda tetap tersimpan, tunggu jaringan terhubung.", "error");
+      return;
     }
-  }
-
-  // Submit Kata score
-  async function submitKataScores() {
-    if (isSending) return;
-    isSending = true;
-
+    sending = true;
     const payload = {
       type: "judge_score",
       tatami: tatamiNumber,
-      juri: selectedJudge,
-      score_aka: akaScore.toFixed(1),
-      score_ao: aoScore.toFixed(1),
+      juri: seat,
+      score_aka: fmt(akaValue),
+      score_ao: fmt(aoValue),
     };
-
-    let sent = false;
-
-    // 1. Try sending over WebSocket
-    if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-      try {
-        wsClient.send(JSON.stringify(payload));
-        sent = true;
-      } catch (err) {
-        console.warn("WebSocket send failed:", err);
-      }
-    }
-
-    // 2. HTTP fallback if WebSocket send didn't succeed
-    if (!sent) {
-      try {
-        const res = await fetch("/api/tatami/submit-judge-score", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (res.ok) sent = true;
-      } catch (err) {
-        console.error("HTTP score submit failed:", err);
-      }
-    }
-
-    isSending = false;
-    isSubmitted = true;
-    lastSubmittedMatchId = matchId;
-    showToast(`✓ Nilai Juri ${selectedJudge} Berhasil Terkirim!`);
-
-    // Trigger haptic vibration if supported on mobile
-    if (typeof navigator !== "undefined" && navigator.vibrate) {
-      navigator.vibrate([40, 60, 40]);
-    }
-  }
-
-  function unlockScores() {
-    isSubmitted = false;
-    showToast(`Koreksi nilai aktif untuk Juri ${selectedJudge}`);
-  }
-
-  function selectJudgeSeat(seatNum: number) {
-    selectedJudge = seatNum;
-    isJudgeSelectorOpen = false;
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem("ambrilindo_judge_seat", String(seatNum));
-    }
-    // Reset submission lock when switching seat
-    isSubmitted = false;
-    showToast(`Beralih ke Wasit / Juri #${seatNum}`);
-  }
-
-  // Apply match state from Live Sync / WebSocket
-  function applyIncomingMatchState(data: any) {
-    if (!data) return;
-
-    if (data.matchId !== undefined && data.matchId !== matchId) {
-      // New match loaded -> automatically unlock and reset defaults if new match
-      if (lastSubmittedMatchId !== data.matchId) {
-        isSubmitted = false;
-        akaScore = 7.5;
-        aoScore = 7.5;
-        activeKumiteFlag = null;
-      }
-      matchId = data.matchId;
-    }
-
-    if (data.category) categoryName = data.category;
-    if (data.round) matchRound = data.round;
-    if (data.matchNumber !== undefined) matchNumber = data.matchNumber;
-    if (data.isKata !== undefined) isKata = data.isKata;
-    if (data.isFinished !== undefined) isMatchFinished = data.isFinished;
-
-    if (data.aka) {
-      if (data.aka.name) akaName = data.aka.name;
-      if (data.aka.contingent) akaContingent = data.aka.contingent;
-      if (data.aka.kataName !== undefined) akaKataName = data.aka.kataName;
-      // Sync judge score if already set from table and we haven't edited
-      if (!isSubmitted && data.aka.judgeScores && data.aka.judgeScores[selectedJudge - 1]) {
-        const val = parseFloat(data.aka.judgeScores[selectedJudge - 1]);
-        if (!isNaN(val) && val >= 5.0) akaScore = val;
-      }
-    }
-
-    if (data.ao) {
-      if (data.ao.name) aoName = data.ao.name;
-      if (data.ao.contingent) aoContingent = data.ao.contingent;
-      if (data.ao.kataName !== undefined) aoKataName = data.ao.kataName;
-      if (!isSubmitted && data.ao.judgeScores && data.ao.judgeScores[selectedJudge - 1]) {
-        const val = parseFloat(data.ao.judgeScores[selectedJudge - 1]);
-        if (!isNaN(val) && val >= 5.0) aoScore = val;
-      }
-    }
-  }
-
-  // Initial HTTP fetch for tatami active match
-  async function fetchInitialMatch() {
+    let ok = false;
     try {
-      const res = await fetch(`/api/tatami/${tatamiNumber}/current-match`);
+      const res = await fetch(`${getHostBaseUrl()}/api/tatami/submit-judge-score`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      ok = res.ok;
+      if (ok) {
+        connection = "live";
+        lastMessageAt = Date.now();
+      }
+    } catch (_) {
+      ok = false;
+    }
+    sending = false;
+    tieConfirm = false;
+    if (!ok) {
+      showToast("Nilai belum terkirim ke meja. Nilai Anda aman di layar, coba kirim lagi.", "error");
+      return;
+    }
+    sent = { matchId, aka: payload.score_aka, ao: payload.score_ao };
+    sentAt = Date.now();
+    showToast(`Nilai Juri ${seat} terkirim`);
+    try {
+      navigator.vibrate?.([40, 60, 40]);
+    } catch (_) {}
+  }
+
+  function unlock() {
+    sent = null;
+    showToast(`Koreksi nilai Juri ${seat}`);
+  }
+
+  // --- live state from the control panel ---
+  function applyLiveState(raw: any) {
+    if (!raw) return;
+    const d = raw.payload || raw.data || raw;
+    const tNum = Number(d.tatami ?? raw.tatami ?? raw.tatami_pk);
+    if (tNum && tNum !== tatamiNumber) return;
+
+    const nextMatchId = d.matchId !== undefined ? d.matchId : (d.id !== undefined ? d.id : null);
+    const nextAkaName = d.aka?.name || d.atlet1_nama || "";
+    const nextAoName = d.ao?.name || d.atlet2_nama || "";
+    const nextAkaContingent = d.aka?.contingent || d.atlet1_kontingen || "";
+    const nextAoContingent = d.ao?.contingent || d.atlet2_kontingen || "";
+    const nextAkaKata = d.aka?.kataName || d.kata1 || "";
+    const nextAoKata = d.ao?.kataName || d.kata2 || "";
+    const nextCategory = d.category || d.kategori || "";
+    const nextRound = d.round ? (d.round === 4 ? "PARTAI FINAL" : d.round === 3 ? "SEMIFINAL" : (typeof d.round === "number" ? `BABAK ${d.round}` : String(d.round))) : "";
+    const nextMatchNumber = d.matchNumber ?? d.urutan ?? "";
+
+    // Comprehensive detection of match change:
+    // 1. matchId explicitly changed (e.g. 101 -> 102)
+    // 2. OR matchId is null/0 (e.g. Festival match) but athlete names changed
+    const hadActiveMatch = matchId !== null || !!akaName || !!aoName;
+    const isDifferentMatch =
+      hadActiveMatch &&
+      ((nextMatchId !== null && matchId !== null && nextMatchId !== matchId) ||
+        (nextAkaName && akaName && nextAkaName !== akaName) ||
+        (nextAoName && aoName && nextAoName !== aoName));
+
+    if (isDifferentMatch) {
+      resetScores();
+      sent = null;
+      try {
+        navigator.vibrate?.([60, 80, 60]);
+      } catch (_) {}
+      const label = nextCategory ? `${nextCategory} ${nextRound}` : (nextRound || "Partai Baru");
+      showToast(`Partai baru dibuka: ${label}`, "ok");
+    }
+
+    matchId = nextMatchId;
+    categoryName = nextCategory;
+    roundLabel = nextRound;
+    matchNumber = nextMatchNumber;
+    isKata = d.isKata !== false;
+    isFinished = !!d.isFinished || !!d.selesai;
+    akaName = nextAkaName;
+    akaContingent = nextAkaContingent;
+    akaKata = nextAkaKata;
+    aoName = nextAoName;
+    aoContingent = nextAoContingent;
+    aoKata = nextAoKata;
+    deskAka = Array.isArray(d.aka?.judgeScores) ? d.aka.judgeScores : [];
+    deskAo = Array.isArray(d.ao?.judgeScores) ? d.ao.judgeScores : [];
+
+    // The table cleared this judge's scores (e.g. reset button pressed): allow a new submission.
+    if (sent && seat !== null && !deskAka[seat - 1] && !deskAo[seat - 1] && sent.matchId === matchId) {
+      const age = Date.now() - sentAt;
+      if (age > 2500) sent = null;
+    }
+  }
+
+  // --- HTTP fallback for polling & wakeup ---
+  async function fetchLiveStateHttp() {
+    if (isFetchingHttp) return;
+    isFetchingHttp = true;
+    try {
+      const url = `${getHostBaseUrl()}/api/tatami/${tatamiNumber}/live-state?_t=${Date.now()}`;
+      const res = await fetch(url, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+        },
+      });
       if (res.ok) {
         const json = await res.json();
-        if (json.status === "success" && json.data) {
-          const d = json.data;
-          matchId = d.id;
-          categoryName = d.kode || "KATA / KUMITE";
-          matchRound = d.round ? `BABAK ${d.round}` : "BABAK PENYISIHAN";
-          matchNumber = d.urutan || 1;
-          akaName = d.atlet1_nama || "Sudut Merah (Aka)";
-          akaContingent = d.atlet1_kontingen || "-";
-          akaKataName = d.kata1 || "";
-          aoName = d.atlet2_nama || "Sudut Biru (Ao)";
-          aoContingent = d.atlet2_kontingen || "-";
-          aoKataName = d.kata2 || "";
+        if (json?.data) {
+          applyLiveState(json.data);
+          lastMessageAt = Date.now();
+          if (connection !== "live" && navigator.onLine !== false) {
+            connection = "live";
+          }
         }
       }
-    } catch (err) {
-      console.warn("Initial match fetch failed:", err);
+    } catch (_) {
+      // Server unreachable
+      if (navigator.onLine === false) {
+        connection = "offline";
+      }
+    } finally {
+      isFetchingHttp = false;
     }
   }
 
-  // WebSocket Connection Lifecycle
-  function connectWebSocket() {
-    if (typeof window === "undefined") return;
-
-    try {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const host = window.location.host;
-      const wsUrl = `${protocol}//${host}/ws/jury-panel/${tatamiNumber}`;
-
-      wsClient = new WebSocket(wsUrl);
-
-      wsClient.onopen = () => {
-        isWsConnected = true;
-      };
-
-      wsClient.onmessage = (event) => {
-        try {
-          const parsed = JSON.parse(event.data);
-          // If message is live tatami state
-          if (parsed && (parsed.tatami === tatamiNumber || !parsed.tatami)) {
-            applyIncomingMatchState(parsed);
-          }
-        } catch (e) {
-          console.warn("WS Parse error:", e);
-        }
-      };
-
-      wsClient.onclose = () => {
-        isWsConnected = false;
-      };
-
-      wsClient.onerror = () => {
-        isWsConnected = false;
-      };
-    } catch (e) {
-      isWsConnected = false;
-    }
+  function handleManualReconnect() {
+    connection = "connecting";
+    fetchLiveStateHttp();
+    socket?.send({ type: "request_tatami_state", tatami: tatamiNumber });
+    announceSeat();
+    showToast("Mencoba menyambungkan kembali...", "ok");
   }
 
   onMount(() => {
-    // 1. Restore seat from localStorage if saved
-    if (typeof localStorage !== "undefined") {
-      const savedSeat = localStorage.getItem("ambrilindo_judge_seat");
-      if (savedSeat) {
-        selectedJudge = Math.max(1, Math.min(5, parseInt(savedSeat, 10) || 1));
+    try {
+      const saved = Number(localStorage.getItem(seatKey));
+      if (JUDGE_SEATS.includes(saved)) seat = saved;
+    } catch (_) {}
+    if (seat === null) seatPickerOpen = true;
+    try {
+      tabletId = sessionStorage.getItem("ambrilindo_tablet_id") || "";
+      if (!tabletId) {
+        tabletId = Math.random().toString(36).slice(2, 10);
+        sessionStorage.setItem("ambrilindo_tablet_id", tabletId);
       }
+    } catch (_) {
+      tabletId = Math.random().toString(36).slice(2, 10);
     }
 
-    // 2. Fetch initial match
-    fetchInitialMatch();
+    // Initial load: fast HTTP query + WebSocket setup
+    fetchLiveStateHttp();
 
-    // 3. Connect WebSocket
-    connectWebSocket();
-
-    // 4. Auto-reconnect timer if disconnected
-    reconnectInterval = setInterval(() => {
-      if (!wsClient || wsClient.readyState === WebSocket.CLOSED) {
-        connectWebSocket();
+    socket = connectTatamiSocket(
+      "jury-panel",
+      tatamiNumber,
+      (msg) => {
+        lastMessageAt = Date.now();
+        connection = "live";
+        if (msg?.type === "tatami_live_state") {
+          applyLiveState(msg.payload || msg.data);
+        } else if (
+          msg?.type === "jury_presence" &&
+          msg.tablet &&
+          msg.tablet !== tabletId &&
+          Number(msg.tatami) === tatamiNumber
+        ) {
+          otherTablets = { ...otherTablets, [msg.tablet]: { seat: Number(msg.seat), at: Date.now() } };
+        }
+      },
+      (sock) => {
+        connection = "live";
+        lastMessageAt = Date.now();
+        // A tablet that just (re)connected asks the control panel for the current match.
+        sock.send({ type: "request_tatami_state", tatami: tatamiNumber });
+        announceSeat();
+      },
+      () => {
+        connection = navigator.onLine === false ? "offline" : "connecting";
       }
-    }, 3000);
+    );
+
+    // Safeguard heartbeat & adaptive polling:
+    // If connection dropped or quiet > 6s, poll HTTP live-state.
+    const health = setInterval(() => {
+      const silence = Date.now() - lastMessageAt;
+      if (silence > 8000 && connection === "live") {
+        connection = "connecting";
+      }
+      if (connection !== "live" || silence > 12000) {
+        fetchLiveStateHttp();
+        socket?.send({ type: "request_tatami_state", tatami: tatamiNumber });
+      }
+    }, 4000);
+
+    // Active safety net: poll HTTP live-state every 2500ms
+    // Ensures automatic synchronization in max 2.5s even if WS drops/misses
+    const safetyNet = setInterval(() => {
+      fetchLiveStateHttp();
+    }, 2500);
+
+    const presence = setInterval(() => {
+      now = Date.now();
+      announceSeat();
+    }, PRESENCE_EVERY_MS);
+
+    const onOffline = () => (connection = "offline");
+    const onOnline = () => {
+      connection = "connecting";
+      fetchLiveStateHttp();
+    };
+
+    // Wakeup from sleep / tab focus
+    const onWakeup = () => {
+      if (document.visibilityState === "visible") {
+        fetchLiveStateHttp();
+        socket?.send({ type: "request_tatami_state", tatami: tatamiNumber });
+        announceSeat();
+      }
+    };
+
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onWakeup);
+    window.addEventListener("focus", onWakeup);
 
     return () => {
-      if (wsClient) wsClient.close();
-      if (reconnectInterval) clearInterval(reconnectInterval);
+      clearInterval(health);
+      clearInterval(safetyNet);
+      clearInterval(presence);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onWakeup);
+      window.removeEventListener("focus", onWakeup);
+      socket?.close();
       if (toastTimer) clearTimeout(toastTimer);
     };
   });
 </script>
 
 <svelte:head>
-  <title>Panel Wasit Juri • Tatami {tatamiNumber} • Juri #{selectedJudge}</title>
+  <title>Juri {seat ?? "-"} • Tatami {tatamiNumber}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 </svelte:head>
 
-<!-- Mobile Touch Screen Container (Fixed Fullscreen, Zero Accidental Scroll) -->
-<div class="fixed inset-0 bg-[#0c0e12] text-zinc-100 flex flex-col justify-between select-none font-sans overflow-hidden touch-manipulation">
-  
-  <!-- Top Navigation & Judge Seat Selector Header -->
-  <header class="bg-[#14161b] border-b border-white/10 px-3.5 py-2.5 flex items-center justify-between shrink-0 shadow-lg relative z-20">
-    <div class="flex items-center gap-2">
-      <!-- Tatami Badge -->
-      <span class="px-2.5 py-1 rounded-lg bg-white/10 text-white font-mono font-black text-xs tracking-wider border border-white/10">
-        TATAMI {tatamiNumber}
-      </span>
-
-      <!-- Online / Offline Status Dot -->
-      <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold font-mono {isWsConnected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
-        <span class="w-1.5 h-1.5 rounded-full {isWsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}"></span>
-        <span>{isWsConnected ? 'LIVE' : 'OFFLINE'}</span>
+{#snippet scorePanel(side: Side)}
+  {@const isAka = side === "aka"}
+  {@const entry = isAka ? aka : ao}
+  {@const v = isAka ? akaValue : aoValue}
+  {@const name = isAka ? akaName : aoName}
+  {@const contingent = isAka ? akaContingent : aoContingent}
+  {@const kata = isAka ? akaKata : aoKata}
+  <section
+    class="min-h-0 flex flex-col rounded-2xl border-2 overflow-hidden bg-[#15171d] {isAka
+      ? 'border-red-600/70'
+      : 'border-blue-600/70'} {locked ? 'opacity-70' : ''}"
+  >
+    <div class="px-3 py-2 flex items-center gap-2 {isAka ? 'bg-red-600' : 'bg-blue-600'} text-white shrink-0">
+      <span class="px-1.5 py-0.5 rounded bg-black/30 text-[11px] font-mono font-black tracking-wider">{isAka ? "AKA" : "AO"}</span>
+      <div class="min-w-0 flex-1">
+        <div class="text-base font-black leading-tight truncate">{name || (isAka ? "Sudut Merah" : "Sudut Biru")}</div>
+        <div class="text-[11px] font-semibold opacity-85 truncate">{contingent || "-"}</div>
       </div>
-    </div>
-
-    <!-- Judge Seat Switcher Pill -->
-    <div class="relative">
-      <button
-        onclick={() => isJudgeSelectorOpen = !isJudgeSelectorOpen}
-        class="h-8 px-3 rounded-lg bg-[#1e222b] hover:bg-[#282d39] text-white border border-white/15 text-xs font-black flex items-center gap-1.5 shadow transition"
-      >
-        <span>JURI #{selectedJudge}</span>
-        <svg class="w-3.5 h-3.5 text-zinc-400 transition transform {isJudgeSelectorOpen ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {#if isJudgeSelectorOpen}
-        <!-- Dropdown Menu -->
-        <div class="absolute right-0 top-10 w-44 bg-[#181a20] border border-white/20 rounded-xl shadow-2xl py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100">
-          <div class="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-400 font-bold border-b border-white/10">
-            KURSI JURI
-          </div>
-          {#each [1, 2, 3, 4, 5] as seat}
-            <button
-              onclick={() => selectJudgeSeat(seat)}
-              class="w-full px-3 py-2 text-left text-xs font-bold flex items-center justify-between transition {selectedJudge === seat ? 'bg-white text-black' : 'text-zinc-200 hover:bg-white/[0.08]'}"
-            >
-              <span>WASIT / JURI #{seat}</span>
-              {#if selectedJudge === seat}
-                <span class="text-[10px] font-mono font-black">AKTIF</span>
-              {/if}
-            </button>
-          {/each}
-        </div>
+      {#if kata}
+        <span class="px-2 py-0.5 rounded-full bg-black/30 border border-white/25 text-[11px] font-bold shrink-0 max-w-[40%] truncate">{kata}</span>
       {/if}
     </div>
-  </header>
 
-  <!-- Match Info Strip -->
-  <div class="bg-[#111317] border-b border-white/[0.06] px-3.5 py-1.5 flex items-center justify-between text-[11px] shrink-0 font-medium">
-    <div class="flex items-center gap-2 truncate">
-      <span class="font-bold text-zinc-200 truncate">{categoryName}</span>
-      <span class="text-zinc-500">•</span>
-      <span class="font-mono text-zinc-400 shrink-0">{matchRound}</span>
+    <div class="flex-1 min-h-0 flex flex-col p-2.5 gap-2 overflow-y-auto">
+      <div class="flex items-center justify-center py-1 shrink-0">
+        <span
+          class="font-black font-mono tabular-nums leading-none text-5xl sm:text-7xl {v === null
+            ? 'text-zinc-600'
+            : isAka
+              ? 'text-red-500'
+              : 'text-blue-500'}"
+        >
+          {fmt(v)}
+        </span>
+        {#if v === 0}
+          <span class="ml-2 px-2 py-0.5 rounded bg-white/10 text-xs font-black text-zinc-200">DQ / KIKEN</span>
+        {/if}
+      </div>
+
+      <div class="grid grid-cols-6 gap-1.5 flex-[1.1] min-h-11">
+        {#each WHOLES as w (w)}
+          <button
+            type="button"
+            disabled={locked}
+            onclick={() => pickWhole(side, w)}
+            class="h-full min-h-11 rounded-xl text-2xl sm:text-3xl font-black font-mono transition active:scale-95 disabled:opacity-40 border {entry.whole === w
+              ? isAka
+                ? 'bg-red-600 border-red-400 text-white'
+                : 'bg-blue-600 border-blue-400 text-white'
+              : 'bg-white/[0.05] border-white/10 text-zinc-100'}"
+          >
+            {w}
+          </button>
+        {/each}
+      </div>
+
+      <div class="grid grid-cols-5 grid-rows-2 gap-1.5 flex-[2] min-h-20">
+        {#each TENTHS as t (t)}
+          {@const usable = entry.whole !== null && entry.whole !== 0 && entry.whole !== 10}
+          <button
+            type="button"
+            disabled={locked || !usable}
+            onclick={() => pickTenth(side, t)}
+            class="h-full min-h-9 rounded-xl text-xl sm:text-2xl font-black font-mono transition active:scale-95 disabled:opacity-30 border {usable &&
+            entry.tenth === t
+              ? isAka
+                ? 'bg-red-600/80 border-red-400 text-white'
+                : 'bg-blue-600/80 border-blue-400 text-white'
+              : 'bg-white/[0.03] border-white/[0.08] text-zinc-300'}"
+          >
+            .{t}
+          </button>
+        {/each}
+      </div>
+
+      <button
+        type="button"
+        disabled={locked}
+        onclick={() => requestDq(side)}
+        class="h-10 shrink-0 rounded-lg text-xs font-bold border transition disabled:opacity-40 {dqConfirm === side
+          ? 'bg-rose-600 border-rose-400 text-white'
+          : 'bg-transparent border-white/10 text-zinc-400'}"
+      >
+        {dqConfirm === side ? "Ketuk sekali lagi: nilai 0.0 (DQ / Kiken)" : "0.0 — DQ / Kiken"}
+      </button>
     </div>
-    <div class="flex items-center gap-2 shrink-0">
-      <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold {isKata ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}">
-        {isKata ? 'KATA' : 'KUMITE'}
-      </span>
-      <span class="font-mono font-bold text-zinc-400 text-[10px]">#{matchNumber}</span>
-    </div>
+  </section>
+{/snippet}
+
+<div class="fixed inset-0 bg-[#0c0e12] text-zinc-100 flex flex-col select-none font-sans overflow-hidden touch-manipulation">
+  <!-- Header -->
+  <div class="bg-[#14161b] border-b border-white/10 px-3 py-2 flex items-center gap-2 shrink-0">
+    <button
+      type="button"
+      onclick={() => (exitConfirmOpen = true)}
+      class="h-10 px-3 rounded-xl bg-white/[0.06] hover:bg-rose-500/20 active:bg-rose-500/30 border border-white/10 hover:border-rose-500/40 text-zinc-300 hover:text-rose-200 flex items-center gap-1.5 text-xs font-bold transition active:scale-95 shrink-0"
+      title="Keluar ke Landing Page Website"
+    >
+      <svg class="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+      </svg>
+      <span>Keluar</span>
+    </button>
+    <span class="px-2.5 py-1 rounded-lg bg-white/10 border border-white/10 font-mono font-black text-sm shrink-0">TATAMI {tatamiNumber}</span>
+    <span
+      class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold font-mono border {connection === 'live'
+        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25'
+        : connection === 'connecting'
+          ? 'bg-amber-500/10 text-amber-300 border-amber-500/25'
+          : 'bg-rose-500/10 text-rose-400 border-rose-500/25'}"
+    >
+      <span
+        class="w-1.5 h-1.5 rounded-full {connection === 'live'
+          ? 'bg-emerald-400'
+          : connection === 'connecting'
+            ? 'bg-amber-300 animate-pulse'
+            : 'bg-rose-400'}"
+      ></span>
+      {connection === "live" ? "TERHUBUNG" : connection === "connecting" ? "MENYAMBUNG" : "OFFLINE"}
+    </span>
+    <div class="flex-1"></div>
+    <button
+      type="button"
+      onclick={() => (seatPickerOpen = true)}
+      class="h-10 px-4 rounded-xl bg-white text-black font-black text-sm"
+    >
+      JURI {seat ?? "?"}
+    </button>
   </div>
 
-  <!-- Toast Notification Overlay -->
-  {#if toastMessage}
-    <div class="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-emerald-500 text-black px-4 py-2 rounded-xl text-xs font-bold shadow-2xl animate-in slide-in-from-top-2 duration-150 flex items-center gap-2">
-      <svg class="w-4 h-4 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-      </svg>
-      <span>{toastMessage}</span>
+  <!-- Disconnect Safeguard Alert Banners -->
+  {#if connection === "offline"}
+    <div class="bg-rose-600 text-white px-3 py-2 flex items-center justify-between gap-2 shrink-0 shadow-lg z-30">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="text-base shrink-0">⚠️</span>
+        <span class="text-xs font-bold truncate">Jaringan offline. Nilai yang Anda pilih tersimpan aman di layar.</span>
+      </div>
+      <button
+        type="button"
+        onclick={handleManualReconnect}
+        class="h-7 px-2.5 rounded bg-white text-rose-700 text-xs font-black shrink-0 active:scale-95 transition"
+      >
+        Coba Sambung
+      </button>
+    </div>
+  {:else if connection === "connecting"}
+    <div class="bg-amber-500/20 border-b border-amber-500/30 text-amber-200 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 z-30">
+      <div class="flex items-center gap-2 min-w-0 text-xs font-medium">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0"></span>
+        <span class="truncate">Menyambungkan kembali ke Meja Tatami {tatamiNumber}...</span>
+      </div>
+      <button
+        type="button"
+        onclick={handleManualReconnect}
+        class="h-6 px-2 rounded bg-amber-400 text-black text-[11px] font-bold shrink-0 active:scale-95 transition"
+      >
+        Segarkan
+      </button>
     </div>
   {/if}
 
-  <!-- Main Combatants Scoring Area (Split 50% / 50%) -->
-  <main class="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 overflow-hidden">
-    
-    <!-- ==================== AKA CARD (RED) ==================== -->
-    <section class="flex-1 min-h-0 bg-[#16181f] border-2 {isSubmitted ? 'border-red-500/40 opacity-90' : 'border-red-600 shadow-lg shadow-red-950/20'} rounded-2xl flex flex-col overflow-hidden relative">
-      <!-- Card Header Strip -->
-      <div class="bg-red-600 px-3 py-1.5 text-white flex items-center justify-between shrink-0 shadow">
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-1.5">
-            <span class="px-1.5 py-0.2 rounded bg-black/40 text-[10px] font-mono font-black tracking-wider uppercase">AKA</span>
-            <h2 class="text-sm font-black truncate tracking-tight">{akaName}</h2>
-          </div>
-          <p class="text-[10px] text-red-100 font-medium truncate mt-0.5">{akaContingent}</p>
-        </div>
-        {#if isKata && akaKataName}
-          <span class="px-2 py-0.5 rounded-full bg-black/35 text-[10px] font-mono font-bold text-white border border-white/20 ml-2 shrink-0">
-            {akaKataName}
-          </span>
-        {/if}
-      </div>
-
-      <!-- Card Body / Controls -->
-      <div class="flex-1 min-h-0 flex flex-col justify-between p-2.5">
-        {#if isKata}
-          <!-- Large Digital Score Display -->
-          <div class="flex-1 flex items-center justify-center min-h-0">
-            <div class="text-center">
-              <span class="text-5xl sm:text-6xl font-black font-mono tracking-tight text-red-500 drop-shadow-md">
-                {akaScore === 0 ? "0.0 (DQ)" : akaScore.toFixed(1)}
-              </span>
-            </div>
-          </div>
-
-          <!-- Steppers Row -->
-          <div class="grid grid-cols-4 gap-1.5 shrink-0 my-1">
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("aka", -0.5)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-red-400 font-mono font-black text-sm border border-red-500/20 flex items-center justify-center transition"
-            >-0.5</button>
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("aka", -0.1)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-red-400 font-mono font-black text-sm border border-red-500/20 flex items-center justify-center transition"
-            >-0.1</button>
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("aka", 0.1)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-red-400 font-mono font-black text-sm border border-red-500/20 flex items-center justify-center transition"
-            >+0.1</button>
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("aka", 0.5)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-red-400 font-mono font-black text-sm border border-red-500/20 flex items-center justify-center transition"
-            >+0.5</button>
-          </div>
-
-          <!-- Presets Quick Bar -->
-          <div class="grid grid-cols-5 gap-1 shrink-0">
-            {#each [0.0, 7.0, 7.5, 8.0, 8.5] as preset}
-              <button
-                disabled={isSubmitted}
-                onclick={() => setPresetScore("aka", preset)}
-                class="h-7 rounded-lg text-[10px] font-mono font-bold transition border active:scale-95 disabled:opacity-40 {akaScore === preset ? 'bg-red-600 text-white border-red-500 font-black' : 'bg-white/[0.03] text-zinc-400 border-white/[0.06] hover:bg-white/[0.08]'}"
-              >
-                {preset === 0 ? 'DQ' : preset.toFixed(1)}
-              </button>
-            {/each}
-          </div>
-        {:else}
-          <!-- Kumite Flags Mode -->
-          <div class="flex-1 flex flex-col justify-center">
-            <div class="grid grid-cols-3 gap-2">
-              <button
-                onclick={() => toggleKumiteFlag("aka_yuko")}
-                class="h-14 rounded-xl font-black text-xs font-mono transition border active:scale-95 {activeKumiteFlag === 'aka_yuko' ? 'bg-red-600 text-white border-white shadow-lg' : 'bg-red-950/40 text-red-300 border-red-500/30'}"
-              >
-                YUKO (1)
-              </button>
-              <button
-                onclick={() => toggleKumiteFlag("aka_wazaari")}
-                class="h-14 rounded-xl font-black text-xs font-mono transition border active:scale-95 {activeKumiteFlag === 'aka_wazaari' ? 'bg-red-600 text-white border-white shadow-lg' : 'bg-red-950/40 text-red-300 border-red-500/30'}"
-              >
-                WAZA-ARI (2)
-              </button>
-              <button
-                onclick={() => toggleKumiteFlag("aka_ippon")}
-                class="h-14 rounded-xl font-black text-xs font-mono transition border active:scale-95 {activeKumiteFlag === 'aka_ippon' ? 'bg-red-600 text-white border-white shadow-lg' : 'bg-red-950/40 text-red-300 border-red-500/30'}"
-              >
-                IPPON (3)
-              </button>
-            </div>
-          </div>
-        {/if}
-      </div>
-    </section>
-
-    <!-- ==================== AO CARD (BLUE) ==================== -->
-    <section class="flex-1 min-h-0 bg-[#16181f] border-2 {isSubmitted ? 'border-blue-500/40 opacity-90' : 'border-blue-600 shadow-lg shadow-blue-950/20'} rounded-2xl flex flex-col overflow-hidden relative">
-      <!-- Card Header Strip -->
-      <div class="bg-blue-600 px-3 py-1.5 text-white flex items-center justify-between shrink-0 shadow">
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-1.5">
-            <span class="px-1.5 py-0.2 rounded bg-black/40 text-[10px] font-mono font-black tracking-wider uppercase">AO</span>
-            <h2 class="text-sm font-black truncate tracking-tight">{aoName}</h2>
-          </div>
-          <p class="text-[10px] text-blue-100 font-medium truncate mt-0.5">{aoContingent}</p>
-        </div>
-        {#if isKata && aoKataName}
-          <span class="px-2 py-0.5 rounded-full bg-black/35 text-[10px] font-mono font-bold text-white border border-white/20 ml-2 shrink-0">
-            {aoKataName}
-          </span>
-        {/if}
-      </div>
-
-      <!-- Card Body / Controls -->
-      <div class="flex-1 min-h-0 flex flex-col justify-between p-2.5">
-        {#if isKata}
-          <!-- Large Digital Score Display -->
-          <div class="flex-1 flex items-center justify-center min-h-0">
-            <div class="text-center">
-              <span class="text-5xl sm:text-6xl font-black font-mono tracking-tight text-blue-500 drop-shadow-md">
-                {aoScore === 0 ? "0.0 (DQ)" : aoScore.toFixed(1)}
-              </span>
-            </div>
-          </div>
-
-          <!-- Steppers Row -->
-          <div class="grid grid-cols-4 gap-1.5 shrink-0 my-1">
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("ao", -0.5)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-blue-400 font-mono font-black text-sm border border-blue-500/20 flex items-center justify-center transition"
-            >-0.5</button>
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("ao", -0.1)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-blue-400 font-mono font-black text-sm border border-blue-500/20 flex items-center justify-center transition"
-            >-0.1</button>
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("ao", 0.1)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-blue-400 font-mono font-black text-sm border border-blue-500/20 flex items-center justify-center transition"
-            >+0.1</button>
-            <button
-              disabled={isSubmitted}
-              onclick={() => adjustScore("ao", 0.5)}
-              class="h-10 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] active:scale-95 disabled:opacity-40 text-blue-400 font-mono font-black text-sm border border-blue-500/20 flex items-center justify-center transition"
-            >+0.5</button>
-          </div>
-
-          <!-- Presets Quick Bar -->
-          <div class="grid grid-cols-5 gap-1 shrink-0">
-            {#each [0.0, 7.0, 7.5, 8.0, 8.5] as preset}
-              <button
-                disabled={isSubmitted}
-                onclick={() => setPresetScore("ao", preset)}
-                class="h-7 rounded-lg text-[10px] font-mono font-bold transition border active:scale-95 disabled:opacity-40 {aoScore === preset ? 'bg-blue-600 text-white border-blue-500 font-black' : 'bg-white/[0.03] text-zinc-400 border-white/[0.06] hover:bg-white/[0.08]'}"
-              >
-                {preset === 0 ? 'DQ' : preset.toFixed(1)}
-              </button>
-            {/each}
-          </div>
-        {:else}
-          <!-- Kumite Flags Mode -->
-          <div class="flex-1 flex flex-col justify-center">
-            <div class="grid grid-cols-3 gap-2">
-              <button
-                onclick={() => toggleKumiteFlag("ao_yuko")}
-                class="h-14 rounded-xl font-black text-xs font-mono transition border active:scale-95 {activeKumiteFlag === 'ao_yuko' ? 'bg-blue-600 text-white border-white shadow-lg' : 'bg-blue-950/40 text-blue-300 border-blue-500/30'}"
-              >
-                YUKO (1)
-              </button>
-              <button
-                onclick={() => toggleKumiteFlag("ao_wazaari")}
-                class="h-14 rounded-xl font-black text-xs font-mono transition border active:scale-95 {activeKumiteFlag === 'ao_wazaari' ? 'bg-blue-600 text-white border-white shadow-lg' : 'bg-blue-950/40 text-blue-300 border-blue-500/30'}"
-              >
-                WAZA-ARI (2)
-              </button>
-              <button
-                onclick={() => toggleKumiteFlag("ao_ippon")}
-                class="h-14 rounded-xl font-black text-xs font-mono transition border active:scale-95 {activeKumiteFlag === 'ao_ippon' ? 'bg-blue-600 text-white border-white shadow-lg' : 'bg-blue-950/40 text-blue-300 border-blue-500/30'}"
-              >
-                IPPON (3)
-              </button>
-            </div>
-          </div>
-        {/if}
-      </div>
-    </section>
-
-  </main>
-
-  <!-- Sticky Bottom Submission Bar -->
-  <footer class="bg-[#14161b] border-t border-white/10 p-3 shrink-0 shadow-2xl">
-    {#if !isSubmitted}
-      <button
-        onclick={submitKataScores}
-        disabled={isSending}
-        class="w-full h-12 bg-white text-black hover:bg-zinc-200 active:scale-[0.98] font-black text-sm rounded-xl shadow-xl flex items-center justify-center gap-2 transition"
-      >
-        {#if isSending}
-          <svg class="animate-spin h-5 w-5 text-black" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-          </svg>
-          <span>MENGIRIM NILAI...</span>
-        {:else}
-          <svg class="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
-          </svg>
-          <span>KIRIM NILAI WASIT #{selectedJudge}</span>
-        {/if}
+  {#if seatClash}
+    <div class="bg-rose-600 text-white px-3 py-2 flex items-center gap-3 shrink-0">
+      <span class="text-sm font-bold flex-1">Kursi Juri {seat} juga dipakai tablet lain. Nilai salah satu tablet akan tertimpa.</span>
+      <button type="button" onclick={() => (seatPickerOpen = true)} class="h-9 px-3 rounded-lg bg-white text-rose-700 font-black text-xs shrink-0">
+        Ganti kursi
       </button>
+    </div>
+  {/if}
+
+  <!-- Match strip -->
+  <div class="bg-[#111317] border-b border-white/[0.06] px-3 py-1.5 flex items-center gap-2 text-xs shrink-0">
+    {#if hasMatch}
+      <span class="font-bold text-zinc-100 truncate">{categoryName || "Partai aktif"}</span>
+      {#if roundLabel}<span class="text-zinc-500 shrink-0">• {roundLabel}</span>{/if}
+      <div class="flex-1"></div>
+      {#if matchNumber !== ""}<span class="font-mono font-bold text-zinc-400 shrink-0">Partai #{matchNumber}</span>{/if}
     {:else}
-      <!-- Locked State with Correction Option -->
-      <div class="flex items-center gap-2">
-        <div class="flex-1 h-12 bg-emerald-500/15 border-2 border-emerald-500/40 rounded-xl flex items-center justify-center gap-2 text-emerald-400 font-mono font-black text-xs">
-          <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-          </svg>
-          <span>NILAI JURI #{selectedJudge} TERKIRIM (TERKUNCI)</span>
-        </div>
+      <span class="text-zinc-400">Menunggu partai dari Meja Tatami {tatamiNumber}…</span>
+    {/if}
+  </div>
+
+  {#if toast}
+    <div
+      class="fixed top-16 left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 rounded-xl text-sm font-bold shadow-2xl max-w-[92vw] text-center {toast.kind === 'ok'
+        ? 'bg-emerald-500 text-black'
+        : 'bg-rose-600 text-white'}"
+    >
+      {toast.text}
+    </div>
+  {/if}
+
+  <!-- Main Body -->
+  {#if !hasMatch}
+    <!-- Empty State: Waiting for table to open a match -->
+    <div class="flex-1 flex flex-col items-center justify-center p-6 text-center">
+      <div class="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-center mb-4 text-3xl">
+        🥋
+      </div>
+      <h3 class="text-xl font-black text-white">Menunggu Partai Dimulai</h3>
+      <p class="text-sm text-zinc-400 max-w-sm mt-1.5">
+        Operator Meja Tatami {tatamiNumber} belum membuka partai. Layar penilaian juri akan muncul secara otomatis begitu partai dibuka.
+      </p>
+      <div class="mt-6 flex flex-col sm:flex-row items-center gap-3">
         <button
-          onclick={unlockScores}
-          class="h-12 px-4 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-zinc-300 border border-white/15 text-xs font-bold transition active:scale-95 shrink-0"
+          type="button"
+          onclick={() => (seatPickerOpen = true)}
+          class="h-11 px-5 rounded-xl bg-white/[0.08] border border-white/15 text-white font-bold text-xs active:scale-95 transition"
         >
-          Koreksi
+          Kursi Saat Ini: Juri {seat ?? "?"} (Ganti)
+        </button>
+        <button
+          type="button"
+          onclick={handleManualReconnect}
+          class="h-11 px-5 rounded-xl bg-white text-black font-black text-xs active:scale-95 transition"
+        >
+          Muat Ulang Data Meja
         </button>
       </div>
-    {/if}
-  </footer>
+    </div>
+  {:else if !isKata}
+    <div class="flex-1 flex items-center justify-center p-6 text-center">
+      <div>
+        <div class="text-lg font-black text-white">Partai Ini Adalah Kumite</div>
+        <div class="text-sm text-zinc-400 mt-1">Panel nilai Kata otomatis aktif kembali saat meja membuka partai Kata.</div>
+      </div>
+    </div>
+  {:else if isFinished}
+    <div class="flex-1 flex items-center justify-center p-6 text-center">
+      <div>
+        <div class="text-lg font-black text-white">Partai Sudah Selesai</div>
+        <div class="text-sm text-zinc-400 mt-1">Tunggu operator meja membuka partai berikutnya. Layar akan berganti otomatis.</div>
+      </div>
+    </div>
+  {:else}
+    <!-- Score panels: stacked on a portrait tablet, side by side in landscape -->
+    <main class="flex-1 min-h-0 p-2.5 grid grid-rows-2 landscape:grid-rows-1 landscape:grid-cols-2 gap-2.5 overflow-y-auto">
+      {@render scorePanel("aka")}
+      {@render scorePanel("ao")}
+    </main>
 
+    <!-- Submit bar -->
+    <div class="bg-[#14161b] border-t border-white/10 p-2.5 shrink-0">
+      {#if locked && sent}
+        <div class="flex items-center gap-2">
+          <div
+            class="flex-1 h-14 rounded-xl border-2 flex items-center justify-center gap-2 font-black text-sm {confirmedByDesk
+              ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+              : 'bg-amber-500/10 border-amber-500/40 text-amber-200'}"
+          >
+            {#if confirmedByDesk}
+              ✓ Diterima meja — AKA {sent.aka} • AO {sent.ao}
+            {:else}
+              Terkirim, menunggu meja… AKA {sent.aka} • AO {sent.ao}
+            {/if}
+          </div>
+          <button
+            type="button"
+            onclick={unlock}
+            class="h-14 px-5 rounded-xl bg-white/[0.06] border border-white/15 text-zinc-200 font-bold text-sm active:scale-95 transition"
+          >
+            Koreksi
+          </button>
+        </div>
+      {:else}
+        {#if tieConfirm}
+          <div class="mb-2 px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs font-semibold">
+            Nilai AKA dan AO sama ({fmt(akaValue)}). Juri ini tidak akan memberi bendera ke siapa pun.
+          </div>
+        {/if}
+        <button
+          type="button"
+          onclick={submit}
+          disabled={!ready || seat === null || sending || !hasMatch || connection === "offline"}
+          class="w-full h-14 rounded-xl font-black text-base transition active:scale-[0.98] disabled:opacity-40 {connection ===
+          'offline'
+            ? 'bg-rose-900/50 text-rose-300 border border-rose-500/30'
+            : tieConfirm
+              ? 'bg-amber-400 text-black'
+              : 'bg-white text-black'}"
+        >
+          {#if sending}
+            Mengirim…
+          {:else if connection === "offline"}
+            Koneksi Terputus — Menunggu Jaringan...
+          {:else if !hasMatch}
+            Menunggu partai
+          {:else if !ready}
+            Isi nilai AKA dan AO
+          {:else if tieConfirm}
+            Tetap kirim nilai sama
+          {:else}
+            Kirim nilai Juri {seat} — AKA {fmt(akaValue)} • AO {fmt(aoValue)}
+          {/if}
+        </button>
+      {/if}
+    </div>
+  {/if}
 </div>
+
+<!-- Seat picker: shown on first open of this tatami and from the header -->
+{#if seatPickerOpen}
+  <div class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-5">
+    <div class="w-full max-w-md bg-[#181a20] border border-white/10 rounded-2xl p-5">
+      <h2 class="text-lg font-black text-white">Tatami {tatamiNumber} — pilih kursi juri</h2>
+      <div class="grid grid-cols-5 gap-2 mt-4">
+        {#each JUDGE_SEATS as n (n)}
+          {@const taken = seatsTakenElsewhere.has(n)}
+          <button
+            type="button"
+            onclick={() => chooseSeat(n)}
+            class="aspect-square rounded-2xl flex flex-col items-center justify-center border-2 transition active:scale-95 {seat === n
+              ? 'bg-white text-black border-white'
+              : taken
+                ? 'bg-white/[0.02] text-zinc-500 border-white/10'
+                : 'bg-white/[0.04] text-white border-white/15'}"
+          >
+            <span class="text-3xl font-black font-mono leading-none">{n}</span>
+            {#if taken}<span class="text-[10px] font-bold mt-1 text-rose-400">dipakai</span>{/if}
+          </button>
+        {/each}
+      </div>
+      {#if seat !== null}
+        <button
+          type="button"
+          onclick={() => (seatPickerOpen = false)}
+          class="mt-4 w-full h-11 rounded-xl bg-white/[0.06] border border-white/10 text-zinc-200 font-bold text-sm"
+        >
+          Batal
+        </button>
+      {/if}
+      <button
+        type="button"
+        onclick={exitToLanding}
+        class="mt-2 w-full h-10 rounded-xl bg-transparent hover:bg-white/[0.04] text-zinc-400 hover:text-zinc-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+        </svg>
+        <span>Keluar ke Beranda Website</span>
+      </button>
+    </div>
+  </div>
+{/if}
+
+<!-- Exit confirmation modal -->
+{#if exitConfirmOpen}
+  <div class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-5">
+    <div class="w-full max-w-sm bg-[#181a20] border border-white/10 rounded-2xl p-5 shadow-2xl">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center shrink-0">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+          </svg>
+        </div>
+        <div>
+          <h3 class="text-base font-black text-white">Keluar dari Panel Juri?</h3>
+          <p class="text-xs text-zinc-400 mt-0.5">Kembali ke landing page portal website</p>
+        </div>
+      </div>
+
+      <div class="my-4 p-3 rounded-xl bg-white/[0.03] border border-white/10 text-xs text-zinc-300 space-y-1">
+        <div class="flex justify-between font-mono">
+          <span class="text-zinc-500">Posisi:</span>
+          <span class="font-bold text-white">Tatami {tatamiNumber} — {seat ? `Juri ${seat}` : "Kursi Belum Dipilih"}</span>
+        </div>
+        {#if hasMatch && ready && !locked}
+          <div class="flex items-center gap-1.5 text-amber-400 pt-1 font-semibold">
+            <span>⚠ Nilai yang diisi belum dikirim ke meja!</span>
+          </div>
+        {/if}
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onclick={() => (exitConfirmOpen = false)}
+          class="h-11 rounded-xl bg-white/[0.08] hover:bg-white/15 border border-white/10 text-zinc-200 font-bold text-sm transition active:scale-95"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={exitToLanding}
+          class="h-11 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm shadow-lg shadow-rose-950/40 transition active:scale-95 flex items-center justify-center gap-1.5"
+        >
+          <span>Ya, Keluar</span>
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

@@ -33,6 +33,7 @@ pub struct AppState {
     pub broadcast_tx: broadcast::Sender<ArenaMessage>,
     pub db: Arc<Mutex<crate::db::DatabaseManager>>,
     pub app_handle: Option<tauri::AppHandle>,
+    pub live_tatami_cache: Arc<tokio::sync::Mutex<std::collections::HashMap<i64, serde_json::Value>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,6 +369,37 @@ async fn handle_socket(
     let socket_id = NEXT_SOCKET_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     info!("WebSocket client connected for channel '{}' on Tatami #{}", channel, tatami_pk);
 
+    // Send immediately cached live state to newly connected client if available
+    if tatami_pk > 0 {
+        let cached = {
+            let cache = state.live_tatami_cache.lock().await;
+            cache.get(&tatami_pk).cloned()
+        };
+        let state_to_send = match cached {
+            Some(c) => Some(c),
+            None => {
+                let db = state.db.lock().await;
+                if let Ok(Some(m)) = db.get_tatami_current_match(tatami_pk as i32, None).await {
+                    let live = build_live_state_from_match(tatami_pk, &m);
+                    drop(db);
+                    let mut cache = state.live_tatami_cache.lock().await;
+                    cache.insert(tatami_pk, live.clone());
+                    Some(live)
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(cached_state) = state_to_send {
+            let resp = serde_json::json!({
+                "type": "tatami_live_state",
+                "payload": cached_state
+            });
+            let text = serde_json::to_string(&resp).unwrap_or_default();
+            let _ = socket.send(Message::Text(text.into())).await;
+        }
+    }
+
     loop {
         tokio::select! {
             // Server is stopping: close this client so the old server can shut down.
@@ -385,6 +417,51 @@ async fn handle_socket(
                                 // Tag with the sender so it is not echoed back to itself.
                                 obj.insert(ORIGIN_KEY.into(), serde_json::json!(socket_id));
                             }
+                            // Cache live state regardless of origin (so mobile tablets can fetch it)
+                            if let Some(msg_type) = parsed.get("type").and_then(|t| t.as_str()) {
+                                if msg_type == "tatami_live_state" {
+                                    let data_payload = parsed.get("payload").unwrap_or(&parsed);
+                                    if let Some(t_num) = data_payload.get("tatami").and_then(|v| v.as_i64()) {
+                                        let cache_arc = state.live_tatami_cache.clone();
+                                        let data_clone = data_payload.clone();
+                                        tokio::spawn(async move {
+                                            let mut cache = cache_arc.lock().await;
+                                            cache.insert(t_num, data_clone);
+                                        });
+                                    }
+                                } else if msg_type == "request_tatami_state" {
+                                    let req_tatami = parsed.get("tatami").and_then(|v| v.as_i64()).unwrap_or(tatami_pk);
+                                    let cache_arc = state.live_tatami_cache.clone();
+                                    let cached = {
+                                        let cache = cache_arc.lock().await;
+                                        cache.get(&req_tatami).cloned()
+                                    };
+                                    let state_to_send = match cached {
+                                        Some(c) => Some(c),
+                                        None => {
+                                            let db = state.db.lock().await;
+                                            if let Ok(Some(m)) = db.get_tatami_current_match(req_tatami as i32, None).await {
+                                                let live = build_live_state_from_match(req_tatami, &m);
+                                                drop(db);
+                                                let mut cache = cache_arc.lock().await;
+                                                cache.insert(req_tatami, live.clone());
+                                                Some(live)
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                    };
+                                    if let Some(cached_state) = state_to_send {
+                                        let resp = serde_json::json!({
+                                            "type": "tatami_live_state",
+                                            "payload": cached_state
+                                        });
+                                        let text = serde_json::to_string(&resp).unwrap_or_default();
+                                        let _ = socket.send(Message::Text(text.into())).await;
+                                    }
+                                }
+                            }
+
                             let arena_msg = ArenaMessage {
                                 tatami_pk: target_tatami,
                                 channel: channel.clone(),
@@ -562,12 +639,18 @@ async fn list_contingents_api(Path(event_id): Path<i64>, State(state): State<Arc
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TatamiMatchQuery {
+    pub event: Option<i64>,
+}
+
 async fn tatami_current_match_api(
     Path(tatami_num): Path<i32>,
+    axum::extract::Query(q): axum::extract::Query<TatamiMatchQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
-    match db.get_tatami_current_match(tatami_num).await {
+    match db.get_tatami_current_match(tatami_num, q.event).await {
         Ok(m) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": m }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }
@@ -2272,9 +2355,37 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "get_festival_format" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_festival_format(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "set_festival_format" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let format = get_str_val(&payload, &["format"]).unwrap_or_default();
+            let delete_bagans = get_bool_val(&payload, &["deleteBagans", "delete_bagans"]).unwrap_or(false);
+            match db.set_festival_format(ev_id, format, delete_bagans).await {
+                Ok(v) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "save_festival_roster_state" => {
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
-            match serde_json::from_value::<FestivalRosterState>(payload.get("state").unwrap_or(&payload).clone()) {
+            // The app sends { eventId, rosterState }; older callers send "state" or the bare state.
+            let state_val = payload
+                .get("rosterState")
+                .or(payload.get("roster_state"))
+                .or(payload.get("state"))
+                .unwrap_or(&payload)
+                .clone();
+            match serde_json::from_value::<FestivalRosterState>(state_val) {
                 Ok(s) => match db.save_festival_roster_state(ev_id, s).await {
                     Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
                     Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2288,6 +2399,24 @@ async fn dispatch_command_api(
             match db.auto_pair_festival_category(ev_id, nt_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_festival_mix_groups" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            match db.get_festival_mix_groups(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "save_festival_mix_groups" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let groups_val = payload.get("mixGroups").or(payload.get("mix_groups")).cloned().unwrap_or(serde_json::Value::Array(vec![]));
+            match serde_json::from_value::<Vec<crate::models::FestivalMixGroup>>(groups_val) {
+                Ok(groups) => match db.save_festival_mix_groups(ev_id, groups).await {
+                    Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+                },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
             }
         },
         "mix_festival_categories" => {
@@ -2859,6 +2988,82 @@ async fn submit_urgent_call_api(
     (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
 }
 
+pub fn build_live_state_from_match(tatami_num: i64, m: &crate::models::EnrichedDetailBagan) -> serde_json::Value {
+    serde_json::json!({
+        "tatami": tatami_num,
+        "matchId": m.id,
+        "baganId": m.bagan_id,
+        "category": "",
+        "round": m.round.map(|r| if r == 4 { "PARTAI FINAL".to_string() } else if r == 3 { "SEMIFINAL".to_string() } else { format!("BABAK {}", r) }).unwrap_or_default(),
+        "matchNumber": m.urutan.unwrap_or(1),
+        "isKata": m.kata1.is_some() || m.kata2.is_some(),
+        "isFinished": m.selesai,
+        "aka": {
+            "name": m.atlet1_nama.as_deref().unwrap_or("Sudut Merah"),
+            "contingent": m.atlet1_kontingen.as_deref().unwrap_or("-"),
+            "kataName": m.kata1.as_deref().unwrap_or(""),
+            "totalPoints": 0,
+            "judgeScores": ["", "", "", "", ""],
+            "score": 0,
+            "senshu": false,
+            "penalties": { "c1": false, "c2": false, "c3": false, "hc": false, "h": false },
+            "vr": false,
+            "logo": null
+        },
+        "ao": {
+            "name": m.atlet2_nama.as_deref().unwrap_or("Sudut Biru"),
+            "contingent": m.atlet2_kontingen.as_deref().unwrap_or("-"),
+            "kataName": m.kata2.as_deref().unwrap_or(""),
+            "totalPoints": 0,
+            "judgeScores": ["", "", "", "", ""],
+            "score": 0,
+            "senshu": false,
+            "penalties": { "c1": false, "c2": false, "c3": false, "hc": false, "h": false },
+            "vr": false,
+            "logo": null
+        },
+        "winner": "",
+        "isFinished": m.selesai,
+        "isClosed": false,
+        "isTimerRunning": false
+    })
+}
+
+async fn tatami_live_state_api(
+    Path(tatami_num): Path<i64>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let cached = {
+        let cache = state.live_tatami_cache.lock().await;
+        cache.get(&tatami_num).cloned()
+    };
+    if let Some(live) = cached {
+        return (StatusCode::OK, Json(serde_json::json!({
+            "status": "success",
+            "source": "cache",
+            "data": live
+        }))).into_response();
+    }
+
+    // Fallback: Query active match from database
+    let db = state.db.lock().await;
+    match db.get_tatami_current_match(tatami_num as i32, None).await {
+        Ok(Some(m)) => {
+            let live = build_live_state_from_match(tatami_num, &m);
+            drop(db);
+            let mut cache = state.live_tatami_cache.lock().await;
+            cache.insert(tatami_num, live.clone());
+            (StatusCode::OK, Json(serde_json::json!({
+                "status": "success",
+                "source": "database",
+                "data": live
+            }))).into_response()
+        },
+        Ok(None) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": null }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+    }
+}
+
 pub fn create_router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -2875,6 +3080,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         // Tatami routes
         .route("/api/tatamis/:event_id", get(list_tatamis_api))
         .route("/api/tatami/:tatami_number/current-match", get(tatami_current_match_api))
+        .route("/api/tatami/:tatami_number/live-state", get(tatami_live_state_api))
         .route("/api/tatami/:tatami_number/matches", get(tatami_matches_api))
         .route("/api/tatami/create", post(create_tatami_api))
         .route("/api/tatami/update-number", post(update_tatami_number_api))

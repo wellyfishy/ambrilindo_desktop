@@ -201,7 +201,11 @@
       requestClaim(tatami, true);
     });
     const heartbeat = setInterval(() => requestClaim(tatami), CLAIM_HEARTBEAT_MS);
-    const socket = connectTatamiSocket("admin-control", tatami, handleSocketMessage);
+    const socket = connectTatamiSocket("admin-control", tatami, handleSocketMessage, (sock) => {
+      if (claimStatus === "owned") {
+        broadcastLiveState();
+      }
+    });
     tatamiSocket = socket;
     const releaseOnUnload = () => {
       invoke("release_tatami", { tatami, ownerId: claimOwnerId }).catch(() => {});
@@ -289,8 +293,8 @@
     }, 3500);
   }
 
-  // Reactive Sync when match prop changes (switching bouts in team kumite)
-  let lastLoadedMatchId = $state<number | null>(null);
+  // Reactive Sync when match prop changes (switching bouts in team kumite or festival pairs)
+  let lastLoadedMatchKey = $state<string>("");
 
   function syncFromMatch(m: DetailBaganItem) {
     matchWinner = m.pemenang || "";
@@ -304,6 +308,11 @@
 
     kataAkaName = m.kata1 || "";
     kataAoName = m.kata2 || "";
+
+    // Reset 5 judges scores and overlays for new match
+    akaJudgeScores = ["", "", "", "", ""];
+    aoJudgeScores = ["", "", "", "", ""];
+    showKataScoreOnBoard = false;
 
     akaPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
     aoPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
@@ -329,8 +338,9 @@
   }
 
   $effect(() => {
-    if (match.id !== lastLoadedMatchId) {
-      lastLoadedMatchId = match.id;
+    const currentKey = `${match.id}_${match.atlet1_nama || ""}_${match.atlet2_nama || ""}_${match.kata1 || ""}_${match.kata2 || ""}`;
+    if (currentKey !== lastLoadedMatchKey) {
+      lastLoadedMatchKey = currentKey;
       syncFromMatch(match);
       broadcastLiveState();
     }
@@ -999,6 +1009,15 @@
 
     // Universal broadcast to local IPC, local BroadcastChannel, and LAN WebSocket relay
     broadcastLiveMatch($state.snapshot(payload));
+    if (tatamiSocket) {
+      try {
+        tatamiSocket.send({
+          type: "tatami_live_state",
+          origin: isHostUi() ? "host" : undefined,
+          payload: $state.snapshot(payload),
+        });
+      } catch (_) {}
+    }
   }
 
   // ==================== SAVING & EXIT ====================
