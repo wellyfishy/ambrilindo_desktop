@@ -212,28 +212,28 @@
 
 <div class="h-screen w-screen bg-[#0d0e12] text-zinc-100 flex flex-col overflow-hidden font-sans select-none">
   <!-- Top Stadium Header -->
-  <header class="px-6 py-3.5 bg-[#14161b] border-b border-white/[0.08] flex items-center justify-between shrink-0 shadow-lg">
-    <div class="flex items-center space-x-4">
-      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-red-500 flex items-center justify-center text-white text-xl shadow-md">
+  <header class="px-4 sm:px-6 py-3 sm:py-3.5 bg-[#14161b] border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-lg">
+    <div class="flex items-center gap-3 sm:gap-4 min-w-0">
+      <div class="hidden sm:flex shrink-0 w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-red-500 items-center justify-center text-white text-xl shadow-md">
         🥋
       </div>
-      <div>
-        <div class="flex items-center space-x-2.5">
-          <h1 class="text-lg font-black tracking-tight text-white uppercase">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2.5 min-w-0">
+          <h1 class="text-base sm:text-lg font-black tracking-tight text-white uppercase truncate">
             {overview?.event_name || "KEJUARAAN KARATE RESMI"}
           </h1>
-          <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-[10px] font-mono font-bold text-emerald-400 animate-pulse">
+          <span class="hidden md:inline shrink-0 px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-[10px] font-mono font-bold text-emerald-400 animate-pulse">
             LIVE CALL ROOM
           </span>
         </div>
-        <p class="text-xs text-zinc-400 font-mono tracking-wide">
+        <p class="hidden sm:block text-xs text-zinc-400 font-mono tracking-wide truncate">
           MONITOR PANGGILAN ATLET & RUANG PEMANASAN (MARSHALLING STATION)
         </p>
       </div>
     </div>
 
     <!-- Clock & Quick Action Controls -->
-    <div class="flex items-center space-x-3">
+    <div class="flex items-center gap-2 sm:gap-3 shrink-0">
       <span
         class="flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold font-mono border {isLive ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' : 'bg-amber-500/10 text-amber-300 border-amber-500/25'}"
       >
@@ -241,7 +241,7 @@
         {isLive ? "LIVE" : "MENYAMBUNG"}
       </span>
       <!-- Digital Clock -->
-      <div class="px-4 py-1.5 rounded-xl bg-[#0d0e12] border border-white/[0.1] font-mono text-base font-black text-amber-400 tracking-widest shadow-inner">
+      <div class="hidden sm:block px-4 py-1.5 rounded-xl bg-[#0d0e12] border border-white/[0.1] font-mono text-base font-black text-amber-400 tracking-widest shadow-inner">
         {currentTime}
       </div>
 
@@ -305,7 +305,7 @@
         Belum ada Tatami aktif yang terdaftar pada turnamen ini.
       </div>
     {:else}
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 min-w-[700px]">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-5">
         {#each overview.tatamis as tQueue}
           <div class="rounded-2xl bg-[#14161b] border border-white/[0.08] flex flex-col justify-between overflow-hidden shadow-2xl">
             <!-- Tatami Court Header -->

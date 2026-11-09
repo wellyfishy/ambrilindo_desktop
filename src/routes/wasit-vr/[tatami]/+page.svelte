@@ -195,7 +195,11 @@
               <!-- Standby -->
               <div class="flex-1 rounded-xl border border-dashed border-white/15 flex flex-col items-center justify-center gap-2 text-zinc-500 text-center px-4">
                 <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M15 10l4.55-2.28A1 1 0 0121 8.62v6.76a1 1 0 01-1.45.9L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                <div class="text-sm font-semibold">Menunggu pengajuan Video Review dari pelatih {side === "aka" ? "AKA" : "AO"}</div>
+                {#if corner.cardUsed}
+                  <div class="text-sm font-semibold text-rose-300">Kartu VR {side === "aka" ? "AKA" : "AO"} sudah hangus</div>
+                {:else}
+                  <div class="text-sm font-semibold">Menunggu pengajuan Video Review dari pelatih {side === "aka" ? "AKA" : "AO"}</div>
+                {/if}
               </div>
             {:else if req.status === "in_progress"}
               <!-- Open request -->

@@ -223,6 +223,9 @@ pub struct EnrichedDetailBagan {
     pub atlet2_kontingen: Option<String>,
     pub atlet2_logo: Option<String>,
     pub atlet2_is_priority: Option<bool>,
+    /// Bracket name (only some queries fill it; the LO Kata list uses it to skip kumite)
+    #[sqlx(default)]
+    pub nama_bagan: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

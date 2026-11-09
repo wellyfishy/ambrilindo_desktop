@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { EventItem, TatamiItem } from "$lib/types";
+  import { getHostBaseUrl } from "$lib/api_client";
 
   let events = $state<EventItem[]>([]);
   let selectedEventId = $state<number | null>(null);
@@ -9,6 +10,8 @@
   let selectedRole = $state<string>("wasit_vr");
   let isLoading = $state(true);
   let hostUrl = $state("");
+  let loadError = $state("");
+  let hostOnline = $derived(events.length > 0 && !loadError);
 
   interface RoleOption {
     id: string;
@@ -37,7 +40,7 @@
       badge: "Operator",
       color: "blue",
       icon: "monitor",
-      getUrl: (t) => `/control-panel?tatami=${t}`,
+      getUrl: (t, e) => `/control-panel?tatami=${t}${e ? `&event=${e}` : ""}`,
     },
     {
       id: "lo_kata",
@@ -73,7 +76,7 @@
       badge: "Central",
       color: "purple",
       icon: "sliders",
-      getUrl: () => `/control-panel`,
+      getUrl: (t, e) => `/control-panel?tatami=${t}${e ? `&event=${e}` : ""}`,
     },
     {
       id: "scoreboard",
@@ -100,7 +103,7 @@
       badge: "Manager",
       color: "zinc",
       icon: "shield",
-      getUrl: (t) => `/control-panel?tatami=${t}`,
+      getUrl: (t, e) => `/control-panel?tatami=${t}${e ? `&event=${e}` : ""}`,
     },
   ];
 
@@ -108,26 +111,37 @@
     roleOptions.find((r) => r.id === selectedRole) || roleOptions[0]
   );
 
-  onMount(async () => {
-    if (typeof window !== "undefined") {
-      hostUrl = window.location.origin;
-    }
-
+  // Newest event first (the host lists them that way). Retries until the host answers,
+  // so a tablet switched on before the host (or on a flaky LAN) still gets the list.
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  async function loadEvents() {
     try {
-      const res = await fetch("/api/events");
-      if (res.ok) {
-        const json = await res.json();
-        const evList: EventItem[] = json.data || [];
-        events = evList;
-        if (evList.length > 0) {
-          selectedEventId = evList[0].id;
-          await loadTatamisForEvent(evList[0].id);
-        }
+      const res = await fetch(`${getHostBaseUrl()}/api/events`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const evList: EventItem[] = json.data || [];
+      events = evList;
+      loadError = evList.length ? "" : "Belum ada event di meja utama";
+      if (evList.length > 0 && !evList.some((e) => e.id === selectedEventId)) {
+        selectedEventId = evList[0].id;
+        await loadTatamisForEvent(evList[0].id);
       }
-    } catch (_) {
+    } catch (err) {
+      loadError = "Meja utama belum terhubung, mencoba lagi…";
+      retryTimer = setTimeout(loadEvents, 4000);
     } finally {
       isLoading = false;
     }
+  }
+
+  onMount(() => {
+    if (typeof window !== "undefined") {
+      hostUrl = getHostBaseUrl();
+    }
+    loadEvents();
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   });
 
   async function handleEventChange(e: Event) {
@@ -141,7 +155,7 @@
 
   async function loadTatamisForEvent(eventId: number) {
     try {
-      const res = await fetch(`/api/tatamis/${eventId}`);
+      const res = await fetch(`${getHostBaseUrl()}/api/tatamis/${eventId}`);
       if (res.ok) {
         const json = await res.json();
         const list: TatamiItem[] = json.data || [];
@@ -188,9 +202,9 @@
       </div>
     </div>
 
-    <div class="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-full text-emerald-400 text-xs font-semibold">
-      <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-      <span class="text-[11px] font-mono">LAN HOST ONLINE</span>
+    <div class="flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold border {hostOnline ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-400' : 'bg-amber-500/10 border-amber-500/25 text-amber-300'}">
+      <span class="w-2 h-2 rounded-full animate-pulse {hostOnline ? 'bg-emerald-400' : 'bg-amber-300'}"></span>
+      <span class="text-[11px] font-mono">{hostOnline ? "LAN HOST ONLINE" : "MENYAMBUNG…"}</span>
     </div>
   </header>
 
@@ -211,7 +225,7 @@
             class="w-full bg-[#181a22] border border-white/[0.12] focus:border-white text-white text-xs font-medium px-3 py-2 pr-8 rounded-xl outline-none appearance-none cursor-pointer"
           >
             {#if events.length === 0}
-              <option disabled selected value="">Memuat event turnamen…</option>
+              <option disabled selected value="">{loadError || "Memuat event turnamen…"}</option>
             {:else}
               {#each events as ev}
                 <option value={ev.id}>

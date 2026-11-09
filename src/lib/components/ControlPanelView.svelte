@@ -154,7 +154,10 @@
       if (res.granted) {
         const wasOwned = claimStatus === "owned";
         claimStatus = "owned";
-        if (!wasOwned) broadcastLiveState();
+        if (!wasOwned) {
+          broadcastLiveState();
+          recordRunningMatch();
+        }
       } else {
         // Mark as blocked first so pausing the timer does not broadcast.
         claimStatus = "blocked";
@@ -170,8 +173,31 @@
         console.warn("Klaim tatami tidak dapat diperiksa, lanjut tanpa klaim:", err);
         claimStatus = "owned";
         broadcastLiveState();
+        recordRunningMatch();
       }
     }
+  }
+
+  /**
+   * The host's database records which match runs on which tatami (marshalling, jury and LO
+   * tablets read it). The host's own window does this when it opens; a control panel on
+   * another device (browser, operator laptop) has to tell the host.
+   */
+  let recordedRunning = "";
+  $effect(() => {
+    // another match or bout opened in this window while it holds the tatami
+    void match?.id;
+    if (claimStatus === "owned") recordRunningMatch();
+  });
+  function recordRunningMatch() {
+    if (isHostUi() || !match?.id || match.id <= 0) return;
+    const key = `${activeTatami}:${match.id}`;
+    if (recordedRunning === key) return;
+    recordedRunning = key;
+    invoke("notify_match_running", { matchId: match.id, tatami: activeTatami }).catch((e) => {
+      recordedRunning = "";
+      console.warn("Gagal mencatat partai berjalan di host:", e);
+    });
   }
 
   async function takeOverTatami() {
@@ -207,6 +233,9 @@
     const socket = connectTatamiSocket("admin-control", tatami, handleSocketMessage, (sock) => {
       if (claimStatus === "owned") {
         broadcastLiveState();
+        // The host may have restarted (or been offline): record the running match again.
+        recordedRunning = "";
+        recordRunningMatch();
       }
     });
     tatamiSocket = socket;

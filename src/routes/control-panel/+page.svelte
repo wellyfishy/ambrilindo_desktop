@@ -20,6 +20,8 @@
   let logoMap = $state<Record<string, string>>({});
   let isLoading = $state<boolean>(true);
   let errorMessage = $state<string | null>(null);
+  /** Opened for a tatami (QR / venue portal) while no match runs there yet */
+  let standbyTatami = $state<number | null>(null);
 
   let isFestival = $derived(
     (matchId === 0 && baganId === 0) ||
@@ -42,6 +44,37 @@
     const parsedTatami = parseInt(rawParamTatami || "1", 10);
     const hasExplicitTatami = !!rawParamTatami && !isNaN(parsedTatami) && parsedTatami > 0;
     tatamiNumber = hasExplicitTatami ? parsedTatami : 1;
+
+    // Opened for a tatami only (operator QR code / venue portal): follow the match the host
+    // runs there. Never start a stand-in match: it would take the tatami over from the real
+    // control panel and show "AKA CONTESTANT" on the scoreboard and tablets.
+    const sp = page.url.searchParams;
+    const explicitFestival =
+      sp.get("isFestival") === "true" || sp.has("aka") || sp.has("ao") || sp.has("cat");
+    if (matchId === 0 && baganId === 0 && !explicitFestival) {
+      const ev = sp.get("event");
+      try {
+        const res = await fetch(
+          `${getHostBaseUrl()}/api/tatami/${tatamiNumber}/current-match${ev ? `?event=${ev}` : ""}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const m = (await res.json())?.data;
+        if (m?.id && m?.bagan_id) {
+          const u = new URL(window.location.href);
+          u.searchParams.set("matchId", String(m.id));
+          u.searchParams.set("baganId", String(m.bagan_id));
+          window.location.replace(u.toString());
+          return;
+        }
+        standbyTatami = tatamiNumber;
+        errorMessage = `Belum ada partai berjalan di Tatami ${tatamiNumber}. Buka partai dari Bagan / Jadwal di meja utama, lalu tekan Muat Ulang.`;
+      } catch (err: any) {
+        standbyTatami = tatamiNumber;
+        errorMessage = `Meja utama tidak terjangkau (${err?.message || err}). Periksa jaringan, lalu tekan Muat Ulang.`;
+      }
+      isLoading = false;
+      return;
+    }
 
     // Handle stateless Festival match (no database required when matchId and baganId are 0)
     if (matchId === 0 && baganId === 0) {
@@ -360,8 +393,27 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
         </svg>
       </div>
-      <h2 class="text-base font-bold text-white mb-1">Gagal Membuka Control Panel</h2>
+      <h2 class="text-base font-bold text-white mb-1">
+        {standbyTatami ? `Tatami ${standbyTatami} Siaga` : "Gagal Membuka Control Panel"}
+      </h2>
       <p class="text-xs text-zinc-400 max-w-md mb-4">{errorMessage || "Partai tidak ditemukan."}</p>
+      {#if standbyTatami}
+        <div class="flex gap-2 mb-3">
+          <button
+            type="button"
+            onclick={() => window.location.reload()}
+            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md"
+          >
+            Muat Ulang
+          </button>
+          <a
+            href={`/control-panel?matchId=0&baganId=0&isFestival=true&tatami=${standbyTatami}`}
+            class="h-9 px-3.5 inline-flex items-center bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
+          >
+            Partai Festival Manual
+          </a>
+        </div>
+      {/if}
       <button
         type="button"
         onclick={handleCloseWindow}

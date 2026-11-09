@@ -515,6 +515,36 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Removes every row that points at the bouts of some brackets (tatami "now running",
+    /// referee scores, referee seats, team line-ups), so those bouts can be deleted. Without
+    /// this, redrawing or deleting a bracket fails on a foreign key, for example once a team
+    /// kumite line-up was entered. `bagan_sql` selects the bracket ids with one `?` (= `id`).
+    async fn purge_bout_dependents(conn: &mut sqlx::SqliteConnection, bagan_sql: &str, id: i64) -> Result<(), String> {
+        let bouts = format!("SELECT id FROM backend_detailbagan WHERE bagan_id IN ({})", bagan_sql);
+        let statements = [
+            (format!("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id IN ({})", bouts), 1),
+            (format!("DELETE FROM backend_score WHERE detail_bagan_id IN ({})", bouts), 1),
+            (format!("DELETE FROM backend_wasitdetailbagan WHERE detail_bagan_id IN ({})", bouts), 1),
+            (
+                format!(
+                    "DELETE FROM backend_matchup WHERE detail_bagan_id IN ({0}) OR db_id IN ({0}) OR bagan_id IN ({1})",
+                    bouts, bagan_sql
+                ),
+                3,
+            ),
+        ];
+        for (sql, binds) in statements {
+            let mut q = sqlx::query(&sql);
+            for _ in 0..binds {
+                q = q.bind(id);
+            }
+            q.execute(&mut *conn)
+                .await
+                .map_err(|e| format!("Gagal membersihkan data partai lama: {}", e))?;
+        }
+        Ok(())
+    }
+
     /// Deletes a competition category, safely unlinking athletes and cleaning up any related brackets
     pub async fn delete_category(&self, category_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
@@ -1023,6 +1053,7 @@ impl DatabaseManager {
 
         let repechage_bagan_id = match existing_rep_id {
             Some(id) => {
+                Self::purge_bout_dependents(&mut *tx, "SELECT ?", id).await?;
                 sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id = ?")
                     .bind(id)
                     .execute(&mut *tx)
@@ -1668,7 +1699,8 @@ impl DatabaseManager {
                     ELSE COALESCE(u2.nama_utusan, p2.nama_perguruan)
                 END as atlet2_kontingen,
                 u2.logo as atlet2_logo,
-                a2.is_priority as atlet2_is_priority
+                a2.is_priority as atlet2_is_priority,
+                bg.nama_bagan
             FROM backend_detailbagan d
             JOIN backend_bagan bg ON bg.id = d.bagan_id
             JOIN backend_tatami t ON t.event_id = bg.event_id
@@ -2457,6 +2489,7 @@ impl DatabaseManager {
             .map_err(|e| format!("Gagal mereset tatami: {}", e))?;
 
         // 2. Delete detail bagans
+        Self::purge_bout_dependents(&mut *tx, "SELECT id FROM backend_bagan WHERE event_id = ?", event_id).await?;
         sqlx::query(
             "DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)"
         )
@@ -2531,6 +2564,13 @@ impl DatabaseManager {
         .await;
 
         // 3. Delete detail bagans for festival bagans
+        Self::purge_bout_dependents(&mut *tx, r#"SELECT id FROM backend_bagan WHERE event_id = ? AND (
+                     UPPER(nama_bagan) LIKE '%FESTIVAL%'
+                     OR UPPER(COALESCE(kode, '')) LIKE 'F%'
+                     OR nomor_tanding_id IN (
+                         SELECT id FROM backend_nomortanding WHERE UPPER(nama_nomor_tanding) LIKE '%FESTIVAL%'
+                     )
+                 )"#, event_id).await?;
         sqlx::query(
             "DELETE FROM backend_detailbagan WHERE bagan_id IN (
                  SELECT id FROM backend_bagan WHERE event_id = ? AND (
@@ -2662,6 +2702,7 @@ impl DatabaseManager {
             .execute(&mut **tx)
             .await;
 
+        Self::purge_bout_dependents(&mut **tx, "SELECT id FROM backend_bagan WHERE event_id = ?", event_id).await?;
         let res_matches = sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)")
             .bind(event_id)
             .execute(&mut **tx)
@@ -2824,6 +2865,7 @@ impl DatabaseManager {
             .execute(&mut *tx)
             .await;
 
+        Self::purge_bout_dependents(&mut *tx, "SELECT id FROM backend_bagan WHERE event_id = ?", event_id).await?;
         let _ = sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE event_id = ?)")
             .bind(event_id)
             .execute(&mut *tx)
@@ -2916,6 +2958,7 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal mereset tatami: {}", e))?;
 
         // 2. Delete detail bagans
+        Self::purge_bout_dependents(&mut *tx, "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?", category_id).await?;
         sqlx::query(
             "DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)"
         )
@@ -2967,6 +3010,7 @@ impl DatabaseManager {
             .await
             .map_err(|e| format!("Gagal mereset tatami untuk kategori {}: {}", cat_id, e))?;
 
+            Self::purge_bout_dependents(&mut *tx, "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?", cat_id).await?;
             sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
                 .bind(cat_id)
                 .execute(&mut *tx)
@@ -3341,6 +3385,7 @@ impl DatabaseManager {
             .await
             .map_err(|e| format!("Gagal mereset tatami untuk kategori festival {}: {}", cat_id, e))?;
 
+            Self::purge_bout_dependents(&mut *tx, "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?", cat_id).await?;
             sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
                 .bind(cat_id)
                 .execute(&mut *tx)
@@ -3657,6 +3702,13 @@ impl DatabaseManager {
 
     /// Saves a match result in detail_bagan and advances the winner in tournament brackets
     pub async fn save_match_result(&self, input: SaveMatchInput) -> Result<(), String> {
+        // Winner is AKA ("1") or AO ("2"); empty only for an open bout or a round-robin draw.
+        // Anything else would mark the bout finished with nobody advancing.
+        if let Some(p) = input.pemenang.as_deref().map(str::trim) {
+            if !p.is_empty() && p != "1" && p != "2" {
+                return Err(format!("Pemenang tidak valid: \"{}\" (harus AKA atau AO)", p));
+            }
+        }
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
@@ -4581,6 +4633,11 @@ impl DatabaseManager {
         .ok()
         .flatten()
         .flatten();
+        // Unknown match (deleted / re-drawn bracket): never touch tatami rows of every event.
+        let Some(match_event) = match_event else {
+            return Err(format!("Partai {} tidak ditemukan (bagan mungkin sudah diundi ulang)", match_id));
+        };
+        let match_event = Some(match_event);
 
         let _ = sqlx::query(
             "UPDATE backend_tatami SET detail_bagan_id = ? WHERE tatami_number = ? AND (? IS NULL OR event_id = ?)"
@@ -8175,11 +8232,20 @@ impl DatabaseManager {
     pub async fn delete_team_bout(&self, bout_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
 
-        sqlx::query("DELETE FROM backend_matchup WHERE db_id = ?")
-            .bind(bout_id)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("Gagal menghapus matchup: {}", e))?;
+        for sql in [
+            "UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id = ?",
+            "DELETE FROM backend_score WHERE detail_bagan_id = ?",
+            "DELETE FROM backend_wasitdetailbagan WHERE detail_bagan_id = ?",
+            "DELETE FROM backend_matchup WHERE db_id = ? OR detail_bagan_id = ?",
+        ] {
+            let mut q = sqlx::query(sql).bind(bout_id);
+            if sql.contains("OR detail_bagan_id") {
+                q = q.bind(bout_id);
+            }
+            q.execute(pool)
+                .await
+                .map_err(|e| format!("Gagal menghapus matchup: {}", e))?;
+        }
 
         sqlx::query("DELETE FROM backend_detailbagan WHERE id = ? AND team = 1")
             .bind(bout_id)
@@ -8484,8 +8550,9 @@ impl DatabaseManager {
                 a.id, a.event_id, a.nama_atlet, a.nik, a.kode_atlet, a.additional_code, a.is_priority,
                 a.perguruan_id, p.nama_perguruan,
                 a.utusan_id, u.nama_utusan, u.logo as utusan_logo,
-                a.nomor_tanding_id, nt.nama_kategori as nomor_tanding_nama, nt.tipe as nomor_tanding_tipe,
-                NULL as is_bob
+                a.nomor_tanding_id, nt.nama_nomor_tanding as nomor_tanding_nama,
+                CASE WHEN UPPER(COALESCE(nt.nama_nomor_tanding, '')) LIKE '%FESTIVAL%' THEN 'Festival' ELSE 'Tournament' END as nomor_tanding_tipe,
+                nt.is_bob
             FROM backend_atlet a
             LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
             LEFT JOIN backend_utusan u ON a.utusan_id = u.id
@@ -8601,7 +8668,7 @@ impl DatabaseManager {
                 if let Some(bagan_id) = m.bagan_id {
                     let cat_row: Option<(Option<String>,)> = sqlx::query_as(
                         r#"
-                        SELECT nt.nama_kategori 
+                        SELECT COALESCE(nt.nama_nomor_tanding, b.nama_bagan) 
                         FROM backend_bagan b
                         JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
                         WHERE b.id = ?
@@ -8839,7 +8906,7 @@ impl DatabaseManager {
                 let m_opt = sqlx::query_as::<_, (i64, Option<i64>, Option<String>, Option<i32>, Option<i32>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
                     r#"
                     SELECT 
-                        d.id, d.bagan_id, nt.nama_kategori, d.round, d.urutan, d.kode,
+                        d.id, d.bagan_id, COALESCE(nt.nama_nomor_tanding, b.nama_bagan), d.round, d.urutan, d.kode,
                         a1.nama_atlet, u1.nama_utusan, p1.nama_perguruan,
                         a2.nama_atlet, u2.nama_utusan, p2.nama_perguruan
                     FROM backend_detailbagan d
@@ -8882,7 +8949,7 @@ impl DatabaseManager {
             let upcoming_rows = sqlx::query_as::<_, (i64, Option<i64>, Option<String>, Option<i32>, Option<i32>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
                 r#"
                 SELECT 
-                    d.id, d.bagan_id, nt.nama_kategori, d.round, d.urutan, d.kode,
+                    d.id, d.bagan_id, COALESCE(nt.nama_nomor_tanding, b.nama_bagan), d.round, d.urutan, d.kode,
                     a1.nama_atlet, u1.nama_utusan, p1.nama_perguruan,
                     a2.nama_atlet, u2.nama_utusan, p2.nama_perguruan
                 FROM backend_detailbagan d
@@ -8894,16 +8961,29 @@ impl DatabaseManager {
                 LEFT JOIN backend_atlet a2 ON d.atlet2_id = a2.id
                 LEFT JOIN backend_utusan u2 ON a2.utusan_id = u2.id
                 LEFT JOIN backend_perguruan p2 ON a2.perguruan_id = p2.id
-                WHERE d.assigned_tatami_id = ? AND d.selesai = 0
+                WHERE b.event_id = ?
+                  AND (d.assigned_tatami_id = ? OR d.assigned_tatami_id = ?)
+                  AND d.selesai = 0
+                  AND d.atlet1_id IS NOT NULL AND d.atlet2_id IS NOT NULL
                 ORDER BY d.round ASC, d.urutan ASC
-                LIMIT 6
+                LIMIT 40
                 "#
             )
+            // Bouts store either the tatami row id or (older data / roster) its number.
+            // Only bouts with both athletes known can be called to the mat.
+            .bind(event_id)
             .bind(t.id)
+            .bind(t_num)
             .fetch_all(pool)
             .await
             .unwrap_or_default();
 
+            // A team match is several bouts between the same two teams: call it once.
+            let pair_key = |bagan: Option<i64>, a: &str, b: &str| format!("{:?}|{}|{}", bagan, a, b);
+            let mut seen_pairs = std::collections::HashSet::new();
+            if let Some(ref cur) = current_match {
+                seen_pairs.insert(pair_key(cur.bagan_id, &cur.atlet1_nama, &cur.atlet2_nama));
+            }
             let mut filtered_upcoming = Vec::new();
             for m in upcoming_rows {
                 if let Some(ref cur) = current_match {
@@ -8911,7 +8991,14 @@ impl DatabaseManager {
                         continue;
                     }
                 }
+                let key = pair_key(m.1, m.6.as_deref().unwrap_or(""), m.9.as_deref().unwrap_or(""));
+                if !seen_pairs.insert(key) {
+                    continue;
+                }
                 filtered_upcoming.push(m);
+                if filtered_upcoming.len() >= 6 {
+                    break;
+                }
             }
 
             let mut next_match: Option<MarshallingMatchItem> = None;

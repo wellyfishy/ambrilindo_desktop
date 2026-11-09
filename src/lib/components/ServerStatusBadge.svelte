@@ -33,16 +33,19 @@
   }
 
   async function checkServerStatus() {
+    // On a remote device this asks the host over the LAN: no answer means the host (or the
+    // network) is down, and the badge must say so instead of claiming "online".
     try {
-      const running = await invoke<boolean>("get_server_status");
-      isServerRunning = running;
-      if (running) {
-        networkInfo = await invoke<NetworkInfo>("get_network_info");
-      }
+      isServerRunning = await invoke<boolean>("get_server_status");
     } catch (_) {
-      // In web browser mode, if window.__TAURI_INTERNALS__ is not present
-      if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
-        isServerRunning = true;
+      isServerRunning = false;
+      return;
+    }
+    if (isServerRunning) {
+      try {
+        networkInfo = await invoke<NetworkInfo>("get_network_info");
+      } catch (_) {
+        // address details only exist on the host machine itself
       }
     }
   }

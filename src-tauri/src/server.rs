@@ -1803,6 +1803,8 @@ async fn dispatch_command_api(
                 }
             }
         },
+        // Remote devices poll this to show whether the host is reachable: answering at all means yes.
+        "get_server_status" => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": true }))).into_response(),
         "get_events" => match db.get_events().await {
             Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2071,7 +2073,14 @@ async fn dispatch_command_api(
         "update_bagan_details" => {
             let b_id = get_i64_val(&payload, &["baganId", "bagan_id"]).unwrap_or(0);
             let nama = get_str_val(&payload, &["namaBagan", "nama_bagan"]);
-            let matchups = serde_json::from_value::<Vec<UpdateMatchAthletesInput>>(payload.get("matchups").cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
+            // A malformed list must fail loudly: answering "success" without saving would let
+            // the operator believe a bracket correction went through.
+            let matchups = match serde_json::from_value::<Vec<UpdateMatchAthletesInput>>(payload.get("matchups").cloned().unwrap_or(serde_json::Value::Array(vec![]))) {
+                Ok(m) => m,
+                Err(e) => {
+                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Data susunan bagan tidak valid: {}", e) }))).into_response();
+                }
+            };
             match db.update_bagan_details(b_id, nama, matchups).await {
                 Ok(()) => {
                     if let Some(app) = &state.app_handle {

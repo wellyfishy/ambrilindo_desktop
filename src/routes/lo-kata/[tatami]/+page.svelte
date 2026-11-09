@@ -171,7 +171,10 @@
       if (matchesRes.ok) {
         const json = await matchesRes.json();
         if (json.status === "success" && Array.isArray(json.data)) {
-          tatamiMatches = json.data;
+          // Only kata bouts: kumite on the same tatami has no kata to choose.
+          tatamiMatches = json.data.filter(
+            (m: any) => !m.nama_bagan || /KATA/i.test(m.nama_bagan)
+          );
         }
       }
     } catch (err) {
