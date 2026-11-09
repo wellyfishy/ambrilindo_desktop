@@ -451,14 +451,20 @@ async fn handle_socket(
                                             }
                                         }
                                     };
-                                    if let Some(cached_state) = state_to_send {
-                                        let resp = serde_json::json!({
+                                    // Always answer: tablets treat silence as a dead link and reconnect,
+                                    // so an idle tatami (no match yet) still gets a reply.
+                                    let resp = match state_to_send {
+                                        Some(cached_state) => serde_json::json!({
                                             "type": "tatami_live_state",
                                             "payload": cached_state
-                                        });
-                                        let text = serde_json::to_string(&resp).unwrap_or_default();
-                                        let _ = socket.send(Message::Text(text.into())).await;
-                                    }
+                                        }),
+                                        None => serde_json::json!({
+                                            "type": "tatami_state_none",
+                                            "tatami": req_tatami
+                                        }),
+                                    };
+                                    let text = serde_json::to_string(&resp).unwrap_or_default();
+                                    let _ = socket.send(Message::Text(text.into())).await;
                                 }
                             }
 
