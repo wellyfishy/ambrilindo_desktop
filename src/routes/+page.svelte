@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke, setConnectionConfig, withHostParam } from "$lib/api_client";
-  import { initLiveSync } from "$lib/liveSync";
+  import { initLiveSync, subscribeBracketUpdates } from "$lib/liveSync";
 
   import type {
     ActiveChannel,
@@ -553,6 +553,23 @@
     } catch (_) {}
 
     isSessionLoaded = true;
+  });
+
+  // Brackets drawn, deleted or edited on another laptop: refresh this event's bracket list.
+  $effect(() => {
+    if (!isSessionLoaded) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = subscribeBracketUpdates(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (selectedEventId) selectEvent(selectedEventId);
+      }, 600);
+    });
+    return () => {
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
   });
 
   // Pick up events added or removed elsewhere whenever the window comes back to the front.

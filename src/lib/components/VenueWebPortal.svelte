@@ -28,7 +28,7 @@
       badge: "VR Table",
       color: "amber",
       icon: "video",
-      getUrl: (t) => `/wasit-vr/${t}`,
+      getUrl: (t, e) => `/wasit-vr/${t}${e ? `?event=${e}` : ""}`,
     },
     {
       id: "admtatami",
@@ -46,7 +46,7 @@
       badge: "LO Table",
       color: "cyan",
       icon: "clipboard",
-      getUrl: (t) => `/lo-kata/${t}`,
+      getUrl: (t, e) => `/lo-kata/${t}${e ? `?event=${e}` : ""}`,
     },
     {
       id: "coach_sup",
@@ -55,7 +55,7 @@
       badge: "Challenge",
       color: "rose",
       icon: "whistle",
-      getUrl: (t) => `/coach-supervisor/${t}`,
+      getUrl: (t, e) => `/coach-supervisor/${t}${e ? `?event=${e}` : ""}`,
     },
     {
       id: "juri",
@@ -64,7 +64,7 @@
       badge: "Jury Tablet",
       color: "emerald",
       icon: "flag",
-      getUrl: (t) => `/jury/${t}`,
+      getUrl: (t, e) => `/jury/${t}${e ? `?event=${e}` : ""}`,
     },
     {
       id: "admin_control",
@@ -82,7 +82,7 @@
       badge: "Display",
       color: "yellow",
       icon: "tv",
-      getUrl: (t) => `/scoreboard?tatami=${t}`,
+      getUrl: (t, e) => `/scoreboard?tatami=${t}${e ? `&event=${e}` : ""}`,
     },
     {
       id: "marshalling",
@@ -91,7 +91,7 @@
       badge: "Call Station",
       color: "indigo",
       icon: "megaphone",
-      getUrl: () => `/marshalling`,
+      getUrl: (_t, e) => `/marshalling${e ? `?event=${e}` : ""}`,
     },
     {
       id: "tatami_manager",

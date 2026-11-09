@@ -57,7 +57,11 @@
         },
         // Ask the control panel for its current state so a freshly opened or
         // reconnected scoreboard is not blank until the next change.
-        (sock) => sock.send({ type: "request_tatami_state", tatami: tatamiNumber })
+        (sock) => sock.send({ type: "request_tatami_state", tatami: tatamiNumber }),
+        undefined,
+        // A TV on Wi-Fi can lose the link without a close event: re-ask after 20 s of
+        // silence and reconnect if the host does not answer.
+        { staleMs: 20000, onStale: (sock) => sock.send({ type: "request_tatami_state", tatami: tatamiNumber }) }
       );
     }
     async function setupIpc() {

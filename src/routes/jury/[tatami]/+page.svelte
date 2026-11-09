@@ -293,14 +293,13 @@
         },
       });
       if (res.ok) {
-        const json = await res.json();
-        if (json?.data) {
-          applyLiveState(json.data);
-          lastMessageAt = Date.now();
-          if (connection !== "live" && navigator.onLine !== false) {
-            connection = "live";
-          }
+        // The host answered: the link is up even when the tatami has no match yet.
+        lastMessageAt = Date.now();
+        if (connection !== "live" && navigator.onLine !== false) {
+          connection = "live";
         }
+        const json = await res.json();
+        if (json?.data) applyLiveState(json.data);
       }
     } catch (_) {
       // Server unreachable

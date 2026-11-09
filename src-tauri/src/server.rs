@@ -664,10 +664,11 @@ async fn tatami_current_match_api(
 
 async fn tatami_matches_api(
     Path(tatami_num): Path<i32>,
+    axum::extract::Query(q): axum::extract::Query<TatamiMatchQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
-    match db.get_tatami_matches(tatami_num).await {
+    match db.get_tatami_matches(tatami_num, q.event).await {
         Ok(matches) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": matches }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
     }

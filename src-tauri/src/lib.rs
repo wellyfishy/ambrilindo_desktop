@@ -29,6 +29,16 @@ pub struct DesktopState {
     pub live_tatami_cache: Arc<tokio::sync::Mutex<std::collections::HashMap<i64, serde_json::Value>>>,
 }
 
+/// Tells every LAN device (operator laptops, bracket screens) that brackets changed, so they
+/// reload. Changes made over HTTP already do this in server.rs; this covers the host's own UI.
+fn notify_bracket_changed(state: &DesktopState) {
+    let _ = state.server_broadcast.send(ArenaMessage {
+        tatami_pk: 0,
+        channel: "bracket".into(),
+        payload: serde_json::json!({ "type": "bracket_updated" }),
+    });
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct DatabaseSummary {
     pub db_path: String,
@@ -293,7 +303,11 @@ async fn execute_drawing_bagan(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<DrawingSummary, String> {
     let db = state.db.lock().await;
-    db.execute_drawing_bagan(event_id, category_ids, &shuffle_type, vr_category_ids).await
+    let res = db.execute_drawing_bagan(event_id, category_ids, &shuffle_type, vr_category_ids).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -313,7 +327,11 @@ async fn execute_drawing_festival_bagan(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<DrawingSummary, String> {
     let db = state.db.lock().await;
-    db.execute_drawing_festival_bagan(event_id, category_ids, &shuffle_type).await
+    let res = db.execute_drawing_festival_bagan(event_id, category_ids, &shuffle_type).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -322,7 +340,11 @@ async fn delete_all_bagans(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.delete_all_bagans(event_id).await
+    let res = db.delete_all_bagans(event_id).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -331,7 +353,11 @@ async fn delete_all_festival_bagans(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<u64, String> {
     let db = state.db.lock().await;
-    db.delete_all_festival_bagans(event_id).await
+    let res = db.delete_all_festival_bagans(event_id).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -341,7 +367,11 @@ async fn delete_category_bagans(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.delete_category_bagans(event_id, category_id).await
+    let res = db.delete_category_bagans(event_id, category_id).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -465,6 +495,7 @@ async fn update_bagan_details(
     let db = state.db.lock().await;
     db.update_bagan_details(bagan_id, nama_bagan, matchups).await?;
     let _ = app.emit("bracket_updated", ());
+    notify_bracket_changed(&state);
     Ok(())
 }
 
@@ -516,6 +547,7 @@ async fn save_match_result(
         db.save_match_result(input).await?;
         (db.get_pool_cloned(), db.get_active_db_path_cloned())
     };
+    notify_bracket_changed(&state);
 
     if let Some(pool) = pool_opt {
         let app_handle = app.clone();
@@ -1040,7 +1072,11 @@ async fn finish_team_match(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.finish_team_match(parent_match_id, winner_override).await
+    let res = db.finish_team_match(parent_match_id, winner_override).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -1763,7 +1799,11 @@ async fn create_bob_bagan(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<models::BobBaganResult, String> {
     let db = state.db.lock().await;
-    db.create_bob_bagan(input).await
+    let res = db.create_bob_bagan(input).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]

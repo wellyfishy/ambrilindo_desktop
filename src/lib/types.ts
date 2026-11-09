@@ -169,6 +169,8 @@ export interface AthleteMutationInput {
   perguruan_id?: number | null;
   utusan_id?: number | null;
   nomor_tanding_id?: number | null;
+  /** Late entry added from Edit Bagan (placed by hand into a running bracket). */
+  allow_late?: boolean;
 }
 
 export interface PerguruanItem {

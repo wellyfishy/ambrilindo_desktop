@@ -2,14 +2,17 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
+  import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
+  import { getHostBaseUrl } from "$lib/api_client";
 
-  // Tatami number from route params
+  // Tatami number from route params; the event comes from the portal / tatami picker
   let tatamiNumber = $derived(Number(page.params.tatami || "1"));
+  let eventId = $derived(Number(page.url.searchParams.get("event")) || null);
+  let eventQuery = $derived(eventId ? `?event=${eventId}` : "");
 
-  // Connection state
+  // Connection state (the shared socket reconnects by itself)
   let isWsConnected = $state(false);
-  let wsClient: WebSocket | null = null;
-  let reconnectInterval: any = null;
+  let socket: TatamiSocket | null = null;
 
   // Tatami matches list
   let tatamiMatches = $state<any[]>([]);
@@ -117,25 +120,22 @@
         kata2: aoKata || null,
       };
 
-      // 1. Send via REST endpoint
-      const res = await fetch("/api/match/save-kata", {
+      // 1. Save on the host (it also tells the control panel)
+      const res = await fetch(`${getHostBaseUrl()}/api/match/save-kata`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      // 2. Also send over WebSocket if open
-      if (wsClient && wsClient.readyState === WebSocket.OPEN) {
-        wsClient.send(
-          JSON.stringify({
-            type: "lo_kata_broadcast",
-            tatami: tatamiNumber,
-            match_id: activeMatch.id,
-            kata_aka: akaKata,
-            kata_ao: aoKata,
-          })
-        );
-      }
+      // 2. Also over the live socket (control panel updates right away)
+      socket?.send({
+        type: "lo_kata_broadcast",
+        tatami: tatamiNumber,
+        match_id: activeMatch.id,
+        kata_aka: akaKata,
+        kata_ao: aoKata,
+      });
 
       showToast("✓ Kata Berhasil Disiarkan ke Scoreboard & Meja!");
       if (typeof navigator !== "undefined" && navigator.vibrate) {
@@ -154,7 +154,8 @@
     isLoadingMatches = true;
     try {
       // 1. Try active match
-      const currentRes = await fetch(`/api/tatami/${tatamiNumber}/current-match`);
+      const base = getHostBaseUrl();
+      const currentRes = await fetch(`${base}/api/tatami/${tatamiNumber}/current-match${eventQuery}`);
       if (currentRes.ok) {
         const json = await currentRes.json();
         if (json.status === "success" && json.data) {
@@ -166,7 +167,7 @@
       }
 
       // 2. Fetch list of all matches on this tatami
-      const matchesRes = await fetch(`/api/tatami/${tatamiNumber}/matches`);
+      const matchesRes = await fetch(`${base}/api/tatami/${tatamiNumber}/matches${eventQuery}`);
       if (matchesRes.ok) {
         const json = await matchesRes.json();
         if (json.status === "success" && Array.isArray(json.data)) {
@@ -180,58 +181,38 @@
     }
   }
 
-  // WebSocket Connection Lifecycle
-  function connectWebSocket() {
-    if (typeof window === "undefined") return;
-
-    try {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const host = window.location.host;
-      const wsUrl = `${protocol}//${host}/ws/lo-kata/${tatamiNumber}`;
-
-      wsClient = new WebSocket(wsUrl);
-
-      wsClient.onopen = () => {
-        isWsConnected = true;
-      };
-
-      wsClient.onmessage = (event) => {
-        try {
-          const parsed = JSON.parse(event.data);
-          if (parsed && (parsed.tatami === tatamiNumber || !parsed.tatami)) {
-            if (parsed.matchId && parsed.matchId !== selectedMatchId) {
-              selectedMatchId = parsed.matchId;
-              fetchTatamiMatches();
-            }
-          }
-        } catch (_) {}
-      };
-
-      wsClient.onclose = () => {
-        isWsConnected = false;
-      };
-
-      wsClient.onerror = () => {
-        isWsConnected = false;
-      };
-    } catch (_) {
-      isWsConnected = false;
+  // Live state from the control panel: follow the match it opens, refresh after reconnect.
+  function handleLiveState(d: any) {
+    if (!d || Number(d.tatami) !== tatamiNumber) return;
+    const mId = d.matchId ? Number(d.matchId) : null;
+    if (mId && mId !== selectedMatchId) {
+      selectedMatchId = mId;
+      fetchTatamiMatches();
     }
   }
 
   onMount(() => {
     fetchTatamiMatches();
-    connectWebSocket();
-
-    reconnectInterval = setInterval(() => {
-      if (!wsClient || wsClient.readyState === WebSocket.CLOSED) {
-        connectWebSocket();
-      }
-    }, 3000);
+    socket = connectTatamiSocket(
+      "lo-kata",
+      tatamiNumber,
+      (msg) => {
+        isWsConnected = true;
+        if (msg?.type === "tatami_live_state") handleLiveState(msg.payload || msg.data);
+        else if (msg?.type === "bracket_updated") fetchTatamiMatches();
+      },
+      (sock) => {
+        isWsConnected = true;
+        // Whatever changed while offline: reload the list and ask the control panel.
+        fetchTatamiMatches();
+        sock.send({ type: "request_tatami_state", tatami: tatamiNumber });
+      },
+      () => (isWsConnected = false),
+      { staleMs: 20000, onStale: (sock) => sock.send({ type: "request_tatami_state", tatami: tatamiNumber }) }
+    );
 
     return () => {
-      if (wsClient) wsClient.close();
-      if (reconnectInterval) clearInterval(reconnectInterval);
+      socket?.close();
       if (toastTimer) clearTimeout(toastTimer);
     };
   });

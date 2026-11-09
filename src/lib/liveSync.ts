@@ -27,6 +27,27 @@ let lastBroadcastPayload: TatamiLiveMatchPayload | null = null;
 type LiveStateListener = (activeTatamis: Record<number, TatamiLiveMatchPayload>) => void;
 const listeners = new Set<LiveStateListener>();
 
+// Brackets changed somewhere (a result saved on any laptop, a drawing, a manual edit), or
+// this window just reconnected and may have missed such a change.
+const bracketListeners = new Set<() => void>();
+let wsEverOpened = false;
+
+function notifyBracketListeners() {
+  for (const cb of bracketListeners) {
+    try {
+      cb();
+    } catch (e) {
+      console.warn("LiveSync bracket listener error:", e);
+    }
+  }
+}
+
+/** Runs `cb` when brackets change on any device, and after the LAN link comes back. */
+export function subscribeBracketUpdates(cb: () => void): () => void {
+  bracketListeners.add(cb);
+  return () => bracketListeners.delete(cb);
+}
+
 function notifyListeners() {
   for (const listener of listeners) {
     try {
@@ -146,6 +167,9 @@ function connectWebSocket() {
     wsClient = new WebSocket(wsUrl);
 
     wsClient.onopen = () => {
+      // After a reconnect, refresh whatever may have changed while the link was down.
+      if (wsEverOpened) notifyBracketListeners();
+      wsEverOpened = true;
       if (lastBroadcastPayload && wsClient && wsClient.readyState === WebSocket.OPEN) {
         try {
           wsClient.send(
@@ -165,8 +189,8 @@ function connectWebSocket() {
         if (msg.type === "tatami_live_state") {
           applyLiveMatchPayload(msg.data || msg.payload || msg);
         } else if (msg.type === "bracket_updated") {
-          // If bracket updated, notify listeners
           notifyListeners();
+          notifyBracketListeners();
         } else if (msg.tatami !== undefined) {
           applyLiveMatchPayload(msg);
         }

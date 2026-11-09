@@ -19,7 +19,7 @@
     RoundRobinMatrixCell,
   } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
-  import { initLiveSync, isMatchLive, getRunningTatamiForMatch, subscribeLiveSync } from "$lib/liveSync";
+  import { initLiveSync, isMatchLive, getRunningTatamiForMatch, subscribeLiveSync, subscribeBracketUpdates } from "$lib/liveSync";
   import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import FestivalBracketSheet from "./FestivalBracketSheet.svelte";
@@ -77,6 +77,85 @@
   let editBaganName = $state("");
   let editedMatchups = $state<Record<number, { atlet1_id: number | null; atlet2_id: number | null }>>({});
   let categoryAthletes = $state<EnrichedAtletItem[]>([]);
+
+  // Late entry (Edit Bagan): register an athlete straight into this bracket's category,
+  // then place them by hand in a free slot.
+  let lateModalOpen = $state(false);
+  let lateName = $state("");
+  let lateUtusanId = $state<number | null>(null);
+  let latePerguruanId = $state<number | null>(null);
+  let lateSaving = $state(false);
+  let lateError = $state<string | null>(null);
+  let lateUtusanList = $state<{ id: number; nama_utusan: string }[]>([]);
+  let latePerguruanList = $state<{ id: number; nama_perguruan: string }[]>([]);
+
+  /** Athletes of the category not placed in any slot of this bracket (while editing). */
+  let unplacedAthletes = $derived.by(() => {
+    if (!isEditMode) return [];
+    const placed = new Set<number>();
+    for (const v of Object.values(editedMatchups)) {
+      if (v.atlet1_id) placed.add(Number(v.atlet1_id));
+      if (v.atlet2_id) placed.add(Number(v.atlet2_id));
+    }
+    return categoryAthletes.filter((a) => !placed.has(a.id) && !(a.additional_code || "").startsWith("MEMBER_"));
+  });
+
+  async function openLateModal() {
+    lateName = "";
+    lateError = null;
+    lateModalOpen = true;
+    const evId = currentBaganInfo?.event_id ?? baganInfo?.event_id;
+    if (!evId) return;
+    try {
+      const [u, p] = await Promise.all([
+        invoke<any[]>("get_contingents", { eventId: evId }),
+        invoke<any[]>("get_perguruans", { eventId: evId }),
+      ]);
+      lateUtusanList = (u || []).map((x) => ({ id: x.id, nama_utusan: x.nama_utusan || "-" }));
+      latePerguruanList = (p || []).map((x) => ({ id: x.id, nama_perguruan: x.nama_perguruan || "-" }));
+    } catch (e) {
+      console.warn("Gagal memuat kontingen/perguruan:", e);
+    }
+  }
+
+  async function saveLateAthlete() {
+    const evId = currentBaganInfo?.event_id ?? baganInfo?.event_id;
+    const catId = currentBaganInfo?.nomor_tanding_id ?? baganInfo?.nomor_tanding_id;
+    if (!lateName.trim()) {
+      lateError = "Nama atlet wajib diisi.";
+      return;
+    }
+    if (!evId || !catId) {
+      lateError = "Bagan ini tidak terhubung ke nomor tanding.";
+      return;
+    }
+    lateSaving = true;
+    lateError = null;
+    try {
+      const created = await invoke<EnrichedAtletItem>("create_athlete", {
+        input: {
+          id: null,
+          event_id: evId,
+          nama_atlet: lateName.trim().toUpperCase(),
+          nik: null,
+          kode_atlet: null,
+          additional_code: null,
+          is_priority: false,
+          perguruan_id: latePerguruanId,
+          utusan_id: lateUtusanId,
+          nomor_tanding_id: catId,
+          allow_late: true,
+        },
+      });
+      categoryAthletes = [...categoryAthletes, created];
+      lateModalOpen = false;
+      onShowToast(`${created.nama_atlet} ditambahkan. Pilih slot kosongnya di bagan, lalu Simpan.`, "success");
+    } catch (e: any) {
+      lateError = `${e?.message || e}`;
+    } finally {
+      lateSaving = false;
+    }
+  }
 
   let dbPodium = $state<BaganPodium | null>(null);
 
@@ -483,44 +562,9 @@
       await loadBracketData();
       if (onBaganUpdated) onBaganUpdated();
     } catch (err: any) {
-      console.warn("Tauri update_bagan_details failed (fallback in-memory):", err);
-      if (currentBaganInfo) {
-        currentBaganInfo.nama_bagan = editBaganName.trim() || currentBaganInfo.nama_bagan;
-      }
-      for (const [mIdStr, val] of Object.entries(editedMatchups)) {
-        const m = matches.find((x) => x.id === Number(mIdStr));
-        if (m) {
-          const a1Id = val.atlet1_id ? Number(val.atlet1_id) : null;
-          const a2Id = val.atlet2_id ? Number(val.atlet2_id) : null;
-          m.atlet1_id = a1Id;
-          m.atlet2_id = a2Id;
-          const foundA1 = categoryAthletes.find((a) => a.id === a1Id);
-          if (foundA1) {
-            m.atlet1_nama = foundA1.nama_atlet;
-            m.atlet1_kontingen = foundA1.perguruan_nama || foundA1.utusan_nama || null;
-            m.atlet1_logo = foundA1.utusan_logo || null;
-            m.atlet1_is_priority = foundA1.is_priority;
-          } else if (!a1Id) {
-            m.atlet1_nama = null;
-            m.atlet1_kontingen = null;
-            m.atlet1_logo = null;
-            m.atlet1_is_priority = false;
-          }
-          const foundA2 = categoryAthletes.find((a) => a.id === a2Id);
-          if (foundA2) {
-            m.atlet2_nama = foundA2.nama_atlet;
-            m.atlet2_kontingen = foundA2.perguruan_nama || foundA2.utusan_nama || null;
-            m.atlet2_logo = foundA2.utusan_logo || null;
-            m.atlet2_is_priority = foundA2.is_priority;
-          } else if (!a2Id) {
-            m.atlet2_nama = null;
-            m.atlet2_kontingen = null;
-            m.atlet2_logo = null;
-            m.atlet2_is_priority = false;
-          }
-        }
-      }
-      isEditMode = false;
+      // Stay in edit mode with the operator's changes; nothing was saved.
+      onShowToast(`Perubahan bagan tidak tersimpan: ${err?.message || err}`, "error");
+      alert(`Perubahan bagan tidak tersimpan. ${err?.message || err}`);
     } finally {
       isSavingEdit = false;
     }
@@ -665,55 +709,8 @@
       await loadRoundRobinData();
     } catch (err) {
       console.error("Gagal memuat detail bagan:", err);
-      // Fallback mock data matching tournament Kata Kadet Putra for test & dev environments
-      if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
-        matches = [
-          // Round 1 (Babak 16 Besar - 8 matches)
-          { id: 1, bagan_id: 2, round: 1, urutan: 1, atlet1_id: 1, atlet2_id: 2, score1: "0", score2: "5", pemenang: "2", selesai: true, kata1: "4 - Aoyagi", kata2: "6 - Bassai Dai", team: false, hantei: false, vr1: false, vr2: false, kode: "M-01", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "BAGAS SATRIA WIJAYA", atlet1_kontingen: "INKAI • DOJO BUSHIDO SAMARINDA", atlet2_nama: "GUNTUR BUMI PERSADA", atlet2_kontingen: "KKI • KKI KUTAI TIMUR" },
-          { id: 2, bagan_id: 2, round: 1, urutan: 2, atlet1_id: 3, atlet2_id: 4, score1: "2", score2: "3", pemenang: "2", selesai: true, kata1: "4 - Aoyagi", kata2: "7 - Bassai Sho", team: false, hantei: false, vr1: false, vr2: false, kode: "M-02", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "BRYAN NICHOLAS SETIAWAN", atlet1_kontingen: "LEMKARI • KUTAI KARTANEGARA", atlet2_nama: "ZULFIKAR AKBAR", atlet2_kontingen: "GOJU RYU • BALIKPAPAN" },
-          { id: 3, bagan_id: 2, round: 1, urutan: 3, atlet1_id: 5, atlet2_id: 6, score1: "0", score2: "5", pemenang: "2", selesai: true, kata1: "2 - Anan Dai", kata2: "7 - Bassai Sho", team: false, hantei: false, vr1: false, vr2: false, kode: "M-03", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "NAUFAL AZIZ PRADANA", atlet1_kontingen: "INKAI • SAMARINDA SEBERANG", atlet2_nama: "PRADIPTA ARYA", atlet2_kontingen: "WADOKAI • WADOKAI BONTANG" },
-          { id: 4, bagan_id: 2, round: 1, urutan: 4, atlet1_id: 7, atlet2_id: 8, score1: "5", score2: "0", pemenang: "1", selesai: true, kata1: "8 - Chatanyara Kusanku", kata2: "2 - Anan Dai", team: false, hantei: false, vr1: false, vr2: false, kode: "M-04", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "FAREL AL GHAZALI", atlet1_kontingen: "SHINDOKA • SHINDOKA BERAU", atlet2_nama: "SULTAN HAIDAR ALI", atlet2_kontingen: "PORBBIKO • PORBBIKO PASER" },
-          { id: 5, bagan_id: 2, round: 1, urutan: 5, atlet1_id: 9, atlet2_id: 10, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-05", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "FANDI AHMAD MAULANA", atlet1_kontingen: "BKC • BKC KOTA SAMARINDA", atlet2_nama: "WIDODO CAHYONO", atlet2_kontingen: "KKI • KKI KUTAI TIMUR" },
-          { id: 6, bagan_id: 2, round: 1, urutan: 6, atlet1_id: 11, atlet2_id: 12, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-06", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "RAFI AHMAD KURNIAWAN", atlet1_kontingen: "PORBBIKO • PORBBIKO PASER", atlet2_nama: "GILANG PRASETYO", atlet2_kontingen: "SHINDOKA • SHINDOKA BERAU" },
-          { id: 7, bagan_id: 2, round: 1, urutan: 7, atlet1_id: 13, atlet2_id: 14, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-07", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "LEONARDUS PRATAMA", atlet1_kontingen: "INKANAS • INKANAS BALIKPAPAN", atlet2_nama: "FADIL RAMADHAN", atlet2_kontingen: "LEMKARI • KUTAI KARTANEGARA" },
-          { id: 8, bagan_id: 2, round: 1, urutan: 8, atlet1_id: 15, atlet2_id: 16, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-08", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "NABIL FATHURRAHMAN", atlet1_kontingen: "INKAI • DOJO BUSHIDO SAMARINDA", atlet2_nama: "ALDY REVALDY", atlet2_kontingen: "WADOKAI • WADOKAI BONTANG" },
-
-          // Round 2 (Perempat Final - 4 matches)
-          { id: 9, bagan_id: 2, round: 2, urutan: 1, atlet1_id: 2, atlet2_id: 4, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-09", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "GUNTUR BUMI PERSADA", atlet1_kontingen: "KKI • KKI KUTAI TIMUR", atlet2_nama: "ZULFIKAR AKBAR", atlet2_kontingen: "GOJU RYU • BALIKPAPAN" },
-          { id: 10, bagan_id: 2, round: 2, urutan: 2, atlet1_id: 6, atlet2_id: 7, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-10", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "PRADIPTA ARYA", atlet1_kontingen: "WADOKAI • WADOKAI BONTANG", atlet2_nama: "FAREL AL GHAZALI", atlet2_kontingen: "SHINDOKA • SHINDOKA BERAU" },
-          { id: 11, bagan_id: 2, round: 2, urutan: 3, atlet1_id: null, atlet2_id: null, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-11", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "BYE", atlet1_kontingen: "—", atlet2_nama: "BYE", atlet2_kontingen: "—" },
-          { id: 12, bagan_id: 2, round: 2, urutan: 4, atlet1_id: null, atlet2_id: null, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-12", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "BYE", atlet1_kontingen: "—", atlet2_nama: "BYE", atlet2_kontingen: "—" },
-
-          // Round 3 (Semi Final - 2 matches)
-          { id: 13, bagan_id: 2, round: 3, urutan: 1, atlet1_id: null, atlet2_id: null, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-13", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "BYE", atlet1_kontingen: "—", atlet2_nama: "BYE", atlet2_kontingen: "—" },
-          { id: 14, bagan_id: 2, round: 3, urutan: 2, atlet1_id: null, atlet2_id: null, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-14", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "BYE", atlet1_kontingen: "—", atlet2_nama: "BYE", atlet2_kontingen: "—" },
-
-          // Round 4 (Partai Final - 1 match)
-          { id: 15, bagan_id: 2, round: 4, urutan: 1, atlet1_id: null, atlet2_id: null, score1: "-", score2: "-", pemenang: null, selesai: false, kata1: null, kata2: null, team: false, hantei: false, vr1: false, vr2: false, kode: "M-15", scorekecil1: null, scorekecil2: null, assigned_tatami_id: 1, atlet1_nama: "BYE", atlet1_kontingen: "—", atlet2_nama: "BYE", atlet2_kontingen: "—" },
-        ];
-        currentBaganInfo = {
-          id: 2,
-          event_id: 1,
-          nama_bagan: "KATA PERORANGAN KADET PUTRA",
-          nomor_tanding_id: 2,
-          tipe_tanding: "1",
-          juara_1_id: null,
-          juara_2_id: null,
-          juara_3a_id: null,
-          juara_3b_id: null,
-          peringkat_5_id: null,
-          peringkat_6_id: null,
-          peringkat_7_id: null,
-          peringkat_8_id: null,
-          round_robin: false,
-          pool: 1,
-          kode: "002",
-          is_bob: false,
-          has_vr: false,
-        };
-      } else {
-        matches = [];
-      }
+      // Keep whatever was shown before; never substitute stand-in athletes.
+      onShowToast(`Bagan gagal dimuat: ${err}`, "error");
     } finally {
       isLoading = false;
       await tick();
@@ -792,6 +789,16 @@
     const unsubLive = subscribeLiveSync(() => {
       liveSyncVersion++;
     });
+    // Results saved on another laptop (or while this one was offline) arrive over the LAN.
+    let bracketReloadTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubBracket = subscribeBracketUpdates(() => {
+      if (isEditMode) return; // do not throw away the operator's unsaved edits
+      if (bracketReloadTimer) clearTimeout(bracketReloadTimer);
+      bracketReloadTimer = setTimeout(() => {
+        bracketReloadTimer = null;
+        loadBracketData();
+      }, 300);
+    });
     loadBracketData();
 
     let ro: ResizeObserver | null = null;
@@ -852,6 +859,9 @@
     }
 
     return () => {
+      unsubLive();
+      unsubBracket();
+      if (bracketReloadTimer) clearTimeout(bracketReloadTimer);
       ro?.disconnect();
       window.removeEventListener("resize", handleWindowResize);
       window.removeEventListener("keydown", handleKeyDown);
@@ -1042,6 +1052,17 @@
             <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
             <span>Mode Edit</span>
           </span>
+          {#if !isFestivalBagan}
+            <button
+              type="button"
+              onclick={openLateModal}
+              disabled={isSavingEdit}
+              class="px-3 py-1.5 {isDarkMode ? 'bg-white/[0.05] hover:bg-white/[0.08] text-zinc-200 border-white/[0.1]' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300'} text-xs font-semibold border rounded-lg transition active:scale-95 disabled:opacity-50"
+              title="Daftarkan atlet yang datang terlambat lalu taruh di slot kosong"
+            >
+              + Atlet Terlambat
+            </button>
+          {/if}
           <button
             type="button"
             onclick={cancelEditMode}
@@ -1162,6 +1183,14 @@
       <span>{isFestivalBagan ? `${festivalGroups.length * 3} Partai` : `${elimMatchesCount} Partai`}</span>
     </div>
   </div>
+
+  {#if isEditMode && unplacedAthletes.length > 0}
+    <div class="no-print mb-2 px-3 py-2 rounded-xl border text-xs {isDarkMode ? 'bg-rose-500/10 border-rose-500/30 text-rose-200' : 'bg-rose-50 border-rose-200 text-rose-800'}">
+      <span class="font-bold">Belum ada di bagan ({unplacedAthletes.length}):</span>
+      {unplacedAthletes.map((a) => a.nama_atlet).join(", ")}
+      <span class="opacity-75"> — pilih di slot kosong (BYE) yang partainya belum dimainkan.</span>
+    </div>
+  {/if}
 
   <!-- Interactive Bracket Tree Viewport -->
   <div
@@ -1848,6 +1877,47 @@
     loadBracketData();
   }}
 />
+
+{#if lateModalOpen}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs no-print" role="dialog" aria-modal="true">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl w-full max-w-md text-zinc-200">
+      <h3 class="text-base font-black text-white uppercase tracking-tight">Atlet Terlambat</h3>
+      <div class="mt-4 space-y-3">
+        <label class="block text-[11px] font-mono text-zinc-400 uppercase">
+          Nama atlet
+          <input
+            type="text"
+            bind:value={lateName}
+            class="mt-1 w-full bg-[#14161b] text-sm text-white px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white/40 outline-none uppercase"
+          />
+        </label>
+        <label class="block text-[11px] font-mono text-zinc-400 uppercase">
+          Kontingen
+          <select bind:value={lateUtusanId} class="mt-1 w-full bg-[#14161b] text-sm text-white px-3 py-2 rounded-xl border border-white/[0.1] outline-none">
+            <option value={null}>—</option>
+            {#each lateUtusanList as u (u.id)}<option value={u.id}>{u.nama_utusan}</option>{/each}
+          </select>
+        </label>
+        <label class="block text-[11px] font-mono text-zinc-400 uppercase">
+          Perguruan
+          <select bind:value={latePerguruanId} class="mt-1 w-full bg-[#14161b] text-sm text-white px-3 py-2 rounded-xl border border-white/[0.1] outline-none">
+            <option value={null}>—</option>
+            {#each latePerguruanList as p (p.id)}<option value={p.id}>{p.nama_perguruan}</option>{/each}
+          </select>
+        </label>
+        {#if lateError}
+          <div class="text-xs text-rose-300 font-semibold">{lateError}</div>
+        {/if}
+      </div>
+      <div class="flex justify-end gap-2 mt-6">
+        <button type="button" onclick={() => (lateModalOpen = false)} class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl">Batal</button>
+        <button type="button" onclick={saveLateAthlete} disabled={lateSaving} class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md disabled:opacity-50">
+          {lateSaving ? "Menyimpan..." : "Tambahkan"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .bagan-print-page {

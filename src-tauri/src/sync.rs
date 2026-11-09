@@ -1861,6 +1861,15 @@ impl SyncService {
         let mut synced_count = 0;
         let mut failed_count = 0;
 
+        // An item left in 'processing' (app closed or crashed mid-request) would never be
+        // picked up again: put it back in the queue after a minute.
+        let _ = sqlx::query(
+            "UPDATE backend_syncqueue SET status = 'failed', updated_at = CURRENT_TIMESTAMP
+             WHERE status = 'processing' AND updated_at < datetime('now', '-60 seconds')"
+        )
+        .execute(pool)
+        .await;
+
         loop {
             // Find oldest active pending or failed item whose event has is_live_sync_enabled = 1 (or no event)
             let row = sqlx::query(
@@ -1952,10 +1961,11 @@ impl SyncService {
                     }
                 }
                 Err(e) => {
+                    // No connection (venue internet down, web server unreachable) is never a
+                    // reason to give up: the item stays queued and is sent when the link is back.
                     let err_msg = e.to_string();
                     let new_retry = retry_count + 1;
-                    let is_unrecoverable = new_retry >= 5;
-                    let final_status = if is_unrecoverable { "abandoned" } else { "failed" };
+                    let final_status = "failed";
 
                     let _ = sqlx::query(
                         "UPDATE backend_syncqueue SET status = ?, retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -1969,12 +1979,8 @@ impl SyncService {
 
                     failed_count += 1;
                     warn!("SyncQueue #{} to {} connection failed: {}", item_id, endpoint, err_msg);
-                    if is_unrecoverable {
-                        continue;
-                    } else {
-                        // Offline: halt until next tick
-                        break;
-                    }
+                    // Offline: halt until next tick (strict FIFO)
+                    break;
                 }
             }
         }

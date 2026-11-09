@@ -139,6 +139,10 @@ pub struct AthleteMutationInput {
     pub perguruan_id: Option<i64>,
     pub utusan_id: Option<i64>,
     pub nomor_tanding_id: Option<i64>,
+    /// Late entry placed by hand in a running bracket (Edit Bagan): skips the
+    /// "category already started" check.
+    #[serde(default)]
+    pub allow_late: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

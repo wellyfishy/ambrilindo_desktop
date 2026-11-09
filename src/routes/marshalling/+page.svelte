@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/stores";
-  import { apiCall, getConnectionConfig } from "$lib/api_client";
+  import { apiCall } from "$lib/api_client";
+  import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
   import type { MarshallingOverview, TatamiQueue, UrgentCall, SubmitUrgentCallPayload } from "$lib/types";
 
   let overview = $state<MarshallingOverview | null>(null);
@@ -9,7 +10,8 @@
   let currentTime = $state(new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
   let timerInterval: any = null;
   let refreshInterval: any = null;
-  let socket: WebSocket | null = null;
+  let socket: TatamiSocket | null = null;
+  let isLive = $state(false);
 
   // Active announcement state
   let activeUrgentCall = $state<UrgentCall | null>(null);
@@ -30,9 +32,31 @@
     "SEGERA MELAPOR KE MEJA MARSHALL / LO",
   ];
 
-  let eventId = $derived(
-    parseInt($page.url.searchParams.get("event_id") || "1") || 1
+  // Event from the portal link (?event= / ?event_id=); without it, the newest event.
+  let eventId = $state<number>(
+    parseInt($page.url.searchParams.get("event") || $page.url.searchParams.get("event_id") || "0") || 0
   );
+
+  async function resolveEvent() {
+    if (eventId) return;
+    try {
+      const events = await apiCall<{ id: number }[]>("get_events", {});
+      if (events?.length) eventId = Math.max(...events.map((e) => e.id));
+    } catch (_) {}
+  }
+
+  // Live state arrives several times a second while timers run on every tatami. The queue
+  // only changes when a tatami opens another match or a bracket changes, so refresh then
+  // (coalesced), not on every message.
+  const lastMatchByTatami: Record<number, number | null> = {};
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleRefresh(delay = 800) {
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      loadData(false);
+    }, delay);
+  }
 
   onMount(async () => {
     // Clock
@@ -41,12 +65,13 @@
     }, 1000);
 
     // Initial Load
+    await resolveEvent();
     await loadData();
 
-    // Auto-refresh fallback polling every 12 seconds
+    // Fallback polling (also covers a link that dropped without notice)
     refreshInterval = setInterval(() => {
       loadData(false);
-    }, 12000);
+    }, 15000);
 
     // WebSocket Connection
     setupWebSocket();
@@ -56,10 +81,9 @@
     if (timerInterval) clearInterval(timerInterval);
     if (refreshInterval) clearInterval(refreshInterval);
     if (announcementDismissTimer) clearTimeout(announcementDismissTimer);
-    if (socket) {
-      socket.close();
-      socket = null;
-    }
+    if (refreshTimer) clearTimeout(refreshTimer);
+    socket?.close();
+    socket = null;
   });
 
   async function loadData(showSpinner = true) {
@@ -77,34 +101,33 @@
   }
 
   function setupWebSocket() {
-    try {
-      const config = getConnectionConfig();
-      const wsUrl = config.hostUrl.replace(/^http/, "ws") + "/ws/marshalling/0";
-      socket = new WebSocket(wsUrl);
-
-      socket.onopen = () => {
-        console.log("Marshalling WebSocket connected.");
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.payload?.type === "urgent_call") {
-            triggerUrgentCallAnnouncement(msg.payload);
-          } else {
-            // Queue state changed, refresh queue immediately
-            loadData(false);
+    socket = connectTatamiSocket(
+      "marshalling",
+      0,
+      (msg) => {
+        isLive = true;
+        if (!msg || typeof msg !== "object") return;
+        const type = msg.type || msg.payload?.type;
+        if (type === "urgent_call") {
+          triggerUrgentCallAnnouncement(msg.type ? msg : msg.payload);
+        } else if (type === "bracket_updated") {
+          scheduleRefresh();
+        } else if (type === "tatami_live_state") {
+          const d = msg.payload || msg.data || {};
+          const t = Number(d.tatami);
+          const m = d.matchId ? Number(d.matchId) : null;
+          if (t && lastMatchByTatami[t] !== m) {
+            lastMatchByTatami[t] = m;
+            scheduleRefresh();
           }
-        } catch (_) {}
-      };
-
-      socket.onclose = () => {
-        // Reconnect after 3s
-        setTimeout(setupWebSocket, 3000);
-      };
-    } catch (err) {
-      console.warn("WS setup err:", err);
-    }
+        }
+      },
+      () => {
+        isLive = true;
+        loadData(false); // catch up on what changed while offline
+      },
+      () => (isLive = false)
+    );
   }
 
   // Web Audio Synth Stadium Chime (C5 -> E5 -> G5 ramp)
@@ -211,6 +234,12 @@
 
     <!-- Clock & Quick Action Controls -->
     <div class="flex items-center space-x-3">
+      <span
+        class="flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold font-mono border {isLive ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' : 'bg-amber-500/10 text-amber-300 border-amber-500/25'}"
+      >
+        <span class="w-1.5 h-1.5 rounded-full {isLive ? 'bg-emerald-400' : 'bg-amber-300 animate-pulse'}"></span>
+        {isLive ? "LIVE" : "MENYAMBUNG"}
+      </span>
       <!-- Digital Clock -->
       <div class="px-4 py-1.5 rounded-xl bg-[#0d0e12] border border-white/[0.1] font-mono text-base font-black text-amber-400 tracking-widest shadow-inner">
         {currentTime}

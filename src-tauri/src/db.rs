@@ -1642,7 +1642,9 @@ impl DatabaseManager {
     }
 
     /// Fetches all matches assigned to a specific tatami number
-    pub async fn get_tatami_matches(&self, tatami_num: i32) -> Result<Vec<EnrichedDetailBagan>, String> {
+    /// Matches assigned to a tatami number. The tatami must belong to the match's own event
+    /// (every event has its own tatami 1, 2, ...); `event_id` narrows it to one event.
+    pub async fn get_tatami_matches(&self, tatami_num: i32, event_id: Option<i64>) -> Result<Vec<EnrichedDetailBagan>, String> {
         let pool = self.get_pool()?;
         sqlx::query_as::<_, EnrichedDetailBagan>(
             r#"
@@ -1668,18 +1670,22 @@ impl DatabaseManager {
                 u2.logo as atlet2_logo,
                 a2.is_priority as atlet2_is_priority
             FROM backend_detailbagan d
-            JOIN backend_tatami t ON (d.assigned_tatami_id = t.id OR d.assigned_tatami_id = t.tatami_number)
+            JOIN backend_bagan bg ON bg.id = d.bagan_id
+            JOIN backend_tatami t ON t.event_id = bg.event_id
+                AND (d.assigned_tatami_id = t.id OR d.assigned_tatami_id = t.tatami_number)
             LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
             LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id
             LEFT JOIN backend_perguruan p1 ON a1.perguruan_id = p1.id
             LEFT JOIN backend_atlet a2 ON d.atlet2_id = a2.id
             LEFT JOIN backend_utusan u2 ON a2.utusan_id = u2.id
             LEFT JOIN backend_perguruan p2 ON a2.perguruan_id = p2.id
-            WHERE t.tatami_number = ?
+            WHERE t.tatami_number = ? AND (? IS NULL OR bg.event_id = ?)
             ORDER BY d.round ASC, d.urutan ASC
             "#
         )
         .bind(tatami_num)
+        .bind(event_id)
+        .bind(event_id)
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat daftar partai tatami: {}", e))
@@ -1811,7 +1817,9 @@ impl DatabaseManager {
         if clean_name.is_empty() {
             return Err("Nama atlet tidak boleh kosong.".to_string());
         }
-        self.ensure_category_open(input.nomor_tanding_id).await?;
+        if !input.allow_late {
+            self.ensure_category_open(input.nomor_tanding_id).await?;
+        }
 
         let res = sqlx::query(
             r#"
@@ -4715,7 +4723,50 @@ impl DatabaseManager {
             }
         }
 
+        // Bracket context for the checks below
+        let (bagan_cat, bagan_name, bagan_is_bob): (Option<i64>, String, bool) = sqlx::query_as(
+            "SELECT nomor_tanding_id, COALESCE(nama_bagan, ''), COALESCE(is_bob, 0) FROM backend_bagan WHERE id = ?"
+        )
+        .bind(bagan_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal memuat bagan: {}", e))?
+        .ok_or_else(|| "Bagan tidak ditemukan.".to_string())?;
+        // Festival bagans may mix categories (mix groups) and BOB takes winners of other categories.
+        let check_category = bagan_cat.is_some() && !bagan_is_bob && !bagan_name.to_uppercase().contains("FESTIVAL");
+
         // 2. Update each matchup's atlet1_id and atlet2_id
+        for m in matchups.iter() {
+            // A finished bout keeps its athletes: changing them would orphan its result.
+            let current: Option<(Option<i64>, Option<i64>, bool, i32, i32)> = sqlx::query_as(
+                "SELECT atlet1_id, atlet2_id, selesai, round, urutan FROM backend_detailbagan WHERE id = ? AND bagan_id = ?"
+            )
+            .bind(m.match_id)
+            .bind(bagan_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memuat partai #{}: {}", m.match_id, e))?;
+            if let Some((a1, a2, true, round, urutan)) = current {
+                if a1 != m.atlet1_id || a2 != m.atlet2_id {
+                    return Err(format!(
+                        "Partai babak {} nomor {} sudah selesai; atletnya tidak bisa diganti. Buka ulang hasil partai itu terlebih dahulu.",
+                        round, urutan
+                    ));
+                }
+            }
+            if check_category {
+                for aid in [m.atlet1_id, m.atlet2_id].into_iter().flatten() {
+                    let cat: Option<Option<i64>> = sqlx::query_scalar("SELECT nomor_tanding_id FROM backend_atlet WHERE id = ?")
+                        .bind(aid)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(|e| format!("Gagal memeriksa atlet: {}", e))?;
+                    if cat.flatten() != bagan_cat {
+                        return Err(format!("Atlet #{} bukan peserta kategori bagan ini.", aid));
+                    }
+                }
+            }
+        }
         for m in matchups {
             sqlx::query(
                 "UPDATE backend_detailbagan SET atlet1_id = ?, atlet2_id = ? WHERE id = ? AND bagan_id = ?"
@@ -4727,6 +4778,26 @@ impl DatabaseManager {
             .execute(&mut *tx)
             .await
             .map_err(|e| format!("Gagal memperbarui atlet partai #{}: {}", m.match_id, e))?;
+        }
+
+        // 3. An athlete may sit in only one bout per round
+        let dup: Option<(i32, String)> = sqlx::query_as(
+            r#"
+            SELECT x.round, COALESCE(a.nama_atlet, '#' || x.aid) FROM (
+                SELECT round, atlet1_id AS aid FROM backend_detailbagan WHERE bagan_id = ? AND team = 0 AND atlet1_id IS NOT NULL
+                UNION ALL
+                SELECT round, atlet2_id AS aid FROM backend_detailbagan WHERE bagan_id = ? AND team = 0 AND atlet2_id IS NOT NULL
+            ) x LEFT JOIN backend_atlet a ON a.id = x.aid
+            GROUP BY x.round, x.aid HAVING COUNT(*) > 1 LIMIT 1
+            "#
+        )
+        .bind(bagan_id)
+        .bind(bagan_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal memeriksa duplikasi atlet: {}", e))?;
+        if let Some((round, name)) = dup {
+            return Err(format!("{} muncul dua kali di babak {}. Setiap atlet hanya boleh di satu partai per babak.", name, round));
         }
 
         tx.commit().await.map_err(|e| format!("Gagal menyimpan perubahan bagan: {}", e))?;
