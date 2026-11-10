@@ -16,6 +16,8 @@
     history = [],
     onToggleCheck,
     onResetCheck,
+    readOnly = false,
+    historyAlwaysOpen = false,
   }: {
     votes?: StickState["votes"];
     aka?: SideResult | null;
@@ -27,11 +29,15 @@
     tested?: string[];
     lastKey?: string | null;
     history?: StickHistoryRow[];
-    onToggleCheck: () => void;
-    onResetCheck: () => void;
+    onToggleCheck?: () => void;
+    onResetCheck?: () => void;
+    /** watching from another device (Admin Control): no stick-test controls */
+    readOnly?: boolean;
+    historyAlwaysOpen?: boolean;
   } = $props();
 
-  let showHistory = $state(false);
+  let showHistoryToggle = $state(false);
+  let showHistory = $derived(historyAlwaysOpen || showHistoryToggle);
 
   function voteLabel(v: StickState["votes"][number]): string {
     if (!v) return "-";
@@ -73,6 +79,7 @@
       <span class="px-1.5 py-0.5 rounded bg-white/[0.06] text-zinc-400 font-bold text-[10px]" title="Banner poin hanya muncul saat timer berjalan">YAME</span>
     {/if}
     <div class="ml-auto flex items-center gap-1">
+      {#if !readOnly}
       <button
         type="button"
         onclick={onToggleCheck}
@@ -81,10 +88,11 @@
       >
         Uji Stick
       </button>
-      {#if !checkMode}
+      {/if}
+      {#if !checkMode && !historyAlwaysOpen}
         <button
           type="button"
-          onclick={() => (showHistory = !showHistory)}
+          onclick={() => (showHistoryToggle = !showHistoryToggle)}
           class="h-7 px-2 rounded-md border font-bold transition {showHistory ? 'bg-white/[0.08] border-white/20 text-white' : 'bg-[#1e2029] border-white/10 text-zinc-300 hover:text-white'}"
         >
           Riwayat
@@ -125,13 +133,15 @@
         </div>
       {/each}
     </div>
-    <button
-      type="button"
-      onclick={onResetCheck}
-      class="self-end h-7 px-2.5 rounded-md bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-zinc-300 font-bold"
-    >
-      Ulangi Uji
-    </button>
+    {#if !readOnly}
+      <button
+        type="button"
+        onclick={onResetCheck}
+        class="self-end h-7 px-2.5 rounded-md bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-zinc-300 font-bold"
+      >
+        Ulangi Uji
+      </button>
+    {/if}
   {:else}
     <div class="grid grid-cols-4 gap-1.5">
       {#each votes as v, j}
@@ -150,7 +160,7 @@
     </div>
 
     {#if showHistory}
-      <div class="max-h-40 overflow-y-auto rounded-lg border border-white/10">
+      <div class="{historyAlwaysOpen ? 'flex-1 min-h-0' : 'max-h-40'} overflow-y-auto rounded-lg border border-white/10">
         {#if history.length === 0}
           <div class="py-2 text-center text-zinc-500 text-[11px]">Belum ada sinyal</div>
         {:else}

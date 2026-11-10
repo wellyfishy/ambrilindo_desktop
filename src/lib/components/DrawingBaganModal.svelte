@@ -713,13 +713,19 @@
                 </select>
               </label>
               <label class="flex flex-col gap-1">
-                <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Lama acak per nomor</span>
-                <select bind:value={live.durationSec} class="bg-[#111215] border border-white/[0.1] rounded-xl px-3 py-1.5 text-white">
-                  <option value={0}>Tanpa timer (stop manual)</option>
-                  {#each [3, 5, 8, 10, 15] as sec (sec)}
-                    <option value={sec}>{sec} detik</option>
-                  {/each}
-                </select>
+                <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Countdown per nomor (detik)</span>
+                <div class="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    max="600"
+                    step="1"
+                    bind:value={live.durationSec}
+                    onblur={() => (live.durationSec = Math.max(0, Math.min(600, Math.round(Number(live.durationSec) || 0))))}
+                    class="w-20 bg-[#111215] border border-white/[0.1] rounded-xl px-3 py-1.5 text-white focus:border-white focus:outline-none"
+                  />
+                  <span class="text-[11px] text-zinc-500">{Number(live.durationSec) > 0 ? "detik" : "stop manual"}</span>
+                </div>
               </label>
               <label class="flex flex-col gap-1">
                 <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Pindah nomor</span>

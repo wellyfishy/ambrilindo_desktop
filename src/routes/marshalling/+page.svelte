@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/stores";
+  import PortalExitButton from "$lib/components/PortalExitButton.svelte";
   import { apiCall } from "$lib/api_client";
   import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
   import type { MarshallingOverview, TatamiQueue, UrgentCall, SubmitUrgentCallPayload } from "$lib/types";
@@ -214,6 +215,7 @@
   <!-- Top Stadium Header -->
   <header class="px-4 sm:px-6 py-3 sm:py-3.5 bg-[#14161b] border-b border-white/[0.08] flex flex-wrap items-center justify-between gap-3 shrink-0 shadow-lg">
     <div class="flex items-center gap-3 sm:gap-4 min-w-0">
+      <PortalExitButton title="Keluar dari Panggilan Atlet?" />
       <div class="hidden sm:flex shrink-0 w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-red-500 items-center justify-center text-white text-xl shadow-md">
         🥋
       </div>

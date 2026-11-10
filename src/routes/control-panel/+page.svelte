@@ -261,6 +261,11 @@
   }
 
   async function handleCloseWindow() {
+    // Opened from the venue portal in a browser: there is no window to close, go back
+    if (typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__) {
+      window.location.href = "/";
+      return;
+    }
     try {
       await invoke("close_control_panel_window", { matchId });
     } catch (_) {}
@@ -432,7 +437,7 @@
         onclick={handleCloseWindow}
         class="px-4 py-2 bg-[#1e2029] hover:bg-[#2b2d31] border border-white/10 text-white text-xs font-bold rounded-lg transition"
       >
-        Tutup Jendela
+        {typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__ ? "Keluar ke halaman utama" : "Tutup Jendela"}
       </button>
     </div>
   {:else}

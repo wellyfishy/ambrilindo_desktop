@@ -23,6 +23,7 @@
     getUrl: (tatami: number, eventId: number | null) => string;
   }
 
+  // In pairs that work together (shown side by side): VR, monitoring, kata, operator + board
   const roleOptions: RoleOption[] = [
     {
       id: "wasit_vr",
@@ -34,13 +35,31 @@
       getUrl: (t, e) => `/wasit-vr/${t}${e ? `?event=${e}` : ""}`,
     },
     {
-      id: "admtatami",
-      title: "Admin Tatami",
-      subtitle: "Operator Scoring Lapangan",
-      badge: "Operator",
-      color: "blue",
-      icon: "monitor",
-      getUrl: (t, e) => `/control-panel?tatami=${t}${e ? `&event=${e}` : ""}`,
+      id: "coach_sup",
+      title: "Coach Supervisor",
+      subtitle: "Panel Challenge Pelatih VR",
+      badge: "Challenge",
+      color: "rose",
+      icon: "whistle",
+      getUrl: (t, e) => `/coach-supervisor/${t}${e ? `?event=${e}` : ""}`,
+    },
+    {
+      id: "admin_control",
+      title: "Admin Control",
+      subtitle: "Monitor Stick / Mouse Juri",
+      badge: "Monitor",
+      color: "purple",
+      icon: "sliders",
+      getUrl: (t, e) => `/admin-control/${t}${e ? `?event=${e}` : ""}`,
+    },
+    {
+      id: "tatami_manager",
+      title: "Tatami Manager",
+      subtitle: "Atur Wasit & Juri per Partai",
+      badge: "Manager",
+      color: "zinc",
+      icon: "shield",
+      getUrl: (t, e) => `/tatami-manager/${t}${e ? `?event=${e}` : ""}`,
     },
     {
       id: "lo_kata",
@@ -52,15 +71,6 @@
       getUrl: (t, e) => `/lo-kata/${t}${e ? `?event=${e}` : ""}`,
     },
     {
-      id: "coach_sup",
-      title: "Coach Supervisor",
-      subtitle: "Panel Challenge Pelatih VR",
-      badge: "Challenge",
-      color: "rose",
-      icon: "whistle",
-      getUrl: (t, e) => `/coach-supervisor/${t}${e ? `?event=${e}` : ""}`,
-    },
-    {
       id: "juri",
       title: "Juri Tatami",
       subtitle: "Tablet Nilai Poin & Bendera",
@@ -70,12 +80,12 @@
       getUrl: (t, e) => `/jury/${t}${e ? `?event=${e}` : ""}`,
     },
     {
-      id: "admin_control",
-      title: "Admin Control",
-      subtitle: "Cockpit Kontrol Pertandingan",
-      badge: "Central",
-      color: "purple",
-      icon: "sliders",
+      id: "admtatami",
+      title: "Admin Tatami",
+      subtitle: "Operator Scoring Lapangan",
+      badge: "Operator",
+      color: "blue",
+      icon: "monitor",
       getUrl: (t, e) => `/control-panel?tatami=${t}${e ? `&event=${e}` : ""}`,
     },
     {
@@ -86,24 +96,6 @@
       color: "yellow",
       icon: "tv",
       getUrl: (t, e) => `/scoreboard?tatami=${t}${e ? `&event=${e}` : ""}`,
-    },
-    {
-      id: "marshalling",
-      title: "Panggilan Atlet",
-      subtitle: "Staging & Ruang Pemanasan",
-      badge: "Call Station",
-      color: "indigo",
-      icon: "megaphone",
-      getUrl: (_t, e) => `/marshalling${e ? `?event=${e}` : ""}`,
-    },
-    {
-      id: "tatami_manager",
-      title: "Tatami Manager",
-      subtitle: "Panel Pengawas Tatami",
-      badge: "Manager",
-      color: "zinc",
-      icon: "shield",
-      getUrl: (t, e) => `/control-panel?tatami=${t}${e ? `&event=${e}` : ""}`,
     },
   ];
 
@@ -180,10 +172,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 </svelte:head>
 
-<div class="min-h-screen bg-[#0c0e12] text-zinc-100 flex flex-col justify-between font-sans select-none p-4 sm:p-6 md:p-8">
+<!-- Scrolls on its own: the page shell around it is fixed to the screen height -->
+<div class="flex-1 h-full w-full overflow-y-auto overscroll-contain bg-[#0c0e12]">
+<div class="min-h-full bg-[#0c0e12] text-zinc-100 flex flex-col justify-between font-sans select-none p-4 sm:p-6 md:p-8">
   <!-- Brand & Live Host Header -->
-  <header class="max-w-2xl mx-auto w-full flex items-center justify-between border-b border-white/[0.08] pb-4 shrink-0">
-    <div class="flex items-center space-x-3">
+  <header class="max-w-2xl mx-auto w-full flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-4 shrink-0">
+    <div class="flex items-center space-x-3 min-w-0">
       <div class="w-9 h-9 rounded-xl bg-white text-black font-black flex items-center justify-center text-sm shadow-md shrink-0">
         <svg class="w-5 h-5 text-black" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/>
@@ -264,7 +258,7 @@
     </div>
 
     <!-- Role Selection Header -->
-    <div class="flex items-center justify-between px-1">
+    <div class="flex items-end justify-between gap-2 px-1">
       <div>
         <h2 class="text-xs font-bold text-zinc-200 uppercase tracking-wider">PILIH PERAN / LAYAR ARENA</h2>
         <p class="text-[11px] text-zinc-400 mt-0.5">Ketuk peran yang akan dijalankan pada perangkat ini</p>
@@ -273,12 +267,12 @@
     </div>
 
     <!-- Role Cards Grid (Inspired by auth.html) -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+    <div class="grid grid-cols-2 gap-2 sm:gap-2.5">
       {#each roleOptions as role}
         <button
           type="button"
           onclick={() => (selectedRole = role.id)}
-          class="text-left p-3 rounded-2xl border transition-all relative flex flex-col justify-between {selectedRole === role.id
+          class="text-left p-2.5 sm:p-3 rounded-2xl border transition-all relative flex flex-col justify-between min-w-0 {selectedRole === role.id
             ? 'bg-[#1a1c24] border-white/40 ring-1 ring-white/30 shadow-md'
             : 'bg-[#13151b] hover:bg-[#181a22] border-white/[0.06] text-zinc-300'}"
         >
@@ -338,7 +332,7 @@
             </div>
 
             {#if role.badge}
-              <span class="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.06]">
+              <span class="hidden min-[400px]:inline text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 border border-white/[0.06] truncate max-w-[60%]">
                 {role.badge}
               </span>
             {/if}
@@ -346,8 +340,8 @@
 
           <!-- Title & Subtitle -->
           <div>
-            <div class="text-xs font-bold text-white tracking-tight flex items-center justify-between">
-              <span>{role.title}</span>
+            <div class="text-xs font-bold text-white tracking-tight flex items-center justify-between gap-1">
+              <span class="truncate">{role.title}</span>
               {#if selectedRole === role.id}
                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
               {/if}
@@ -364,7 +358,7 @@
       onclick={handleNavigate}
       class="w-full h-12 bg-white hover:bg-zinc-200 active:scale-[0.99] text-black font-black text-xs sm:text-sm rounded-2xl shadow-xl flex items-center justify-center gap-2 transition-all mt-4 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/50"
     >
-      <span>Buka {activeRoleInfo.title} &bull; Tatami {selectedTatami}</span>
+      <span class="truncate">Buka {activeRoleInfo.title} &bull; Tatami {selectedTatami}</span>
       <svg class="w-4 h-4 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
         <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
       </svg>
@@ -372,11 +366,12 @@
   </main>
 
   <!-- Clean Minimal Footer -->
-  <footer class="max-w-2xl mx-auto w-full pt-4 border-t border-white/[0.08] flex items-center justify-between text-[11px] text-zinc-400 shrink-0">
+  <footer class="max-w-2xl mx-auto w-full pt-4 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400 shrink-0">
     <div class="flex items-center gap-2">
       <span class="text-zinc-500">Host:</span>
-      <span class="font-mono text-zinc-300">{hostUrl || "http://127.0.0.1:8000"}</span>
+      <span class="font-mono text-zinc-300 break-all">{hostUrl || "http://127.0.0.1:8000"}</span>
     </div>
     <span class="text-zinc-500">Ambrilindo Venue System</span>
   </footer>
+</div>
 </div>

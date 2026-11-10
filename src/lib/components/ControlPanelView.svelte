@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from "svelte";
+  import PortalExitButton from "$lib/components/PortalExitButton.svelte";
   import { emit, listen } from "@tauri-apps/api/event";
   import { invoke, isHostUi, getHostBaseUrl, withHostParam } from "$lib/api_client";
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput } from "$lib/types";
@@ -507,6 +508,7 @@
 
     kataAkaName = m.kata1 || "";
     kataAoName = m.kata2 || "";
+    kataFromLo = { aka: false, ao: false };
 
     // Reset judges scores and overlays for new match, then restore any saved ones
     akaJudgeScores = emptyJudges();
@@ -659,6 +661,9 @@
   // Kata Judges Comparative Scoring State
   let kataAkaName = $state<string>("");
   let kataAoName = $state<string>("");
+  // Kata filled in by the LO Kata tablet (badge "LO"); flash bumps to highlight a new one
+  let kataFromLo = $state<{ aka: boolean; ao: boolean }>({ aka: false, ao: false });
+  let kataLoFlash = $state<{ aka: number; ao: number }>({ aka: 0, ao: 0 });
   let akaJudgeScores = $state<string[]>(emptyJudges());
   let aoJudgeScores = $state<string[]>(emptyJudges());
   let showKataScoreOnBoard = $state<boolean>(false);
@@ -819,6 +824,7 @@
     } else {
       kataAoName = item.label;
     }
+    kataFromLo = { ...kataFromLo, [kataModalTarget]: false };
     isKataModalOpen = false;
     broadcastLiveState();
   }
@@ -1368,6 +1374,48 @@
     }
   }
 
+  /**
+   * The judge stick monitor as this control panel computed it, for the Admin Control page
+   * on other devices (same numbers: nothing is recomputed there).
+   */
+  function broadcastStickMonitor() {
+    if (claimStatus !== "owned" || isKata) return;
+    const msg = {
+      type: "stick_monitor",
+      tatami: activeTatami,
+      payload: $state.snapshot({
+        matchId: match.id,
+        mouseMode,
+        votes: stickState?.votes ?? [null, null, null, null],
+        aka: stickState?.aka ?? null,
+        ao: stickState?.ao ?? null,
+        hantei: isHantei,
+        hanteiTally: stickState?.hantei ?? { aka: 0, ao: 0 },
+        timerRunning: isTimerRunning,
+        checkMode: stickCheck,
+        tested: stickTested,
+        lastKey: stickLastKey,
+        history: stickHistory,
+        at: Date.now(),
+      }),
+    };
+    // Socket only: other windows on this machine treat every BroadcastChannel message as
+    // live state (scoreboard) or a refresh trigger (tatami manager). The host relays the
+    // socket message to every device of this tatami, this machine included.
+    tatamiSocket?.send({ ...msg, origin: isHostUi() ? "host" : undefined });
+  }
+  // Every change of the monitor goes out at once (one message per microtask)
+  let stickMonitorQueued = false;
+  $effect(() => {
+    void [stickState, stickHistory, stickCheck, stickTested, stickLastKey, isHantei, isTimerRunning, mouseMode];
+    if (stickMonitorQueued) return;
+    stickMonitorQueued = true;
+    queueMicrotask(() => {
+      stickMonitorQueued = false;
+      untrack(() => broadcastStickMonitor());
+    });
+  });
+
   function clearStickState() {
     clearHanteiDecision();
     hanteiWinner = null;
@@ -1758,6 +1806,7 @@
 
     if (data.type === "request_tatami_state") {
       broadcastLiveState();
+      broadcastStickMonitor();
       return;
     }
 
@@ -1775,18 +1824,35 @@
         broadcastLiveState();
       }
     } else if (data.type === "lo_kata_broadcast") {
-      if (data.kata_aka !== undefined && data.kata_aka !== null) {
-        kataAkaName = String(data.kata_aka);
-      }
-      if (data.kata_ao !== undefined && data.kata_ao !== null) {
-        kataAoName = String(data.kata_ao);
-      }
-      broadcastLiveState();
+      applyLoKata(data);
     } else if (data.type === "vr_challenge_started") {
       applyRemoteVrStarted(data);
     } else if (data.type === "vr_challenge_resolved") {
       applyRemoteVrResolved(data);
     }
+  }
+
+  /** Kata picked on the LO Kata tablet (host IPC, socket or, on this machine, BroadcastChannel) */
+  function applyLoKata(data: any) {
+    // Only kata for the match open here (an LO tablet may be on another match)
+    if (data.match_id && Number(data.match_id) !== match.id) return;
+    let changed = false;
+    if (data.kata_aka !== undefined && data.kata_aka !== null && String(data.kata_aka) !== kataAkaName) {
+      kataAkaName = String(data.kata_aka);
+      kataFromLo = { ...kataFromLo, aka: !!kataAkaName };
+      kataLoFlash = { ...kataLoFlash, aka: kataLoFlash.aka + 1 };
+      changed = true;
+    }
+    if (data.kata_ao !== undefined && data.kata_ao !== null && String(data.kata_ao) !== kataAoName) {
+      kataAoName = String(data.kata_ao);
+      kataFromLo = { ...kataFromLo, ao: !!kataAoName };
+      kataLoFlash = { ...kataLoFlash, ao: kataLoFlash.ao + 1 };
+      changed = true;
+    }
+    // The same message arrives on several paths: only the first one changes anything
+    // (no sound: the LO badge and highlight are enough)
+    if (!changed) return;
+    broadcastLiveState();
   }
 
   // Messages from the host over this tatami's socket. The host's own windows already
@@ -1840,6 +1906,8 @@
           applyRemoteVrStarted(data);
         } else if (data.type === "vr_challenge_resolved") {
           applyRemoteVrResolved(data);
+        } else if (data.type === "lo_kata_broadcast") {
+          applyLoKata(data);
         }
       };
     }
@@ -2186,6 +2254,7 @@
   <!-- Top Cockpit Header Bar (Discord Card #181a20, Border #2b2d31) -->
   <div class="cockpit-page-header flex items-center justify-between flex-wrap gap-3 p-3 bg-[#181a20] border border-[#2b2d31] rounded-xl shadow-lg mb-3 shrink-0">
     <div class="flex items-center space-x-2">
+      <PortalExitButton title="Keluar dari Control Panel?" warning="Skor dan hasil yang belum disimpan akan hilang." />
       <!-- Save & Exit Button -->
       <button
         type="button"
@@ -2630,10 +2699,15 @@
                     <button
                       type="button"
                       onclick={() => openKataModal("aka")}
-                      class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between text-xs font-semibold text-zinc-200 transition"
-                      title="Klik untuk memilih Kata"
+                      class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between gap-1.5 text-xs font-semibold text-zinc-200 transition"
+                      title={kataFromLo.aka ? "Kata dari LO Kata (klik untuk mengganti)" : "Klik untuk memilih Kata"}
                     >
-                      <span class="truncate">{kataAkaName || "Pilih Kata..."}</span>
+                      {#key kataLoFlash.aka}
+                        <span class="truncate min-w-0 flex-1 rounded px-1 -mx-1" class:cp-kata-flash={kataLoFlash.aka > 0}>{kataAkaName || "Pilih Kata..."}</span>
+                      {/key}
+                      {#if kataFromLo.aka && kataAkaName}
+                        <span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono font-black bg-purple-500/20 text-purple-300 border border-purple-500/40">LO</span>
+                      {/if}
                       <svg class="w-4 h-4 text-zinc-400 shrink-0 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                       </svg>
@@ -2721,10 +2795,15 @@
                     <button
                       type="button"
                       onclick={() => openKataModal("ao")}
-                      class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between text-xs font-semibold text-zinc-200 transition"
-                      title="Klik untuk memilih Kata"
+                      class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between gap-1.5 text-xs font-semibold text-zinc-200 transition"
+                      title={kataFromLo.ao ? "Kata dari LO Kata (klik untuk mengganti)" : "Klik untuk memilih Kata"}
                     >
-                      <span class="truncate">{kataAoName || "Pilih Kata..."}</span>
+                      {#key kataLoFlash.ao}
+                        <span class="truncate min-w-0 flex-1 rounded px-1 -mx-1" class:cp-kata-flash={kataLoFlash.ao > 0}>{kataAoName || "Pilih Kata..."}</span>
+                      {/key}
+                      {#if kataFromLo.ao && kataAoName}
+                        <span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono font-black bg-purple-500/20 text-purple-300 border border-purple-500/40">LO</span>
+                      {/if}
                       <svg class="w-4 h-4 text-zinc-400 shrink-0 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                       </svg>
@@ -3343,6 +3422,7 @@
           onclick={() => {
             if (kataModalTarget === "aka") kataAkaName = "";
             else kataAoName = "";
+            kataFromLo = { ...kataFromLo, [kataModalTarget]: false };
             isKataModalOpen = false;
             broadcastLiveState();
           }}
@@ -3548,6 +3628,15 @@
   .cp-preview {
     aspect-ratio: 16 / 9;
     width: min(100cqw, calc(100cqh * 16 / 9));
+  }
+
+  /* Kata just filled in by the LO Kata tablet */
+  .cp-kata-flash {
+    animation: cp-kata-flash 2.4s ease-out;
+  }
+  @keyframes cp-kata-flash {
+    0%, 30% { background-color: rgba(168, 85, 247, 0.45); color: #ffffff; }
+    100% { background-color: transparent; }
   }
 
   /* Short screens (small operator laptops): compact AO / AKA cards so the whole

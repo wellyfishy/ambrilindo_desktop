@@ -5,6 +5,7 @@
   // so it follows match changes and reconnects at once.
   import { onMount, onDestroy } from "svelte";
   import { page } from "$app/state";
+  import PortalExitButton from "$lib/components/PortalExitButton.svelte";
   import {
     connectVrLink,
     emptyView,
@@ -113,6 +114,7 @@
   <!-- Header -->
   <header class="bg-[#14161c] border-b border-white/10 px-4 py-3 flex items-center justify-between gap-3 sticky top-0 z-30">
     <div class="flex items-center gap-3 min-w-0">
+      <PortalExitButton title="Keluar dari Coach Supervisor?" />
       <div class="px-2.5 py-1 rounded-lg bg-amber-500 text-black font-black text-sm shrink-0">T{tatamiNumber}</div>
       <div class="min-w-0">
         <div class="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Video Review · Pelatih</div>

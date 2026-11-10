@@ -10,6 +10,7 @@
   import { isHostUi, setConnectionConfig } from "$lib/api_client";
   import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
   import ScoreboardDisplay from "$lib/components/ScoreboardDisplay.svelte";
+  import PortalExitButton from "$lib/components/PortalExitButton.svelte";
 
   // Tatami number from query string, defaults to 1
   let tatamiNumber = $derived(Number(page.url.searchParams.get("tatami") || "1"));
@@ -104,6 +105,7 @@
 <div class="sb-page">
   <ScoreboardDisplay bind:this={display} tatami={tatamiNumber} connected={isLocalSyncConnected} />
 </div>
+<PortalExitButton title="Keluar dari Scoreboard?" autohide />
 
 <style>
   .sb-page {

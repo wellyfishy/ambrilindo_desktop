@@ -53,6 +53,12 @@
     hideScores?: boolean;
     /** leave out this many leading rounds (live drawing: rounds with only BYEs) */
     skipRounds?: number;
+    /** show each athlete's kata before the bout is finished (LO Kata) */
+    showKata?: boolean;
+    /** outline this match (e.g. the one open in the control panel) */
+    highlightMatchId?: number | null;
+    /** tooltip of a clickable card (default: opens the control panel) */
+    clickHint?: string;
   }
 
   let {
@@ -74,6 +80,9 @@
     cardScale = 1,
     hideScores = false,
     skipRounds = 0,
+    showKata = false,
+    highlightMatchId = null,
+    clickHint = "Klik untuk membuka Kontrol Pertandingan (Control Panel)",
   }: Props = $props();
 
   /** Card size for a round: never taller than its slot, so connector lines stay on centre */
@@ -137,13 +146,13 @@
           <div data-slot={slotNum} class="{slotHeightClass} flex items-center justify-center">
             {#if match}
               <div
-                class="match-card w-full {!interactive ? '' : isEditMode ? 'cursor-default ring-1 ring-amber-500/50' : 'cursor-pointer hover:ring-2 hover:ring-amber-500/80'} transition-all {isDarkMode ? 'bg-[#181a20] border-zinc-700 hover:border-zinc-500' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''}"
+                class="match-card w-full {!interactive ? '' : isEditMode ? 'cursor-default ring-1 ring-amber-500/50' : 'cursor-pointer hover:ring-2 hover:ring-amber-500/80'} transition-all {isDarkMode ? 'bg-[#181a20] border-zinc-700 hover:border-zinc-500' : 'bg-white border-slate-400/90 hover:border-slate-800'} border rounded-md overflow-hidden shadow-xs relative z-10 {roundNum === 4 ? (isDarkMode ? 'border-amber-500/80 shadow-[0_0_15px_rgba(245,158,11,0.15)]' : 'border-amber-500 shadow-md') : ''} {highlightMatchId != null && match.id === highlightMatchId ? 'ring-2 ring-emerald-400 shadow-[0_0_14px_rgba(52,211,153,0.45)]' : ''}"
                 onclick={() => { if (interactive && !isEditMode) onMatchClick?.(match); }}
                 role="button"
                 tabindex="0"
                 onkeydown={(e) => { if (interactive && e.key === 'Enter' && !isEditMode) onMatchClick?.(match); }}
                 style={zoom !== 1 ? `zoom: ${zoom}; width: ${colWidth / zoom}px;` : undefined}
-                title={!interactive ? undefined : isEditMode ? "Mode Edit: Pilih atlet peserta partai" : "Klik untuk membuka Kontrol Pertandingan (Control Panel)"}
+                title={!interactive ? undefined : isEditMode ? "Mode Edit: Pilih atlet peserta partai" : clickHint}
               >
                 <!-- Match Card Header -->
                 <div class="card-header-bar flex items-center justify-between px-1.5 h-[13px] {isDarkMode ? 'bg-[#101215] border-white/[0.12] text-zinc-100' : 'bg-slate-200 border-slate-400 text-slate-950'} border-b text-[8px] font-black font-mono tracking-wider">
@@ -253,7 +262,7 @@
                         <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
                           {match.atlet1_kontingen || (match.atlet1_nama ? '-' : '—')}
                         </div>
-                        {#if match.selesai && match.kata1 && match.kata1 !== '0 - Blank'}
+                        {#if (match.selesai || showKata) && match.kata1 && match.kata1 !== '0 - Blank'}
                           <div class="kata-row flex items-center leading-none mt-[0.5px]">
                             <span
                               class="kata-badge-aka text-[6px] font-black px-1 py-0 inline-flex items-center leading-[7.5px] {isDarkMode ? 'bg-red-500/25 text-red-200 border-red-500/50' : 'bg-red-100 text-red-900 border-red-400'} border rounded max-w-[130px] truncate"
@@ -343,7 +352,7 @@
                         <div class="player-sub-text truncate min-w-0 text-[7px] font-bold leading-[8.5px] mt-[0.5px] {isDarkMode ? 'text-zinc-200' : 'text-slate-900'}">
                           {match.atlet2_kontingen || (match.atlet2_nama ? '-' : '—')}
                         </div>
-                        {#if match.selesai && match.kata2 && match.kata2 !== '0 - Blank'}
+                        {#if (match.selesai || showKata) && match.kata2 && match.kata2 !== '0 - Blank'}
                           <div class="kata-row flex items-center leading-none mt-[0.5px]">
                             <span
                               class="kata-badge-ao text-[6px] font-black px-1 py-0 inline-flex items-center leading-[7.5px] {isDarkMode ? 'bg-blue-500/25 text-blue-200 border-blue-500/50' : 'bg-blue-100 text-blue-900 border-blue-400'} border rounded max-w-[130px] truncate"

@@ -88,6 +88,18 @@ pub fn slot_distance(s1: &MatchSlot, s2: &MatchSlot) -> u32 {
     4
 }
 
+/// Top-to-bottom position of a round-1 slot in the bracket (0 = very top, 15 = very bottom)
+pub fn slot_line(s: &MatchSlot) -> u32 {
+    (s.match_num - 1) * 2 + if s.position == SlotPosition::Atlet1 { 0 } else { 1 }
+}
+
+/// Where seeds go, in order: seed 1 at the very top, seed 2 at the very bottom (they can
+/// only meet in the final), seeds 3 and 4 on either side of the middle.
+const SEED_LINES: [u32; 4] = [0, 15, 8, 7];
+/// Per line away from a seed's place. Above keeping a contingent out of the same quarter
+/// (10_000), below never letting a contingent meet in round 1 (1_000_000).
+const SEED_LINE_PENALTY: u64 = 40_000;
+
 /// Penalty assigned to distance between two competitors from the same club/contingent
 pub fn slot_penalty(s1: &MatchSlot, s2: &MatchSlot) -> u64 {
     match slot_distance(s1, s2) {
@@ -418,7 +430,8 @@ pub fn build_bracket_in_memory(
     let regular_athletes: Vec<AthleteInput> = athletes_slice.iter().filter(|a| !a.is_priority).cloned().collect();
 
     let mut rng = rand::thread_rng();
-    let num_trials = 60;
+    // More layouts when there are seeds, so the very top / bottom slots are on offer
+    let num_trials = if priority_athletes.is_empty() { 60 } else { 160 };
     let mut best_score = u64::MAX;
     let mut best_candidates: Vec<HashMap<i64, MatchSlot>> = Vec::new();
 
@@ -464,7 +477,8 @@ pub fn build_bracket_in_memory(
             let mut shuffled_prio = priority_athletes.clone();
             shuffled_prio.shuffle(&mut rng);
 
-            for a in shuffled_prio {
+            for (seed_idx, a) in shuffled_prio.into_iter().enumerate() {
+                let seed_line = SEED_LINES.get(seed_idx).copied();
                 let max_bye = available.iter().map(|s| get_slot_bye_level(s, &match_counts)).max().unwrap_or(0);
                 let candidate_slots: Vec<MatchSlot> = available
                     .iter()
@@ -480,7 +494,9 @@ pub fn build_bracket_in_memory(
                     let group_prev = placed_by_group.get(&a.group_key).unwrap_or(&empty_group);
                     let p_del: u64 = group_prev.iter().map(|prev_s| slot_penalty(s, prev_s)).sum();
                     let p_sec: u64 = if let Some(sec) = &a.secondary_key { placed_by_group.get(sec).unwrap_or(&empty_group).iter().map(|prev_s| slot_penalty(s, prev_s)).sum() } else { 0 };
-                    let p = 2 * p_prio + p_del + (p_sec / 2);
+                    // Seeds as far apart as possible: very top, very bottom, then the middle
+                    let p_line: u64 = seed_line.map_or(0, |t| (slot_line(s).abs_diff(t) as u64) * SEED_LINE_PENALTY);
+                    let p = 2 * p_prio + p_del + (p_sec / 2) + p_line;
                     if p < best_p {
                         best_p = p;
                         candidates = vec![*s];
@@ -988,6 +1004,51 @@ mod tests {
 
         assert_eq!(slot_distance(&s1, &s5), 4);
         assert_eq!(slot_penalty(&s1, &s5), 0);
+    }
+
+    /// Where an athlete ends up (after BYEs): (round, urutan, is atlet1)
+    fn find_athlete(res: &BracketResult, id: i64) -> Option<(u32, u32, bool)> {
+        for (r, map) in &res.matches {
+            for (u, m) in map {
+                if m.atlet1_id == Some(id) {
+                    return Some((*r, *u, true));
+                }
+                if m.atlet2_id == Some(id) {
+                    return Some((*r, *u, false));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_two_seeds_at_very_top_and_bottom() {
+        for n in [4usize, 5, 6, 7, 8, 9, 11, 13, 16] {
+            for _ in 0..25 {
+                let athletes: Vec<AthleteInput> = (1..=n as i64)
+                    .map(|i| AthleteInput {
+                        id: i,
+                        name: format!("A{}", i),
+                        is_priority: i <= 2,
+                        group_key: format!("K{}", i % 3),
+                        secondary_key: None,
+                    })
+                    .collect();
+                let res = build_bracket_in_memory(&athletes, 1, false);
+                let mut tops = 0;
+                let mut bottoms = 0;
+                for id in [1, 2] {
+                    let (r, u, first) = find_athlete(&res, id).expect("seed placed");
+                    let last_u = match r { 1 => 8, 2 => 4, 3 => 2, _ => 1 };
+                    if u == 1 && first {
+                        tops += 1;
+                    } else if u == last_u && !first {
+                        bottoms += 1;
+                    }
+                }
+                assert_eq!((tops, bottoms), (1, 1), "n={}: seeds must take the very top and the very bottom", n);
+            }
+        }
     }
 
     #[test]

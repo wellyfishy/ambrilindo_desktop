@@ -1,448 +1,634 @@
 <script lang="ts">
+  // LO Kata (Liaison Officer at the mat): the kata bracket of the tatami, so kata can be
+  // entered for any bout, also before the operator opens it. Tap a bout, pick the kata;
+  // it is saved and sent at once. Realtime both ways: the control panel's live state
+  // carries the kata it shows (and which bout is open), kata from another LO tablet arrive
+  // as lo_kata_broadcast. The shared socket reconnects by itself; every reconnect reloads
+  // the bracket and asks the control panel for its state.
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
   import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
   import { getHostBaseUrl } from "$lib/api_client";
+  import { computePodium, deriveBracketMeta, TREE_COL_GAP, TREE_COL_WIDTH, TREE_HEIGHT, treeWidthFor } from "$lib/bracket_layout";
+  import BracketTree from "$lib/components/BracketTree.svelte";
+  import PortalExitButton from "$lib/components/PortalExitButton.svelte";
 
-  // Tatami number from route params; the event comes from the portal / tatami picker
   let tatamiNumber = $derived(Number(page.params.tatami || "1"));
-  let eventId = $derived(Number(page.url.searchParams.get("event")) || null);
-  let eventQuery = $derived(eventId ? `?event=${eventId}` : "");
+  let eventFromUrl = $derived(Number(page.url.searchParams.get("event")) || null);
+  let eventFromMatch = $state<number | null>(null);
+  let eventId = $derived(eventFromUrl ?? eventFromMatch);
+  let eventQuery = $derived(eventFromUrl ? `?event=${eventFromUrl}` : "");
 
-  // Connection state (the shared socket reconnects by itself)
-  let isWsConnected = $state(false);
+  type LinkStatus = "connecting" | "live" | "offline";
+  let linkStatus = $state<LinkStatus>("connecting");
   let socket: TatamiSocket | null = null;
 
-  // Tatami matches list
+  // ---- Follow the tatami (default) or browse any kata bagan ----
+  const FOLLOW_KEY = "ambrilindo.loKata.follow";
+  function readFollow(): boolean {
+    try {
+      return localStorage.getItem(FOLLOW_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  }
+  let followTatami = $state(readFollow());
+
+  // Kata bouts assigned to this tatami (which bagan run here, and the open bout's bagan)
   let tatamiMatches = $state<any[]>([]);
-  let selectedMatchId = $state<number | null>(null);
-  let isLoadingMatches = $state(false);
-
-  // Active match data
-  let activeMatch = $derived.by(() => {
-    if (!selectedMatchId) return tatamiMatches[0] || null;
-    return tatamiMatches.find((m) => m.id === selectedMatchId) || tatamiMatches[0] || null;
+  let tatamiBagans = $derived.by(() => {
+    const seen = new Map<number, string>();
+    for (const m of tatamiMatches) if (m.bagan_id && !seen.has(m.bagan_id)) seen.set(m.bagan_id, m.nama_bagan || `Bagan ${m.bagan_id}`);
+    return [...seen].map(([id, nama_bagan]) => ({ id, nama_bagan }));
   });
+  // Every kata bagan of the event (browse mode)
+  let eventKataBagans = $state<any[]>([]);
 
-  // Kata selection state
-  let akaKata = $state<string>("");
-  let aoKata = $state<string>("");
+  // Bracket on screen
+  let viewBaganId = $state<number | null>(null);
+  let viewBagan = $state<any | null>(null);
+  let baganMatches = $state<any[]>([]);
+  let isLoading = $state(false);
 
-  // Modal Kata Picker State
-  let isModalOpen = $state(false);
-  let modalTarget = $state<"aka" | "ao">("aka");
+  // Bout open in the control panel of this tatami (from its live state)
+  let livePanelMatchId = $state<number | null>(null);
+
+  // Bout being edited (kata sheet)
+  let editMatchId = $state<number | null>(null);
+  let editMatch = $derived(editMatchId ? baganMatches.find((m) => m.id === editMatchId) ?? null : null);
+  let akaKata = $state("");
+  let aoKata = $state("");
+
+  type SendStatus = "idle" | "sending" | "sent" | "error";
+  let sendStatus = $state<SendStatus>("idle");
+  // Right after our own send, older live states may still be on their way: ignore them
+  let ignoreLiveUntil = 0;
+
+  // ---- Kata picker ----
+  let isPickerOpen = $state(false);
+  let pickerTarget = $state<"aka" | "ao">("aka");
   let searchQuery = $state("");
-
   let filteredKataList = $derived.by(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return KATA_ENTRIES;
-    return KATA_ENTRIES.filter(
-      (k) => k.name.toLowerCase().includes(q) || k.code.toLowerCase().includes(q)
-    );
+    return KATA_ENTRIES.filter((k) => k.name.toLowerCase().includes(q) || k.code.toLowerCase().includes(q));
   });
 
-  // Repeat Kata Detection Engine
-  let previousAkaKatas = $derived.by(() => {
-    if (!activeMatch || !activeMatch.atlet1_id) return [];
-    return tatamiMatches
-      .filter((m) => m.id !== activeMatch.id)
-      .filter((m) => m.atlet1_id === activeMatch.atlet1_id || m.atlet2_id === activeMatch.atlet1_id)
-      .map((m) => ({
-        round: m.round ? `Babak ${m.round}` : "Babak Sebelumnya",
-        kata: m.atlet1_id === activeMatch.atlet1_id ? m.kata1 : m.kata2,
-      }))
-      .filter((item) => !!item.kata);
-  });
+  /** "4 - Aoyagi" and "Aoyagi" are the same kata */
+  function kataKey(v: string | null | undefined): string {
+    return String(v || "").replace(/^\s*\d+\s*-\s*/, "").trim().toLowerCase();
+  }
+  /** Kata this athlete already used in other bouts of the bracket */
+  function previousKatas(atletId: number | null | undefined): string[] {
+    if (!editMatch || !atletId) return [];
+    return baganMatches
+      .filter((m) => m.id !== editMatch.id && (m.atlet1_id === atletId || m.atlet2_id === atletId))
+      .map((m) => (m.atlet1_id === atletId ? m.kata1 : m.kata2))
+      .filter(Boolean);
+  }
+  let isAkaKataRepeated = $derived(!!akaKata && previousKatas(editMatch?.atlet1_id).some((k) => kataKey(k) === kataKey(akaKata)));
+  let isAoKataRepeated = $derived(!!aoKata && previousKatas(editMatch?.atlet2_id).some((k) => kataKey(k) === kataKey(aoKata)));
 
-  let isAkaKataRepeated = $derived.by(() => {
-    if (!akaKata) return false;
-    return previousAkaKatas.some((item) => item.kata.toLowerCase() === akaKata.toLowerCase());
-  });
-
-  let previousAoKatas = $derived.by(() => {
-    if (!activeMatch || !activeMatch.atlet2_id) return [];
-    return tatamiMatches
-      .filter((m) => m.id !== activeMatch.id)
-      .filter((m) => m.atlet1_id === activeMatch.atlet2_id || m.atlet2_id === activeMatch.atlet2_id)
-      .map((m) => ({
-        round: m.round ? `Babak ${m.round}` : "Babak Sebelumnya",
-        kata: m.atlet1_id === activeMatch.atlet2_id ? m.kata1 : m.kata2,
-      }))
-      .filter((item) => !!item.kata);
-  });
-
-  let isAoKataRepeated = $derived.by(() => {
-    if (!aoKata) return false;
-    return previousAoKatas.some((item) => item.kata.toLowerCase() === aoKata.toLowerCase());
-  });
-
-  // Action status feedback
-  let isSaving = $state(false);
   let toastMessage = $state<string | null>(null);
-  let toastTimer: any = null;
-
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
   function showToast(msg: string) {
     toastMessage = msg;
     if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toastMessage = null;
-    }, 2500);
+    toastTimer = setTimeout(() => (toastMessage = null), 2200);
   }
 
-  // Open Kata selection modal
-  function openKataModal(target: "aka" | "ao") {
-    modalTarget = target;
-    searchQuery = "";
-    isModalOpen = true;
-  }
-
-  function selectKata(kata: KataItem) {
-    if (modalTarget === "aka") {
-      akaKata = kata.name;
-    } else {
-      aoKata = kata.name;
+  // ---- Bracket sizing: fill the width, scroll down if taller ----
+  let stageW = $state(800);
+  let stageEl: HTMLElement | null = $state(null);
+  let skipRounds = $derived.by(() => {
+    const rounds = baganMatches.filter((m) => m.atlet1_id || m.atlet2_id).map((m) => Number(m.round) || 1);
+    if (rounds.length === 0) return 0;
+    return Math.max(0, Math.min(2, Math.min(...rounds) - 1));
+  });
+  let treeFit = $derived.by(() => {
+    const columns = 4 - skipRounds;
+    const avail = Math.max(320, stageW - 16);
+    let colWidth = (avail - (columns - 1) * TREE_COL_GAP) / columns;
+    let scale = 1;
+    if (colWidth < TREE_COL_WIDTH) {
+      colWidth = TREE_COL_WIDTH;
+      scale = Math.max(0.55, avail / treeWidthFor(colWidth, columns));
     }
-    isModalOpen = false;
+    const cardScale = Math.max(1, Math.min(1.8, colWidth / 170));
+    return { columns, colWidth: Math.floor(colWidth), scale, cardScale };
+  });
+  let treeMeta = $derived(viewBagan ? deriveBracketMeta(viewBagan.nama_bagan || "", viewBagan.pool) : null);
+  let isElimination = $derived(!!viewBagan && !viewBagan.round_robin && baganMatches.some((m) => Number(m.round) >= 1 && Number(m.round) <= 4));
+
+  // ---- Data loading ----
+  async function getJson(path: string): Promise<any> {
+    const res = await fetch(`${getHostBaseUrl()}${path}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    return json?.status === "success" ? json.data : null;
   }
 
-  // Broadcast & Save Kata
-  async function broadcastAndSaveKata() {
-    if (!activeMatch) return;
-    if (isSaving) return;
-    isSaving = true;
-
+  async function fetchTatamiMatches(): Promise<number | null> {
+    let currentBagan: number | null = null;
     try {
-      const payload = {
-        match_id: activeMatch.id,
-        tatami: tatamiNumber,
-        kata1: akaKata || null,
-        kata2: aoKata || null,
-      };
+      const current = await getJson(`/api/tatami/${tatamiNumber}/current-match${eventQuery}`).catch(() => null);
+      const all = await getJson(`/api/tatami/${tatamiNumber}/matches${eventQuery}`).catch(() => null);
+      if (Array.isArray(all)) {
+        // Only kata bouts: kumite on the same tatami has no kata to choose
+        tatamiMatches = all.filter((m: any) => !m.nama_bagan || /KATA/i.test(m.nama_bagan));
+      }
+      if (current?.id && !livePanelMatchId) livePanelMatchId = Number(current.id);
+      currentBagan = current?.bagan_id ? Number(current.bagan_id) : null;
+      const anyBagan = currentBagan ?? tatamiMatches[0]?.bagan_id ?? null;
+      if (!eventFromUrl && !eventFromMatch && anyBagan) {
+        const b = await getJson(`/api/bagan/${anyBagan}`).catch(() => null);
+        if (b?.event_id) eventFromMatch = Number(b.event_id);
+      }
+    } catch (err) {
+      console.warn("Gagal memuat partai tatami:", err);
+    }
+    return currentBagan;
+  }
 
-      // 1. Save on the host (it also tells the control panel)
+  async function fetchEventKataBagans() {
+    if (!eventId) return;
+    try {
+      const list = await getJson(`/api/bagans/${eventId}`);
+      if (Array.isArray(list)) {
+        eventKataBagans = list
+          .filter((b: any) => String(b.tipe_tanding) === "1" || /KATA/i.test(b.nama_bagan || ""))
+          .sort((a: any, b: any) => String(a.nama_bagan || "").localeCompare(String(b.nama_bagan || "")));
+      }
+    } catch (err) {
+      console.warn("Gagal memuat daftar bagan kata:", err);
+    }
+  }
+
+  async function showBagan(baganId: number | null) {
+    if (!baganId) {
+      viewBaganId = null;
+      viewBagan = null;
+      baganMatches = [];
+      return;
+    }
+    const switching = baganId !== viewBaganId;
+    viewBaganId = baganId;
+    if (switching) {
+      baganMatches = [];
+      editMatchId = null;
+    }
+    isLoading = true;
+    try {
+      const [b, list] = await Promise.all([getJson(`/api/bagan/${baganId}`), getJson(`/api/detail-bagan/${baganId}`)]);
+      if (viewBaganId !== baganId) return;
+      viewBagan = b;
+      baganMatches = (Array.isArray(list) ? list : []).filter((m: any) => !m.team);
+      // Kata sheet open: keep it in step with the reloaded bout
+      if (editMatch && Date.now() > ignoreLiveUntil) {
+        akaKata = editMatch.kata1 || "";
+        aoKata = editMatch.kata2 || "";
+      }
+    } catch (err) {
+      console.warn("Gagal memuat bagan:", err);
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  /** Bagan of the bout open in the control panel (follow mode) */
+  function panelBaganId(): number | null {
+    if (!livePanelMatchId) return null;
+    const m = tatamiMatches.find((x) => x.id === livePanelMatchId) ?? baganMatches.find((x) => x.id === livePanelMatchId);
+    return m?.bagan_id ? Number(m.bagan_id) : null;
+  }
+
+  async function refreshAll() {
+    const currentBagan = await fetchTatamiMatches();
+    if (followTatami) {
+      await showBagan(panelBaganId() ?? viewBaganId ?? currentBagan ?? tatamiBagans[0]?.id ?? null);
+    } else {
+      await fetchEventKataBagans();
+      await showBagan(viewBaganId ?? eventKataBagans[0]?.id ?? null);
+    }
+  }
+
+  function setFollow(on: boolean) {
+    followTatami = on;
+    try {
+      localStorage.setItem(FOLLOW_KEY, on ? "1" : "0");
+    } catch {}
+    if (on) {
+      showBagan(panelBaganId() ?? viewBaganId ?? tatamiBagans[0]?.id ?? null);
+      socket?.send({ type: "request_tatami_state", tatami: tatamiNumber });
+    } else {
+      fetchEventKataBagans();
+    }
+  }
+
+  // ---- Kata sheet ----
+  function openSheet(m: any) {
+    if (!m || (!m.atlet1_id && !m.atlet2_id)) return;
+    editMatchId = m.id;
+    akaKata = m.kata1 || "";
+    aoKata = m.kata2 || "";
+    sendStatus = "idle";
+  }
+  function closeSheet() {
+    editMatchId = null;
+    isPickerOpen = false;
+  }
+
+  function openPicker(target: "aka" | "ao") {
+    pickerTarget = target;
+    searchQuery = "";
+    isPickerOpen = true;
+  }
+  function selectKata(kata: KataItem) {
+    if (pickerTarget === "aka") akaKata = kata.label;
+    else aoKata = kata.label;
+    isPickerOpen = false;
+    sendKata();
+  }
+  function clearKata(target: "aka" | "ao") {
+    if (target === "aka") akaKata = "";
+    else aoKata = "";
+    sendKata();
+  }
+
+  function patchMatch(id: number, kata1: string | null, kata2: string | null) {
+    baganMatches = baganMatches.map((x) => (x.id === id ? { ...x, kata1, kata2 } : x));
+    tatamiMatches = tatamiMatches.map((x) => (x.id === id ? { ...x, kata1, kata2 } : x));
+  }
+
+  /** Save on the host (it tells the control panel) and send over the live socket */
+  async function sendKata() {
+    const m = editMatch;
+    if (!m) return;
+    const kata1 = akaKata || null;
+    const kata2 = aoKata || null;
+    // Bout of this tatami: its control panel; any other bout: every control panel (each
+    // one only takes kata for the bout it has open)
+    const onThisTatami = tatamiMatches.some((x) => x.id === m.id);
+    const target = onThisTatami ? tatamiNumber : 0;
+    sendStatus = "sending";
+    ignoreLiveUntil = Date.now() + 2500;
+    patchMatch(m.id, kata1, kata2);
+    try {
       const res = await fetch(`${getHostBaseUrl()}/api/match/save-kata`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ match_id: m.id, tatami: target, kata1, kata2 }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      // 2. Also over the live socket (control panel updates right away)
-      socket?.send({
-        type: "lo_kata_broadcast",
-        tatami: tatamiNumber,
-        match_id: activeMatch.id,
-        kata_aka: akaKata,
-        kata_ao: aoKata,
-      });
-
-      showToast("✓ Kata Berhasil Disiarkan ke Scoreboard & Meja!");
-      if (typeof navigator !== "undefined" && navigator.vibrate) {
-        navigator.vibrate([40, 50, 40]);
-      }
+      const msg = { type: "lo_kata_broadcast", tatami: target, match_id: m.id, kata_aka: kata1 ?? "", kata_ao: kata2 ?? "" };
+      socket?.send(msg);
+      // Same machine as the control panel: instant, also without the network
+      try {
+        const bc = new BroadcastChannel("ambrilindo_live_sync");
+        bc.postMessage(msg);
+        bc.close();
+      } catch {}
+      sendStatus = "sent";
+      if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(30);
     } catch (err) {
-      console.error("Gagal menyiarkan kata:", err);
-      showToast("Gagal menyimpan kata ke server");
-    } finally {
-      isSaving = false;
+      console.error("Gagal mengirim kata:", err);
+      sendStatus = "error";
+      showToast("Gagal mengirim kata. Periksa koneksi lalu kirim ulang.");
     }
   }
 
-  // Fetch matches assigned to this tatami
-  async function fetchTatamiMatches() {
-    isLoadingMatches = true;
-    try {
-      // 1. Try active match
-      const base = getHostBaseUrl();
-      const currentRes = await fetch(`${base}/api/tatami/${tatamiNumber}/current-match${eventQuery}`);
-      if (currentRes.ok) {
-        const json = await currentRes.json();
-        if (json.status === "success" && json.data) {
-          const m = json.data;
-          selectedMatchId = m.id;
-          akaKata = m.kata1 || "";
-          aoKata = m.kata2 || "";
-        }
-      }
-
-      // 2. Fetch list of all matches on this tatami
-      const matchesRes = await fetch(`${base}/api/tatami/${tatamiNumber}/matches${eventQuery}`);
-      if (matchesRes.ok) {
-        const json = await matchesRes.json();
-        if (json.status === "success" && Array.isArray(json.data)) {
-          // Only kata bouts: kumite on the same tatami has no kata to choose.
-          tatamiMatches = json.data.filter(
-            (m: any) => !m.nama_bagan || /KATA/i.test(m.nama_bagan)
-          );
-        }
-      }
-    } catch (err) {
-      console.warn("Gagal memuat jadwal partai tatami:", err);
-    } finally {
-      isLoadingMatches = false;
-    }
-  }
-
-  // Live state from the control panel: follow the match it opens, refresh after reconnect.
+  // ---- Realtime ----
+  /** Control panel live state: which bout is open, and the kata it shows */
   function handleLiveState(d: any) {
     if (!d || Number(d.tatami) !== tatamiNumber) return;
     const mId = d.matchId ? Number(d.matchId) : null;
-    if (mId && mId !== selectedMatchId) {
-      selectedMatchId = mId;
-      fetchTatamiMatches();
+    const changed = mId !== livePanelMatchId;
+    livePanelMatchId = mId;
+    if (followTatami && mId && changed) {
+      const b = panelBaganId();
+      if (b && b !== viewBaganId) showBagan(b);
+      else if (!b) refreshAll(); // a bout we do not know yet
+    }
+    if (mId && d.isKata !== false && Date.now() > ignoreLiveUntil) {
+      const a = typeof d.aka?.kataName === "string" ? d.aka.kataName : null;
+      const o = typeof d.ao?.kataName === "string" ? d.ao.kataName : null;
+      if (a !== null && o !== null) {
+        const known = baganMatches.find((x) => x.id === mId) ?? tatamiMatches.find((x) => x.id === mId);
+        if (known && ((known.kata1 || "") !== a || (known.kata2 || "") !== o)) patchMatch(mId, a || null, o || null);
+        if (editMatchId === mId) {
+          akaKata = a;
+          aoKata = o;
+        }
+      }
+    }
+  }
+
+  /** Kata sent by another LO tablet (or this one, echoed) */
+  function handleKataBroadcast(d: any) {
+    const mId = Number(d?.match_id) || null;
+    if (!mId) return;
+    const kata1 = d.kata_aka ? String(d.kata_aka) : null;
+    const kata2 = d.kata_ao ? String(d.kata_ao) : null;
+    patchMatch(mId, kata1, kata2);
+    if (editMatchId === mId && Date.now() > ignoreLiveUntil) {
+      akaKata = kata1 || "";
+      aoKata = kata2 || "";
     }
   }
 
   onMount(() => {
-    fetchTatamiMatches();
+    refreshAll();
     socket = connectTatamiSocket(
       "lo-kata",
       tatamiNumber,
       (msg) => {
-        isWsConnected = true;
+        linkStatus = "live";
         if (msg?.type === "tatami_live_state") handleLiveState(msg.payload || msg.data);
-        else if (msg?.type === "bracket_updated") fetchTatamiMatches();
+        else if (msg?.type === "lo_kata_broadcast") handleKataBroadcast(msg.payload || msg);
+        else if (msg?.type === "bracket_updated") refreshAll();
       },
       (sock) => {
-        isWsConnected = true;
-        // Whatever changed while offline: reload the list and ask the control panel.
-        fetchTatamiMatches();
+        linkStatus = "live";
+        // Whatever changed while offline: reload and ask the control panel for its state
+        refreshAll();
         sock.send({ type: "request_tatami_state", tatami: tatamiNumber });
       },
-      () => (isWsConnected = false),
-      { staleMs: 20000, onStale: (sock) => sock.send({ type: "request_tatami_state", tatami: tatamiNumber }) }
+      () => (linkStatus = typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "connecting"),
+      { staleMs: 15000, onStale: (sock) => sock.send({ type: "request_tatami_state", tatami: tatamiNumber }) }
     );
-
+    let obs: ResizeObserver | null = null;
+    if (stageEl) {
+      obs = new ResizeObserver(([e]) => (stageW = e.contentRect.width));
+      obs.observe(stageEl);
+    }
     return () => {
       socket?.close();
+      obs?.disconnect();
       if (toastTimer) clearTimeout(toastTimer);
     };
   });
+
+  function roundLabel(m: any): string {
+    const r = Number(m?.round) || 1;
+    return r === 4 ? "Final" : r === 3 ? "Semifinal" : `Babak ${r}`;
+  }
 </script>
 
 <svelte:head>
-  <title>LO Kata Matras • Tatami {tatamiNumber}</title>
+  <title>LO Kata • Tatami {tatamiNumber}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 </svelte:head>
 
-<!-- Mobile/Tablet Screen Container -->
-<div class="fixed inset-0 bg-[#0c0e12] text-zinc-100 flex flex-col justify-between select-none font-sans overflow-hidden touch-manipulation">
-  
-  <!-- Header Bar -->
-  <header class="bg-[#14161b] border-b border-white/10 px-4 py-2.5 flex items-center justify-between shrink-0 shadow-lg relative z-20">
-    <div class="flex items-center gap-2">
-      <span class="px-2.5 py-1 rounded-lg bg-purple-500/20 text-purple-300 font-mono font-black text-xs tracking-wider border border-purple-500/30">
+<div class="fixed inset-0 bg-[#0c0e12] text-zinc-100 flex flex-col select-none font-sans overflow-hidden touch-manipulation">
+  <!-- Header -->
+  <header class="bg-[#14161b] border-b border-white/10 px-4 py-2.5 flex items-center justify-between gap-2 shrink-0 shadow-lg relative z-20">
+    <div class="flex items-center gap-2 min-w-0">
+      <PortalExitButton title="Keluar dari LO Kata?" />
+      <span class="px-2.5 py-1 rounded-lg bg-purple-500/20 text-purple-300 font-mono font-black text-xs tracking-wider border border-purple-500/30 shrink-0">
         LO KATA • TATAMI {tatamiNumber}
       </span>
-      <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold font-mono {isWsConnected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}">
-        <span class="w-1.5 h-1.5 rounded-full {isWsConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}"></span>
-        <span>{isWsConnected ? 'ONLINE' : 'OFFLINE'}</span>
+      <div
+        class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold font-mono shrink-0 {linkStatus === 'live'
+          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+          : linkStatus === 'connecting'
+            ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+            : 'bg-red-500/10 text-red-400 border border-red-500/20'}"
+      >
+        <span class="w-1.5 h-1.5 rounded-full {linkStatus === 'live' ? 'bg-emerald-400 animate-pulse' : linkStatus === 'connecting' ? 'bg-amber-300 animate-pulse' : 'bg-red-400'}"></span>
+        <span>{linkStatus === "live" ? "ONLINE" : linkStatus === "connecting" ? "MENYAMBUNG ULANG…" : "OFFLINE"}</span>
       </div>
     </div>
-
-    <!-- Refresh Matches Button -->
     <button
-      onclick={fetchTatamiMatches}
-      class="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/10 transition"
-      title="Segarkan data tatami"
+      onclick={refreshAll}
+      class="p-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/10 transition shrink-0"
+      title="Segarkan data"
+      aria-label="Segarkan data"
     >
-      <svg class="w-4 h-4 {isLoadingMatches ? 'animate-spin text-purple-400' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-4 h-4 {isLoading ? 'animate-spin text-purple-400' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
       </svg>
     </button>
   </header>
 
-  <!-- Match Selector Dropdown -->
-  <div class="bg-[#111317] border-b border-white/[0.06] px-4 py-2 flex items-center gap-2 shrink-0">
-    <span class="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 shrink-0">Partai:</span>
-    <select
-      bind:value={selectedMatchId}
-      onchange={() => {
-        if (activeMatch) {
-          akaKata = activeMatch.kata1 || "";
-          aoKata = activeMatch.kata2 || "";
-        }
-      }}
-      class="flex-1 bg-[#181a20] text-xs font-semibold text-white px-2.5 py-1.5 rounded-xl border border-white/10 focus:outline-none focus:border-purple-400"
-    >
-      {#if tatamiMatches.length === 0}
-        <option value={null}>Tidak ada partai terdaftar di tatami ini</option>
-      {:else}
-        {#each tatamiMatches as m}
-          <option value={m.id}>
-            Partai #{m.urutan || 1} • {m.round ? `Babak ${m.round}` : 'Penyisihan'} — {m.atlet1_nama || 'AKA'} vs {m.atlet2_nama || 'AO'}
-          </option>
+  <!-- Which bracket: follow the tatami, or any kata bagan of the event -->
+  <div class="bg-[#111317] border-b border-white/[0.06] px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-2 shrink-0">
+    <button type="button" role="switch" aria-checked={followTatami} onclick={() => setFollow(!followTatami)} class="flex items-center gap-2 text-xs font-bold shrink-0">
+      <span class="relative w-9 h-5 rounded-full transition {followTatami ? 'bg-purple-500' : 'bg-white/[0.12]'}">
+        <span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all {followTatami ? 'left-[18px]' : 'left-0.5'}"></span>
+      </span>
+      <span class={followTatami ? "text-white" : "text-zinc-400"}>Ikut bagan tatami {tatamiNumber}</span>
+    </button>
+
+    {#if followTatami}
+      <!-- Kata bagan of this tatami; the one in use follows the control panel -->
+      <div class="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto scrollbar-thin">
+        {#each tatamiBagans as b (b.id)}
+          <button
+            type="button"
+            onclick={() => showBagan(b.id)}
+            class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold transition border {viewBaganId === b.id ? 'bg-purple-500/20 text-white border-purple-400' : 'bg-white/[0.03] text-zinc-400 border-white/10 hover:text-white'}"
+          >
+            {b.nama_bagan}
+            {#if b.id === panelBaganId()}<span class="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 align-middle"></span>{/if}
+          </button>
+        {:else}
+          <span class="text-xs text-zinc-500">Belum ada bagan kata di tatami ini</span>
         {/each}
-      {/if}
-    </select>
+      </div>
+    {:else}
+      <select
+        value={viewBaganId}
+        onchange={(e) => showBagan(Number((e.target as HTMLSelectElement).value) || null)}
+        class="flex-1 min-w-0 bg-[#181a20] text-xs font-semibold text-white px-2.5 py-1.5 rounded-xl border border-white/10 focus:outline-none focus:border-purple-400"
+      >
+        <option value={null}>{eventKataBagans.length ? "Pilih bagan kata…" : "Memuat bagan kata…"}</option>
+        {#each eventKataBagans as b (b.id)}
+          <option value={b.id}>{b.nama_bagan}</option>
+        {/each}
+      </select>
+    {/if}
   </div>
 
-  <!-- Toast Notification Overlay -->
   {#if toastMessage}
-    <div class="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-purple-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-2xl animate-in slide-in-from-top-2 duration-150 flex items-center gap-2">
-      <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-      </svg>
-      <span>{toastMessage}</span>
-    </div>
+    <div class="fixed top-14 left-1/2 -translate-x-1/2 z-[60] bg-red-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-2xl">{toastMessage}</div>
   {/if}
 
-  <!-- Main Body: Dual Cards for AKA & AO Kata -->
-  <main class="flex-1 min-h-0 p-3 flex flex-col gap-3 overflow-y-auto">
-    
-    <!-- ==================== AKA KATA CARD ==================== -->
-    <div class="bg-[#16181f] border-2 border-red-600/70 rounded-2xl p-4 shadow-lg flex flex-col justify-between gap-3">
-      <div>
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded bg-red-600 text-white font-mono font-black text-[10px] tracking-wider uppercase">AKA</span>
-            <h2 class="text-base font-black text-white truncate">{activeMatch?.atlet1_nama || "Sudut Merah"}</h2>
-          </div>
-        </div>
-        <p class="text-xs text-zinc-400 mt-0.5 font-medium">{activeMatch?.atlet1_kontingen || "-"}</p>
+  <!-- The bracket: tap a bout to set its kata -->
+  <main bind:this={stageEl} class="flex-1 min-h-0 overflow-auto p-2">
+    {#if !viewBagan || !treeMeta}
+      <div class="h-full flex items-center justify-center text-xs font-mono text-zinc-500">
+        {isLoading ? "Memuat bagan…" : followTatami ? "Belum ada bagan kata di tatami ini" : "Pilih bagan kata"}
       </div>
-
-      <!-- Selected Kata Badge & Change Button -->
-      <div class="flex items-center justify-between gap-2 bg-[#101216] border border-white/10 rounded-xl p-2.5">
-        <span class="text-sm font-black font-mono {akaKata ? 'text-red-400' : 'text-zinc-500'} truncate">
-          {akaKata || "Belum dipilih"}
-        </span>
-        <button
-          onclick={() => openKataModal("aka")}
-          class="h-9 px-3.5 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-bold text-xs rounded-xl shadow transition shrink-0"
-        >
-          Pilih Kata
-        </button>
-      </div>
-
-      <!-- Repeat Kata Alert Warning -->
-      {#if isAkaKataRepeated}
-        <div class="px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-2">
-          <span>⚠️</span>
-          <span>Kata "{akaKata}" sudah pernah dimainkan di babak sebelumnya</span>
+    {:else if isElimination}
+      {@const treeW = treeWidthFor(treeFit.colWidth, treeFit.columns)}
+      <div style="width: {treeW * treeFit.scale}px; height: {TREE_HEIGHT * treeFit.scale}px;">
+        <div style="transform: scale({treeFit.scale}); transform-origin: top left; width: {treeW}px; height: {TREE_HEIGHT}px;">
+          <BracketTree
+            matches={baganMatches}
+            meta={treeMeta}
+            podium={computePodium(baganMatches, treeMeta)}
+            theme="dark"
+            interactive
+            showKata
+            showPodium={false}
+            hideScores
+            colWidth={treeFit.colWidth}
+            cardScale={treeFit.cardScale}
+            {skipRounds}
+            highlightMatchId={livePanelMatchId}
+            clickHint="Ketuk untuk memilih kata"
+            onMatchClick={openSheet}
+          />
         </div>
-      {/if}
-    </div>
-
-    <!-- ==================== AO KATA CARD ==================== -->
-    <div class="bg-[#16181f] border-2 border-blue-600/70 rounded-2xl p-4 shadow-lg flex flex-col justify-between gap-3">
-      <div>
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded bg-blue-600 text-white font-mono font-black text-[10px] tracking-wider uppercase">AO</span>
-            <h2 class="text-base font-black text-white truncate">{activeMatch?.atlet2_nama || "Sudut Biru"}</h2>
-          </div>
-        </div>
-        <p class="text-xs text-zinc-400 mt-0.5 font-medium">{activeMatch?.atlet2_kontingen || "-"}</p>
       </div>
-
-      <!-- Selected Kata Badge & Change Button -->
-      <div class="flex items-center justify-between gap-2 bg-[#101216] border border-white/10 rounded-xl p-2.5">
-        <span class="text-sm font-black font-mono {aoKata ? 'text-blue-400' : 'text-zinc-500'} truncate">
-          {aoKata || "Belum dipilih"}
-        </span>
-        <button
-          onclick={() => openKataModal("ao")}
-          class="h-9 px-3.5 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold text-xs rounded-xl shadow transition shrink-0"
-        >
-          Pilih Kata
-        </button>
+    {:else}
+      <!-- Not an elimination tree (e.g. round robin): plain list of bouts -->
+      <div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));">
+        {#each baganMatches.filter((m) => m.atlet1_id || m.atlet2_id) as m (m.id)}
+          <button
+            type="button"
+            onclick={() => openSheet(m)}
+            class="text-left rounded-xl border p-3 bg-[#16181f] {m.id === livePanelMatchId ? 'border-emerald-400 ring-2 ring-emerald-400/40' : 'border-white/10'}"
+          >
+            <div class="text-[10px] font-mono text-zinc-400 mb-1">Partai #{m.urutan || 1} • {roundLabel(m)}</div>
+            <div class="text-xs font-black text-red-300 truncate">{m.atlet1_nama || "-"} <span class="text-zinc-500 font-mono font-bold">{m.kata1 || ""}</span></div>
+            <div class="text-xs font-black text-blue-300 truncate">{m.atlet2_nama || "-"} <span class="text-zinc-500 font-mono font-bold">{m.kata2 || ""}</span></div>
+          </button>
+        {/each}
       </div>
-
-      <!-- Repeat Kata Alert Warning -->
-      {#if isAoKataRepeated}
-        <div class="px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-2">
-          <span>⚠️</span>
-          <span>Kata "{aoKata}" sudah pernah dimainkan di babak sebelumnya</span>
-        </div>
-      {/if}
-    </div>
-
+    {/if}
   </main>
 
-  <!-- Sticky Bottom Broadcast Button -->
-  <footer class="bg-[#14161b] border-t border-white/10 p-3 shrink-0 shadow-2xl">
-    <button
-      onclick={broadcastAndSaveKata}
-      disabled={isSaving || !activeMatch}
-      class="w-full h-12 bg-purple-600 hover:bg-purple-500 active:scale-[0.98] disabled:opacity-50 text-white font-black text-sm rounded-xl shadow-xl flex items-center justify-center gap-2 transition"
-    >
-      {#if isSaving}
-        <svg class="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-        </svg>
-        <span>MENYIARKAN KATA...</span>
-      {:else}
-        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
-        </svg>
-        <span>SIARKAN KATA KE PAPAN SKOR & SIMPAN</span>
-      {/if}
-    </button>
+  <!-- Legend -->
+  <footer class="bg-[#14161b] border-t border-white/10 px-4 py-2 shrink-0 flex items-center gap-4 text-[11px] font-mono text-zinc-400">
+    <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded ring-2 ring-emerald-400"></span>Partai di control panel</span>
+    <span>Ketuk partai untuk memilih kata</span>
   </footer>
 
-  <!-- Modal: Official WKF Kata Search & Picker -->
-  {#if isModalOpen}
-    <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs select-none">
-      <div class="bg-[#181a20] border border-white/10 rounded-2xl p-5 shadow-2xl max-w-md w-full flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-150">
-        
-        <!-- Modal Header -->
-        <div class="flex items-center justify-between pb-3 border-b border-white/10">
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-black uppercase {modalTarget === 'aka' ? 'bg-red-600 text-white' : 'bg-blue-600 text-white'}">
-              {modalTarget === 'aka' ? 'SUDUT MERAH (AKA)' : 'SUDUT BIRU (AO)'}
-            </span>
-            <h3 class="text-sm font-black text-white">Daftar Kata WKF/FORKI</h3>
+  <!-- Kata sheet for the tapped bout -->
+  {#if editMatch}
+    <div class="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs" role="presentation" onclick={closeSheet}>
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="w-full sm:max-w-xl bg-[#181a20] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[92vh]"
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
+        onclick={(e) => e.stopPropagation()}
+      >
+        <div class="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-2">
+          <div class="min-w-0">
+            <div class="text-sm font-black text-white uppercase truncate">Partai #{editMatch.urutan || 1} • {roundLabel(editMatch)}</div>
+            <div class="text-[11px] font-mono {editMatch.id === livePanelMatchId ? 'text-emerald-300' : 'text-zinc-500'}">
+              {editMatch.id === livePanelMatchId ? "Sedang dibuka di control panel" : (viewBagan?.nama_bagan ?? "")}
+            </div>
           </div>
-          <button
-            onclick={() => isModalOpen = false}
-            aria-label="Tutup modal"
-            class="p-1 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-white transition"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+          <button onclick={closeSheet} aria-label="Tutup" class="p-1.5 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-white transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
 
-        <!-- Search Bar -->
+        <div class="p-3 flex flex-col gap-3 overflow-y-auto">
+          {#each [["aka", "AKA"], ["ao", "AO"]] as const as [side, label] (side)}
+            {@const kata = side === "aka" ? akaKata : aoKata}
+            {@const repeated = side === "aka" ? isAkaKataRepeated : isAoKataRepeated}
+            {@const name = side === "aka" ? editMatch.atlet1_nama : editMatch.atlet2_nama}
+            <div class="bg-[#16181f] border-2 rounded-2xl p-3 flex flex-col gap-2.5 {side === 'aka' ? 'border-red-600/70' : 'border-blue-600/70'}">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="px-2 py-0.5 rounded text-white font-mono font-black text-[10px] tracking-wider shrink-0 {side === 'aka' ? 'bg-red-600' : 'bg-blue-600'}">{label}</span>
+                  <h2 class="text-base font-black text-white truncate">{name || "BYE"}</h2>
+                </div>
+                <p class="text-xs text-zinc-400 mt-0.5 font-medium truncate">{(side === "aka" ? editMatch.atlet1_kontingen : editMatch.atlet2_kontingen) || "-"}</p>
+              </div>
+              <div class="flex items-center justify-between gap-2 bg-[#101216] border border-white/10 rounded-xl p-2.5">
+                <span class="text-sm font-black font-mono truncate {kata ? (side === 'aka' ? 'text-red-400' : 'text-blue-400') : 'text-zinc-500'}">{kata || "Belum dipilih"}</span>
+                <div class="flex items-center gap-1.5 shrink-0">
+                  {#if kata}
+                    <button type="button" onclick={() => clearKata(side)} class="h-9 px-2.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 font-semibold text-xs rounded-xl transition">
+                      Hapus
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    onclick={() => openPicker(side)}
+                    disabled={!name}
+                    class="h-9 px-3.5 active:scale-95 text-white font-bold text-xs rounded-xl shadow transition disabled:opacity-40 {side === 'aka' ? 'bg-red-600 hover:bg-red-500' : 'bg-blue-600 hover:bg-blue-500'}"
+                  >
+                    Pilih Kata
+                  </button>
+                </div>
+              </div>
+              {#if repeated}
+                <div class="px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-2">
+                  <span>⚠️</span>
+                  <span>Kata "{kata}" sudah dimainkan atlet ini di partai lain bagan ini</span>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+
+        <div class="px-4 py-3 border-t border-white/10 flex items-center gap-3">
+          <div class="flex-1 min-w-0 text-xs font-bold font-mono flex items-center gap-2">
+            {#if sendStatus === "sending"}
+              <span class="w-2 h-2 rounded-full bg-amber-300 animate-pulse shrink-0"></span><span class="text-amber-300 truncate">Mengirim…</span>
+            {:else if sendStatus === "sent"}
+              <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
+              <span class="text-emerald-300 truncate">{editMatch.id === livePanelMatchId ? "Terkirim ke control panel & papan skor" : "Tersimpan, muncul saat partai dibuka"}</span>
+            {:else if sendStatus === "error"}
+              <span class="w-2 h-2 rounded-full bg-red-400 shrink-0"></span><span class="text-red-300 truncate">Gagal terkirim</span>
+            {:else}
+              <span class="text-zinc-500 truncate">Kata langsung terkirim saat dipilih</span>
+            {/if}
+          </div>
+          {#if sendStatus === "error"}
+            <button onclick={sendKata} class="h-10 px-4 shrink-0 bg-red-600 hover:bg-red-500 text-white font-black text-xs rounded-xl shadow-xl">KIRIM ULANG</button>
+          {/if}
+          <button onclick={closeSheet} class="h-10 px-4 shrink-0 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md">Selesai</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Kata picker -->
+  {#if isPickerOpen}
+    <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs select-none">
+      <div class="bg-[#181a20] border border-white/10 rounded-2xl p-5 shadow-2xl max-w-md w-full flex flex-col max-h-[85vh]">
+        <div class="flex items-center justify-between pb-3 border-b border-white/10">
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-black uppercase text-white {pickerTarget === 'aka' ? 'bg-red-600' : 'bg-blue-600'}">
+              {pickerTarget === "aka" ? "SUDUT MERAH (AKA)" : "SUDUT BIRU (AO)"}
+            </span>
+            <h3 class="text-sm font-black text-white">Daftar Kata WKF/FORKI</h3>
+          </div>
+          <button onclick={() => (isPickerOpen = false)} aria-label="Tutup daftar kata" class="p-1 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-white transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
         <div class="py-3">
           <input
             type="text"
             bind:value={searchQuery}
-            placeholder="Ketik nama kata (misal: Anan, Chatanyara, Suparinpei...)"
+            placeholder="Cari kata (misal: Anan, Chatanyara, Suparinpei)"
             class="w-full bg-[#111317] border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-purple-400"
           />
         </div>
-
-        <!-- Kata Scrollable List -->
         <div class="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1">
-          {#if filteredKataList.length === 0}
-            <div class="p-6 text-center text-zinc-500 text-xs">
-              Tidak ada kata yang sesuai dengan "{searchQuery}"
-            </div>
+          {#each filteredKataList as item (item.code)}
+            <button onclick={() => selectKata(item)} class="w-full px-3 py-2.5 rounded-xl text-left transition flex items-center justify-between hover:bg-white/[0.06] text-zinc-200">
+              <div>
+                <span class="font-bold text-xs text-white block">{item.name}</span>
+                <span class="text-[10px] font-mono text-zinc-400 block">{item.code}</span>
+              </div>
+              <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+            </button>
           {:else}
-            {#each filteredKataList as item}
-              <button
-                onclick={() => selectKata(item)}
-                class="w-full px-3 py-2.5 rounded-xl text-left transition flex items-center justify-between hover:bg-white/[0.06] text-zinc-200"
-              >
-                <div>
-                  <span class="font-bold text-xs text-white block">{item.name}</span>
-                  <span class="text-[10px] font-mono text-zinc-400 block">{item.code}</span>
-                </div>
-                <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                </svg>
-              </button>
-            {/each}
-          {/if}
+            <div class="p-6 text-center text-zinc-500 text-xs">Tidak ada kata yang cocok dengan "{searchQuery}"</div>
+          {/each}
         </div>
-
       </div>
     </div>
   {/if}
-
 </div>
