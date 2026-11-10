@@ -65,6 +65,51 @@
   let activeMatchForControl = $state<DetailBaganItem | null>(null);
 
   let currentBaganInfo = $state<BaganItem | null>(null);
+
+  // Delete this category's bracket (all its pools / final), from the bracket page itself
+  let showDeleteBagan = $state(false);
+  let deleteNeedsResultsConfirm = $state(false);
+  let deleteResultsConfirmed = $state(false);
+  let deleteBaganError = $state("");
+  let isDeletingBagan = $state(false);
+  let deleteCategoryId = $derived((currentBaganInfo ?? baganInfo)?.nomor_tanding_id ?? null);
+  let deleteEventId = $derived((currentBaganInfo ?? baganInfo)?.event_id ?? null);
+  let finishedHere = $derived(matches.filter((m) => m.selesai && !m.team).length);
+
+  function openDeleteBagan() {
+    deleteBaganError = "";
+    deleteResultsConfirmed = false;
+    deleteNeedsResultsConfirm = finishedHere > 0;
+    showDeleteBagan = true;
+  }
+
+  async function deleteThisBagan() {
+    if (!deleteCategoryId || !deleteEventId) return;
+    if (deleteNeedsResultsConfirm && !deleteResultsConfirmed) return;
+    isDeletingBagan = true;
+    deleteBaganError = "";
+    try {
+      await invoke("delete_category_bagans", {
+        eventId: deleteEventId,
+        categoryId: deleteCategoryId,
+        force: deleteNeedsResultsConfirm && deleteResultsConfirmed,
+      });
+      showDeleteBagan = false;
+      onShowToast(`Bagan ${baganName} dihapus`, "success");
+      onBaganUpdated?.();
+    } catch (err: any) {
+      const msg = typeof err === "string" ? err : err?.message || String(err);
+      // Another pool / the final of this category already has results: ask explicitly
+      if (/partai selesai/i.test(msg)) {
+        deleteNeedsResultsConfirm = true;
+        deleteBaganError = msg;
+      } else {
+        deleteBaganError = `Gagal menghapus bagan: ${msg}`;
+      }
+    } finally {
+      isDeletingBagan = false;
+    }
+  }
   $effect(() => {
     currentBaganInfo = baganInfo;
   });
@@ -1045,6 +1090,17 @@
           </svg>
           <span>Edit Bagan</span>
         </button>
+        {#if !isFestivalBagan && !isBobBagan && deleteCategoryId}
+          <button
+            type="button"
+            onclick={openDeleteBagan}
+            class="px-3 py-1.5 {isDarkMode ? 'bg-red-500/10 hover:bg-red-500/20 text-red-300 border-red-500/30' : 'bg-red-50 hover:bg-red-100 text-red-700 border-red-300'} text-xs font-semibold border rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
+            title="Hapus bagan nomor tanding ini (atlet tetap terdaftar, bisa diundi lagi)"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            <span>Hapus Bagan</span>
+          </button>
+        {/if}
       {:else}
         <!-- Edit Mode Active Actions -->
         <div class="flex items-center gap-1.5">
@@ -2028,3 +2084,44 @@
     flex-direction: column;
   }
 </style>
+
+{#if showDeleteBagan}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs font-sans">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl w-full max-w-md text-zinc-200 space-y-4">
+      <h3 class="text-sm font-black uppercase tracking-wider font-mono text-white">Hapus bagan?</h3>
+      <p class="text-xs text-zinc-300 leading-relaxed">
+        Bagan <strong class="text-white">{baganName}</strong> akan dihapus, termasuk pool dan final nomor ini bila ada.
+        Atletnya tetap terdaftar dan nomor ini bisa diundi lagi dari menu Drawing.
+      </p>
+      {#if deleteBaganError}
+        <p class="text-xs text-red-300">{deleteBaganError}</p>
+      {/if}
+      {#if deleteNeedsResultsConfirm}
+        <label class="flex items-start gap-2.5 p-3 rounded-xl bg-red-500/10 border border-red-500/25 cursor-pointer">
+          <input type="checkbox" bind:checked={deleteResultsConfirmed} class="mt-0.5 w-4 h-4 rounded text-red-500 focus:ring-0" />
+          <span class="text-xs text-red-300">
+            Nomor ini sudah bertanding{finishedHere > 0 ? ` (${finishedHere} partai selesai di bagan ini)` : ""}. Saya paham hasil partai tersebut ikut terhapus.
+          </span>
+        </label>
+      {/if}
+      <div class="flex justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onclick={() => (showDeleteBagan = false)}
+          disabled={isDeletingBagan}
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={deleteThisBagan}
+          disabled={isDeletingBagan || (deleteNeedsResultsConfirm && !deleteResultsConfirmed)}
+          class="h-9 px-4 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-xl shadow-md disabled:opacity-40"
+        >
+          {isDeletingBagan ? "Menghapus…" : "Hapus Bagan"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

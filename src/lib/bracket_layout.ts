@@ -10,6 +10,14 @@ import type { BaganPodium, DetailBaganItem } from "$lib/types";
 
 export const TREE_WIDTH = 1064;
 export const TREE_HEIGHT = 692;
+/** Default column width and the gap between columns (TREE_WIDTH = 4 columns + 3 gaps). */
+export const TREE_COL_WIDTH = 242;
+export const TREE_COL_GAP = 32;
+
+/** Width of the tree for a given column width (wider columns: same height, longer names). */
+export function treeWidthFor(colWidth: number = TREE_COL_WIDTH, columns = 4): number {
+  return columns * colWidth + (columns - 1) * TREE_COL_GAP;
+}
 
 export interface BracketMeta {
   poolCount: number;
@@ -123,6 +131,14 @@ export function getSlotCountForRound(roundNum: number): number {
   }
 }
 
+/** Slot height in px per round (a match card is centred in its slot). */
+export function getSlotHeightPx(roundNum: number): number {
+  return roundNum >= 1 && roundNum <= 4 ? 82 * 2 ** (roundNum - 1) : 82;
+}
+
+/** Natural height of a match card at size 1 (header + two athlete rows). */
+export const MATCH_CARD_HEIGHT = 58;
+
 export function getSlotHeightClass(roundNum: number): string {
   switch (roundNum) {
     case 1: return "h-[82px]";
@@ -145,16 +161,25 @@ export interface ConnectorLine {
 }
 
 /** Exact connector coordinates for the fixed tree geometry (no DOM measurement). */
-export function computeConnectorLines(elimRoundCount: number, isRepechageBagan: boolean): ConnectorLine[] {
+export function computeConnectorLines(
+  elimRoundCount: number,
+  isRepechageBagan: boolean,
+  colWidth: number = TREE_COL_WIDTH,
+  /** leading rounds left out of the drawing (live drawing hides empty early rounds) */
+  skipRounds = 0
+): ConnectorLine[] {
   const list: ConnectorLine[] = [];
   if (elimRoundCount < 2) return list;
+  // right edge of round column i (0 = round 1), and left edge of column i + 1
+  const right = (i: number) => (i - skipRounds) * (colWidth + TREE_COL_GAP) + colWidth;
+  const left = (i: number) => right(i - 1) + TREE_COL_GAP;
 
   if (isRepechageBagan) {
-    list.push({ x1: 242, y1: 159, x2: 274, y2: 159 });
-    list.push({ x1: 242, y1: 487, x2: 274, y2: 487 });
+    list.push({ x1: right(0), y1: 159, x2: left(1), y2: 159 });
+    list.push({ x1: right(0), y1: 487, x2: left(1), y2: 487 });
     if (elimRoundCount >= 3) {
-      list.push({ x1: 516, y1: 159, x2: 548, y2: 159 });
-      list.push({ x1: 516, y1: 487, x2: 548, y2: 487 });
+      list.push({ x1: right(1), y1: 159, x2: left(2), y2: 159 });
+      list.push({ x1: right(1), y1: 487, x2: left(2), y2: 487 });
     }
     return list;
   }
@@ -167,16 +192,18 @@ export function computeConnectorLines(elimRoundCount: number, isRepechageBagan: 
     list.push({ x1: xMid, y1: yOut, x2: xTo, y2: yOut });
   };
 
-  addFork(242, 274, 77, 159, 118);
-  addFork(242, 274, 241, 323, 282);
-  addFork(242, 274, 405, 487, 446);
-  addFork(242, 274, 569, 651, 610);
-  if (elimRoundCount >= 3) {
-    addFork(516, 548, 118, 282, 200);
-    addFork(516, 548, 446, 610, 528);
+  if (skipRounds < 1) {
+    addFork(right(0), left(1), 77, 159, 118);
+    addFork(right(0), left(1), 241, 323, 282);
+    addFork(right(0), left(1), 405, 487, 446);
+    addFork(right(0), left(1), 569, 651, 610);
   }
-  if (elimRoundCount >= 4) {
-    addFork(790, 822, 200, 528, 364);
+  if (elimRoundCount >= 3 && skipRounds < 2) {
+    addFork(right(1), left(2), 118, 282, 200);
+    addFork(right(1), left(2), 446, 610, 528);
+  }
+  if (elimRoundCount >= 4 && skipRounds < 3) {
+    addFork(right(2), left(3), 200, 528, 364);
   }
   return list;
 }

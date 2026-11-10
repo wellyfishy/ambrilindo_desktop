@@ -3,6 +3,16 @@
   import { invoke } from "$lib/api_client";
   import type { DrawingCategoryInfo, DrawingSummary } from "$lib/types";
   import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
+  import LiveDrawingView from "$lib/components/LiveDrawingView.svelte";
+  import {
+    sortForDrawing,
+    drawingGroup,
+    DRAWING_GROUP_LABEL,
+    loadLiveProgress,
+    saveLiveProgress,
+    clearLiveProgress,
+    type LiveDrawingProgress,
+  } from "$lib/drawingOrder";
 
   interface Props {
     eventId: number;
@@ -35,6 +45,82 @@
 
   // Result dialog
   let summaryResult = $state<DrawingSummary | null>(null);
+
+  // Drawing live: one category at a time with a visible shuffle, for coaches to watch.
+  // Settings are remembered on this device.
+  const LIVE_KEY = "ambrilindo.liveDrawing";
+  function loadLiveSettings() {
+    const d = { enabled: false, shuffleMs: 20, durationSec: 5, autoNext: true };
+    try {
+      return { ...d, ...JSON.parse(localStorage.getItem(LIVE_KEY) || "{}") };
+    } catch {
+      return d;
+    }
+  }
+  let live = $state(loadLiveSettings());
+  $effect(() => {
+    const snapshot = JSON.stringify(live);
+    try {
+      localStorage.setItem(LIVE_KEY, snapshot);
+    } catch {}
+  });
+  let showLive = $state(false);
+  let liveCategories = $state<DrawingCategoryInfo[]>([]);
+  let liveStartIndex = $state(0);
+  // A live ceremony stopped earlier on this device: continue from its next category
+  let savedProgress = $state<LiveDrawingProgress | null>(null);
+  let resumeCategories = $derived(
+    savedProgress
+      ? savedProgress.ids.map((id) => categories.find((c) => c.id === id)).filter((c): c is DrawingCategoryInfo => !!c)
+      : []
+  );
+  let resumeIndex = $derived.by(() => {
+    if (!savedProgress) return 0;
+    const nextId = savedProgress.ids[savedProgress.next];
+    const i = resumeCategories.findIndex((c) => c.id === nextId);
+    return i < 0 ? 0 : i;
+  });
+
+  function startLive(cats: DrawingCategoryInfo[], from: number) {
+    executionError = null;
+    liveCategories = cats;
+    liveStartIndex = from;
+    saveLiveProgress(eventId, cats, from);
+    showLive = true;
+  }
+  function resumeLive() {
+    if (resumeCategories.length) startLive(resumeCategories, resumeIndex);
+  }
+  function discardProgress() {
+    clearLiveProgress(eventId);
+    savedProgress = null;
+  }
+
+  // Delete one category's bracket
+  let deleteTarget = $state<DrawingCategoryInfo | null>(null);
+  let deleteResultsConfirmed = $state(false);
+  let isDeletingOne = $state(false);
+  async function deleteCategoryBagan() {
+    const cat = deleteTarget;
+    if (!cat) return;
+    const force = isLocked(cat);
+    if (force && !deleteResultsConfirmed) return;
+    isDeletingOne = true;
+    executionError = null;
+    try {
+      await invoke("delete_category_bagans", { eventId, categoryId: cat.id, force });
+      deleteTarget = null;
+      deleteResultsConfirmed = false;
+      await loadCategories();
+      onComplete();
+    } catch (err: any) {
+      executionError = typeof err === "string" ? err : err.message || "Gagal menghapus bagan.";
+    } finally {
+      isDeletingOne = false;
+    }
+  }
+  // Selected categories in ceremony order: kata → kata beregu → kumite → kumite beregu
+  let orderedSelection = $derived(sortForDrawing(categories.filter((c) => selectedCategoryIds.includes(c.id))));
 
   async function handleCreateRoundRobin(catId: number) {
     isCreatingRoundRobin = catId;
@@ -138,6 +224,11 @@
       return;
     }
 
+    if (live.enabled) {
+      startLive(orderedSelection, 0);
+      return;
+    }
+
     isExecuting = true;
     executionError = null;
 
@@ -174,6 +265,7 @@
   }
 
   onMount(() => {
+    savedProgress = loadLiveProgress(eventId);
     loadCategories();
   });
 </script>
@@ -416,6 +508,21 @@
                         BELUM
                       </span>
                     {/if}
+                    {#if cat.bagan_count > 0}
+                      <button
+                        type="button"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          deleteResultsConfirmed = false;
+                          deleteTarget = cat;
+                        }}
+                        class="p-1.5 text-zinc-400 hover:text-red-300 rounded-lg hover:bg-white/[0.08] transition"
+                        title="Hapus bagan {cat.nama_nomor_tanding}"
+                        aria-label="Hapus bagan {cat.nama_nomor_tanding}"
+                      >
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                      </button>
+                    {/if}
                   </div>
                 </div>
               {/each}
@@ -559,6 +666,88 @@
           </div>
         </div>
 
+        <!-- SECTION 4: Mode drawing (live, satu per satu) -->
+        <div class="p-4 bg-[#181a20] border border-white/[0.08] rounded-xl space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-xs font-mono font-bold text-white uppercase tracking-wider">4. MODE DRAWING</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={live.enabled}
+              aria-label="Drawing live satu per satu"
+              onclick={() => (live.enabled = !live.enabled)}
+              class="flex items-center gap-2 text-xs font-mono font-bold"
+            >
+              <span class="{live.enabled ? 'text-white' : 'text-zinc-500'}">DRAWING LIVE</span>
+              <span class="relative w-9 h-5 rounded-full transition {live.enabled ? 'bg-amber-500' : 'bg-white/[0.12]'}">
+                <span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all {live.enabled ? 'left-[18px]' : 'left-0.5'}"></span>
+              </span>
+            </button>
+          </div>
+
+          {#if savedProgress && resumeCategories.length > 0}
+            <div class="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs">
+              <span class="text-amber-200">
+                Drawing live terhenti di nomor {resumeIndex + 1}/{resumeCategories.length}:
+                <strong class="text-white">{resumeCategories[resumeIndex]?.nama_nomor_tanding}</strong>
+              </span>
+              <span class="flex gap-2">
+                <button type="button" onclick={discardProgress} class="h-8 px-3 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl">
+                  Mulai baru
+                </button>
+                <button type="button" onclick={resumeLive} class="h-8 px-3.5 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md">
+                  Lanjutkan
+                </button>
+              </span>
+            </div>
+          {/if}
+
+          {#if live.enabled}
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 font-mono text-xs">
+              <label class="flex flex-col gap-1">
+                <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Kecepatan acak</span>
+                <select bind:value={live.shuffleMs} class="bg-[#111215] border border-white/[0.1] rounded-xl px-3 py-1.5 text-white">
+                  {#each [20, 50, 100, 200] as ms (ms)}
+                    <option value={ms}>{ms} ms</option>
+                  {/each}
+                </select>
+              </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Lama acak per nomor</span>
+                <select bind:value={live.durationSec} class="bg-[#111215] border border-white/[0.1] rounded-xl px-3 py-1.5 text-white">
+                  <option value={0}>Tanpa timer (stop manual)</option>
+                  {#each [3, 5, 8, 10, 15] as sec (sec)}
+                    <option value={sec}>{sec} detik</option>
+                  {/each}
+                </select>
+              </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Pindah nomor</span>
+                <select bind:value={live.autoNext} class="bg-[#111215] border border-white/[0.1] rounded-xl px-3 py-1.5 text-white">
+                  <option value={true}>Otomatis (6 detik)</option>
+                  <option value={false}>Manual (tombol)</option>
+                </select>
+              </label>
+            </div>
+
+            <!-- Order preview -->
+            <div class="space-y-1.5">
+              <span class="text-[10px] font-mono font-bold tracking-wider uppercase text-zinc-400">Urutan undian ({orderedSelection.length} nomor)</span>
+              <ol class="max-h-28 overflow-y-auto pr-1 scrollbar-thin text-[11px] font-mono text-zinc-300 space-y-0.5">
+                {#each orderedSelection as c, i (c.id)}
+                  <li class="flex gap-2">
+                    <span class="w-6 text-right text-zinc-500">{i + 1}.</span>
+                    <span class="truncate">{c.nama_nomor_tanding}</span>
+                    {#if i === 0 || drawingGroup(orderedSelection[i - 1]) !== drawingGroup(c)}
+                      <span class="ml-auto shrink-0 text-amber-300/80">{DRAWING_GROUP_LABEL[drawingGroup(c)]}</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ol>
+            </div>
+          {/if}
+        </div>
+
       </div>
 
       <!-- Modal Footer -->
@@ -613,7 +802,7 @@
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
-              <span>MULAI DRAWING ({selectedCategoryIds.length})</span>
+              <span>{live.enabled ? "MULAI DRAWING LIVE" : "MULAI DRAWING"} ({selectedCategoryIds.length})</span>
             {/if}
           </button>
         </div>
@@ -679,6 +868,64 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if deleteTarget}
+  <div class="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs font-sans">
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl w-full max-w-md text-zinc-200 space-y-4">
+      <h3 class="text-sm font-black uppercase tracking-wider font-mono text-white">Hapus bagan?</h3>
+      <p class="text-xs text-zinc-300 leading-relaxed">
+        Bagan <strong class="text-white">{deleteTarget.nama_nomor_tanding}</strong> ({deleteTarget.bagan_count} bagan) akan dihapus.
+        Atletnya tetap terdaftar dan nomor ini bisa diundi lagi.
+      </p>
+      {#if isLocked(deleteTarget)}
+        <label class="flex items-start gap-2.5 p-3 rounded-xl bg-red-500/10 border border-red-500/25 cursor-pointer">
+          <input type="checkbox" bind:checked={deleteResultsConfirmed} class="mt-0.5 w-4 h-4 rounded text-red-500 focus:ring-0" />
+          <span class="text-xs text-red-300">
+            Nomor ini sudah bertanding ({deleteTarget.finished_matches} partai selesai). Saya paham hasil partai tersebut ikut terhapus.
+          </span>
+        </label>
+      {/if}
+      <div class="flex justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onclick={() => (deleteTarget = null)}
+          disabled={isDeletingOne}
+          class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
+        >
+          Batal
+        </button>
+        <button
+          type="button"
+          onclick={deleteCategoryBagan}
+          disabled={isDeletingOne || (isLocked(deleteTarget) && !deleteResultsConfirmed)}
+          class="h-9 px-4 bg-red-600 hover:bg-red-500 text-white font-bold text-xs rounded-xl shadow-md disabled:opacity-40"
+        >
+          {isDeletingOne ? "Menghapus…" : "Hapus Bagan"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showLive}
+  <LiveDrawingView
+    {eventId}
+    {eventName}
+    categories={liveCategories}
+    startIndex={liveStartIndex}
+    {shuffleType}
+    {vrCategoryIds}
+    shuffleMs={Number(live.shuffleMs) || 20}
+    durationMs={Number.isFinite(Number(live.durationSec)) ? Number(live.durationSec) * 1000 : 5000}
+    autoNext={!!live.autoNext}
+    onFinish={(summary) => {
+      showLive = false;
+      savedProgress = loadLiveProgress(eventId);
+      if (summary.categories_processed > 0) summaryResult = summary;
+      loadCategories();
+    }}
+  />
 {/if}
 
 <!-- Best of Best (BOB) Drawing Modal -->

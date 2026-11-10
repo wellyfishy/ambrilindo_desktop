@@ -9,6 +9,7 @@
   import JudgeStickMonitor from "$lib/components/JudgeStickMonitor.svelte";
   import { StickTracker, LEVEL_LABEL, LEVEL_SHORT, type StickState, type StickHistoryRow } from "$lib/judgeSticks";
   import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
+  import { startTicker, type Ticker } from "$lib/ticker";
   import { broadcastLiveMatch, initLiveSync, connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
 
   interface Props {
@@ -459,13 +460,13 @@
   // Reactive Sync when match prop changes (switching bouts in team kumite or festival pairs)
   let lastLoadedMatchKey = $state<string>("");
 
-  // Kata: muat skor 5 juri yang sudah tersimpan untuk partai ini
+  // Kata: muat skor juri yang sudah tersimpan untuk partai ini
   function parseJudgeArray(raw: unknown): string[] | null {
     if (typeof raw !== "string" || !raw) return null;
     try {
       const arr = JSON.parse(raw);
       if (!Array.isArray(arr)) return null;
-      return [0, 1, 2, 3, 4].map((i) => (arr[i] == null ? "" : String(arr[i])));
+      return judgeIdx.map((i) => (arr[i] == null ? "" : String(arr[i])));
     } catch {
       return null;
     }
@@ -482,6 +483,7 @@
       if (!aka && !ao) return;
       if (aka) akaJudgeScores = aka;
       if (ao) aoJudgeScores = ao;
+      manualFlags = null;
       broadcastLiveState();
     } catch (err) {
       console.warn("Gagal memuat skor juri tersimpan:", err);
@@ -490,6 +492,7 @@
 
   function syncFromMatch(m: DetailBaganItem) {
     matchWinner = m.pemenang || "";
+    autoWinner = null;
     showWinnerBanner = false;
     stopPrepCountdown(false);
     clearStickState();
@@ -505,9 +508,9 @@
     kataAkaName = m.kata1 || "";
     kataAoName = m.kata2 || "";
 
-    // Reset 5 judges scores and overlays for new match, then restore any saved ones
-    akaJudgeScores = ["", "", "", "", ""];
-    aoJudgeScores = ["", "", "", "", ""];
+    // Reset judges scores and overlays for new match, then restore any saved ones
+    akaJudgeScores = emptyJudges();
+    aoJudgeScores = emptyJudges();
     showKataScoreOnBoard = false;
     if (isKata && m.id) loadSavedJudgeScores(m.id);
 
@@ -520,14 +523,12 @@
       boardAkaScore = parseInt(m.score1 || "0", 10) || 0;
       boardAoScore = parseInt(m.score2 || "0", 10) || 0;
       isScorePublished = true;
-      if (isKata) {
-        akaBendera = String(boardAkaScore);
-      }
+      manualFlags = isKata ? { aka: boardAkaScore, ao: boardAoScore } : null;
     } else {
       boardAkaScore = 0;
       boardAoScore = 0;
       isScorePublished = false;
-      akaBendera = "-";
+      manualFlags = null;
     }
 
     timerMs = selectedPresetSeconds * 1000;
@@ -618,40 +619,75 @@
   let akaPenalties = $state({ c1: false, c2: false, c3: false, hc: false, h: false });
   let aoPenalties = $state({ c1: false, c2: false, c3: false, hc: false, h: false });
 
-  // Kata 5-Judges Comparative Scoring State
+  // Kata judges: 3, 5 or 7 per tatami, chosen in ⚙ and remembered on this device
+  // (the next match keeps it). The scoreboard pop up and jury tablets follow it.
+  const KATA_JUDGE_OPTIONS = [3, 5, 7];
+  const JUDGE_COUNT_KEY = "ambrilindo.kataJudgeCount";
+  function loadJudgeCount(): number {
+    try {
+      const v = Number(localStorage.getItem(JUDGE_COUNT_KEY));
+      return KATA_JUDGE_OPTIONS.includes(v) ? v : 5;
+    } catch {
+      return 5;
+    }
+  }
+  let kataJudgeCount = $state<number>(loadJudgeCount());
+  let judgeIdx = $derived(Array.from({ length: kataJudgeCount }, (_, i) => i));
+  function emptyJudges(fill = ""): string[] {
+    return Array.from({ length: kataJudgeCount }, () => fill);
+  }
+  function fitJudges(arr: string[]): string[] {
+    return Array.from({ length: kataJudgeCount }, (_, i) => arr[i] ?? "");
+  }
+  function setKataJudgeCount(n: number) {
+    if (!KATA_JUDGE_OPTIONS.includes(n) || n === kataJudgeCount) return;
+    kataJudgeCount = n;
+    try {
+      localStorage.setItem(JUDGE_COUNT_KEY, String(n));
+    } catch {}
+    akaJudgeScores = fitJudges(akaJudgeScores);
+    aoJudgeScores = fitJudges(aoJudgeScores);
+    if (activeJudgePicker !== null && activeJudgePicker >= n) activeJudgePicker = null;
+    // Flags can never exceed the number of judges
+    if (manualFlags) {
+      const aka = Math.min(manualFlags.aka, n);
+      manualFlags = { aka, ao: n - aka };
+    }
+    broadcastLiveState();
+  }
+
+  // Kata Judges Comparative Scoring State
   let kataAkaName = $state<string>("");
   let kataAoName = $state<string>("");
-  let akaJudgeScores = $state<string[]>(["", "", "", "", ""]);
-  let aoJudgeScores = $state<string[]>(["", "", "", "", ""]);
+  let akaJudgeScores = $state<string[]>(emptyJudges());
+  let aoJudgeScores = $state<string[]>(emptyJudges());
   let showKataScoreOnBoard = $state<boolean>(false);
 
-  // Kata Bendera (Flag) Scoring State — Ambrilindo Local Standard
-  let akaBendera = $state<string>("-"); // "-", "0", "1", "2", "3", "4", "5"
-  let aoBendera = $derived.by(() => {
-    if (akaBendera === "-") return "-";
-    const num = parseInt(akaBendera, 10);
-    if (isNaN(num)) return "-";
-    return String(Math.max(0, 5 - num));
-  });
+  // Kata Bendera (flags) — Ambrilindo Local standard.
+  // Each corner's flags are the judges who gave it the higher score, counted per corner:
+  // a tied or not-yet-entered judge gives no flag to either side (so AO is NOT simply
+  // "judges − AKA"). The operator can override with the flag selector (chief referee
+  // flags without scores); any judge score entered afterwards returns to counting.
+  // A saved result without judge scores is restored as an override with its own totals.
+  let manualFlags = $state<{ aka: number; ao: number } | null>(null);
+  let hasJudgeInput = $derived(
+    akaJudgeScores.some((s) => s?.trim() !== "") || aoJudgeScores.some((s) => s?.trim() !== "")
+  );
 
-  // Effective points: uses manual Bendera if selected, otherwise uses 5-judge comparison
-  let effectiveAkaPoints = $derived.by(() => {
-    if (akaBendera !== "-") {
-      return parseInt(akaBendera, 10) || 0;
-    }
-    return judgeComparisons.akaPoints;
-  });
+  let effectiveAkaPoints = $derived.by(() => (manualFlags ? manualFlags.aka : judgeComparisons.akaPoints));
+  let effectiveAoPoints = $derived.by(() => (manualFlags ? manualFlags.ao : judgeComparisons.aoPoints));
 
-  let effectiveAoPoints = $derived.by(() => {
-    if (akaBendera !== "-") {
-      return parseInt(aoBendera, 10) || 0;
-    }
-    return judgeComparisons.aoPoints;
-  });
+  // Shown in the flag column ("-" = nothing entered yet)
+  let akaBendera = $derived.by(() => (manualFlags || hasJudgeInput ? String(effectiveAkaPoints) : "-"));
+  let aoBendera = $derived.by(() => (manualFlags || hasJudgeInput ? String(effectiveAoPoints) : "-"));
 
   function handleAkaBenderaChange(val: string) {
-    akaBendera = val;
-    if (val === "-") return;
+    if (val === "-") {
+      manualFlags = null;
+      return;
+    }
+    const aka = Math.max(0, Math.min(kataJudgeCount, parseInt(val, 10) || 0));
+    manualFlags = { aka, ao: kataJudgeCount - aka };
     // Automatically output score to arena scoreboard when using manual bendera!
     publishScoresToBoard();
   }
@@ -689,7 +725,7 @@
     }
   }
 
-  // Button 2: Pop Up Skor 5 Juri. Membuka pop up juga memaksa skor besar tampil
+  // Button 2: Pop Up Skor Juri. Membuka pop up juga memaksa skor besar tampil
   // (scoreboard baru memunculkannya setelah 5 skor juri selesai muncul).
   // Menutup pop up tidak menyembunyikan skor besar; itu lewat tombol 1.
   function toggleKataScorePopup() {
@@ -837,7 +873,13 @@
   let selectedPresetSeconds = $state<number>(initialPresetSeconds);
   let timerMs = $state<number>(initialPresetSeconds * 1000);
   let isTimerRunning = $state<boolean>(false);
-  let animFrameId: number | null = null;
+  // Match clock tick: a worker-driven ticker, so the clock, the board updates and the end
+  // buzzer keep going while this window is minimized or behind another window.
+  let timerTicker: Ticker | null = null;
+  function stopTimerTicker() {
+    timerTicker?.stop();
+    timerTicker = null;
+  }
   let lastTickTimestamp: number = 0;
   let lastBroadcastTimestamp: number = 0;
   let liveBroadcastChannel: BroadcastChannel | null = null;
@@ -907,11 +949,9 @@
     if (timerMs <= 0) {
       timerMs = 0;
       isTimerRunning = false;
+      stopTimerTicker();
       broadcastLiveState();
-      return;
     }
-
-    animFrameId = requestAnimationFrame(runTimerLoop);
   }
 
   function selectTimerPreset(seconds: number) {
@@ -920,7 +960,7 @@
     timerMs = seconds * 1000;
     resetAlarmTriggerFlags();
     if (isTimerRunning) {
-      if (animFrameId) cancelAnimationFrame(animFrameId);
+      stopTimerTicker();
       isTimerRunning = false;
     }
     broadcastLiveState();
@@ -928,7 +968,7 @@
 
   function pauseTimer() {
     if (isTimerRunning) {
-      if (animFrameId) cancelAnimationFrame(animFrameId);
+      stopTimerTicker();
       isTimerRunning = false;
       broadcastLiveState();
     }
@@ -944,7 +984,7 @@
     lastToggleTimestamp = now;
 
     if (isTimerRunning) {
-      if (animFrameId) cancelAnimationFrame(animFrameId);
+      stopTimerTicker();
       isTimerRunning = false;
       broadcastLiveState();
     } else {
@@ -956,13 +996,14 @@
       lastTickTimestamp = performance.now();
       lastBroadcastTimestamp = lastTickTimestamp;
       broadcastLiveState();
-      animFrameId = requestAnimationFrame(runTimerLoop);
+      stopTimerTicker();
+      timerTicker = startTicker(runTimerLoop);
     }
   }
 
   function resetTimer() {
     if (isTimerRunning) {
-      if (animFrameId) cancelAnimationFrame(animFrameId);
+      stopTimerTicker();
       isTimerRunning = false;
     }
     timerMs = selectedPresetSeconds * 1000;
@@ -977,10 +1018,20 @@
   }
 
   // ==================== RESET ALL MATCH DATA (KATA & KUMITE) ====================
+  // The top Reset clears the whole bout: ask first when there is something to lose.
+  function confirmResetAllMatchData() {
+    const penaltiesSet = Object.values(akaPenalties).some(Boolean) || Object.values(aoPenalties).some(Boolean);
+    const hasData =
+      akaScore > 0 || aoScore > 0 || akaSenshu || aoSenshu || penaltiesSet || !!matchWinner ||
+      hasJudgeInput || !!manualFlags || timerMs !== selectedPresetSeconds * 1000;
+    if (hasData && !confirm("Reset semua skor, pelanggaran, dan waktu partai ini?")) return;
+    resetAllMatchData();
+  }
+
   function resetAllMatchData() {
     // 1. Reset timer to current selected preset
     if (isTimerRunning) {
-      if (animFrameId) cancelAnimationFrame(animFrameId);
+      stopTimerTicker();
       isTimerRunning = false;
     }
     timerMs = selectedPresetSeconds * 1000;
@@ -994,9 +1045,9 @@
     aoPenalties = { c1: false, c2: false, c3: false, hc: false, h: false };
 
     // 3. Reset Kata judge scores & bendera
-    akaJudgeScores = ["", "", "", "", ""];
-    aoJudgeScores = ["", "", "", "", ""];
-    akaBendera = "-";
+    akaJudgeScores = emptyJudges();
+    aoJudgeScores = emptyJudges();
+    manualFlags = null;
     boardAkaScore = 0;
     boardAoScore = 0;
     isScorePublished = false;
@@ -1004,6 +1055,7 @@
 
     // 4. Reset match decision flags
     matchWinner = "";
+    autoWinner = null;
     showWinnerBanner = false;
     stopPrepCountdown(false);
     clearStickState();
@@ -1017,7 +1069,7 @@
     broadcastLiveState();
   }
 
-  // ==================== 5-JUDGE COMPARATIVE SCORING LOGIC ====================
+  // ==================== KATA JUDGES COMPARATIVE SCORING (3 / 5 / 7) ====================
   let judgeComparisons = $derived.by(() => {
     let akaPoints = 0;
     let aoPoints = 0;
@@ -1027,7 +1079,7 @@
       scoreAo: number | null;
     }> = [];
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < kataJudgeCount; i++) {
       const rawAka = akaJudgeScores[i]?.trim();
       const rawAo = aoJudgeScores[i]?.trim();
       const vAka = rawAka !== "" ? parseFloat(rawAka) : NaN;
@@ -1146,11 +1198,8 @@
       aoJudgeScores[judgeIdx] = val;
       aoJudgeScores = [...aoJudgeScores];
     }
-    // Automatically sync bendera when numerical scores are entered
-    const { akaPoints, aoPoints } = judgeComparisons;
-    if (akaJudgeScores.some((s) => s.trim() !== "") || aoJudgeScores.some((s) => s.trim() !== "")) {
-      akaBendera = String(akaPoints);
-    }
+    // A judge score was entered: flags follow the judges again
+    manualFlags = null;
     // Notice: Do NOT output to scoreboard while operator is inputting scores!
   }
 
@@ -1162,14 +1211,14 @@
   // Kiken Handlers (Chief Referee Override)
   function applyKiken(side: "aka" | "ao") {
     if (side === "aka") {
-      akaJudgeScores = ["0.0", "0.0", "0.0", "0.0", "0.0"];
-      aoJudgeScores = aoJudgeScores.map((s) => (s && s !== "0.0" ? s : "8.0"));
-      akaBendera = "0";
+      akaJudgeScores = emptyJudges("0.0");
+      aoJudgeScores = fitJudges(aoJudgeScores).map((s) => (s && s !== "0.0" ? s : "8.0"));
+      manualFlags = null;
       matchWinner = "2";
     } else {
-      aoJudgeScores = ["0.0", "0.0", "0.0", "0.0", "0.0"];
-      akaJudgeScores = akaJudgeScores.map((s) => (s && s !== "0.0" ? s : "8.0"));
-      akaBendera = "5";
+      aoJudgeScores = emptyJudges("0.0");
+      akaJudgeScores = fitJudges(akaJudgeScores).map((s) => (s && s !== "0.0" ? s : "8.0"));
+      manualFlags = null;
       matchWinner = "1";
     }
     showWinnerBanner = true;
@@ -1177,12 +1226,44 @@
   }
 
   // ==================== KUMITE SCORING ====================
+  // Winner the rules decided (8-point lead, hansoku). Preselected on the crown only, no
+  // banner: the operator confirms or overrides. Undoing the cause undoes the preselection.
+  let autoWinner: "1" | "2" | null = null;
+  const KUMITE_MAX_LEAD = 8;
+
+  function ruleWinner(): "1" | "2" | null {
+    // Hansoku: the other corner wins (both disqualified: nobody decided here)
+    if (akaPenalties.h !== aoPenalties.h) return akaPenalties.h ? "2" : "1";
+    if (akaScore - aoScore >= KUMITE_MAX_LEAD) return "1";
+    if (aoScore - akaScore >= KUMITE_MAX_LEAD) return "2";
+    return null;
+  }
+
+  function applyRuleWinner() {
+    if (isKata) return;
+    const w = ruleWinner();
+    if (w) {
+      if (!matchWinner || matchWinner === autoWinner) {
+        if (w !== autoWinner) pauseTimer(); // bout is over: stop the clock
+        matchWinner = w;
+        autoWinner = w;
+      }
+    } else if (autoWinner && matchWinner === autoWinner) {
+      matchWinner = "";
+      showWinnerBanner = false;
+      autoWinner = null;
+    } else {
+      autoWinner = null;
+    }
+  }
+
   function addKumiteScore(side: "aka" | "ao", pts: number) {
     if (side === "aka") {
       akaScore = Math.max(0, akaScore + pts);
     } else {
       aoScore = Math.max(0, aoScore + pts);
     }
+    applyRuleWinner();
 
     if (pts === 1) {
       triggerScoreBanner(side, "1 - POINT", "YUKO", 1300);
@@ -1239,6 +1320,7 @@
     PENALTY_STEPS.forEach((p, i) => (next[p] = i < newLevel));
     if (side === "aka") akaPenalties = next;
     else aoPenalties = next;
+    applyRuleWinner();
 
     if (newLevel > currentLevel) {
       triggerScoreBanner(side, "PELANGGARAN", PENALTY_LABEL[PENALTY_STEPS[newLevel - 1]], 1500);
@@ -1470,6 +1552,7 @@
   }
 
   function selectWinner(winner: "1" | "2" | "3") {
+    autoWinner = null;
     if (matchWinner === winner) {
       matchWinner = "";
     } else {
@@ -1494,6 +1577,8 @@
       timerSeconds: Math.ceil(timerMs / 1000),
       isTimerRunning,
       isKata,
+      // Kata: number of judges (scoreboard pop up columns, jury tablet seats)
+      judgeCount: kataJudgeCount,
       aka: {
         name: match.atlet1_nama || "Sudut Merah",
         contingent: match.atlet1_kontingen || "-",
@@ -1605,11 +1690,23 @@
           if (effectiveAkaPoints > effectiveAoPoints) effectiveWinner = "1";
           else if (effectiveAoPoints > effectiveAkaPoints) effectiveWinner = "2";
         } else {
-          if (akaScore > aoScore) effectiveWinner = "1";
+          const decided = ruleWinner();
+          if (decided) effectiveWinner = decided;
+          else if (akaScore > aoScore) effectiveWinner = "1";
           else if (aoScore > akaScore) effectiveWinner = "2";
           else if (akaSenshu) effectiveWinner = "1";
           else if (aoSenshu) effectiveWinner = "2";
         }
+      }
+
+      // No winner (tie without senshu / hantei): the bout is saved as NOT finished and the
+      // bracket does not advance. Say so instead of closing silently.
+      if (!effectiveWinner && !isMatchFinished) {
+        const ok = confirm(
+          "Belum ada pemenang (skor seri). Partai akan disimpan sebagai BELUM SELESAI dan bagan tidak maju.\n\n" +
+            "Pilih pemenang atau Hantei dulu untuk menyelesaikan partai. Tetap simpan sebagai belum selesai?"
+        );
+        if (!ok) return;
       }
 
       const input: SaveMatchInput = {
@@ -1666,13 +1763,15 @@
 
     if (data.type === "judge_score") {
       const juriIdx = (Number(data.juri) || 1) - 1;
-      if (juriIdx >= 0 && juriIdx < 5) {
+      if (juriIdx >= 0 && juriIdx < kataJudgeCount) {
         if (data.score_aka !== undefined && data.score_aka !== null) {
           akaJudgeScores[juriIdx] = String(data.score_aka);
         }
         if (data.score_ao !== undefined && data.score_ao !== null) {
           aoJudgeScores[juriIdx] = String(data.score_ao);
         }
+        // Scores from a jury tablet count exactly like typed ones
+        manualFlags = null;
         broadcastLiveState();
       }
     } else if (data.type === "lo_kata_broadcast") {
@@ -1718,14 +1817,12 @@
       boardAkaScore = parseInt(match.score1 || "0", 10) || 0;
       boardAoScore = parseInt(match.score2 || "0", 10) || 0;
       isScorePublished = true;
-      if (isKata) {
-        akaBendera = String(boardAkaScore);
-      }
+      manualFlags = isKata ? { aka: boardAkaScore, ao: boardAoScore } : null;
     } else {
       boardAkaScore = 0;
       boardAoScore = 0;
       isScorePublished = false;
-      akaBendera = "-";
+      manualFlags = null;
     }
 
     // Broadcast initial state immediately
@@ -1823,7 +1920,7 @@
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      if (animFrameId) cancelAnimationFrame(animFrameId);
+      stopTimerTicker();
       if (unlistenRequest) unlistenRequest();
       if (unlistenRemote) unlistenRemote();
       if (claimStatus === "owned") broadcastLiveMatch({
@@ -1992,6 +2089,24 @@
           </button>
         </div>
       </div>
+      {#if isKata}
+        <div>
+          <div class="text-[10px] text-zinc-500 uppercase font-bold mb-1.5">Jumlah Juri Kata</div>
+          <div class="flex gap-1.5" role="radiogroup" aria-label="Jumlah juri kata">
+            {#each KATA_JUDGE_OPTIONS as n (n)}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={kataJudgeCount === n}
+                onclick={() => setKataJudgeCount(n)}
+                class="flex-1 px-2 py-1 rounded border text-[10.5px] font-bold transition {kataJudgeCount === n ? 'bg-white text-black border-white' : 'bg-transparent border-white/10 text-zinc-400 hover:text-zinc-200'}"
+              >
+                {n} Juri
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
       <button
         type="button"
         onclick={triggerManualBuzzer}
@@ -2081,13 +2196,13 @@
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
         </svg>
-        <span>{isSaving ? "Menyimpan..." : teamMatchInfo?.is_team_match ? `Simpan Partai #${teamMatchInfo.active_bout_round || match.urutan || 1}` : "Simpan & Keluar"}</span>
+        <span>{isSaving ? "Menyimpan..." : teamMatchInfo?.is_team_match ? `Simpan Partai #${teamMatchInfo.bouts.find((b) => b.bout_id === match.id)?.round ?? match.urutan ?? 1}` : "Simpan & Keluar"}</span>
       </button>
 
       <!-- Reset Option Button -->
       <button
         type="button"
-        onclick={resetAllMatchData}
+        onclick={confirmResetAllMatchData}
         class="px-3.5 py-1.5 bg-[#2b2d31] hover:bg-rose-600/80 border border-white/10 hover:border-rose-500/50 text-zinc-300 hover:text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95"
         title="Reset semua skor, bendera, timer, dan status kembali ke 0"
       >
@@ -2369,14 +2484,14 @@
                 type="button"
                 onclick={toggleKataScorePopup}
                 class="h-12 px-3 rounded-xl text-xs font-mono font-bold uppercase tracking-wider transition flex items-center justify-center gap-2 shadow active:scale-95 {showKataScoreOnBoard ? 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-500/20' : 'bg-[#111216] hover:bg-[#1e2029] text-zinc-300 border border-white/10'}"
-                title="Buka / tutup pop up skor 5 juri di scoring board"
+                title="Buka / tutup pop up skor {kataJudgeCount} juri di scoring board"
               >
                 {#if showKataScoreOnBoard}
                   <svg class="w-4 h-4 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"/></svg>
-                  <span>Tutup Pop Up 5 Juri</span>
+                  <span>Tutup Pop Up {kataJudgeCount} Juri</span>
                 {:else}
                   <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                  <span>Pop Up Skor 5 Juri</span>
+                  <span>Pop Up Skor {kataJudgeCount} Juri</span>
                 {/if}
               </button>
             </div>
@@ -2441,7 +2556,7 @@
         </div>
       </div>
 
-      <!-- KATA 5-JUDGE COMPARATIVE SCORING TABLE -->
+      <!-- KATA JUDGES COMPARATIVE SCORING TABLE (3 / 5 / 7) -->
       <div class="flex-1 bg-[#181a20] border border-[#2b2d31] rounded-xl p-4 shadow-xl flex flex-col justify-between relative">
         <div>
           <!-- The Table -->
@@ -2450,7 +2565,8 @@
               <thead>
                 <tr class="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400 border-b border-[#2b2d31]">
                   <th class="py-2.5 px-3 text-left w-[240px]">Sudut & Atlet</th>
-                  {#each [1, 2, 3, 4, 5] as jNum, idx}
+                  {#each judgeIdx as idx (idx)}
+                    {@const jNum = idx + 1}
                     {@const decision = judgeComparisons.decisions[idx]}
                     <th class="py-2.5 px-1.5 w-[90px] transition-colors rounded-t-lg {decision?.winner === 'aka' ? 'bg-red-500/20 text-red-300 border-t-2 border-red-500' : decision?.winner === 'ao' ? 'bg-blue-500/20 text-blue-300 border-t-2 border-blue-500' : 'bg-transparent text-zinc-400'}">
                       <div>JURI {jNum}</div>
@@ -2490,7 +2606,7 @@
                   </td>
 
                   <!-- 5 Judge Input Columns for AKA -->
-                  {#each [0, 1, 2, 3, 4] as idx}
+                  {#each judgeIdx as idx (idx)}
                     {@const decision = judgeComparisons.decisions[idx]}
                     <td class="py-2.5 px-1.5 relative {decision?.winner === 'aka' ? 'bg-red-500/10' : ''}">
                       <input
@@ -2533,12 +2649,9 @@
                       title="Pilih jumlah bendera Sudut Merah (AKA)"
                     >
                       <option value="-" class="bg-[#181a20] text-zinc-400">-</option>
-                      <option value="0" class="bg-[#181a20] text-white">0</option>
-                      <option value="1" class="bg-[#181a20] text-white">1</option>
-                      <option value="2" class="bg-[#181a20] text-white">2</option>
-                      <option value="3" class="bg-[#181a20] text-white">3</option>
-                      <option value="4" class="bg-[#181a20] text-white">4</option>
-                      <option value="5" class="bg-[#181a20] text-white">5</option>
+                      {#each [0, ...judgeIdx.map((i) => i + 1)] as n (n)}
+                        <option value={String(n)} class="bg-[#181a20] text-white">{n}</option>
+                      {/each}
                     </select>
                   </td>
 
@@ -2584,7 +2697,7 @@
                   </td>
 
                   <!-- 5 Judge Input Columns for AO -->
-                  {#each [0, 1, 2, 3, 4] as idx}
+                  {#each judgeIdx as idx (idx)}
                     {@const decision = judgeComparisons.decisions[idx]}
                     <td class="py-2.5 px-1.5 relative {decision?.winner === 'ao' ? 'bg-blue-500/10' : ''}">
                       <input
@@ -2622,7 +2735,7 @@
                   <td class="py-2.5 px-2 text-center">
                     <div
                       class="w-16 h-11 bg-[#111216] border-2 border-blue-500/70 text-blue-200 font-mono font-black text-xl flex items-center justify-center rounded-lg shadow-inner mx-auto select-none"
-                      title="Jumlah bendera otomatis Sudut Biru (AO) = 5 - AKA"
+                      title="Jumlah bendera Sudut Biru (AO): juri yang memberi nilai AO lebih tinggi"
                     >
                       {aoBendera}
                     </div>
@@ -2895,9 +3008,10 @@
 
       <!-- HUB TENGAH: LIVE PREVIEW (the board already shows the timer) + CONTROLS -->
       <div class="lg:col-span-4 bg-[#181a20] border-t-4 border-t-amber-500 border border-[#2b2d31] rounded-xl p-3 flex flex-col gap-2.5 shadow-xl min-h-0 overflow-y-auto">
-        <!-- Live board preview: the same template the TV uses. It takes the height
-             left by the controls, so the column never needs scrolling. -->
-        <div class="flex-1 min-h-[110px] flex items-start justify-center [container-type:size]">
+        <!-- Live board preview: the same template the TV uses. Its box is exactly the
+             board (16:9 of the column width), so the controls sit right under it on a
+             tall window; on a short window it shrinks so the column never scrolls. -->
+        <div class="w-full aspect-video shrink min-h-[110px] flex items-start justify-center [container-type:size]">
           <div class="cp-preview rounded-lg overflow-hidden border border-[#2b2d31] bg-black">
             <ScoreboardDisplay liveState={previewState} tatami={activeTatami} connected={claimStatus === "owned"} muted />
           </div>

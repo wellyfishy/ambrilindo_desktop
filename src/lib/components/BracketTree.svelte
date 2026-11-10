@@ -11,7 +11,8 @@
   import { isMatchLive, getRunningTatamiForMatch } from "$lib/liveSync";
   import {
     TREE_HEIGHT,
-    TREE_WIDTH,
+    TREE_COL_WIDTH,
+    treeWidthFor,
     computeConnectorLines,
     elimRoundsOf,
     getMatchForSlot,
@@ -19,6 +20,8 @@
     getRoundTitle,
     getSlotCountForRound,
     getSlotHeightClass,
+    getSlotHeightPx,
+    MATCH_CARD_HEIGHT,
     type BracketMeta,
     type PodiumResult,
   } from "$lib/bracket_layout";
@@ -37,6 +40,19 @@
     liveSyncVersion?: number;
     onMatchClick?: (m: DetailBaganItem) => void;
     gridEl?: HTMLDivElement | null;
+    /** wider columns for a wide screen (live drawing on a TV); default = the print width */
+    colWidth?: number;
+    /** podium card + Ambrilindo logo in the final column (hidden in live drawing) */
+    showPodium?: boolean;
+    /**
+     * Bigger match cards (live drawing on a TV). Each card grows up to this factor, as far
+     * as its slot allows (round 1 slots are the tightest), and keeps the column width.
+     */
+    cardScale?: number;
+    /** no score boxes (drawing: nothing is scored yet, the names get the width) */
+    hideScores?: boolean;
+    /** leave out this many leading rounds (live drawing: rounds with only BYEs) */
+    skipRounds?: number;
   }
 
   let {
@@ -53,17 +69,32 @@
     liveSyncVersion = 0,
     onMatchClick,
     gridEl = $bindable(null),
+    colWidth = TREE_COL_WIDTH,
+    showPodium = true,
+    cardScale = 1,
+    hideScores = false,
+    skipRounds = 0,
   }: Props = $props();
+
+  /** Card size for a round: never taller than its slot, so connector lines stay on centre */
+  function cardZoom(roundNum: number): number {
+    if (cardScale <= 1) return 1;
+    return Math.max(1, Math.min(cardScale, (getSlotHeightPx(roundNum) * 0.92) / MATCH_CARD_HEIGHT));
+  }
 
   let isDarkMode = $derived(theme === "dark");
   let elimRounds = $derived(elimRoundsOf(matches));
-  let connectorLines = $derived(computeConnectorLines(elimRounds.length, meta.isRepechageBagan));
+  // Repechage brackets keep their own layout; elimination trees may skip empty early rounds
+  let skip = $derived(meta.isRepechageBagan ? 0 : Math.max(0, Math.min(skipRounds, elimRounds.length - 1)));
+  let shownRounds = $derived(elimRounds.filter(([r]) => r > skip));
+  let connectorLines = $derived(computeConnectorLines(elimRounds.length, meta.isRepechageBagan, colWidth, skip));
+  let treeWidth = $derived(treeWidthFor(colWidth, 4 - skip));
 </script>
 
 <!-- Dynamic SVG Connector Canvas -->
 <svg
     class="bracket-svg absolute inset-0 pointer-events-none w-full h-full z-0 overflow-visible"
-  viewBox="0 0 {TREE_WIDTH} {TREE_HEIGHT}"
+  viewBox="0 0 {treeWidth} {TREE_HEIGHT}"
 >
   {#each connectorLines as line}
     <line
@@ -81,11 +112,12 @@
 
 <!-- Bracket Columns Grid Container -->
 <div bind:this={gridEl} class="bracket-grid flex items-start gap-8 relative z-10 min-w-max pb-2 pr-2">
-  {#each elimRounds as [roundNum, roundMatches]}
+  {#each shownRounds as [roundNum, roundMatches]}
     {@const slotCount = getSlotCountForRound(roundNum)}
     {@const slotHeightClass = getSlotHeightClass(roundNum)}
+    {@const zoom = cardZoom(roundNum)}
 
-    <div class="round-col round-col-elim w-[242px] shrink-0 flex flex-col relative">
+    <div class="round-col round-col-elim shrink-0 flex flex-col relative" style="width: {colWidth}px;">
       <!-- Column Header with Black/Dark Circle Step Badge (Centered) -->
       <div class="col-header-line h-8 shrink-0 flex items-center justify-center pb-1 border-b-2 {isDarkMode ? 'border-white/[0.25]' : 'border-slate-900'} mb-1">
         <div class="flex items-center justify-center space-x-2 text-center w-full">
@@ -110,6 +142,7 @@
                 role="button"
                 tabindex="0"
                 onkeydown={(e) => { if (interactive && e.key === 'Enter' && !isEditMode) onMatchClick?.(match); }}
+                style={zoom !== 1 ? `zoom: ${zoom}; width: ${colWidth / zoom}px;` : undefined}
                 title={!interactive ? undefined : isEditMode ? "Mode Edit: Pilih atlet peserta partai" : "Klik untuk membuka Kontrol Pertandingan (Control Panel)"}
               >
                 <!-- Match Card Header -->
@@ -232,7 +265,7 @@
                         {/if}
                       </div>
                     </div>
-                    <div class="shrink-0 flex items-center">
+                    <div class="shrink-0 flex items-center" class:hidden={hideScores}>
                       <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {match.pemenang === '1' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
                         {match.score1 ?? '-'}
                       </span>
@@ -322,7 +355,7 @@
                         {/if}
                       </div>
                     </div>
-                    <div class="shrink-0 flex items-center">
+                    <div class="shrink-0 flex items-center" class:hidden={hideScores}>
                       <span class="score-box min-w-[18px] h-[15px] px-0.5 font-mono text-[8.5px] flex items-center justify-center rounded border {match.pemenang === '2' ? (isDarkMode ? 'bg-amber-400/20 border-amber-400 text-amber-300 font-black' : 'bg-[#fde047] border-amber-500 text-amber-950 font-black') : (isDarkMode ? 'bg-white/[0.08] border-white/20 text-white font-black' : 'bg-slate-100 border-slate-400 text-black font-black')}">
                         {match.score2 ?? '-'}
                       </span>
@@ -339,7 +372,7 @@
         {/each}
 
         <!-- Column 4 Bottom Section: Ambrilindo Logo + Hasil Juara Podium Card -->
-        {#if roundNum === 4}
+        {#if roundNum === 4 && showPodium}
           <div class="absolute bottom-0 right-0 w-full flex flex-col items-end z-20">
             <!-- Ambrilindo Brand Logo (Enlarged, Right-Aligned) -->
             <div class="mb-2.5 flex items-center justify-end w-full pr-1">

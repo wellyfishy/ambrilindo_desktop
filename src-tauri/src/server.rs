@@ -933,6 +933,8 @@ pub struct ExecuteDrawingHttpInput {
 pub struct DeleteCategoryBagansHttpInput {
     pub event_id: i64,
     pub category_id: i64,
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1413,7 +1415,7 @@ async fn delete_category_bagans_api(
     Json(payload): Json<DeleteCategoryBagansHttpInput>,
 ) -> impl IntoResponse {
     let db = state.db.lock().await;
-    match db.delete_category_bagans(payload.event_id, payload.category_id).await {
+    match db.delete_category_bagans(payload.event_id, payload.category_id, payload.force).await {
         Ok(()) => {
             if let Some(app) = &state.app_handle {
                 let _ = app.emit("bracket_updated", ());
@@ -1971,11 +1973,17 @@ async fn dispatch_command_api(
         "delete_category_bagans" => {
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             let cat_id = get_i64_val(&payload, &["categoryId", "category_id"]).unwrap_or(0);
-            match db.delete_category_bagans(ev_id, cat_id).await {
+            let force = payload.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            match db.delete_category_bagans(ev_id, cat_id, force).await {
                 Ok(()) => {
                     if let Some(app) = &state.app_handle {
                         let _ = app.emit("bracket_updated", ());
                     }
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "bracket".into(),
+                        payload: serde_json::json!({ "type": "bracket_updated" }),
+                    });
                     (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
                 },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2497,11 +2505,17 @@ async fn dispatch_command_api(
             }
         },
         "assign_bout_athletes" => {
-            let bout_id = get_i64_val(&payload, &["boutId", "bout_id"]).unwrap_or(0);
-            let aka_id = get_i64_val(&payload, &["akaAtletId", "aka_atlet_id"]);
-            let ao_id = get_i64_val(&payload, &["aoAtletId", "ao_atlet_id"]);
-            let aka_custom = get_str_val(&payload, &["akaCustomName", "aka_custom_name"]);
-            let ao_custom = get_str_val(&payload, &["aoCustomName", "ao_custom_name"]);
+            // The control panel sends { input: { bout_id, ... } } (as for the Tauri command);
+            // older callers sent the fields at the top level.
+            let src = payload.get("input").filter(|v| v.is_object()).unwrap_or(&payload);
+            let bout_id = get_i64_val(src, &["boutId", "bout_id"]).unwrap_or(0);
+            let aka_id = get_i64_val(src, &["akaAtletId", "aka_atlet_id"]);
+            let ao_id = get_i64_val(src, &["aoAtletId", "ao_atlet_id"]);
+            let aka_custom = get_str_val(src, &["akaCustomName", "aka_custom_name"]);
+            let ao_custom = get_str_val(src, &["aoCustomName", "ao_custom_name"]);
+            if bout_id <= 0 {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "Partai beregu tidak dikenali (bout_id kosong)" }))).into_response();
+            }
             let input = AssignBoutAthletesInput {
                 bout_id,
                 aka_atlet_id: aka_id,

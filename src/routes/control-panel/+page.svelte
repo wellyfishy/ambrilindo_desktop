@@ -31,7 +31,8 @@
   );
 
 
-  async function loadMatchData() {
+  /** followActiveBout: after a team bout is saved, open the next bout to play */
+  async function loadMatchData(opts: { followActiveBout?: boolean } = {}) {
     isLoading = true;
     errorMessage = null;
 
@@ -143,18 +144,29 @@
         throw new Error("Parameter matchId atau baganId tidak ditemukan di URL.");
       }
 
-      // 1. Fetch all matches in this bagan
+      // 1. Team match info first (Kumite Beregu): the host creates missing bouts and gives
+      //    untouched bouts their VR card back here, so the bout list read next is current.
+      //    (Reading the bouts first showed both cards "hangus" on a team match's first open.)
+      let teamInfoResult: TeamMatchInfo | null = null;
+      let teamInfoError: unknown = null;
+      try {
+        teamInfoResult = await invoke("get_team_match_info", { matchId });
+      } catch (e) {
+        teamInfoError = e;
+      }
+
+      // 2. Fetch all matches in this bagan
       const matches: DetailBaganItem[] = await invoke("get_detail_bagan", { baganId });
       allMatchesInBagan = matches;
 
-      // 2. Fetch team match info if this is Kumite Beregu
       try {
-        const tInfo: TeamMatchInfo = await invoke("get_team_match_info", { matchId });
+        if (teamInfoError) throw teamInfoError;
+        const tInfo = teamInfoResult as TeamMatchInfo;
         if (tInfo && tInfo.is_team_match) {
           teamMatchInfo = tInfo;
           // Determine target match: active bout or currently focused bout
           let targetBoutId = tInfo.active_bout_id;
-          if (currentMatch && tInfo.bouts.some((b) => b.bout_id === currentMatch?.id)) {
+          if (!opts.followActiveBout && currentMatch && tInfo.bouts.some((b) => b.bout_id === currentMatch?.id)) {
             targetBoutId = currentMatch.id;
           }
           const foundBout = matches.find((m) => m.id === targetBoutId);
@@ -364,8 +376,9 @@
         } catch (_) {}
       }
       if (teamMatchInfo?.is_team_match) {
-        // If team match, reload state to update team score and active bout
-        await loadMatchData();
+        // Team match: reload the team score and move on to the next bout to play
+        // (staying on the saved bout made the next save overwrite it)
+        await loadMatchData({ followActiveBout: true });
       } else {
         // Close this window after successful save for standard individual match
         await handleCloseWindow();

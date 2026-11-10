@@ -19,7 +19,12 @@
     tenth: number;
   }
 
-  const JUDGE_SEATS = [1, 2, 3, 4, 5];
+  // Seats follow the number of kata judges set on the control panel (3 / 5 / 7)
+  // Until the control panel's setting is known (panel not open yet), every seat up to the
+  // maximum of 7 can be chosen; the last known count is remembered per tatami.
+  const MAX_JUDGES = 7;
+  let judgeCount = $state<number>(MAX_JUDGES);
+  let JUDGE_SEATS = $derived(Array.from({ length: judgeCount }, (_, i) => i + 1));
   const WHOLES = [5, 6, 7, 8, 9, 10];
   const TENTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -27,6 +32,7 @@
   /** Event of this tatami (from the tatami picker); every event has its own tatami 1, 2, ... */
   let eventId = $derived(Number(page.url.searchParams.get("event")) || null);
   let seatKey = $derived(`ambrilindo_judge_seat_t${tatamiNumber}`);
+  let judgeCountKey = $derived(`ambrilindo_judge_count_t${tatamiNumber}`);
 
   // --- seat ---
   let seat = $state<number | null>(null);
@@ -263,6 +269,19 @@
     matchNumber = nextMatchNumber;
     isKata = d.isKata !== false;
     isFinished = !!d.isFinished || !!d.selesai;
+    const jc = Number(d.judgeCount);
+    if ([3, 5, 7].includes(jc) && jc !== judgeCount) {
+      judgeCount = jc;
+      try {
+        localStorage.setItem(judgeCountKey, String(jc));
+      } catch (_) {}
+      // This seat no longer exists (e.g. panel switched from 5 to 3 judges): choose again.
+      if (seat !== null && seat > jc) {
+        showToast(`Panel kini ${jc} juri — pilih ulang kursi juri`, "error");
+        seat = null;
+        seatPickerOpen = true;
+      }
+    }
     akaName = nextAkaName;
     akaContingent = nextAkaContingent;
     akaKata = nextAkaKata;
@@ -321,8 +340,11 @@
 
   onMount(() => {
     try {
+      const knownCount = Number(localStorage.getItem(judgeCountKey));
+      if ([3, 5, 7].includes(knownCount)) judgeCount = knownCount;
       const saved = Number(localStorage.getItem(seatKey));
-      if (JUDGE_SEATS.includes(saved)) seat = saved;
+      // checked against the panel's judge count once its live state arrives
+      if (Number.isInteger(saved) && saved >= 1 && saved <= judgeCount) seat = saved;
     } catch (_) {}
     if (seat === null) seatPickerOpen = true;
     try {
@@ -735,7 +757,7 @@
   <div class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-5">
     <div class="w-full max-w-md bg-[#181a20] border border-white/10 rounded-2xl p-5">
       <h2 class="text-lg font-black text-white">Tatami {tatamiNumber} — pilih kursi juri</h2>
-      <div class="grid grid-cols-5 gap-2 mt-4">
+      <div class="grid {judgeCount === 3 ? 'grid-cols-3' : judgeCount === 7 ? 'grid-cols-4' : 'grid-cols-5'} gap-2 mt-4">
         {#each JUDGE_SEATS as n (n)}
           {@const taken = seatsTakenElsewhere.has(n)}
           <button

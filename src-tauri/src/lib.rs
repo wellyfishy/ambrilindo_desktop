@@ -364,10 +364,11 @@ async fn delete_all_festival_bagans(
 async fn delete_category_bagans(
     event_id: i64,
     category_id: i64,
+    force: Option<bool>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    let res = db.delete_category_bagans(event_id, category_id).await;
+    let res = db.delete_category_bagans(event_id, category_id, force.unwrap_or(false)).await;
     if res.is_ok() {
         notify_bracket_changed(&state);
     }

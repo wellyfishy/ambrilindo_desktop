@@ -2940,7 +2940,18 @@ impl DatabaseManager {
     }
 
     /// Deletes brackets and match records for a single category
-    pub async fn delete_category_bagans(&self, _event_id: i64, category_id: i64) -> Result<(), String> {
+    /// Deletes a category's brackets. A category that already played bouts is refused unless
+    /// `force` (the operator confirmed that those results are deleted too).
+    pub async fn delete_category_bagans(&self, _event_id: i64, category_id: i64, force: bool) -> Result<(), String> {
+        if !force {
+            let finished = self.category_finished_matches(category_id).await?;
+            if finished > 0 {
+                return Err(format!(
+                    "Bagan tidak dihapus: sudah ada {} partai selesai di kategori ini. Konfirmasi penghapusan hasil bila memang ingin dihapus.",
+                    finished
+                ));
+            }
+        }
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
@@ -3702,13 +3713,6 @@ impl DatabaseManager {
 
     /// Saves a match result in detail_bagan and advances the winner in tournament brackets
     pub async fn save_match_result(&self, input: SaveMatchInput) -> Result<(), String> {
-        // Winner is AKA ("1") or AO ("2"); empty only for an open bout or a round-robin draw.
-        // Anything else would mark the bout finished with nobody advancing.
-        if let Some(p) = input.pemenang.as_deref().map(str::trim) {
-            if !p.is_empty() && p != "1" && p != "2" {
-                return Err(format!("Pemenang tidak valid: \"{}\" (harus AKA atau AO)", p));
-            }
-        }
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
@@ -3722,6 +3726,16 @@ impl DatabaseManager {
         .map_err(|e| format!("Partai dengan ID {} tidak ditemukan: {}", input.match_id, e))?;
 
         let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id, is_team_child_bout) = current_match;
+
+        // Winner is AKA ("1") or AO ("2"); a bout inside a team match may also end
+        // hikiwake ("3"). Empty only for an open bout or a round-robin draw. Anything else
+        // would mark the bout finished with nobody advancing.
+        if let Some(p) = input.pemenang.as_deref().map(str::trim) {
+            let draw_ok = is_team_child_bout && p == "3";
+            if !p.is_empty() && p != "1" && p != "2" && !draw_ok {
+                return Err(format!("Pemenang tidak valid: \"{}\" (harus AKA atau AO)", p));
+            }
+        }
 
         // Fetch bagan metadata to identify pool / multi-pool context
         let bagan_meta: Option<(i32, Option<i64>, Option<String>, Option<i64>, bool, bool)> = sqlx::query_as(
@@ -8259,9 +8273,8 @@ impl DatabaseManager {
     /// Finalizes a team match: computes final aggregate scores, advances winning team in bracket tree, enqueues sync
     pub async fn finish_team_match(&self, parent_match_id: i64, winner_override: Option<String>) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
-        // 1. Fetch all child bouts to calculate aggregate tallies
+        // 1. Tally the bouts (wins, then total points)
         #[derive(sqlx::FromRow)]
         struct ChildBoutTally {
             score1: Option<String>,
@@ -8273,7 +8286,7 @@ impl DatabaseManager {
             "SELECT db.score1, db.score2, db.pemenang FROM backend_matchup m JOIN backend_detailbagan db ON m.db_id = db.id WHERE m.detail_bagan_id = ? ORDER BY m.round ASC"
         )
         .bind(parent_match_id)
-        .fetch_all(&mut *tx)
+        .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat partai beregu: {}", e))?;
 
@@ -8281,158 +8294,67 @@ impl DatabaseManager {
         let mut t_ao_score = 0;
         let mut t_aka_points = 0;
         let mut t_ao_points = 0;
-
+        let parse = |v: &Option<String>| v.as_deref().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
         for b in &bouts {
-            if let Some(ref pem) = b.pemenang {
-                if pem == "1" {
-                    t_aka_score += 1;
-                } else if pem == "2" {
-                    t_ao_score += 1;
-                }
+            match b.pemenang.as_deref() {
+                Some("1") => t_aka_score += 1,
+                Some("2") => t_ao_score += 1,
+                _ => {}
             }
-            if let Some(ref s1) = b.score1 {
-                if let Ok(v) = s1.trim().parse::<i32>() {
-                    t_aka_points += v;
-                }
-            }
-            if let Some(ref s2) = b.score2 {
-                if let Ok(v) = s2.trim().parse::<i32>() {
-                    t_ao_points += v;
-                }
-            }
+            t_aka_points += parse(&b.score1);
+            t_ao_points += parse(&b.score2);
         }
 
-        // 2. Determine final winner
-        let final_pemenang = if let Some(w) = winner_override {
-            w
-        } else if t_aka_score > t_ao_score {
-            "1".to_string()
-        } else if t_ao_score > t_aka_score {
-            "2".to_string()
-        } else if t_aka_points > t_ao_points {
-            "1".to_string()
-        } else if t_ao_points > t_aka_points {
-            "2".to_string()
-        } else {
-            "1".to_string()
+        // 2. Winner: the operator's choice, else wins, else total points. A full tie needs a
+        //    deciding bout (or the operator's choice); never hand it to AKA silently.
+        let final_pemenang = match winner_override.as_deref().map(str::trim) {
+            Some(w @ ("1" | "2")) => w.to_string(),
+            Some(other) if !other.is_empty() => return Err(format!("Pemenang beregu tidak valid: {}", other)),
+            _ if t_aka_score != t_ao_score => if t_aka_score > t_ao_score { "1" } else { "2" }.to_string(),
+            _ if t_aka_points != t_ao_points => if t_aka_points > t_ao_points { "1" } else { "2" }.to_string(),
+            _ => return Err("Skor beregu seri (kemenangan dan poin sama). Tambah partai penentu atau pilih pemenang.".to_string()),
         };
 
-        // 3. Update parent match
-        sqlx::query(
-            "UPDATE backend_detailbagan SET score1 = ?, score2 = ?, scorekecil1 = ?, scorekecil2 = ?, pemenang = ?, selesai = 1 WHERE id = ?"
-        )
-        .bind(t_aka_score.to_string())
-        .bind(t_ao_score.to_string())
-        .bind(t_aka_points.to_string())
-        .bind(t_ao_points.to_string())
-        .bind(&final_pemenang)
-        .bind(parent_match_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Gagal update partai utama: {}", e))?;
-
-        // 4. Advance winning team in bracket tree
-        #[derive(sqlx::FromRow)]
-        struct ParentTreeMeta {
-            bagan_id: i64,
-            round: i64,
-            urutan: i64,
-            atlet1_id: Option<i64>,
-            atlet2_id: Option<i64>,
-            assigned_tatami_id: Option<i64>,
-            event_id: Option<i64>,
-        }
-
-        let p_meta: ParentTreeMeta = sqlx::query_as(
-            "SELECT db.bagan_id, db.round, db.urutan, db.atlet1_id, db.atlet2_id, db.assigned_tatami_id, b.event_id FROM backend_detailbagan db JOIN backend_bagan b ON db.bagan_id = b.id WHERE db.id = ?"
+        // 3. Save the team result like any bout of the bracket, so the same rules apply:
+        //    winner advances, final sets juara 1/2, semifinal / repechage losers go to the
+        //    bronze bout, pools, web sync. (The old code moved the winner to "round + 1",
+        //    which put the final's winner into the bronze bout and never set the juara.)
+        let parent: (i64, bool, bool, Option<i64>) = sqlx::query_as(
+            "SELECT bagan_id, vr1, vr2, assigned_tatami_id FROM backend_detailbagan WHERE id = ?"
         )
         .bind(parent_match_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(pool)
         .await
-        .map_err(|e| format!("Gagal memuat pohon bagan: {}", e))?;
+        .map_err(|e| format!("Gagal memuat partai beregu utama: {}", e))?;
+        let (bagan_id, vr1, vr2, assigned_tatami_id) = parent;
 
-        let winner_athlete_id = if final_pemenang == "1" {
-            p_meta.atlet1_id
-        } else {
-            p_meta.atlet2_id
-        };
+        self.save_match_result(SaveMatchInput {
+            match_id: parent_match_id,
+            bagan_id,
+            score1: Some(t_aka_score.to_string()),
+            score2: Some(t_ao_score.to_string()),
+            scorekecil1: Some(t_aka_points.to_string()),
+            scorekecil2: Some(t_ao_points.to_string()),
+            pemenang: Some(final_pemenang),
+            kata1: None,
+            kata2: None,
+            vr1,
+            vr2,
+            hantei: false,
+            selesai: true,
+            juri_scores1: None,
+            juri_scores2: None,
+        })
+        .await?;
 
-        if let Some(w_id) = winner_athlete_id {
-            let next_round = p_meta.round + 1;
-            let next_urutan = (p_meta.urutan + 1) / 2;
-
-            if p_meta.urutan % 2 == 1 {
-                let _ = sqlx::query(
-                    "UPDATE backend_detailbagan SET atlet1_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
-                )
-                .bind(w_id)
-                .bind(p_meta.bagan_id)
-                .bind(next_round)
-                .bind(next_urutan)
-                .execute(&mut *tx)
-                .await;
-            } else {
-                let _ = sqlx::query(
-                    "UPDATE backend_detailbagan SET atlet2_id = ? WHERE bagan_id = ? AND round = ? AND urutan = ?"
-                )
-                .bind(w_id)
-                .bind(p_meta.bagan_id)
-                .bind(next_round)
-                .bind(next_urutan)
-                .execute(&mut *tx)
-                .await;
-            }
-        }
-
-        // 5. Clear tatami assignment or advance
-        if let Some(t_id) = p_meta.assigned_tatami_id {
+        // 4. The tatami is free for its next match
+        if let Some(t_id) = assigned_tatami_id {
             let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE id = ? AND detail_bagan_id = ?")
                 .bind(t_id)
                 .bind(parent_match_id)
-                .execute(&mut *tx)
+                .execute(pool)
                 .await;
         }
-
-        // 6. Enqueue cloud sync if enabled
-        if let Some(ev_id) = p_meta.event_id {
-            let ev_info: Option<(Option<String>, bool)> = sqlx::query_as(
-                "SELECT kode_event, is_live_sync_enabled FROM backend_event WHERE id = ?"
-            )
-            .bind(ev_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None);
-
-            if let Some((kode_event, is_live_sync_enabled)) = ev_info {
-                if is_live_sync_enabled {
-                    let ev_code = kode_event.unwrap_or_else(|| format!("EV{}", ev_id));
-                    let kode_realtime = format!("{}-{}-{}", ev_code, p_meta.bagan_id, parent_match_id);
-
-                    let payload = serde_json::json!({
-                        "status": "finished",
-                        "pemenang": if final_pemenang == "1" { "aka" } else { "ao" },
-                        "round": p_meta.round,
-                        "urutan": p_meta.urutan,
-                        "kode_realtime": kode_realtime,
-                        "score_aka": t_aka_score.to_string(),
-                        "score_ao": t_ao_score.to_string(),
-                        "lil_score_aka": t_aka_points.to_string(),
-                        "lil_score_ao": t_ao_points.to_string(),
-                    });
-
-                    let _ = sqlx::query(
-                        "INSERT INTO backend_syncqueue (event_id, endpoint, payload, attempts, created_at) VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)"
-                    )
-                    .bind(ev_id)
-                    .bind("api/result/")
-                    .bind(payload.to_string())
-                    .execute(&mut *tx)
-                    .await;
-                }
-            }
-        }
-
-        tx.commit().await.map_err(|e| format!("Gagal menyelesaikan partai beregu: {}", e))?;
         Ok(())
     }
 

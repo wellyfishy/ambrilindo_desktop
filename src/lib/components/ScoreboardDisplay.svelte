@@ -478,9 +478,12 @@
   // Kata scores only appear on the banner when the operator has shown them
   let winnerScoreVisible = $derived(!isKata || (showKataTotal && !holdKataTotal));
 
-  // Calculate judge highlights for 5-judge table
+  // Kata judges shown in the pop up (3 / 5 / 7, set on the control panel)
+  let judgeCount = $state<number>(5);
+
+  // Calculate judge highlights for the judges table
   let judgeDecisions = $derived.by(() => {
-    return [0, 1, 2, 3, 4].map((idx) => {
+    return Array.from({ length: judgeCount }, (_, idx) => idx).map((idx) => {
       const rawAka = akaJudgeScores[idx]?.trim();
       const rawAo = aoJudgeScores[idx]?.trim();
       const vAka = rawAka !== "" && rawAka !== undefined ? parseFloat(rawAka) : NaN;
@@ -506,6 +509,7 @@
     const wasJudgePanel = isKata && showKataScoreOverlay;
     const wasTotalVisible = showKataTotal && !holdKataTotal;
     if (data.category) categoryName = data.category;
+    if ([3, 5, 7].includes(Number(data.judgeCount))) judgeCount = Number(data.judgeCount);
     if (data.round) matchRound = data.round;
     if (data.matchNumber !== undefined) matchNumber = String(data.matchNumber);
     if (data.eventName) eventName = data.eventName;
@@ -1024,7 +1028,7 @@
          judge's higher score is lit in its corner colour, the other stays readable. -->
     <div class="sb-judges-slot">
     {#if showJudgePanel}
-      <div class="sb-judges" aria-label="Skor juri">
+      <div class="sb-judges" aria-label="Skor juri" style="--jcount: {judgeCount}">
         {#each judgeDecisions as decision, idx}
           <div class="sb-judge-pod" style="--i: {idx}">
             <div class="sb-jscore aka" class:leading={decision === "aka"}>
@@ -2239,13 +2243,14 @@
 .sb-banner-overlay.is-dual .sb-banner-subtitle { font-size: 14cqh; }
 .sb-banner-overlay.is-dual .sb-banner-flag { height: 10cqh; }
 
-/* ==================== KATA 5-JUDGE PANEL (between AKA and AO) ==================== */
+/* ==================== KATA JUDGES PANEL (3 / 5 / 7, between AKA and AO) ==================== */
 .sb-judges {
+  --jcount: 5;
   height: 100%;
   min-height: 30cqh;
   padding: 0.8cqh 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--jcount), minmax(0, 1fr));
   gap: 1.6cqh;
 }
 
@@ -2273,7 +2278,8 @@
   border-radius: 1.2cqh;
   font-family: var(--sb-display);
   font-weight: 700;
-  font-size: 11cqh;
+  /* 7 narrower pods: smaller digits so "10.0" still fits */
+  font-size: calc(11cqh * 5 / max(var(--jcount), 5));
   line-height: 1;
   color: rgba(255, 255, 255, 0.9);
   background-color: #1b1d23;
