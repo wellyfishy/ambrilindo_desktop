@@ -154,6 +154,8 @@
       const map: Record<number, EnrichedAtletItem[]> = {};
       for (const a of all) {
         if (a.nomor_tanding_id == null) continue;
+        // a team category lists its teams only, not the members of each team (as drawn)
+        if ((a.additional_code || "").toUpperCase().startsWith("MEMBER_")) continue;
         (map[a.nomor_tanding_id] ??= []).push(a);
       }
       // Grouped by kontingen, so coaches find their athletes quickly

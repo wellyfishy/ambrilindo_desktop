@@ -65,9 +65,9 @@
     },
     {
       id: "lo_kata",
-      title: "LO Kata",
-      subtitle: "Pencatatan & Cek Kata Ulang",
-      badge: "LO Table",
+      title: "LO / Guide",
+      subtitle: "Bagan Tatami & Input Kata",
+      badge: "LO / Guide",
       color: "cyan",
       icon: "clipboard",
       getUrl: (t, e) => `/lo-kata/${t}${e ? `?event=${e}` : ""}`,

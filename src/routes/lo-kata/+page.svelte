@@ -1,4 +1,4 @@
-<!-- LO Kata entry: pick the tatami of the running event. -->
+<!-- LO / Guide entry: pick the tatami of the running event. -->
 <script lang="ts">
   import { onMount } from "svelte";
   import { getHostBaseUrl } from "$lib/api_client";
@@ -35,13 +35,13 @@
 </script>
 
 <svelte:head>
-  <title>Pilih Tatami • LO Kata</title>
+  <title>Pilih Tatami • LO / Guide</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 </svelte:head>
 
 <div class="min-h-screen bg-[#0c0e12] text-zinc-100 flex flex-col font-sans select-none p-5">
   <div class="max-w-lg mx-auto w-full flex-1 flex flex-col justify-center">
-    <h1 class="text-xl font-black text-white tracking-tight uppercase text-center">Panel LO Kata</h1>
+    <h1 class="text-xl font-black text-white tracking-tight uppercase text-center">Panel LO / Guide</h1>
     {#if eventName}
       <p class="text-xs text-zinc-400 text-center mt-1">{eventName}</p>
     {/if}

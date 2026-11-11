@@ -8,7 +8,7 @@
   import { page } from "$app/state";
   import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
   import { apiCall, getHostBaseUrl } from "$lib/api_client";
-  import type { BoutPanel, BoutStatusRow, TatamiItem, TatamiPanelOverview, WasitItem } from "$lib/types";
+  import type { BoutPanel, BoutStatusRow, RefereeBusy, RevisionNotice, TatamiItem, TatamiPanelOverview, WasitItem } from "$lib/types";
   import {
     BOUT_STATUS_CLASS,
     BOUT_STATUS_LABEL,
@@ -17,9 +17,14 @@
     TEAM_SEATS,
     boutJudgeCount,
     boutSeats,
+    busyReason,
     conflictReason,
     effectivePanel,
     isKataCategory,
+    isPanelConflict,
+    panelConflictText,
+    placeInSeat,
+    takenForSeat,
     type SeatHolder,
   } from "$lib/refereeSeats";
   import RefereeAvatar from "$lib/components/RefereeAvatar.svelte";
@@ -132,6 +137,28 @@
     }
   }
 
+  /** referees seated on a tatami right now (double booking check) */
+  let busy = $state<RefereeBusy[]>([]);
+  async function loadBusy() {
+    if (!eventId) return;
+    try {
+      busy = await apiCall<RefereeBusy[]>("get_referee_busy", { eventId });
+    } catch (e) {
+      console.warn("Gagal memuat tugas wasit:", e);
+    }
+  }
+  /** "Sedang bertugas di Tatami 2 (Partai #3)" for a referee of the open bout, else null */
+  function boutBusy(wasitId: number): string | null {
+    return busyReason(busy, wasitId, { tatami: boutPanel?.tatami_number ?? tatamiNumber, matchId: editMatchId });
+  }
+
+  /** Another device saved this bout in between: show its version and say so */
+  async function onPanelConflict(e: unknown) {
+    await loadBoutPanel();
+    boutError = "";
+    showNotice(`⚠ ${panelConflictText(e)}`, true);
+  }
+
   async function loadTatamis() {
     if (!eventId) return;
     try {
@@ -148,7 +175,7 @@
       return;
     }
     try {
-      const p = await apiCall<BoutPanel>("get_bout_panel", { matchId: id, tatamiNumber });
+      const [p] = await Promise.all([apiCall<BoutPanel>("get_bout_panel", { matchId: id, tatamiNumber }), loadBusy()]);
       if (editMatchId === id) {
         boutPanel = p;
         boutError = "";
@@ -178,7 +205,8 @@
   }
 
   /** Save this bout's own panel (seat key → referee id) */
-  async function saveBout(next: Record<string, number>, judges = judgeCount) {
+  /** `rev`: the version this change was made on (another device saving in between refuses it) */
+  async function saveBout(next: Record<string, number>, judges = judgeCount, rev = boutPanel?.rev) {
     if (!editMatchId) return;
     boutSaving = true;
     try {
@@ -186,11 +214,13 @@
         matchId: editMatchId,
         tatamiNumber,
         judges,
+        expectedRev: rev ?? null,
         seats: Object.entries(next).map(([posisi, wasit_id]) => ({ posisi, wasit_id })),
       });
       await loadBoutPanel();
     } catch (e) {
-      boutError = `Gagal menyimpan: ${errText(e)}`;
+      if (isPanelConflict(e)) await onPanelConflict(e);
+      else boutError = `Gagal menyimpan: ${errText(e)}`;
     } finally {
       boutSaving = false;
     }
@@ -222,12 +252,14 @@
         matchId: editMatchId,
         tatamiNumber,
         judges: judgeCount,
+        expectedRev: boutPanel?.rev ?? null,
         seats: Object.entries(next).map(([posisi, wasit_id]) => ({ posisi, wasit_id })),
       });
       await Promise.all([loadBoutPanel(), loadStatuses()]);
       showNotice("Wasit & juri partai ini sudah ditetapkan", false);
     } catch (e) {
-      boutError = `Gagal submit: ${errText(e)}`;
+      if (isPanelConflict(e)) await onPanelConflict(e);
+      else boutError = `Gagal submit: ${errText(e)}`;
     } finally {
       boutSaving = false;
     }
@@ -248,36 +280,95 @@
   function statusBadge(m: any): { text: string; cls: string } | null {
     if (!m || m.selesai || !m.atlet1_id || !m.atlet2_id) return null;
     const s = boutStatuses[m.id]?.status ?? "draft";
+    if (s === "approved" && boutStatuses[m.id]?.revised_at) {
+      return { text: "DIREVISI CR", cls: "bg-violet-500/25 text-violet-100 border-violet-400/60" };
+    }
     const text = s === "draft" ? (boutStatuses[m.id]?.reject_note ? "DITOLAK" : "DRAFT") : s === "submitted" ? "DITETAPKAN" : s === "pending" ? "MENUNGGU CR" : "DISETUJUI";
     const cls = s === "draft" && boutStatuses[m.id]?.reject_note ? "bg-red-600/30 text-red-200 border-red-500/60" : BOUT_STATUS_CLASS[s];
     return { text, cls };
   }
 
-  /** "Partai #3 … ditolak" notices for this tatami (until dismissed) */
-  let rejectNotices = $state<{ id: number; matchId: number; text: string }[]>([]);
+  /**
+   * Chief referee notices for this tatami: "ditolak" (until dismissed) and "direvisi" (until
+   * seen; a revision stays unseen on the host, so it comes back after a reload or offline).
+   */
+  type CrNotice = { id: number; matchId: number; baganId: number | null; text: string; kind: "reject" | "revise" };
+  let rejectNotices = $state<CrNotice[]>([]);
+  let noticeSeq = 0;
+
+  function boutLabel(p: { urutan?: number | null; category?: string | null; aka_nama?: string | null; ao_nama?: string | null }): string {
+    return `Partai #${p.urutan ?? ""} ${p.category ?? ""} (AO ${p.ao_nama ?? "-"} vs AKA ${p.aka_nama ?? "-"})`;
+  }
+
+  function addRevisionNotice(n: RevisionNotice) {
+    if (rejectNotices.some((x) => x.kind === "revise" && x.matchId === n.match_id)) return;
+    rejectNotices = [
+      ...rejectNotices,
+      {
+        id: ++noticeSeq,
+        matchId: n.match_id,
+        baganId: n.bagan_id,
+        kind: "revise",
+        text: `${boutLabel(n)} direvisi Chief Referee${n.note ? `: ${n.note}` : ""}`,
+      },
+    ];
+  }
+
+  async function loadUnseenRevisions() {
+    try {
+      const list = await apiCall<RevisionNotice[]>("get_unseen_revisions", { tatamiNumber, eventId });
+      for (const n of list) addRevisionNotice(n);
+    } catch (e) {
+      console.warn("Gagal memuat revisi Chief Referee:", e);
+    }
+  }
+
+  /** Close a notice; a revision is marked seen on the host (for every tablet of this tatami) */
+  function dismissNotice(n: CrNotice) {
+    rejectNotices = rejectNotices.filter((x) => x.id !== n.id);
+    if (n.kind === "revise") apiCall("ack_bout_revision", { matchId: n.matchId }).then(loadStatuses).catch(() => {});
+  }
+
+  async function openNotice(n: CrNotice) {
+    if (n.baganId && n.baganId !== viewBaganId) await showBagan(n.baganId);
+    editMatchId = n.matchId;
+    dismissNotice(n);
+  }
+
   async function onBoutStatus(msg: any) {
     loadStatuses();
     if (editMatchId && Number(msg.match_id) === editMatchId) loadBoutPanel();
-    if (msg.action !== "reject" || (msg.tatami != null && Number(msg.tatami) !== tatamiNumber)) return;
+    if (msg.tatami != null && Number(msg.tatami) !== tatamiNumber) return;
+    if (msg.action === "revise") {
+      // the host has the full notice (bagan, names, note): ask it
+      loadUnseenRevisions();
+      return;
+    }
+    if (msg.action !== "reject") return;
     let label = `Partai ${msg.match_id}`;
+    let baganId: number | null = null;
     try {
       const p = await apiCall<BoutPanel>("get_bout_panel", { matchId: Number(msg.match_id), tatamiNumber });
-      label = `Partai #${p.urutan ?? ""} ${p.category ?? ""} (${p.aka_nama ?? "-"} vs ${p.ao_nama ?? "-"})`;
+      label = boutLabel(p);
+      baganId = baganMatches.find((m) => m.id === Number(msg.match_id))?.bagan_id ?? null;
     } catch {}
-    rejectNotices = [...rejectNotices, { id: Date.now(), matchId: Number(msg.match_id), text: `${label} ditolak Chief Referee: ${msg.note || "-"}` }];
+    rejectNotices = [
+      ...rejectNotices,
+      { id: ++noticeSeq, matchId: Number(msg.match_id), baganId, kind: "reject", text: `${label} ditolak Chief Referee: ${msg.note || "-"}` },
+    ];
   }
 
-  /** One seat changed (a referee moved here leaves their old seat) */
+  /** One seat changed (a referee moved here leaves their old seat, unless the Tatami Manager also takes Kansa / Score Supervisor) */
   async function setBoutSeat(seatKey: string, holder: SeatHolder | null) {
     if (!effective || !editMatchId) return;
     if (!confirmBackToDraft()) return;
-    const next = currentSeatIds();
+    let next = currentSeatIds();
     if (holder) {
-      for (const k of Object.keys(next)) if (next[k] === holder.wasit_id) delete next[k];
-      next[seatKey] = holder.wasit_id;
-      const conflict = conflictReason(holder, boutPanel);
+      const placed = placeInSeat<number>(next, seatKey, holder.wasit_id, (n) => n);
+      next = Object.fromEntries(Object.entries(placed).filter((e): e is [string, number] => e[1] != null));
+      const warn = [boutBusy(holder.wasit_id), conflictReason(holder, boutPanel)].filter(Boolean).join(" · ");
       const label = seats.find((s) => s.key === seatKey)?.label ?? seatKey;
-      showNotice(conflict ? `⚠ ${holder.nama_wasit} (${label}): ${conflict}` : `${holder.nama_wasit} → ${label}`, !!conflict);
+      showNotice(warn ? `⚠ ${holder.nama_wasit} (${label}): ${warn}` : `${holder.nama_wasit} → ${label}`, !!warn);
     } else {
       delete next[seatKey];
     }
@@ -285,7 +376,9 @@
   }
 
   function openSeat(seat: { key: string; label: string }) {
-    if (!boutSaving) pickFor = { kind: "bout", seat: seat.key, label: seat.label };
+    if (boutSaving) return;
+    pickFor = { kind: "bout", seat: seat.key, label: seat.label };
+    loadBusy();
   }
 
   /** Every seat of this bout empty (the tatami team no longer applies to it) */
@@ -301,17 +394,18 @@
     if (!confirmBackToDraft()) return;
     boutSaving = true;
     try {
-      await apiCall("set_bout_judges", { matchId: editMatchId, tatamiNumber, judges: n, kata: boutIsKata });
+      const rev = await apiCall<number>("set_bout_judges", { matchId: editMatchId, tatamiNumber, judges: n, kata: boutIsKata, expectedRev: boutPanel?.rev ?? null });
       // a bout with its own panel drops the seats that no longer exist
       if (effective?.fromBout) {
         const keep = new Set(boutSeats(boutPanel?.category, n).map((s) => s.key));
         const next = Object.fromEntries(Object.entries(currentSeatIds()).filter(([k]) => keep.has(k)));
-        await saveBout(next, n);
+        await saveBout(next, n, rev);
       } else {
         await loadBoutPanel();
       }
     } catch (e) {
-      boutError = `Gagal: ${errText(e)}`;
+      if (isPanelConflict(e)) await onPanelConflict(e);
+      else boutError = `Gagal: ${errText(e)}`;
     } finally {
       boutSaving = false;
     }
@@ -344,13 +438,16 @@
           if (holders[i]) next[s.key] = holders[i].wasit_id;
         });
       }
+      let rev = boutPanel.rev;
       if (judges !== judgeCount) {
-        await apiCall("set_bout_judges", { matchId: editMatchId, tatamiNumber, judges, kata: boutIsKata });
+        rev = await apiCall<number>("set_bout_judges", { matchId: editMatchId, tatamiNumber, judges, kata: boutIsKata, expectedRev: rev ?? null });
       }
-      await saveBout(next, judges);
-      showNotice(`Wasit ${boutPanel.prev_label ?? "partai sebelumnya"} dipakai`, false);
+      const label = boutPanel.prev_label ?? "partai sebelumnya";
+      await saveBout(next, judges, rev);
+      if (!boutError && boutNotice?.warn !== true) showNotice(`Wasit ${label} dipakai`, false);
     } catch (e) {
-      boutError = `Gagal: ${errText(e)}`;
+      if (isPanelConflict(e)) await onPanelConflict(e);
+      else boutError = `Gagal: ${errText(e)}`;
     } finally {
       boutSaving = false;
     }
@@ -524,6 +621,12 @@
   function openSheet(m: any) {
     if (!m || (!m.atlet1_id && !m.atlet2_id)) return;
     editMatchId = m.id;
+    const st = boutStatuses[m.id];
+    if (st?.revised_at && !st.revised_seen) {
+      const n = rejectNotices.find((x) => x.kind === "revise" && x.matchId === m.id);
+      if (n) dismissNotice(n);
+      else apiCall("ack_bout_revision", { matchId: m.id }).then(loadStatuses).catch(() => {});
+    }
   }
 
   // ---- Realtime ----
@@ -561,6 +664,7 @@
       // no referee_updated pushes without the socket: reload what is open now and then
       if (++pollCount % 3 === 0) {
         loadStatuses();
+        loadUnseenRevisions();
         if (editMatchId) loadBoutPanel();
         if (teamOpen) loadTeam();
       }
@@ -571,6 +675,7 @@
 
   onMount(() => {
     refreshAll();
+    loadUnseenRevisions();
     socket = connectTatamiSocket(
       "tatami-manager",
       tatamiNumber,
@@ -581,13 +686,17 @@
         else if (msg?.type === "referee_updated") {
           refreshReferees();
           loadStatuses();
-        } else if (msg?.type === "bout_status") onBoutStatus(msg);
+        } else if (msg?.type === "bout_status") {
+          onBoutStatus(msg);
+          if (editMatchId) loadBusy();
+        }
       },
       (sock) => {
         linkStatus = "live";
         wsInfo = "tersambung";
         refreshAll();
         refreshReferees();
+        loadUnseenRevisions();
         sock.send({ type: "request_tatami_state", tatami: tatamiNumber });
       },
       (ev) => {
@@ -713,30 +822,28 @@
     {/if}
   </div>
 
-  <!-- Chief referee rejected a bout of this tatami: stays until dismissed -->
+  <!-- Chief referee rejected / revised a bout of this tatami: stays until dismissed / seen -->
   {#if rejectNotices.length}
     <div class="shrink-0 px-3 pt-2 flex flex-col gap-1.5">
       {#each rejectNotices as n (n.id)}
-        <div class="flex items-center gap-2 rounded-xl border border-red-500/50 bg-red-950/60 px-3 py-2 text-xs font-semibold text-red-100 shadow-lg">
-          <span class="text-base leading-none">⚠</span>
+        <div
+          class="flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold shadow-lg {n.kind === 'revise'
+            ? 'border-violet-400/60 bg-violet-950/70 text-violet-50'
+            : 'border-red-500/50 bg-red-950/60 text-red-100'}"
+          role="status"
+        >
+          <span class="text-base leading-none">{n.kind === "revise" ? "✎" : "⚠"}</span>
           <span class="flex-1 min-w-0">{n.text}</span>
-          {#if baganMatches.some((m) => m.id === n.matchId)}
-            <button
-              type="button"
-              onclick={() => {
-                editMatchId = n.matchId;
-                rejectNotices = rejectNotices.filter((x) => x.id !== n.id);
-              }}
-              class="h-8 px-3 rounded-lg bg-white text-black font-bold shrink-0"
-            >
-              Buka
+          {#if n.baganId || baganMatches.some((m) => m.id === n.matchId)}
+            <button type="button" onclick={() => openNotice(n)} class="h-8 px-3 rounded-lg bg-white text-black font-bold shrink-0">
+              {n.kind === "revise" ? "Lihat" : "Buka"}
             </button>
           {/if}
           <button
             type="button"
             aria-label="Tutup"
-            onclick={() => (rejectNotices = rejectNotices.filter((x) => x.id !== n.id))}
-            class="h-8 w-8 rounded-lg hover:bg-white/10 text-red-200 shrink-0"
+            onclick={() => dismissNotice(n)}
+            class="h-8 w-8 rounded-lg hover:bg-white/10 shrink-0 {n.kind === 'revise' ? 'text-violet-200' : 'text-red-200'}"
           >
             ✕
           </button>
@@ -823,17 +930,17 @@
         </div>
 
         <div class="p-3 flex flex-col gap-3 overflow-y-auto min-h-0">
-          <!-- Match in one line: category, AKA vs AO (as in Ambrilindo Local) -->
+          <!-- Match in one line: category, AO (left) vs AKA (right), as seen from the officials' table -->
           <div class="flex items-center justify-between flex-wrap gap-x-4 gap-y-2 px-3 py-2 rounded-xl bg-[#121722] border border-white/[0.12]">
             <span class="text-sm font-black text-white uppercase tracking-wide shrink-0">{boutPanel?.category ?? viewBagan?.nama_bagan ?? ""}</span>
             <div class="flex items-center flex-wrap gap-x-2 gap-y-1 text-[13px] min-w-0">
-              <span class="px-2 py-0.5 rounded bg-red-600 text-white font-mono font-black text-[11px]">AKA</span>
-              <span class="font-bold text-white">{editMatch.atlet1_nama || "BYE"}</span>
-              {#if editMatch.atlet1_kontingen}<span class="text-xs text-zinc-400">({editMatch.atlet1_kontingen})</span>{/if}
-              <span class="px-1.5 py-0.5 rounded bg-white/10 text-white font-mono font-black text-[10px] mx-1">VS</span>
               <span class="px-2 py-0.5 rounded bg-sky-600 text-white font-mono font-black text-[11px]">AO</span>
               <span class="font-bold text-white">{editMatch.atlet2_nama || "BYE"}</span>
               {#if editMatch.atlet2_kontingen}<span class="text-xs text-zinc-400">({editMatch.atlet2_kontingen})</span>{/if}
+              <span class="px-1.5 py-0.5 rounded bg-white/10 text-white font-mono font-black text-[10px] mx-1">VS</span>
+              <span class="font-bold text-white">{editMatch.atlet1_nama || "BYE"}</span>
+              {#if editMatch.atlet1_kontingen}<span class="text-xs text-zinc-400">({editMatch.atlet1_kontingen})</span>{/if}
+              <span class="px-2 py-0.5 rounded bg-red-600 text-white font-mono font-black text-[11px]">AKA</span>
             </div>
           </div>
 
@@ -887,6 +994,11 @@
             </div>
           </div>
 
+          {#if boutPanel?.status === "approved" && boutPanel.revised_at}
+            <div class="rounded-xl px-3 py-2 text-xs font-semibold bg-violet-500/15 border border-violet-400/50 text-violet-100">
+              ✎ Direvisi Chief Referee ({boutPanel.revised_at.split(" ")[1]?.slice(0, 5) ?? ""}){boutPanel.revised_note ? `: ${boutPanel.revised_note}` : ""}. Susunan di bawah adalah hasil revisi dan sudah disetujui.
+            </div>
+          {/if}
           {#if boutPanel?.status === "draft" && boutPanel.reject_note}
             <div class="rounded-xl px-3 py-2 text-xs font-semibold bg-red-500/10 border border-red-500/40 text-red-200">
               ⚠ Ditolak Chief Referee: {boutPanel.reject_note}. Perbaiki lalu Submit ulang.
@@ -912,6 +1024,7 @@
                   {seat}
                   holder={h}
                   conflict={h ? conflictReason(h, boutPanel) : null}
+                  busy={h ? boutBusy(h.wasit_id) : null}
                   disabled={boutSaving}
                   onOpen={() => openSeat(seat)}
                   onRelease={() => setBoutSeat(seat.key, null)}
@@ -1011,10 +1124,11 @@
       panel={isBout ? boutPanel : null}
       takenIds={new Set(
         isBout
-          ? Object.values(effective?.seats ?? {}).filter((h) => !!h).map((h) => h!.wasit_id)
+          ? takenForSeat(effective?.seats ?? {}, pickFor.seat)
           : (teamOverview?.assignments ?? []).map((x) => x.wasit_id)
       )}
       {currentId}
+      busyOf={isBout ? boutBusy : null}
       onPick={(w) => {
         const seat = pickFor!.seat;
         const kind = pickFor!.kind;

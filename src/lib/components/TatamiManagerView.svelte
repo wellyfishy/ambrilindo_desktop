@@ -252,7 +252,7 @@
     let label = "Panel Juri";
     if (qrRole === "lo-kata") {
       targetUrl = `${baseHost}/lo-kata/${tNum}/`;
-      label = "LO Kata";
+      label = "LO / Guide";
     } else if (qrRole === "coach-supervisor") {
       targetUrl = `${baseHost}/coach-supervisor/${tNum}/`;
       label = "Coach Supervisor (VR)";
@@ -880,7 +880,7 @@
               ? 'bg-white text-black shadow-xs font-bold'
               : 'text-zinc-400 hover:text-white'}"
           >
-            LO Kata
+            LO / Guide
           </button>
           <button
             onclick={() => {

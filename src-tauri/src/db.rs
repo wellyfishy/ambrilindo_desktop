@@ -24,7 +24,7 @@ use crate::models::{
     RoundRobinAthleteStanding, RoundRobinData, RoundRobinMatrixCell,
     AssignWasitTatamiInput, AutoAssignPanelInput, EnrichedWasit, EnrichedWasitTatami, SaveWasitInput,
     TatamiPanelOverview, WasitImportRow, WasitImportPreview, WasitImportSummary, BoutWasit, BoutPanel, BoutSeatInput,
-    BoutApprovalState, BoutStatusRow, ApprovalQueue, ApprovalQueueItem, ApprovalLogItem, EventRefereeSettings,
+    BoutApprovalState, BoutStatusRow, ApprovalQueue, ApprovalQueueItem, ApprovalLogItem, EventRefereeSettings, RevisionNotice, RefereeBusy,
     MarshallingMatchItem, MarshallingOverview, TatamiQueue,
     ResultsBookletBeritaAcara, ResultsBookletData, ResultsBookletEventInfo, ResultsBookletSignatory,
     BobBaganResult, BobSourceCategory, CreateBobBaganInput,
@@ -32,6 +32,36 @@ use crate::models::{
 use crate::referee::evaluate_panel_conflicts;
 
 /// A kata category ("KATA PERORANGAN PUTRA", "Kata Beregu") by its name.
+/// Start of the error when a bout's seats were saved by someone else in between (the
+/// Tatami Manager page recognises it and reloads the bout).
+pub const BOUT_PANEL_CONFLICT: &str = "KONFLIK_PANEL";
+
+/// The Tatami Manager may also sit as Kansa or Score Supervisor of the same bout.
+fn can_double_seat(a: &str, b: &str) -> bool {
+    let other = |x: &str| x == "kansa" || x == "score_supervisor";
+    (a == "tatami_manager" && other(b)) || (b == "tatami_manager" && other(a))
+}
+
+fn check_bout_rev(current: i64, expected: Option<i64>) -> Result<(), String> {
+    match expected {
+        Some(e) if e != current => Err(format!(
+            "{}: Panel partai ini baru saja diubah dari perangkat lain. Data terbaru sudah dimuat, silakan ulangi perubahan.",
+            BOUT_PANEL_CONFLICT
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Next seat version: always higher than the last one, also after the bout was reset
+/// (its row deleted), as it follows the clock.
+fn next_bout_rev(current: i64) -> i64 {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    now_ms.max(current + 1)
+}
+
 fn is_kata_name(name: &str) -> bool {
     name.to_uppercase().split(|c: char| !c.is_alphanumeric()).any(|w| w == "KATA")
 }
@@ -207,7 +237,18 @@ impl DatabaseManager {
         // Approval of a bout's officials: draft → submitted (Tatami Manager) → pending
         // (operator wants to start) → approved by the chief referee, or back to draft
         // with the reason when rejected.
-        for (col, ty) in [("status", "TEXT NOT NULL DEFAULT 'draft'"), ("reject_note", "TEXT NULL"), ("status_at", "TEXT NULL")] {
+        // Chief referee revisions: revised_at / revised_note while the revised panel stands,
+        // revised_seen = 0 until the Tatami Manager of that tatami has seen it.
+        for (col, ty) in [
+            ("status", "TEXT NOT NULL DEFAULT 'draft'"),
+            ("reject_note", "TEXT NULL"),
+            ("status_at", "TEXT NULL"),
+            ("revised_note", "TEXT NULL"),
+            ("revised_at", "TEXT NULL"),
+            ("revised_seen", "INTEGER NOT NULL DEFAULT 1"),
+            // version of the seats: a save made from an older version is refused
+            ("rev", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
             let has_col: bool = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('ambrilindo_bout_panel') WHERE name = ?")
                 .bind(col)
                 .fetch_one(pool)
@@ -877,43 +918,91 @@ impl DatabaseManager {
         Ok(BaganPodium { j1, j2, j3a, j3b })
     }
 
-    /// Fetches WKF repechage eligibility info, current status, and qualified athletes
-    pub async fn get_repechage_info(&self, bagan_id: i64) -> Result<RepechageInfo, String> {
+    /// The bagan whose final decides the repechage of a category: the final bagan of a
+    /// category split into pools (pool 0), else the bagan itself. A repechage bagan maps to its
+    /// category's main bagan too.
+    async fn repechage_main_bagan(&self, bagan_id: i64) -> Result<i64, String> {
         let pool = self.get_pool()?;
-
-        // 1. Fetch bagan info
-        let bagan: (i64, Option<i64>, Option<String>, Option<i64>) = sqlx::query_as(
-            "SELECT id, event_id, nama_bagan, nomor_tanding_id FROM backend_bagan WHERE id = ?"
-        )
-        .bind(bagan_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("Bagan tidak ditemukan: {}", e))?;
-
-        let (_b_id, _event_id, _nama_bagan, nomor_tanding_id) = bagan;
-
-        // Check if an existing repechage bagan exists for this category
-        let existing_repechage: Option<(i64, Option<String>)> = if let Some(nt_id) = nomor_tanding_id {
-            sqlx::query_as(
-                "SELECT id, nama_bagan FROM backend_bagan WHERE nomor_tanding_id = ? AND (UPPER(nama_bagan) LIKE '%REFERCHANGE%' OR UPPER(nama_bagan) LIKE '%REPECHAGE%') LIMIT 1"
-            )
-            .bind(nt_id)
+        let nt: Option<Option<i64>> = sqlx::query_scalar("SELECT nomor_tanding_id FROM backend_bagan WHERE id = ?")
+            .bind(bagan_id)
             .fetch_optional(pool)
             .await
-            .unwrap_or(None)
-        } else {
-            None
-        };
+            .map_err(|e| format!("Bagan tidak ditemukan: {}", e))?;
+        let nt = nt.ok_or_else(|| format!("Bagan #{} tidak ditemukan", bagan_id))?;
+        let Some(nt_id) = nt else { return Ok(bagan_id) };
+        let final_bagan: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ? AND pool = 0
+               AND NOT (UPPER(COALESCE(nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(nama_bagan, '')) LIKE '%REPECHAGE%')
+             ORDER BY id LIMIT 1"
+        )
+        .bind(nt_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat bagan final kategori: {}", e))?;
+        Ok(final_bagan.unwrap_or(bagan_id))
+    }
 
+    /// The repechage bagan of a category (one per category), and whether a bout of it is finished
+    async fn repechage_bagan_of(&self, nomor_tanding_id: Option<i64>) -> (Option<(i64, Option<String>)>, bool) {
+        let (Ok(pool), Some(nt_id)) = (self.get_pool(), nomor_tanding_id) else { return (None, false) };
+        let rep: Option<(i64, Option<String>)> = sqlx::query_as(
+            "SELECT id, nama_bagan FROM backend_bagan WHERE nomor_tanding_id = ?
+               AND (UPPER(COALESCE(nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(nama_bagan, '')) LIKE '%REPECHAGE%')
+             ORDER BY id LIMIT 1"
+        )
+        .bind(nt_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+        let started = match &rep {
+            Some((id, _)) => sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM backend_detailbagan WHERE bagan_id = ? AND selesai = 1")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0)
+                > 0,
+            None => false,
+        };
+        (rep, started)
+    }
+
+    /// Fetches WKF repechage eligibility info, current status, and qualified athletes.
+    /// Works from any bagan of the category (pool bagans use the category's final).
+    pub async fn get_repechage_info(&self, bagan_id: i64) -> Result<RepechageInfo, String> {
+        let pool = self.get_pool()?;
+        let bagan_id = self.repechage_main_bagan(bagan_id).await?;
+
+        let nomor_tanding_id: Option<i64> = sqlx::query_scalar("SELECT nomor_tanding_id FROM backend_bagan WHERE id = ?")
+            .bind(bagan_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("Bagan tidak ditemukan: {}", e))?;
+
+        let (existing_repechage, repechage_started) = self.repechage_bagan_of(nomor_tanding_id).await;
         let (repechage_bagan_id, repechage_bagan_name) = match existing_repechage {
             Some((id, name)) => (Some(id), name),
             None => (None, None),
         };
 
-        // 2. Fetch the Final match of this main bagan (highest round, urutan 1)
+        let mut info = RepechageInfo {
+            main_bagan_id: bagan_id,
+            is_finalists_ready: false,
+            finalist1_id: None,
+            finalist1_name: None,
+            finalist2_id: None,
+            finalist2_name: None,
+            pool_a_losers: Vec::new(),
+            pool_b_losers: Vec::new(),
+            repechage_bagan_id,
+            repechage_bagan_name,
+            can_generate: false,
+            repechage_started,
+            blocked_reason: None,
+        };
+
+        // The final is the first round with a single match. The bracket template keeps an extra
+        // single-row round after it (always empty), so "highest round" is not the final.
         let final_match: Option<(i64, i32, Option<i64>, Option<i64>)> = sqlx::query_as(
-            // The final is the first round with a single match. The bracket template keeps an extra
-            // single-row round after it (always empty), so "highest round" is not the final.
             "SELECT id, round, atlet1_id, atlet2_id FROM backend_detailbagan
              WHERE bagan_id = ? AND team = 0 AND round = (
                  SELECT round FROM backend_detailbagan WHERE bagan_id = ? AND team = 0
@@ -927,52 +1016,27 @@ impl DatabaseManager {
         .await
         .map_err(|e| format!("Gagal memuat partai final: {}", e))?;
 
-        let (_f_id, max_round, f1_id, f2_id) = match final_match {
-            Some(m) => m,
-            None => {
-                return Ok(RepechageInfo {
-                    main_bagan_id: bagan_id,
-                    is_finalists_ready: false,
-                    finalist1_id: None,
-                    finalist1_name: None,
-                    finalist2_id: None,
-                    finalist2_name: None,
-                    pool_a_losers: Vec::new(),
-                    pool_b_losers: Vec::new(),
-                    repechage_bagan_id,
-                    repechage_bagan_name,
-                    can_generate: false,
-                })
-            }
+        let Some((_f_id, max_round, f1_id, f2_id)) = final_match else {
+            info.blocked_reason = Some("Bagan ini tidak punya partai final.".into());
+            return Ok(info);
         };
 
-        let is_finalists_ready = f1_id.is_some() && f2_id.is_some();
-        let mut finalist1_name = None;
-        let mut finalist2_name = None;
-        let mut pool_a_losers = Vec::new();
-        let mut pool_b_losers = Vec::new();
-
-        if let Some(id1) = f1_id {
-            let name: Option<String> = sqlx::query_scalar("SELECT nama_atlet FROM backend_atlet WHERE id = ?")
-                .bind(id1)
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None);
-            finalist1_name = name;
+        info.is_finalists_ready = f1_id.is_some() && f2_id.is_some();
+        for (id, out) in [(f1_id, &mut info.finalist1_name), (f2_id, &mut info.finalist2_name)] {
+            if let Some(id) = id {
+                *out = sqlx::query_scalar("SELECT nama_atlet FROM backend_atlet WHERE id = ?")
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap_or(None);
+            }
         }
+        info.finalist1_id = f1_id;
+        info.finalist2_id = f2_id;
 
-        if let Some(id2) = f2_id {
-            let name: Option<String> = sqlx::query_scalar("SELECT nama_atlet FROM backend_atlet WHERE id = ?")
-                .bind(id2)
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None);
-            finalist2_name = name;
-        }
-
-        if let (true, Some(id1), Some(id2)) = (is_finalists_ready, f1_id, f2_id) {
+        if let (Some(id1), Some(id2)) = (f1_id, f2_id) {
             let (a_ids, b_ids) = self.repechage_losers(bagan_id, nomor_tanding_id, max_round, id1, id2).await;
-            for (ids, out) in [(a_ids, &mut pool_a_losers), (b_ids, &mut pool_b_losers)] {
+            for (ids, out) in [(a_ids, &mut info.pool_a_losers), (b_ids, &mut info.pool_b_losers)] {
                 for lid in ids {
                     let lname: Option<String> = sqlx::query_scalar("SELECT nama_atlet FROM backend_atlet WHERE id = ?")
                         .bind(lid)
@@ -986,21 +1050,18 @@ impl DatabaseManager {
             }
         }
 
-        let can_generate = is_finalists_ready && (!pool_a_losers.is_empty() || !pool_b_losers.is_empty());
-
-        Ok(RepechageInfo {
-            main_bagan_id: bagan_id,
-            is_finalists_ready,
-            finalist1_id: f1_id,
-            finalist1_name,
-            finalist2_id: f2_id,
-            finalist2_name,
-            pool_a_losers,
-            pool_b_losers,
-            repechage_bagan_id,
-            repechage_bagan_name,
-            can_generate,
-        })
+        let has_losers = !info.pool_a_losers.is_empty() || !info.pool_b_losers.is_empty();
+        info.blocked_reason = if !info.is_finalists_ready {
+            Some("Finalis (juara 1 & 2) belum lengkap. Selesaikan semifinal dulu.".into())
+        } else if !has_losers {
+            Some("Belum ada atlet yang kalah dari finalis.".into())
+        } else if repechage_started {
+            Some("Partai referchange sudah ada yang selesai, tidak bisa dibuat ulang.".into())
+        } else {
+            None
+        };
+        info.can_generate = info.blocked_reason.is_none();
+        Ok(info)
     }
 
     /// Automatically generates WKF repechage bracket by tracing opponent ancestry of both finalists
@@ -1073,6 +1134,8 @@ impl DatabaseManager {
 
     pub async fn generate_repechage_bracket(&self, main_bagan_id: i64) -> Result<RepechageResult, String> {
         let pool = self.get_pool()?;
+        // From any bagan of the category: the category's final decides the repechage.
+        let main_bagan_id = self.repechage_main_bagan(main_bagan_id).await?;
 
         // 1. Fetch main bagan metadata
         let main_bagan: (i64, Option<i64>, Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as(
@@ -1084,7 +1147,15 @@ impl DatabaseManager {
         .map_err(|e| format!("Bagan utama #{} tidak ditemukan: {}", main_bagan_id, e))?;
 
         let (_b_id, event_id, nama_bagan_opt, nomor_tanding_id, tipe_tanding, has_vr) = main_bagan;
-        let base_name = nama_bagan_opt.unwrap_or_else(|| "BAGAN".to_string());
+        let mut base_name = nama_bagan_opt.unwrap_or_else(|| "BAGAN".to_string()).trim().to_string();
+        // "<category> - Final" (final of a category split into pools): one repechage per category
+        for suffix in [" - FINAL", " FINAL"] {
+            if base_name.to_uppercase().ends_with(suffix) {
+                base_name.truncate(base_name.len() - suffix.len());
+                base_name = base_name.trim().to_string();
+                break;
+            }
+        }
 
         // 2. Fetch the Final match to get Finalist 1 and Finalist 2
         let final_match: Option<(i64, i32, Option<i64>, Option<i64>)> = sqlx::query_as(
@@ -1118,6 +1189,12 @@ impl DatabaseManager {
             return Err("Tidak ditemukan atlet yang terkualifikasi untuk repechage. Pastikan partai penyisihan dan semifinal telah diisi skor pemenangnya.".to_string());
         }
 
+        // A repechage that already has a finished bout is not replaced (its results would be lost).
+        let (existing_rep, started) = self.repechage_bagan_of(nomor_tanding_id).await;
+        if started {
+            return Err("Partai referchange sudah ada yang selesai, bagan tidak bisa dibuat ulang. Buka ulang partainya terlebih dahulu.".to_string());
+        }
+
         // 4. Build WKF repechage plan
         let plan = crate::bracket::build_wkf_repechage_plan(&pool_a_losers, &pool_b_losers);
 
@@ -1126,18 +1203,8 @@ impl DatabaseManager {
 
         let rep_name = format!("{} - REFERCHANGE", base_name);
 
-        let existing_rep_id: Option<i64> = if let Some(nt_id) = nomor_tanding_id {
-            sqlx::query_scalar(
-                "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ? AND UPPER(nama_bagan) = UPPER(?) LIMIT 1"
-            )
-            .bind(nt_id)
-            .bind(&rep_name)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None)
-        } else {
-            None
-        };
+        // One repechage bagan per category: an existing one is rebuilt in place.
+        let existing_rep_id: Option<i64> = existing_rep.map(|(id, _)| id);
 
         let repechage_bagan_id = match existing_rep_id {
             Some(id) => {
@@ -1147,6 +1214,13 @@ impl DatabaseManager {
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| format!("Gagal membersihkan partai repechage lama: {}", e))?;
+                // Bronze of the old plan (a direct bronze) no longer holds
+                sqlx::query("UPDATE backend_bagan SET nama_bagan = ?, juara_3a_id = NULL, juara_3b_id = NULL WHERE id = ?")
+                    .bind(&rep_name)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal menyiapkan bagan repechage lama: {}", e))?;
                 id
             }
             None => {
@@ -8891,15 +8965,16 @@ impl DatabaseManager {
             None => Vec::new(),
         };
 
-        let state: Option<(i64, Option<i64>, Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT custom, judges, status, reject_note FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+        #[allow(clippy::type_complexity)]
+        let state: Option<(i64, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, i64)> =
+            sqlx::query_as("SELECT custom, judges, status, reject_note, revised_note, revised_at, COALESCE(rev, 0) FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
                 .bind(match_id)
                 .fetch_optional(pool)
                 .await
                 .unwrap_or(None);
-        let (custom, judges, status, reject_note) = match state {
-            Some((c, j, s, n)) => (c != 0 || !bout.is_empty(), j, s.unwrap_or_else(|| "draft".into()), n),
-            None => (!bout.is_empty(), None, "draft".to_string(), None),
+        let (custom, judges, status, reject_note, revised_note, revised_at, rev) = match state {
+            Some((c, j, s, n, rn, ra, rv)) => (c != 0 || !bout.is_empty(), j, s.unwrap_or_else(|| "draft".into()), n, rn, ra, rv),
+            None => (!bout.is_empty(), None, "draft".to_string(), None, None, None, 0),
         };
         let require_chief_approval = self.require_chief_approval(event_id).await;
         let defaults: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
@@ -8939,6 +9014,9 @@ impl DatabaseManager {
             ao_nama,
             round,
             urutan,
+            revised_note,
+            revised_at,
+            rev,
         })
     }
 
@@ -9014,6 +9092,16 @@ impl DatabaseManager {
         .bind(note)
         .execute(pool)
         .await;
+        // A revision stands only until the bout's panel changes again
+        if action != "revise" {
+            let _ = sqlx::query(
+                "UPDATE ambrilindo_bout_panel SET revised_note = NULL, revised_at = NULL, revised_seen = 1
+                 WHERE detail_bagan_id = ? AND revised_at IS NOT NULL",
+            )
+            .bind(match_id)
+            .execute(pool)
+            .await;
+        }
         Ok(())
     }
 
@@ -9026,11 +9114,11 @@ impl DatabaseManager {
     }
 
     /// Tatami Manager "Submit": saves the panel as shown and marks it submitted.
-    pub async fn submit_bout_panel(&self, match_id: i64, tatami_number: i32, seats: Vec<BoutSeatInput>, judges: Option<i64>) -> Result<(), String> {
+    pub async fn submit_bout_panel(&self, match_id: i64, tatami_number: i32, seats: Vec<BoutSeatInput>, judges: Option<i64>, expected_rev: Option<i64>) -> Result<(), String> {
         if seats.is_empty() {
             return Err("Belum ada wasit / juri yang dipilih".into());
         }
-        self.save_bout_panel(match_id, seats, judges, Some(tatami_number)).await?;
+        self.save_bout_panel(match_id, seats, judges, Some(tatami_number), expected_rev).await?;
         self.set_bout_status(match_id, "submitted", "submit", None, None, Some(tatami_number)).await
     }
 
@@ -9078,12 +9166,85 @@ impl DatabaseManager {
             .flatten())
     }
 
+    /// Chief referee: changes the officials the Tatami Manager submitted and approves them in
+    /// one step. The Tatami Manager of that tatami is told (unseen until they open it).
+    /// Returns the bout's tatami.
+    pub async fn revise_bout_panel(&self, match_id: i64, seats: Vec<BoutSeatInput>, judges: Option<i64>, note: Option<String>, expected_rev: Option<i64>) -> Result<Option<i64>, String> {
+        let (status, _) = self.bout_status(match_id).await;
+        if status != "pending" {
+            return Err("Permintaan ini sudah tidak menunggu persetujuan".into());
+        }
+        if seats.is_empty() {
+            return Err("Belum ada wasit / juri yang dipilih".into());
+        }
+        let note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        self.write_bout_seats(match_id, seats, judges, None, expected_rev).await?;
+        self.set_bout_status(match_id, "approved", "revise", note.as_deref(), None, None).await?;
+        let pool = self.get_pool()?;
+        sqlx::query(
+            "UPDATE ambrilindo_bout_panel SET revised_note = ?, revised_at = datetime('now', 'localtime'), revised_seen = 0
+             WHERE detail_bagan_id = ?",
+        )
+        .bind(note.as_deref())
+        .bind(match_id)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menyimpan revisi: {}", e))?;
+        Ok(sqlx::query_scalar::<_, Option<i64>>("SELECT tatami_number FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .flatten())
+    }
+
+    /// The Tatami Manager has seen the chief referee's revision of this bout.
+    pub async fn ack_bout_revision(&self, match_id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query("UPDATE ambrilindo_bout_panel SET revised_seen = 1 WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menandai revisi: {}", e))?;
+        Ok(())
+    }
+
+    /// Revisions by the chief referee not yet seen on this tatami (shown again after a
+    /// reload or while the tablet was offline).
+    pub async fn get_unseen_revisions(&self, tatami_number: i32, event_id: Option<i64>) -> Result<Vec<RevisionNotice>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, RevisionNotice>(
+            r#"
+            SELECT bp.detail_bagan_id AS match_id, d.bagan_id, bp.tatami_number,
+                   COALESCE(nt.nama_nomor_tanding, b.nama_bagan) AS category, d.urutan,
+                   a1.nama_atlet AS aka_nama, a2.nama_atlet AS ao_nama,
+                   bp.revised_note AS note, bp.revised_at AS at
+            FROM ambrilindo_bout_panel bp
+            JOIN backend_detailbagan d ON d.id = bp.detail_bagan_id
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            LEFT JOIN backend_atlet a1 ON a1.id = d.atlet1_id
+            LEFT JOIN backend_atlet a2 ON a2.id = d.atlet2_id
+            WHERE bp.tatami_number = ? AND bp.revised_seen = 0 AND bp.revised_at IS NOT NULL
+              AND (? IS NULL OR b.event_id = ?)
+            ORDER BY bp.revised_at ASC
+            "#,
+        )
+        .bind(tatami_number)
+        .bind(event_id)
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat revisi: {}", e))
+    }
+
     /// Statuses of the bouts of one bagan (Tatami Manager badges)
     pub async fn get_bagan_bout_statuses(&self, bagan_id: i64) -> Result<Vec<BoutStatusRow>, String> {
         let pool = self.get_pool()?;
         sqlx::query_as::<_, BoutStatusRow>(
             r#"
-            SELECT bp.detail_bagan_id AS match_id, COALESCE(bp.status, 'draft') AS status, bp.reject_note
+            SELECT bp.detail_bagan_id AS match_id, COALESCE(bp.status, 'draft') AS status, bp.reject_note,
+                   bp.revised_at, bp.revised_note, (COALESCE(bp.revised_seen, 1) != 0) AS revised_seen
             FROM ambrilindo_bout_panel bp
             JOIN backend_detailbagan d ON d.id = bp.detail_bagan_id
             WHERE d.bagan_id = ?
@@ -9125,7 +9286,7 @@ impl DatabaseManager {
             LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
             LEFT JOIN backend_atlet a1 ON a1.id = d.atlet1_id
             LEFT JOIN backend_atlet a2 ON a2.id = d.atlet2_id
-            WHERE b.event_id = ? AND l.action IN ('approve', 'reject')
+            WHERE b.event_id = ? AND l.action IN ('approve', 'reject', 'revise')
             ORDER BY l.id DESC
             LIMIT 20
             "#,
@@ -9188,12 +9349,16 @@ impl DatabaseManager {
 
     /// Number of judges of one bout (kumite 2/4, kata 3/5/7); also becomes the tatami's
     /// default for its next bouts of that kind.
-    pub async fn set_bout_judges(&self, match_id: i64, tatami_number: i32, judges: i64, kata: bool) -> Result<(), String> {
+    /// Returns the bout's new seat version.
+    pub async fn set_bout_judges(&self, match_id: i64, tatami_number: i32, judges: i64, kata: bool, expected_rev: Option<i64>) -> Result<i64, String> {
         let allowed: &[i64] = if kata { &[3, 5, 7] } else { &[2, 4] };
         if !allowed.contains(&judges) {
             return Err(format!("Jumlah juri {} tidak valid", judges));
         }
         let pool = self.get_pool()?;
+        let cur = Self::bout_rev(pool, match_id).await;
+        check_bout_rev(cur, expected_rev)?;
+        let rev = next_bout_rev(cur);
         let event_id: i64 = sqlx::query_scalar(
             "SELECT b.event_id FROM backend_detailbagan d JOIN backend_bagan b ON b.id = d.bagan_id WHERE d.id = ?"
         )
@@ -9203,13 +9368,15 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal memuat partai: {}", e))?
         .ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
         sqlx::query(
-            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, judges, tatami_number, updated_at)
-             VALUES (?, 0, ?, ?, datetime('now'))
-             ON CONFLICT(detail_bagan_id) DO UPDATE SET judges = excluded.judges, tatami_number = excluded.tatami_number"
+            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, judges, tatami_number, updated_at, rev)
+             VALUES (?, 0, ?, ?, datetime('now'), ?)
+             ON CONFLICT(detail_bagan_id) DO UPDATE SET judges = excluded.judges, tatami_number = excluded.tatami_number,
+                 rev = excluded.rev"
         )
         .bind(match_id)
         .bind(judges)
         .bind(tatami_number)
+        .bind(rev)
         .execute(pool)
         .await
         .map_err(|e| format!("Gagal menyimpan jumlah juri: {}", e))?;
@@ -9225,18 +9392,46 @@ impl DatabaseManager {
         .await
         .map_err(|e| format!("Gagal menyimpan jumlah juri tatami: {}", e))?;
         self.mark_bout_draft(match_id).await;
-        Ok(())
+        Ok(rev)
+    }
+
+    /// Seat version of one bout (0 = never saved)
+    async fn bout_rev<'e, E: sqlx::Executor<'e, Database = Sqlite>>(exec: E, match_id: i64) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(rev, 0) FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .fetch_optional(exec)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0)
     }
 
     /// Replaces one bout's panel (all seats at once; a referee sits in one seat only).
     /// No seats = the bout is explicitly empty (it no longer follows the tatami team).
+    /// Any change makes the bout a draft again (to be submitted again).
     pub async fn save_bout_panel(
         &self,
         match_id: i64,
         seats: Vec<BoutSeatInput>,
         judges: Option<i64>,
         tatami_number: Option<i32>,
-    ) -> Result<(), String> {
+        expected_rev: Option<i64>,
+    ) -> Result<i64, String> {
+        let rev = self.write_bout_seats(match_id, seats, judges, tatami_number, expected_rev).await?;
+        self.mark_bout_draft(match_id).await;
+        Ok(rev)
+    }
+
+    /// Writes one bout's seats (and judges) without touching its approval status.
+    /// `expected_rev`: the version the editor saw; a newer one (another tablet saved in
+    /// between) refuses the save. Returns the new version.
+    async fn write_bout_seats(
+        &self,
+        match_id: i64,
+        seats: Vec<BoutSeatInput>,
+        judges: Option<i64>,
+        tatami_number: Option<i32>,
+        expected_rev: Option<i64>,
+    ) -> Result<i64, String> {
         let pool = self.get_pool()?;
         let event_id: i64 = sqlx::query_scalar(
             "SELECT b.event_id FROM backend_detailbagan d JOIN backend_bagan b ON b.id = d.bagan_id WHERE d.id = ?"
@@ -9247,44 +9442,124 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal memuat partai: {}", e))?
         .ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let cur = Self::bout_rev(&mut *tx, match_id).await;
+        check_bout_rev(cur, expected_rev)?;
+        let rev = next_bout_rev(cur);
         sqlx::query("DELETE FROM backend_wasitdetailbagan WHERE detail_bagan_id = ?")
             .bind(match_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| format!("Gagal mengosongkan panel partai: {}", e))?;
-        let mut used = std::collections::HashSet::new();
-        for s in seats {
-            if s.wasit_id <= 0 || s.posisi.trim().is_empty() || !used.insert(s.wasit_id) {
+        // One seat per referee, except the Tatami Manager who may also be Kansa or Score
+        // Supervisor: one row (the table allows one per referee) with "tatami_manager+kansa".
+        // A combined name sent as is ("tatami_manager+kansa") is split into its seats, so it
+        // goes through the same rule as two separate seats.
+        let seats = seats.into_iter().flat_map(|s| {
+            let wasit_id = s.wasit_id;
+            s.posisi.split('+').map(|p| (wasit_id, p.trim().to_string())).collect::<Vec<_>>()
+        });
+        let mut rows: Vec<(i64, Vec<String>)> = Vec::new();
+        for (wasit_id, pos) in seats {
+            if wasit_id <= 0 || pos.is_empty() {
                 continue;
             }
+            match rows.iter_mut().find(|(w, _)| *w == wasit_id) {
+                Some((_, list)) => {
+                    if list.len() == 1 && can_double_seat(&list[0], &pos) {
+                        list.push(pos);
+                    }
+                }
+                None => rows.push((wasit_id, vec![pos])),
+            }
+        }
+        for (wasit_id, mut list) in rows {
+            list.sort_by_key(|p| p != "tatami_manager");
             sqlx::query(
                 "INSERT INTO backend_wasitdetailbagan (posisi, assigned_at, detail_bagan_id, event_id, wasit_id) VALUES (?, datetime('now'), ?, ?, ?)"
             )
-            .bind(s.posisi.trim())
+            .bind(list.join("+"))
             .bind(match_id)
             .bind(event_id)
-            .bind(s.wasit_id)
+            .bind(wasit_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
         }
         sqlx::query(
-            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, judges, tatami_number, updated_at)
-             VALUES (?, 1, ?, ?, datetime('now'))
+            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, judges, tatami_number, updated_at, rev)
+             VALUES (?, 1, ?, ?, datetime('now'), ?)
              ON CONFLICT(detail_bagan_id) DO UPDATE SET custom = 1,
                  judges = COALESCE(excluded.judges, ambrilindo_bout_panel.judges),
                  tatami_number = COALESCE(excluded.tatami_number, ambrilindo_bout_panel.tatami_number),
-                 updated_at = excluded.updated_at"
+                 updated_at = excluded.updated_at, rev = excluded.rev"
         )
         .bind(match_id)
         .bind(judges)
         .bind(tatami_number)
+        .bind(rev)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
         tx.commit().await.map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
-        self.mark_bout_draft(match_id).await;
-        Ok(())
+        Ok(rev)
+    }
+
+    /// Referees seated in a bout that runs now on a tatami (the bout open in its control
+    /// panel: its own panel, else the tatami team) or that waits for / was approved by the
+    /// chief referee and is not finished. The caller leaves out its own tatami and bout.
+    pub async fn get_referee_busy(&self, event_id: i64) -> Result<Vec<RefereeBusy>, String> {
+        let pool = self.get_pool()?;
+        let rows = sqlx::query_as::<_, RefereeBusy>(
+            r#"
+            SELECT wd.wasit_id, t.tatami_number, d.id AS match_id, d.urutan,
+                   COALESCE(nt.nama_nomor_tanding, b.nama_bagan) AS category, 'aktif' AS kind
+            FROM backend_tatami t
+            JOIN backend_detailbagan d ON d.id = t.detail_bagan_id AND d.selesai = 0
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            JOIN backend_wasitdetailbagan wd ON wd.detail_bagan_id = d.id
+            WHERE t.event_id = ? AND t.tatami_number IS NOT NULL
+            UNION ALL
+            SELECT wt.wasit_id, t.tatami_number, d.id, d.urutan,
+                   COALESCE(nt.nama_nomor_tanding, b.nama_bagan), 'aktif'
+            FROM backend_tatami t
+            JOIN backend_detailbagan d ON d.id = t.detail_bagan_id AND d.selesai = 0
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            JOIN backend_wasittatami wt ON wt.tatami_id = t.id AND wt.posisi != 'pool'
+            WHERE t.event_id = ? AND t.tatami_number IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM backend_wasitdetailbagan x WHERE x.detail_bagan_id = d.id)
+              AND NOT EXISTS (SELECT 1 FROM ambrilindo_bout_panel x WHERE x.detail_bagan_id = d.id AND x.custom = 1)
+            UNION ALL
+            SELECT wd.wasit_id, bp.tatami_number, d.id, d.urutan,
+                   COALESCE(nt.nama_nomor_tanding, b.nama_bagan), 'antri'
+            FROM ambrilindo_bout_panel bp
+            JOIN backend_detailbagan d ON d.id = bp.detail_bagan_id AND d.selesai = 0
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            JOIN backend_wasitdetailbagan wd ON wd.detail_bagan_id = d.id
+            WHERE b.event_id = ? AND bp.status IN ('pending', 'approved') AND bp.tatami_number IS NOT NULL
+            "#,
+        )
+        .bind(event_id)
+        .bind(event_id)
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat tugas wasit: {}", e))?;
+        // one row per referee and bout; the bout running now wins over the queued one
+        let mut out: Vec<RefereeBusy> = Vec::new();
+        for r in rows {
+            match out.iter_mut().find(|o| o.wasit_id == r.wasit_id && o.match_id == r.match_id) {
+                Some(o) => {
+                    if r.kind == "aktif" {
+                        *o = r;
+                    }
+                }
+                None => out.push(r),
+            }
+        }
+        Ok(out)
     }
 
     /// The bout goes back to its tatami's team (and the tatami's number of judges).

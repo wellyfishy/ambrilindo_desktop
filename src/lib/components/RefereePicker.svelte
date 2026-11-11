@@ -15,14 +15,16 @@
     /** referees already seated in this panel (shown, marked) */
     takenIds?: Set<number>;
     currentId?: number | null;
+    /** double booking: why this referee is busy on another tatami now (null = free) */
+    busyOf?: ((id: number) => string | null) | null;
     onPick: (w: WasitItem) => void;
     onClear?: () => void;
     onClose: () => void;
   }
-  let { title, wasits, tatamiId, panel = null, takenIds = new Set(), currentId = null, onPick, onClear, onClose }: Props = $props();
+  let { title, wasits, tatamiId, panel = null, takenIds = new Set(), currentId = null, busyOf = null, onPick, onClear, onClose }: Props = $props();
 
   let query = $state("");
-  let candidates = $derived(rankCandidates(wasits, { tatamiId, panel, takenIds }));
+  let candidates = $derived(rankCandidates(wasits, { tatamiId, panel, takenIds, busyOf }));
   /** below this, a typed name matches nobody */
   const MIN_NAME_SCORE = 0.55;
   let shown = $derived.by(() => {
@@ -88,9 +90,9 @@
         class="w-full bg-[#111215] text-base text-white px-3.5 py-3 rounded-xl border border-white/[0.1] focus:border-white outline-none"
       />
       {#if query.trim()}
-        <div class="mt-1.5 text-[11px] font-mono {best ? (best.conflict ? 'text-amber-300' : 'text-emerald-300') : 'text-zinc-500'}">
+        <div class="mt-1.5 text-[11px] font-mono {best ? (best.busy ? 'text-orange-300' : best.conflict ? 'text-amber-300' : 'text-emerald-300') : 'text-zinc-500'}">
           {#if best}
-            Enter ↵ {best.wasit.nama_wasit}{best.conflict ? ` · ⚠ ${best.conflict}` : ""}
+            Enter ↵ {best.wasit.nama_wasit}{best.busy ? ` · ⛔ ${best.busy}` : ""}{best.conflict ? ` · ⚠ ${best.conflict}` : ""}
           {:else}
             Tidak ada nama yang mirip
           {/if}
@@ -107,7 +109,9 @@
             ? 'bg-emerald-500/[0.08] border-emerald-400/70 ring-1 ring-emerald-400/40'
             : isCurrent
             ? 'bg-white/[0.08] border-white/40'
-            : c.conflict
+            : c.busy
+              ? 'bg-orange-500/[0.05] border-orange-500/40 hover:border-orange-400/70'
+              : c.conflict
               ? 'bg-amber-500/[0.04] border-amber-500/25 hover:border-amber-400/60'
               : 'bg-[#111215] border-white/[0.08] hover:border-white/30'}"
         >
@@ -118,11 +122,14 @@
               {c.wasit.nama_perguruan || "PB / Umum"}{c.wasit.kab_kota ? ` • ${c.wasit.kab_kota}` : ""}
             </div>
             <div class="mt-1 flex flex-wrap gap-1 text-[10px] font-mono font-bold">
-              <span class="px-1.5 py-0.5 rounded {c.rank % 3 === 0 && !c.conflict ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/[0.06] text-zinc-300'}">
+              <span class="px-1.5 py-0.5 rounded {c.rank % 3 === 0 && !c.conflict && !c.busy ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/[0.06] text-zinc-300'}">
                 {c.label}
               </span>
               {#if c.wasit.keterangan}
                 <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">{c.wasit.keterangan}</span>
+              {/if}
+              {#if c.busy}
+                <span class="px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-200" title={c.busy}>⛔ {c.busy}</span>
               {/if}
               {#if c.conflict}
                 <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300" title={c.conflict}>⚠ {c.conflict}</span>

@@ -3,7 +3,7 @@
  * Tatami Manager: seat rules, team → bout panel, conflicts, candidate ranking, photo
  * file-name matching and WebP conversion.
  */
-import type { BoutPanel, BoutWasit, WasitItem, WasitTatamiAssignment } from "$lib/types";
+import type { BoutPanel, BoutWasit, RefereeBusy, WasitItem, WasitTatamiAssignment } from "$lib/types";
 
 export interface Seat {
   key: string;
@@ -64,18 +64,55 @@ export function boutJudgeCount(panel: Pick<BoutPanel, "category" | "judges" | "t
   return kata ? 5 : 4;
 }
 
+/** The tatami manager in charge of the bout (kumite and kata) */
+export const TATAMI_MANAGER_SEAT: Seat = { key: "tatami_manager", label: "Tatami Manager", short: "TM" };
+
+/** The Tatami Manager may also sit as Kansa or Score Supervisor of the same bout */
+export function canDoubleSeat(a: string, b: string): boolean {
+  const other = (x: string) => x === "kansa" || x === "score_supervisor";
+  return (a === TATAMI_MANAGER_SEAT.key && other(b)) || (b === TATAMI_MANAGER_SEAT.key && other(a));
+}
+
 /**
- * Seats of one bout. Kumite: referee + 2 or 4 judges + kansa + score supervisor.
- * Kata: 3, 5 or 7 judges.
+ * Seats after `holder` takes `seatKey`: they leave their other seats, except one seat they
+ * may hold at the same time (Tatami Manager + Kansa / Score Supervisor).
+ */
+export function placeInSeat<T>(seats: Record<string, T | null>, seatKey: string, holder: T, idOf: (t: T) => number): Record<string, T | null> {
+  const next = { ...seats };
+  const id = idOf(holder);
+  let kept = false;
+  for (const k of Object.keys(next)) {
+    const h = next[k];
+    if (k === seatKey || h == null || idOf(h) !== id) continue;
+    if (!kept && canDoubleSeat(k, seatKey)) kept = true;
+    else next[k] = null;
+  }
+  next[seatKey] = holder;
+  return next;
+}
+
+/** Referees to mark "already in this panel" when choosing `seatKey` (a possible second job is not) */
+export function takenForSeat(seats: Record<string, { wasit_id: number } | null | undefined>, seatKey: string): Set<number> {
+  return new Set(
+    Object.entries(seats)
+      .filter(([k, h]) => !!h && !canDoubleSeat(k, seatKey))
+      .map(([, h]) => h!.wasit_id)
+  );
+}
+
+/**
+ * Seats of one bout. Kumite: tatami manager + referee + 2 or 4 judges + kansa + score
+ * supervisor. Kata: tatami manager + 3, 5 or 7 judges.
  */
 export function boutSeats(category: string | null | undefined, judges?: number): Seat[] {
   const judge = (i: number): Seat => ({ key: `judge_${i}`, label: `Juri ${i}`, short: `J${i}` });
   if (isKataCategory(category)) {
     const n = judges && (KATA_JUDGE_OPTIONS as readonly number[]).includes(judges) ? judges : 5;
-    return Array.from({ length: n }, (_, i) => judge(i + 1));
+    return [TATAMI_MANAGER_SEAT, ...Array.from({ length: n }, (_, i) => judge(i + 1))];
   }
   const n = judges === 2 ? 2 : 4;
   return [
+    TATAMI_MANAGER_SEAT,
     { key: "referee", label: "Wasit (Referee)", short: "WASIT" },
     ...Array.from({ length: n }, (_, i) => judge(i + 1)),
     { key: "kansa", label: "Kansa", short: "KANSA" },
@@ -105,14 +142,18 @@ export function effectivePanel(panel: BoutPanel, seats: Seat[]): { seats: Record
   const out: Record<string, SeatHolder | null> = {};
   for (const s of seats) out[s.key] = null;
   if (panel.custom || panel.bout.length > 0) {
-    for (const b of panel.bout) if (b.posisi in out) out[b.posisi] = b;
+    // "tatami_manager+kansa": one referee holding two seats
+    for (const b of panel.bout) for (const k of b.posisi.split("+")) if (k in out) out[k] = b;
     return { seats: out, fromBout: true };
   }
   const team = panel.team.filter((t) => t.posisi !== "pool");
   if (isKataCategory(panel.category)) {
+    // the tatami manager keeps their seat; the judges come from the team in order
+    const tm = team.find((t) => t.posisi === TATAMI_MANAGER_SEAT.key);
+    if (TATAMI_MANAGER_SEAT.key in out) out[TATAMI_MANAGER_SEAT.key] = tm ? fromTeam(tm) : null;
     const order = ["referee", "judge_1", "judge_2", "judge_3", "judge_4", "judge_5", "judge_6"];
     const holders = order.map((k) => team.find((t) => t.posisi === k)).filter((t): t is WasitTatamiAssignment => !!t);
-    seats.forEach((s, i) => (out[s.key] = holders[i] ? fromTeam(holders[i]) : null));
+    seats.filter((s) => s.key !== TATAMI_MANAGER_SEAT.key).forEach((s, i) => (out[s.key] = holders[i] ? fromTeam(holders[i]) : null));
   } else {
     for (const s of seats) {
       const t = team.find((x) => x.posisi === s.key);
@@ -149,11 +190,35 @@ export function conflictReason(
   return null;
 }
 
+/** Error text of a save refused because another device changed the bout in between */
+export function isPanelConflict(e: unknown): boolean {
+  return String((e as any)?.message ?? e).includes("KONFLIK_PANEL");
+}
+
+/** "Panel partai ini baru saja diubah…" without the marker */
+export function panelConflictText(e: unknown): string {
+  return String((e as any)?.message ?? e).replace(/^.*KONFLIK_PANEL:\s*/, "");
+}
+
+/**
+ * Double booking: the referee sits in a bout running now, or waiting for / approved by the
+ * chief referee, on another tatami. Their own tatami and this bout do not count.
+ */
+export function busyReason(busy: RefereeBusy[], wasitId: number, here: { tatami: number | null; matchId: number | null }): string | null {
+  const hits = busy.filter((b) => b.wasit_id === wasitId && b.tatami_number !== here.tatami && b.match_id !== here.matchId);
+  if (hits.length === 0) return null;
+  const b = hits.find((h) => h.kind === "aktif") ?? hits[0];
+  const where = `Tatami ${b.tatami_number}${b.urutan ? ` (Partai #${b.urutan})` : ""}`;
+  return b.kind === "aktif" ? `Sedang bertugas di ${where}` : `Sudah dipasang di ${where}`;
+}
+
 export interface Candidate {
   wasit: WasitItem;
   rank: number;
   label: string;
   conflict: string | null;
+  /** seated on another tatami at the same time */
+  busy: string | null;
 }
 
 /**
@@ -162,7 +227,7 @@ export interface Candidate {
  */
 export function rankCandidates(
   wasits: WasitItem[],
-  opts: { tatamiId: number | null; panel: BoutPanel | null; takenIds: Set<number> }
+  opts: { tatamiId: number | null; panel: BoutPanel | null; takenIds: Set<number>; busyOf?: ((id: number) => string | null) | null }
 ): Candidate[] {
   // get_wasits returns one row per tatami assignment: fold them per referee
   const byId = new Map<number, { w: WasitItem; tatamis: Set<number> }>();
@@ -187,13 +252,16 @@ export function rankCandidates(
       label = "Tatami lain (pinjam)";
     }
     if (conflict) rank += 3;
+    const busy = opts.busyOf?.(w.id) ?? null;
+    // busy on another tatami: after everyone free (still pickable)
+    if (busy) rank += 6;
     if (!w.is_active) rank += 10;
     if (opts.takenIds.has(w.id)) {
       // picking one moves them from their seat: list after the free ones
       rank += 5;
       label = "Sudah di panel ini";
     }
-    out.push({ wasit: w, rank, label, conflict });
+    out.push({ wasit: w, rank, label, conflict, busy });
   }
   return out.sort((a, b) => a.rank - b.rank || a.wasit.nama_wasit.localeCompare(b.wasit.nama_wasit));
 }

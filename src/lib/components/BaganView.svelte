@@ -442,8 +442,18 @@
     }
   }
 
-  async function handleGenerateRepechage() {
+  async function handleGenerateRepechage(regenerate = false) {
     if (!baganId) return;
+    if (!repechageInfo?.can_generate) {
+      if (repechageInfo?.blocked_reason) alert(repechageInfo.blocked_reason);
+      return;
+    }
+    const a = repechageInfo.pool_a_losers.length;
+    const b = repechageInfo.pool_b_losers.length;
+    const ask = regenerate
+      ? `Buat ulang bagan referchange?\n\nPartai referchange yang ada diganti dengan susunan baru dari hasil terbaru.\nJuara 3A: ${a} atlet • Juara 3B: ${b} atlet`
+      : `Buat bagan referchange?\n\nFinalis: ${repechageInfo.finalist1_name ?? "-"} & ${repechageInfo.finalist2_name ?? "-"}\nKalah dari finalis 1 (Juara 3A): ${repechageInfo.pool_a_losers.join(", ") || "-"}\nKalah dari finalis 2 (Juara 3B): ${repechageInfo.pool_b_losers.join(", ") || "-"}`;
+    if (!confirm(ask)) return;
     isGeneratingRepechage = true;
     try {
       const res = await invoke<RepechageResult>("generate_repechage_bracket", { mainBaganId: baganId });
@@ -1021,7 +1031,7 @@
           <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
           <span>ROUND-ROBIN (BERGER)</span>
         </div>
-      {:else if !isRepechageBagan}
+      {:else if !isRepechageBagan && !isFestivalBagan}
         {#if repechageInfo?.repechage_bagan_id}
           <button
             type="button"
@@ -1038,18 +1048,31 @@
             <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
             <span>Bagan Referchange</span>
           </button>
-        {:else if repechageInfo?.can_generate}
+          {#if repechageInfo.can_generate}
+            <button
+              type="button"
+              onclick={() => handleGenerateRepechage(true)}
+              disabled={isGeneratingRepechage}
+              class="px-3 py-1.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-lg transition active:scale-95 disabled:opacity-50"
+              title="Buat ulang bagan referchange dari hasil terbaru (belum ada partai referchange yang selesai)"
+            >
+              {isGeneratingRepechage ? "Membuat..." : "Generate ulang"}
+            </button>
+          {/if}
+        {:else if repechageInfo}
           <button
             type="button"
-            onclick={handleGenerateRepechage}
-            disabled={isGeneratingRepechage}
-            class="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95 disabled:opacity-50"
-            title="Otomatis telusuri atlet yang kalah dari kedua finalis untuk memperebutkan Juara 3 Bersama"
+            onclick={() => handleGenerateRepechage(false)}
+            disabled={isGeneratingRepechage || !repechageInfo.can_generate}
+            class="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-500"
+            title={repechageInfo.can_generate
+              ? "Atlet yang kalah dari finalis (juara 1 & 2) memperebutkan Juara 3A & 3B dalam satu bagan referchange"
+              : (repechageInfo.blocked_reason ?? "Belum bisa membuat referchange")}
           >
             <svg class="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
               <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
             </svg>
-            <span>{isGeneratingRepechage ? "Membuat..." : "+ Buat Referchange"}</span>
+            <span>{isGeneratingRepechage ? "Membuat..." : "+ Generate Referchange"}</span>
           </button>
         {/if}
       {:else}

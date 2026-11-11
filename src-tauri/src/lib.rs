@@ -1812,10 +1812,11 @@ async fn save_bout_panel(
     seats: Vec<models::BoutSeatInput>,
     judges: Option<i64>,
     tatami_number: Option<i32>,
+    expected_rev: Option<i64>,
     state: tauri::State<'_, DesktopState>,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let db = state.db.lock().await;
-    let res = db.save_bout_panel(match_id, seats, judges, tatami_number).await;
+    let res = db.save_bout_panel(match_id, seats, judges, tatami_number, expected_rev).await;
     if res.is_ok() {
         notify_referees_changed(&state);
     }
@@ -1828,10 +1829,11 @@ async fn submit_bout_panel(
     tatami_number: i32,
     seats: Vec<models::BoutSeatInput>,
     judges: Option<i64>,
+    expected_rev: Option<i64>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.submit_bout_panel(match_id, tatami_number, seats, judges).await?;
+    db.submit_bout_panel(match_id, tatami_number, seats, judges, expected_rev).await?;
     notify_referees_changed(&state);
     notify_bout_status(&state, match_id, "submitted", "submit", None);
     Ok(())
@@ -1871,6 +1873,49 @@ async fn decide_bout_approval(
 }
 
 #[tauri::command]
+async fn revise_bout_panel(
+    match_id: i64,
+    seats: Vec<models::BoutSeatInput>,
+    judges: Option<i64>,
+    note: Option<String>,
+    expected_rev: Option<i64>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let tatami = db.revise_bout_panel(match_id, seats, judges, note.clone(), expected_rev).await?;
+    let shown = note.as_deref().map(str::trim).unwrap_or("").to_string();
+    notify_referees_changed(&state);
+    let _ = state.server_broadcast.send(ArenaMessage {
+        tatami_pk: 0,
+        channel: "bracket".into(),
+        payload: serde_json::json!({ "type": "bout_status", "match_id": match_id, "status": "approved", "action": "revise", "note": shown, "tatami": tatami }),
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn ack_bout_revision(match_id: i64, state: tauri::State<'_, DesktopState>) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.ack_bout_revision(match_id).await
+}
+
+#[tauri::command]
+async fn get_unseen_revisions(
+    tatami_number: i32,
+    event_id: Option<i64>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<models::RevisionNotice>, String> {
+    let db = state.db.lock().await;
+    db.get_unseen_revisions(tatami_number, event_id).await
+}
+
+#[tauri::command]
+async fn get_referee_busy(event_id: i64, state: tauri::State<'_, DesktopState>) -> Result<Vec<models::RefereeBusy>, String> {
+    let db = state.db.lock().await;
+    db.get_referee_busy(event_id).await
+}
+
+#[tauri::command]
 async fn get_bagan_bout_statuses(bagan_id: i64, state: tauri::State<'_, DesktopState>) -> Result<Vec<models::BoutStatusRow>, String> {
     let db = state.db.lock().await;
     db.get_bagan_bout_statuses(bagan_id).await
@@ -1906,10 +1951,11 @@ async fn set_bout_judges(
     tatami_number: i32,
     judges: i64,
     kata: bool,
+    expected_rev: Option<i64>,
     state: tauri::State<'_, DesktopState>,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let db = state.db.lock().await;
-    let res = db.set_bout_judges(match_id, tatami_number, judges, kata).await;
+    let res = db.set_bout_judges(match_id, tatami_number, judges, kata, expected_rev).await;
     if res.is_ok() {
         notify_referees_changed(&state);
     }
@@ -2301,6 +2347,10 @@ pub fn run() {
             submit_bout_panel,
             request_bout_approval,
             decide_bout_approval,
+            revise_bout_panel,
+            ack_bout_revision,
+            get_unseen_revisions,
+            get_referee_busy,
             get_bagan_bout_statuses,
             get_approval_queue,
             get_event_referee_settings,

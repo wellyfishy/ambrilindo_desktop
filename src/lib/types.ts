@@ -772,6 +772,10 @@ export interface RepechageInfo {
   repechage_bagan_id?: number | null;
   repechage_bagan_name?: string | null;
   can_generate: boolean;
+  /** a repechage bout is finished: no regenerating */
+  repechage_started?: boolean;
+  /** why it cannot be generated yet */
+  blocked_reason?: string | null;
 }
 
 export interface RepechageResult {
@@ -967,6 +971,21 @@ export interface BoutPanel {
   ao_nama: string | null;
   round: number | null;
   urutan: number | null;
+  /** the chief referee changed the submitted officials (and approved them) */
+  revised_note: string | null;
+  revised_at: string | null;
+  /** version of the seats; sent back with a save so an edit from another device is not overwritten */
+  rev: number;
+}
+
+/** A referee seated in a bout running (aktif) or queued for the chief referee (antri) on a tatami */
+export interface RefereeBusy {
+  wasit_id: number;
+  tatami_number: number;
+  match_id: number;
+  urutan: number | null;
+  category: string | null;
+  kind: "aktif" | "antri";
 }
 
 /** draft → submitted (Tatami Manager) → pending (operator wants to start) → approved (chief referee) */
@@ -982,6 +1001,24 @@ export interface BoutStatusRow {
   match_id: number;
   status: BoutStatus;
   reject_note: string | null;
+  /** set while the chief referee's revision stands */
+  revised_at: string | null;
+  revised_note: string | null;
+  /** the Tatami Manager has seen the revision */
+  revised_seen: boolean;
+}
+
+/** A chief referee revision not yet seen by the Tatami Manager of that tatami */
+export interface RevisionNotice {
+  match_id: number;
+  bagan_id: number | null;
+  tatami_number: number | null;
+  category: string | null;
+  urutan: number | null;
+  aka_nama: string | null;
+  ao_nama: string | null;
+  note: string | null;
+  at: string | null;
 }
 
 export interface ApprovalQueueItem {
@@ -996,7 +1033,7 @@ export interface ApprovalLogItem {
   id: number;
   match_id: number;
   tatami_number: number | null;
-  action: "approve" | "reject";
+  action: "approve" | "reject" | "revise";
   note: string | null;
   at: string;
   category: string | null;

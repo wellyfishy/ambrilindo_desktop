@@ -2610,9 +2610,10 @@ async fn dispatch_command_api(
             };
             let judges = get_i64_val(&payload, &["judges"]);
             let tatami = get_i32_val(&payload, &["tatamiNumber", "tatami_number"]);
-            match db.save_bout_panel(m, seats, judges, tatami).await {
-                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            let rev = get_i64_val(&payload, &["expectedRev", "expected_rev"]);
+            match db.save_bout_panel(m, seats, judges, tatami, rev).await {
+                Ok(v) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response() },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "submit_bout_panel" => {
@@ -2623,7 +2624,8 @@ async fn dispatch_command_api(
                 Ok(r) => r,
                 Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Data panel tidak valid: {}", e) }))).into_response(),
             };
-            match db.submit_bout_panel(m, t, seats, judges).await {
+            let rev = get_i64_val(&payload, &["expectedRev", "expected_rev"]);
+            match db.submit_bout_panel(m, t, seats, judges, rev).await {
                 Ok(()) => {
                     let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) });
                     let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "bout_status", "match_id": m, "status": "submitted", "action": "submit" }) });
@@ -2657,6 +2659,47 @@ async fn dispatch_command_api(
                     (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
                 }
                 Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "revise_bout_panel" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let seats = match serde_json::from_value::<Vec<BoutSeatInput>>(payload.get("seats").cloned().unwrap_or(serde_json::Value::Array(vec![]))) {
+                Ok(r) => r,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Data panel tidak valid: {}", e) }))).into_response(),
+            };
+            let judges = get_i64_val(&payload, &["judges"]);
+            let note = get_str_val(&payload, &["note"]);
+            let rev = get_i64_val(&payload, &["expectedRev", "expected_rev"]);
+            match db.revise_bout_panel(m, seats, judges, note.clone(), rev).await {
+                Ok(tatami) => {
+                    let shown = note.as_deref().map(str::trim).unwrap_or("").to_string();
+                    let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) });
+                    let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "bout_status", "match_id": m, "status": "approved", "action": "revise", "note": shown, "tatami": tatami }) });
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                }
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "ack_bout_revision" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            match db.ack_bout_revision(m).await {
+                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_unseen_revisions" => {
+            let t = get_i64_val(&payload, &["tatamiNumber", "tatami_number"]).unwrap_or(1) as i32;
+            let ev = get_i64_val(&payload, &["eventId", "event_id"]);
+            match db.get_unseen_revisions(t, ev).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_referee_busy" => {
+            let ev = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            match db.get_referee_busy(ev).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_bagan_bout_statuses" => {
@@ -2696,8 +2739,9 @@ async fn dispatch_command_api(
             let t = get_i32_val(&payload, &["tatamiNumber", "tatami_number"]).unwrap_or(1);
             let j = get_i64_val(&payload, &["judges"]).unwrap_or(0);
             let kata = payload.get("kata").and_then(|v| v.as_bool()).unwrap_or(false);
-            match db.set_bout_judges(m, t, j, kata).await {
-                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
+            let rev = get_i64_val(&payload, &["expectedRev", "expected_rev"]);
+            match db.set_bout_judges(m, t, j, kata, rev).await {
+                Ok(v) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response() },
                 Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },

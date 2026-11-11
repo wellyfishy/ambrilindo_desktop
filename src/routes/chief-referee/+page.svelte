@@ -1,15 +1,29 @@
 <script lang="ts">
   // Chief Referee: bouts whose operator wants to start, from every tatami, with the officials
   // the Tatami Manager submitted. Terima → the control panel opens; Tolak (+ reason) → the
-  // bout is a draft again and the Tatami Manager is told.
+  // bout is a draft again and the Tatami Manager is told; Revisi → the chief referee changes
+  // seats and approves in one step, and the Tatami Manager is told what was revised.
   // Realtime over the shared socket, plus an HTTP refresh every 4 s (tablets on picky Wi-Fi).
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import { apiCall, getHostBaseUrl } from "$lib/api_client";
   import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
-  import type { ApprovalQueue, BoutPanel, EventItem } from "$lib/types";
-  import { boutJudgeCount, boutSeats, conflictReason, effectivePanel } from "$lib/refereeSeats";
+  import type { ApprovalQueue, BoutPanel, EventItem, RefereeBusy, WasitItem } from "$lib/types";
+  import {
+    boutJudgeCount,
+    boutSeats,
+    busyReason,
+    conflictReason,
+    effectivePanel,
+    isPanelConflict,
+    panelConflictText,
+    placeInSeat,
+    takenForSeat,
+    type Seat,
+    type SeatHolder,
+  } from "$lib/refereeSeats";
   import RefereeSeatCard from "$lib/components/RefereeSeatCard.svelte";
+  import RefereePicker from "$lib/components/RefereePicker.svelte";
   import PortalExitButton from "$lib/components/PortalExitButton.svelte";
 
   let eventId = $state<number | null>(Number(page.url.searchParams.get("event")) || null);
@@ -26,6 +40,17 @@
   let rejectFor = $state<number | null>(null);
   let rejectChips = $state<string[]>([]);
   let rejectText = $state("");
+
+  // Revise: the chief referee edits the submitted seats of one bout, then approves
+  let reviseFor = $state<number | null>(null);
+  let reviseSeats = $state<Record<string, SeatHolder | null>>({});
+  let reviseOriginal = $state<Record<string, number | null>>({});
+  let reviseNote = $state("");
+  let pickSeat = $state<Seat | null>(null);
+  let wasits = $state<WasitItem[]>([]);
+  let reviseChanged = $derived(
+    reviseFor ? Object.keys(reviseSeats).filter((k) => (reviseSeats[k]?.wasit_id ?? null) !== (reviseOriginal[k] ?? null)) : []
+  );
 
   let socket: TatamiSocket | null = null;
   let lastPending = -1;
@@ -47,23 +72,32 @@
       if (!eventId) return;
     }
     try {
-      const q = await apiCall<ApprovalQueue>("get_approval_queue", { eventId });
-      // officials of each waiting bout (fetched once: changing them makes the bout a draft)
-      const missing = q.pending.filter((p) => !panels[p.match_id]);
-      if (missing.length) {
-        const got = await Promise.all(
-          missing.map((p) =>
-            apiCall<BoutPanel>("get_bout_panel", { matchId: p.match_id, tatamiNumber: p.tatami_number ?? 1 }).catch(() => null)
-          )
-        );
-        const next = { ...panels };
-        got.forEach((p, i) => {
-          if (p) next[missing[i].match_id] = p;
-        });
-        panels = next;
-      }
+      const [q, b] = await Promise.all([
+        apiCall<ApprovalQueue>("get_approval_queue", { eventId }),
+        apiCall<RefereeBusy[]>("get_referee_busy", { eventId }).catch(() => null),
+      ]);
+      if (b) busy = b;
+      // officials of each waiting bout (fetched once: changing them makes the bout a draft).
+      // A bout that left the queue is forgotten, so it is fetched again when it comes back.
+      const waiting = new Set(q.pending.map((p) => p.match_id));
+      const kept = Object.fromEntries(Object.entries(panels).filter(([id]) => waiting.has(Number(id))));
+      const missing = q.pending.filter((p) => !kept[p.match_id]);
+      const got = await Promise.all(
+        missing.map((p) =>
+          apiCall<BoutPanel>("get_bout_panel", { matchId: p.match_id, tatamiNumber: p.tatami_number ?? 1 }).catch(() => null)
+        )
+      );
+      got.forEach((p, i) => {
+        if (p) kept[missing[i].match_id] = p;
+      });
+      if (missing.length || Object.keys(kept).length !== Object.keys(panels).length) panels = kept;
       if (lastPending >= 0 && q.pending.length > lastPending) chime();
       lastPending = q.pending.length;
+      // the bout being revised left the queue (decided elsewhere): leave revise mode
+      if (reviseFor && !q.pending.some((x) => x.match_id === reviseFor)) {
+        reviseFor = null;
+        pickSeat = null;
+      }
       queue = q;
       loadError = "";
     } catch (e: any) {
@@ -81,6 +115,76 @@
       await load();
     } catch (e: any) {
       actionError = typeof e === "string" ? e : e?.message || "Gagal menyimpan keputusan";
+      await load();
+    } finally {
+      busyId = null;
+    }
+  }
+
+  /** referees seated on a tatami right now (double booking) */
+  let busy = $state<RefereeBusy[]>([]);
+  function busyFor(p: BoutPanel, wasitId: number): string | null {
+    return busyReason(busy, wasitId, { tatami: p.tatami_number, matchId: p.match_id });
+  }
+
+  async function loadWasits() {
+    if (!eventId || wasits.length) return;
+    try {
+      wasits = await apiCall<WasitItem[]>("get_wasits", { eventId });
+    } catch (e) {
+      console.warn("Gagal memuat wasit:", e);
+    }
+  }
+
+  function startRevise(matchId: number) {
+    const p = panels[matchId];
+    if (!p) return;
+    const seats = boutSeats(p.category, boutJudgeCount(p, null));
+    const eff = effectivePanel(p, seats);
+    reviseSeats = { ...eff.seats };
+    reviseOriginal = Object.fromEntries(seats.map((s) => [s.key, eff.seats[s.key]?.wasit_id ?? null]));
+    reviseNote = "";
+    reviseFor = matchId;
+    loadWasits();
+  }
+
+  function setReviseSeat(key: string, holder: SeatHolder | null) {
+    // a referee sits in one seat only (picking them here frees their old seat), except the
+    // Tatami Manager who may also be Kansa / Score Supervisor
+    reviseSeats = holder ? placeInSeat(reviseSeats, key, holder, (h) => h.wasit_id) : { ...reviseSeats, [key]: null };
+  }
+
+  async function saveRevision() {
+    const id = reviseFor;
+    const p = id ? panels[id] : null;
+    if (!id || !p) return;
+    busyId = id;
+    actionError = "";
+    try {
+      await apiCall("revise_bout_panel", {
+        matchId: id,
+        judges: boutJudgeCount(p, null),
+        note: reviseNote.trim() || null,
+        expectedRev: p.rev,
+        seats: Object.entries(reviseSeats)
+          .filter(([, h]) => !!h)
+          .map(([posisi, h]) => ({ posisi, wasit_id: h!.wasit_id })),
+      });
+      reviseFor = null;
+      const { [id]: _gone, ...rest } = panels;
+      panels = rest;
+      await load();
+    } catch (e: any) {
+      if (isPanelConflict(e)) {
+        // the Tatami Manager changed this bout in between: show their version
+        actionError = panelConflictText(e);
+        reviseFor = null;
+        pickSeat = null;
+        const { [id]: _stale, ...rest } = panels;
+        panels = rest;
+      } else {
+        actionError = typeof e === "string" ? e : e?.message || "Gagal menyimpan revisi";
+      }
       await load();
     } finally {
       busyId = null;
@@ -209,34 +313,93 @@
         {:else}
           {@const judges = boutJudgeCount(p, null)}
           {@const seats = boutSeats(p.category, judges)}
-          {@const eff = effectivePanel(p, seats)}
-          {@const conflicts = seats.filter((s) => eff.seats[s.key] && conflictReason(eff.seats[s.key]!, p)).length}
-          {@const empty = seats.filter((s) => !eff.seats[s.key]).length}
+          {@const revising = reviseFor === item.match_id}
+          {@const shownSeats = revising ? reviseSeats : effectivePanel(p, seats).seats}
+          {@const conflicts = seats.filter((s) => shownSeats[s.key] && (conflictReason(shownSeats[s.key]!, p) || busyFor(p, shownSeats[s.key]!.wasit_id))).length}
+          {@const empty = seats.filter((s) => !shownSeats[s.key]).length}
           <div class="p-3 flex flex-col gap-3">
             <div class="flex items-center flex-wrap gap-x-2 gap-y-1 text-[13px]">
-              <span class="px-2 py-0.5 rounded bg-red-600 text-white font-mono font-black text-[11px]">AKA</span>
-              <span class="font-bold text-white">{p.aka_nama ?? "-"}</span>
-              <span class="text-xs text-zinc-400">({[p.aka_perguruan, p.aka_utusan].filter(Boolean).join(" • ") || "-"})</span>
-              <span class="px-1.5 py-0.5 rounded bg-white/10 text-white font-mono font-black text-[10px] mx-1">VS</span>
               <span class="px-2 py-0.5 rounded bg-sky-600 text-white font-mono font-black text-[11px]">AO</span>
               <span class="font-bold text-white">{p.ao_nama ?? "-"}</span>
               <span class="text-xs text-zinc-400">({[p.ao_perguruan, p.ao_utusan].filter(Boolean).join(" • ") || "-"})</span>
+              <span class="px-1.5 py-0.5 rounded bg-white/10 text-white font-mono font-black text-[10px] mx-1">VS</span>
+              <span class="font-bold text-white">{p.aka_nama ?? "-"}</span>
+              <span class="text-xs text-zinc-400">({[p.aka_perguruan, p.aka_utusan].filter(Boolean).join(" • ") || "-"})</span>
+              <span class="px-2 py-0.5 rounded bg-red-600 text-white font-mono font-black text-[11px]">AKA</span>
             </div>
 
             <div class="grid gap-2" style="grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));">
               {#each seats as seat (seat.key)}
-                {@const h = eff.seats[seat.key]}
-                <RefereeSeatCard {seat} holder={h} conflict={h ? conflictReason(h, p) : null} readonly photo={72} />
+                {@const h = shownSeats[seat.key]}
+                {#if revising}
+                  <div class="relative rounded-2xl {reviseChanged.includes(seat.key) ? 'ring-2 ring-violet-400' : ''}">
+                    <RefereeSeatCard
+                      {seat}
+                      holder={h}
+                      conflict={h ? conflictReason(h, p) : null}
+                      busy={h ? busyFor(p, h.wasit_id) : null}
+                      photo={72}
+                      disabled={busyId === item.match_id}
+                      onOpen={() => (pickSeat = seat)}
+                      onRelease={() => setReviseSeat(seat.key, null)}
+                    />
+                    {#if reviseChanged.includes(seat.key)}
+                      <span class="absolute -top-2 left-2 px-1.5 py-0.5 rounded bg-violet-500 text-white text-[9px] font-black">DIUBAH</span>
+                    {/if}
+                  </div>
+                {:else}
+                  <RefereeSeatCard {seat} holder={h} conflict={h ? conflictReason(h, p) : null} busy={h ? busyFor(p, h.wasit_id) : null} readonly photo={72} />
+                {/if}
               {/each}
             </div>
+            {#if revising}
+              <input
+                type="text"
+                bind:value={reviseNote}
+                placeholder="Catatan revisi untuk Tatami Manager (opsional)"
+                class="w-full bg-[#111215] text-sm text-white px-3 py-2 rounded-xl border border-violet-400/40 focus:border-white outline-none"
+              />
+            {/if}
 
             <div class="flex items-center justify-between flex-wrap gap-2">
               <div class="flex items-center gap-2 text-[11px] font-mono font-bold">
                 <span class="text-zinc-400">{judges} juri</span>
-                {#if conflicts}<span class="px-2 py-0.5 rounded bg-red-600/20 text-red-200 border border-red-500/40">⚠ {conflicts} bentrok</span>{/if}
+                {#if conflicts}<span class="px-2 py-0.5 rounded bg-yellow-500/15 text-yellow-200 border border-yellow-400/50">⚠ {conflicts} bentrok</span>{/if}
                 {#if empty}<span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-200 border border-amber-500/40">{empty} kursi kosong</span>{/if}
               </div>
+              {#if revising}
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={busyId === item.match_id}
+                    onclick={() => {
+                      reviseFor = null;
+                      pickSeat = null;
+                    }}
+                    class="h-12 px-5 rounded-xl bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-sm disabled:opacity-40"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busyId === item.match_id || reviseChanged.length === 0 || seats.every((s) => !reviseSeats[s.key])}
+                    onclick={saveRevision}
+                    class="h-12 px-6 rounded-xl bg-violet-500 hover:bg-violet-400 text-white font-black text-sm shadow-lg transition disabled:opacity-40"
+                    title={reviseChanged.length === 0 ? "Belum ada kursi yang diubah" : ""}
+                  >
+                    {busyId === item.match_id ? "Menyimpan…" : `Simpan revisi & setujui${reviseChanged.length ? ` (${reviseChanged.length})` : ""}`}
+                  </button>
+                </div>
+              {:else}
               <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busyId === item.match_id || reviseFor !== null}
+                  onclick={() => startRevise(item.match_id)}
+                  class="h-12 px-5 rounded-xl border-2 border-violet-400/60 bg-violet-500/10 text-violet-100 font-black text-sm hover:bg-violet-500 hover:text-white transition disabled:opacity-40"
+                >
+                  Revisi
+                </button>
                 <button
                   type="button"
                   disabled={busyId === item.match_id}
@@ -254,6 +417,7 @@
                   {busyId === item.match_id ? "Menyimpan…" : "Terima"}
                 </button>
               </div>
+              {/if}
             </div>
           </div>
         {/if}
@@ -267,12 +431,12 @@
           {#each queue.recent as r (r.id)}
             <div class="px-3 py-2 flex items-center gap-3 text-xs">
               <span class="font-mono text-zinc-500 shrink-0">{timeOf(r.at)}</span>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-black border shrink-0 {r.action === 'approve' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-red-500/15 text-red-300 border-red-500/40'}">
-                {r.action === "approve" ? "DITERIMA" : "DITOLAK"}
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-black border shrink-0 {r.action === 'approve' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : r.action === 'revise' ? 'bg-violet-500/20 text-violet-200 border-violet-400/50' : 'bg-red-500/15 text-red-300 border-red-500/40'}">
+                {r.action === "approve" ? "DITERIMA" : r.action === "revise" ? "DIREVISI" : "DITOLAK"}
               </span>
               <span class="font-mono text-zinc-300 shrink-0">T{r.tatami_number ?? "-"}</span>
               <span class="min-w-0 flex-1 truncate text-zinc-200">
-                {r.category ?? ""} · Partai #{r.urutan ?? "-"} · {r.aka_nama ?? "-"} vs {r.ao_nama ?? "-"}
+                {r.category ?? ""} · Partai #{r.urutan ?? "-"} · AO {r.ao_nama ?? "-"} vs AKA {r.aka_nama ?? "-"}
               </span>
               {#if r.note}<span class="text-zinc-400 truncate max-w-[40%]">{r.note}</span>{/if}
             </div>
@@ -281,6 +445,30 @@
       </section>
     {/if}
   </main>
+
+  {#if pickSeat && reviseFor && panels[reviseFor]}
+    {@const p = panels[reviseFor]}
+    <RefereePicker
+      title={`Revisi · Partai #${p.urutan ?? ""} · ${pickSeat.label}`}
+      {wasits}
+      tatamiId={p.tatami_id}
+      panel={p}
+      takenIds={takenForSeat(reviseSeats, pickSeat.key)}
+      currentId={reviseSeats[pickSeat.key]?.wasit_id ?? null}
+      busyOf={(id) => busyFor(p, id)}
+      onPick={(w) => {
+        const key = pickSeat!.key;
+        pickSeat = null;
+        setReviseSeat(key, { wasit_id: w.id, nama_wasit: w.nama_wasit, perguruan_id: w.perguruan_id, nama_perguruan: w.nama_perguruan, kab_kota: w.kab_kota, lisensi: w.lisensi, foto: w.foto ?? null });
+      }}
+      onClear={() => {
+        const key = pickSeat!.key;
+        pickSeat = null;
+        setReviseSeat(key, null);
+      }}
+      onClose={() => (pickSeat = null)}
+    />
+  {/if}
 
   {#if rejectFor}
     <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs" role="presentation" onclick={() => (rejectFor = null)}>

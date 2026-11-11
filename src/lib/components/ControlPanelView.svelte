@@ -2778,7 +2778,7 @@
                       type="button"
                       onclick={() => openKataModal("aka")}
                       class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between gap-1.5 text-xs font-semibold text-zinc-200 transition"
-                      title={kataFromLo.aka ? "Kata dari LO Kata (klik untuk mengganti)" : "Klik untuk memilih Kata"}
+                      title={kataFromLo.aka ? "Kata dari LO / Guide (klik untuk mengganti)" : "Klik untuk memilih Kata"}
                     >
                       {#key kataLoFlash.aka}
                         <span class="truncate min-w-0 flex-1 rounded px-1 -mx-1" class:cp-kata-flash={kataLoFlash.aka > 0}>{kataAkaName || "Pilih Kata..."}</span>
@@ -2874,7 +2874,7 @@
                       type="button"
                       onclick={() => openKataModal("ao")}
                       class="w-full h-11 px-2.5 bg-[#111216] hover:bg-[#1e2029] border border-[#2b2d31] hover:border-white/20 rounded-lg text-left flex items-center justify-between gap-1.5 text-xs font-semibold text-zinc-200 transition"
-                      title={kataFromLo.ao ? "Kata dari LO Kata (klik untuk mengganti)" : "Klik untuk memilih Kata"}
+                      title={kataFromLo.ao ? "Kata dari LO / Guide (klik untuk mengganti)" : "Klik untuk memilih Kata"}
                     >
                       {#key kataLoFlash.ao}
                         <span class="truncate min-w-0 flex-1 rounded px-1 -mx-1" class:cp-kata-flash={kataLoFlash.ao > 0}>{kataAoName || "Pilih Kata..."}</span>

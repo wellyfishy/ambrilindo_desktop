@@ -9,6 +9,8 @@
     holder: SeatHolder | null;
     /** conflict with AKA / AO, if any */
     conflict?: string | null;
+    /** seated on another tatami at the same time (double booking), if so */
+    busy?: string | null;
     /** no choosing / releasing (chief referee) */
     readonly?: boolean;
     disabled?: boolean;
@@ -17,7 +19,7 @@
     onOpen?: () => void;
     onRelease?: () => void;
   }
-  let { seat, holder, conflict = null, readonly = false, disabled = false, photo = 88, onOpen, onRelease }: Props = $props();
+  let { seat, holder, conflict = null, busy = null, readonly = false, disabled = false, photo = 88, onOpen, onRelease }: Props = $props();
 
   /** Position badge colours as in Ambrilindo Local */
   function badgeClass(key: string): string {
@@ -45,8 +47,10 @@
       open();
     }
   }}
-  class="group relative min-w-0 flex flex-col rounded-xl border-[1.5px] p-2.5 select-none transition {readonly ? '' : 'cursor-pointer hover:-translate-y-0.5'} {conflict
-    ? 'border-red-500 bg-red-950/30'
+  class="group relative min-w-0 flex flex-col rounded-xl border-[1.5px] p-2.5 select-none transition {readonly ? '' : 'cursor-pointer hover:-translate-y-0.5'} {busy
+    ? 'border-orange-500 bg-orange-950/30'
+    : conflict
+    ? 'border-yellow-400 bg-yellow-500/[0.12]'
     : holder
       ? `border-white/35 bg-[#11131a] ${readonly ? '' : 'hover:border-white/70'}`
       : `border-dashed border-white/20 bg-[#0f1116] ${readonly ? '' : 'hover:border-white/60'}`}"
@@ -56,8 +60,10 @@
     <span class="max-w-full truncate px-2 py-0.5 rounded text-[10.5px] font-mono font-black uppercase tracking-wide text-white border {badgeClass(seat.key)}">
       {seat.short === "WASIT" ? "Wasit" : seat.label}
     </span>
-    {#if conflict}
-      <span class="px-1.5 py-0.5 rounded text-[9.5px] font-black bg-red-600 border border-red-400 text-white">⚠ KONFLIK</span>
+    {#if busy}
+      <span class="px-1.5 py-0.5 rounded text-[9.5px] font-black bg-orange-600 border border-orange-400 text-white">⛔ BENTROK</span>
+    {:else if conflict}
+      <span class="px-1.5 py-0.5 rounded text-[9.5px] font-black bg-yellow-400 border border-yellow-300 text-black">⚠ KONFLIK</span>
     {:else if holder}
       <span class="px-1.5 py-0.5 rounded text-[9.5px] font-black bg-emerald-600 border border-emerald-400 text-white">✓ OK</span>
     {/if}
@@ -79,8 +85,11 @@
       <div class="w-full text-xs font-semibold text-zinc-400 leading-tight">
         <span class="text-sky-300 font-bold">{holder.nama_perguruan || "PB / Umum"}</span>{#if holder.kab_kota}<span class="text-zinc-600 mx-1">•</span><span class="text-zinc-200">{holder.kab_kota}</span>{/if}
       </div>
+      {#if busy}
+        <div class="w-full text-[10px] font-bold text-orange-300 leading-tight">⛔ {busy}</div>
+      {/if}
       {#if conflict}
-        <div class="w-full text-[10px] font-bold text-red-300 leading-tight">{conflict}</div>
+        <div class="w-full text-[10px] font-bold text-yellow-300 leading-tight">⚠ {conflict}</div>
       {/if}
     {:else}
       <div class="text-[13px] font-bold {readonly ? 'text-zinc-500' : 'text-white'}">{readonly ? "Belum diisi" : "+ Pilih Wasit"}</div>

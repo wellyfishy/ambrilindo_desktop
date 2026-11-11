@@ -461,6 +461,24 @@ pub struct BoutPanel {
     pub ao_nama: Option<String>,
     pub round: Option<i64>,
     pub urutan: Option<i64>,
+    /// the chief referee changed the submitted officials (and approved them)
+    pub revised_note: Option<String>,
+    pub revised_at: Option<String>,
+    /// version of the seats (0 = never saved); saves send it back to detect a newer edit
+    pub rev: i64,
+}
+
+/// A referee seated in a bout that runs (or is about to run) on a tatami: picking them
+/// for another tatami at the same time is a double booking.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct RefereeBusy {
+    pub wasit_id: i64,
+    pub tatami_number: i64,
+    pub match_id: i64,
+    pub urutan: Option<i64>,
+    pub category: Option<String>,
+    /// "aktif" = the bout open on that tatami now; "antri" = waiting for / approved by the chief referee
+    pub kind: String,
 }
 
 /// What the control panel learns when it wants to start a bout
@@ -477,6 +495,25 @@ pub struct BoutStatusRow {
     pub match_id: i64,
     pub status: String,
     pub reject_note: Option<String>,
+    /// set when the chief referee revised the officials (until the bout changes again)
+    pub revised_at: Option<String>,
+    pub revised_note: Option<String>,
+    /// the Tatami Manager has seen the revision
+    pub revised_seen: bool,
+}
+
+/// A chief referee revision the Tatami Manager of that tatami has not seen yet
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct RevisionNotice {
+    pub match_id: i64,
+    pub bagan_id: Option<i64>,
+    pub tatami_number: Option<i64>,
+    pub category: Option<String>,
+    pub urutan: Option<i64>,
+    pub aka_nama: Option<String>,
+    pub ao_nama: Option<String>,
+    pub note: Option<String>,
+    pub at: Option<String>,
 }
 
 /// A bout waiting for the chief referee
@@ -1156,6 +1193,12 @@ pub struct RepechageInfo {
     pub repechage_bagan_id: Option<i64>,
     pub repechage_bagan_name: Option<String>,
     pub can_generate: bool,
+    /// a bout of the repechage bagan is finished: it can no longer be generated again
+    #[serde(default)]
+    pub repechage_started: bool,
+    /// why it cannot be generated yet (shown on the disabled button)
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
