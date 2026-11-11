@@ -744,7 +744,7 @@
             type: "wasit",
             id: "wasit-manager",
             name: "wasit-juri",
-            subtitle: "Manajemen Wasit, Penugasan Panel Tatami & Deteksi Bentrok",
+            subtitle: "Data wasit & juri: import Excel, foto",
           })}
         class="bg-[#181a20] border border-white/[0.08] hover:border-white/[0.2] p-4 rounded-xl text-left transition group active:scale-[0.99] flex flex-col justify-between cursor-pointer"
       >
@@ -763,7 +763,7 @@
             Wasit & Dewan Juri
           </h3>
           <p class="text-[11px] text-zinc-400 mt-1 leading-relaxed">
-            Kelola data wasit juri, penugasan panel tatami, dan deteksi otomatis anti-bentrok daerah.
+            Kelola data wasit & juri, import Excel dan foto. Penugasan di Tatami Manager.
           </p>
         </div>
         <div class="mt-3 pt-3 border-t border-white/[0.06] flex items-center text-[11px] font-medium text-rose-400 group-hover:text-rose-300 space-x-1">

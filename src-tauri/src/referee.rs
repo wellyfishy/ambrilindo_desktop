@@ -167,6 +167,7 @@ mod tests {
             kab_kota: Some(kab_kota.to_string()),
             posisi: pos.to_string(),
             assigned_at: None,
+            foto: None,
         }
     }
 

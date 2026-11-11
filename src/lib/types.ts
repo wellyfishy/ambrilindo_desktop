@@ -844,6 +844,9 @@ export interface WasitItem {
   assigned_tatami_id: number | null;
   assigned_tatami_number: number | null;
   assigned_posisi: string | null;
+  /** media path of the photo (webp) */
+  foto?: string | null;
+  keterangan?: string | null;
 }
 
 export interface WasitTatamiAssignment {
@@ -860,6 +863,7 @@ export interface WasitTatamiAssignment {
   kab_kota: string | null;
   posisi: string;
   assigned_at: string | null;
+  foto?: string | null;
 }
 
 export interface WasitConflict {
@@ -893,6 +897,67 @@ export interface SaveWasitPayload {
   lisensi?: string | null;
   no_lisensi?: string | null;
   is_active: boolean;
+  keterangan?: string | null;
+}
+
+export interface WasitImportRow {
+  nama: string;
+  perguruan: string | null;
+  kab_kota: string | null;
+  lisensi: string | null;
+  no_lisensi: string | null;
+  keterangan: string | null;
+  /** "baru" | "ubah" | "sama" | "duplikat" */
+  action: string;
+  existing_id: number | null;
+}
+
+export interface WasitImportPreview {
+  rows: WasitImportRow[];
+  columns: string[];
+  sheet: string | null;
+}
+
+export interface WasitImportSummary {
+  created: number;
+  updated: number;
+  unchanged: number;
+  perguruan_created: number;
+}
+
+export interface BoutWasit {
+  wasit_id: number;
+  posisi: string;
+  nama_wasit: string;
+  perguruan_id: number | null;
+  nama_perguruan: string | null;
+  kab_kota: string | null;
+  lisensi: string | null;
+  foto: string | null;
+}
+
+export interface BoutPanel {
+  match_id: number;
+  event_id: number;
+  tatami_id: number | null;
+  tatami_number: number;
+  category: string | null;
+  /** per-bout panel, used when `custom` (may be empty: seats cleared for this bout) */
+  bout: BoutWasit[];
+  /** the bout has its own panel instead of the tatami team */
+  custom: boolean;
+  /** judges of this bout (kumite 2/4, kata 3/5/7); null = tatami default */
+  judges: number | null;
+  tatami_kumite_judges: number | null;
+  tatami_kata_judges: number | null;
+  team: WasitTatamiAssignment[];
+  aka_perguruan: string | null;
+  aka_utusan: string | null;
+  ao_perguruan: string | null;
+  ao_utusan: string | null;
+  /** bout to copy officials from ("Pakai wasit partai sebelumnya") */
+  prev_match_id: number | null;
+  prev_label: string | null;
 }
 
 export interface AssignWasitPayload {

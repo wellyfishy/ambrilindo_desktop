@@ -773,14 +773,8 @@
             onShowToast={showToast}
           />
         {:else if activeChannel.type === "wasit"}
-          <!-- Referee & Tatami Panel Assigner View -->
-          <WasitManagerView
-            eventId={selectedEventId || 1}
-            eventName={activeEvent?.nama_event || ""}
-            {tatamis}
-            hostAddress={hostUrl}
-            onShowToast={showToast}
-          />
+          <!-- Referee database (assignment happens in the Tatami Manager) -->
+          <WasitManagerView eventId={selectedEventId || 1} onShowToast={showToast} />
         {:else if activeChannel.type === "cetak"}
           <PrintCenterView
             eventId={selectedEventId || 1}

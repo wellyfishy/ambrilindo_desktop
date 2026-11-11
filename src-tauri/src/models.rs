@@ -281,6 +281,12 @@ pub struct Wasit {
     pub lisensi: Option<String>,
     pub no_lisensi: Option<String>,
     pub is_active: bool,
+    /// media path of the referee's photo (webp), e.g. "foto_wasit/wasit_12_surya.webp"
+    #[sqlx(default)]
+    pub foto: Option<String>,
+    /// free note from the import, e.g. "CHIEF REFEREE"
+    #[sqlx(default)]
+    pub keterangan: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -297,6 +303,10 @@ pub struct EnrichedWasit {
     pub assigned_tatami_id: Option<i64>,
     pub assigned_tatami_number: Option<i32>,
     pub assigned_posisi: Option<String>,
+    #[sqlx(default)]
+    pub foto: Option<String>,
+    #[sqlx(default)]
+    pub keterangan: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -323,6 +333,8 @@ pub struct EnrichedWasitTatami {
     pub kab_kota: Option<String>,
     pub posisi: String,
     pub assigned_at: Option<String>,
+    #[sqlx(default)]
+    pub foto: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -359,6 +371,92 @@ pub struct SaveWasitInput {
     pub lisensi: Option<String>,
     pub no_lisensi: Option<String>,
     pub is_active: bool,
+    #[serde(default)]
+    pub keterangan: Option<String>,
+}
+
+/// One referee row read from an Excel / CSV import, with what the import will do
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasitImportRow {
+    pub nama: String,
+    #[serde(default)]
+    pub perguruan: Option<String>,
+    #[serde(default)]
+    pub kab_kota: Option<String>,
+    #[serde(default)]
+    pub lisensi: Option<String>,
+    #[serde(default)]
+    pub no_lisensi: Option<String>,
+    #[serde(default)]
+    pub keterangan: Option<String>,
+    /// "baru" | "ubah" | "sama" | "duplikat" (preview only)
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub existing_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasitImportPreview {
+    pub rows: Vec<WasitImportRow>,
+    /// detected columns, e.g. ["Nama → nama", "Kab/Kota → kab_kota"]
+    pub columns: Vec<String>,
+    pub sheet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasitImportSummary {
+    pub created: i64,
+    pub updated: i64,
+    pub unchanged: i64,
+    pub perguruan_created: i64,
+}
+
+/// A referee seated on one bout (backend_wasitdetailbagan)
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct BoutWasit {
+    pub wasit_id: i64,
+    pub posisi: String,
+    pub nama_wasit: String,
+    pub perguruan_id: Option<i64>,
+    pub nama_perguruan: Option<String>,
+    pub kab_kota: Option<String>,
+    pub lisensi: Option<String>,
+    pub foto: Option<String>,
+}
+
+/// Everything a tablet needs to show and edit one bout's referee panel
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoutPanel {
+    pub match_id: i64,
+    pub event_id: i64,
+    pub tatami_id: Option<i64>,
+    pub tatami_number: i32,
+    pub category: Option<String>,
+    /// per-bout panel (used when `custom`; otherwise the bout uses the tatami team)
+    pub bout: Vec<BoutWasit>,
+    /// the bout has its own panel (`bout`, possibly empty) instead of the tatami team
+    pub custom: bool,
+    /// judges of this bout (kumite 2/4, kata 3/5/7); None = the tatami default
+    pub judges: Option<i64>,
+    /// the tatami's default number of judges
+    pub tatami_kumite_judges: Option<i64>,
+    pub tatami_kata_judges: Option<i64>,
+    /// the tatami's team
+    pub team: Vec<EnrichedWasitTatami>,
+    pub aka_perguruan: Option<String>,
+    pub aka_utusan: Option<String>,
+    pub ao_perguruan: Option<String>,
+    pub ao_utusan: Option<String>,
+    /// bout to copy officials from: the one before in this bagan, else the last one set on this tatami
+    pub prev_match_id: Option<i64>,
+    pub prev_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoutSeatInput {
+    pub posisi: String,
+    pub wasit_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

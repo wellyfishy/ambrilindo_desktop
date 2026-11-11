@@ -48,6 +48,24 @@ export function subscribeBracketUpdates(cb: () => void): () => void {
   return () => bracketListeners.delete(cb);
 }
 
+// Referees changed on the host (roster, photo, tatami team, a bout's panel)
+const refereeListeners = new Set<() => void>();
+function notifyRefereeListeners() {
+  for (const cb of refereeListeners) {
+    try {
+      cb();
+    } catch (e) {
+      console.warn("referee listener failed:", e);
+    }
+  }
+}
+
+/** Called when referees change anywhere on the host, and after a reconnect. */
+export function subscribeRefereeUpdates(cb: () => void): () => void {
+  refereeListeners.add(cb);
+  return () => refereeListeners.delete(cb);
+}
+
 function notifyListeners() {
   for (const listener of listeners) {
     try {
@@ -168,7 +186,10 @@ function connectWebSocket() {
 
     wsClient.onopen = () => {
       // After a reconnect, refresh whatever may have changed while the link was down.
-      if (wsEverOpened) notifyBracketListeners();
+      if (wsEverOpened) {
+        notifyBracketListeners();
+        notifyRefereeListeners();
+      }
       wsEverOpened = true;
       if (lastBroadcastPayload && wsClient && wsClient.readyState === WebSocket.OPEN) {
         try {
@@ -191,6 +212,8 @@ function connectWebSocket() {
         } else if (msg.type === "bracket_updated") {
           notifyListeners();
           notifyBracketListeners();
+        } else if (msg.type === "referee_updated") {
+          notifyRefereeListeners();
         } else if (msg.tatami !== undefined) {
           applyLiveMatchPayload(msg);
         }
@@ -361,8 +384,8 @@ export function connectTatamiSocket(
   tatami: number,
   onMessage: (msg: any) => void,
   onOpen?: (socket: TatamiSocket) => void,
-  /** Runs when the connection drops (it reconnects by itself). */
-  onClose?: () => void,
+  /** Runs when the connection drops (it reconnects by itself); `ev` is missing for a dead link the watchdog dropped. */
+  onClose?: (ev?: CloseEvent) => void,
   options: TatamiSocketOptions = {}
 ): TatamiSocket {
   let ws: WebSocket | null = null;
@@ -452,11 +475,11 @@ export function connectTatamiSocket(
         onMessage(JSON.parse(ev.data));
       } catch (_) {}
     };
-    sock.onclose = () => {
+    sock.onclose = (ev) => {
       if (ws !== sock) return; // an older socket we already replaced
       ws = null;
       if (!closed) {
-        onClose?.();
+        onClose?.(ev);
         scheduleRetry();
       }
     };

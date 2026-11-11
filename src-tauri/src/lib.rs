@@ -31,6 +31,15 @@ pub struct DesktopState {
 
 /// Tells every LAN device (operator laptops, bracket screens) that brackets changed, so they
 /// reload. Changes made over HTTP already do this in server.rs; this covers the host's own UI.
+/// Referees changed (roster, photo, tatami team or a bout's panel): tablets reload them.
+fn notify_referees_changed(state: &DesktopState) {
+    let _ = state.server_broadcast.send(ArenaMessage {
+        tatami_pk: 0,
+        channel: "bracket".into(),
+        payload: serde_json::json!({ "type": "referee_updated" }),
+    });
+}
+
 fn notify_bracket_changed(state: &DesktopState) {
     let _ = state.server_broadcast.send(ArenaMessage {
         tatami_pk: 0,
@@ -544,8 +553,13 @@ async fn save_match_result(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
+    let (finished_id, finished) = (input.match_id, input.selesai);
     let (pool_opt, db_path_opt) = {
         db.save_match_result(input).await?;
+        // history: who officiated a finished bout (its tatami team, unless set per bout)
+        if finished {
+            db.snapshot_bout_panel(finished_id).await;
+        }
         (db.get_pool_cloned(), db.get_active_db_path_cloned())
     };
     notify_bracket_changed(&state);
@@ -1652,7 +1666,11 @@ async fn save_wasit(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<i64, String> {
     let db = state.db.lock().await;
-    db.save_wasit(input).await
+    let res = db.save_wasit(input).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -1661,7 +1679,11 @@ async fn delete_wasit(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.delete_wasit(wasit_id).await
+    let res = db.delete_wasit(wasit_id).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -1680,7 +1702,11 @@ async fn assign_wasit_tatami(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.assign_wasit_tatami(input).await.map(|_| ())
+    let res = db.assign_wasit_tatami(input).await.map(|_| ());
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -1689,7 +1715,11 @@ async fn remove_wasit_tatami(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.remove_wasit_tatami(assignment_id).await
+    let res = db.remove_wasit_tatami(assignment_id).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -1698,7 +1728,11 @@ async fn clear_tatami_panel(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.clear_tatami_panel(tatami_id).await
+    let res = db.clear_tatami_panel(tatami_id).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -1707,7 +1741,105 @@ async fn auto_assign_tatami_panel(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    db.auto_assign_tatami_panel(input).await
+    let res = db.auto_assign_tatami_panel(input).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
+}
+
+#[tauri::command]
+async fn preview_wasit_import(
+    event_id: i64,
+    file_name: String,
+    base64_data: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::WasitImportPreview, String> {
+    let db = state.db.lock().await;
+    db.preview_wasit_import(event_id, &file_name, &base64_data).await
+}
+
+#[tauri::command]
+async fn import_wasits(
+    event_id: i64,
+    rows: Vec<models::WasitImportRow>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::WasitImportSummary, String> {
+    let db = state.db.lock().await;
+    let res = db.import_wasits(event_id, rows).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
+}
+
+#[tauri::command]
+async fn save_wasit_photo(
+    wasit_id: i64,
+    base64_data: String,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<String, String> {
+    let db = state.db.lock().await;
+    let res = db.save_wasit_photo(wasit_id, &base64_data).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
+}
+
+#[tauri::command]
+async fn get_bout_panel(
+    match_id: i64,
+    tatami_number: i32,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::BoutPanel, String> {
+    let db = state.db.lock().await;
+    db.get_bout_panel(match_id, tatami_number).await
+}
+
+#[tauri::command]
+async fn save_bout_panel(
+    match_id: i64,
+    seats: Vec<models::BoutSeatInput>,
+    judges: Option<i64>,
+    tatami_number: Option<i32>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let res = db.save_bout_panel(match_id, seats, judges, tatami_number).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
+}
+
+#[tauri::command]
+async fn set_bout_judges(
+    match_id: i64,
+    tatami_number: i32,
+    judges: i64,
+    kata: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let res = db.set_bout_judges(match_id, tatami_number, judges, kata).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
+}
+
+#[tauri::command]
+async fn reset_bout_panel(
+    match_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let res = db.reset_bout_panel(match_id).await;
+    if res.is_ok() {
+        notify_referees_changed(&state);
+    }
+    res
 }
 
 #[tauri::command]
@@ -2074,6 +2206,13 @@ pub fn run() {
             remove_wasit_tatami,
             clear_tatami_panel,
             auto_assign_tatami_panel,
+            preview_wasit_import,
+            import_wasits,
+            save_wasit_photo,
+            get_bout_panel,
+            save_bout_panel,
+            set_bout_judges,
+            reset_bout_panel,
             export_tournament_excel,
             get_marshalling_overview,
             broadcast_urgent_call,

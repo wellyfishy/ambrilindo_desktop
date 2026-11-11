@@ -729,7 +729,7 @@
                 type: "wasit",
                 id: "wasit-manager",
                 name: "wasit-juri",
-                subtitle: "Manajemen Wasit, Penugasan Panel Tatami & Deteksi Bentrok",
+                subtitle: "Data wasit & juri: import Excel, foto",
               })}
             class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'wasit-juri' || activeChannel.type === 'wasit' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
           >

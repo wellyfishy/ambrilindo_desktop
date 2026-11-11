@@ -2121,7 +2121,12 @@ async fn dispatch_command_api(
         "save_match_result" => {
             match serde_json::from_value::<SaveMatchInput>(payload.get("input").unwrap_or(&payload).clone()) {
                 Ok(inp) => {
+                    let (finished_id, finished) = (inp.match_id, inp.selesai);
                     let res = db.save_match_result(inp).await;
+                    // history: who officiated a finished bout (its tatami team, unless set per bout)
+                    if res.is_ok() && finished {
+                        db.snapshot_bout_panel(finished_id).await;
+                    }
                     let (pool_opt, db_path_opt) = (db.get_pool_cloned(), db.get_active_db_path_cloned());
                     drop(db);
                     match res {
@@ -2560,6 +2565,73 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "preview_wasit_import" => {
+            let src = payload.get("input").filter(|v| v.is_object()).unwrap_or(&payload);
+            let ev = get_i64_val(src, &["eventId", "event_id"]).unwrap_or(0);
+            let name = get_str_val(src, &["fileName", "file_name"]).unwrap_or_default();
+            let data = get_str_val(src, &["base64Data", "base64_data"]).unwrap_or_default();
+            match db.preview_wasit_import(ev, &name, &data).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "import_wasits" => {
+            let ev = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            let rows = match serde_json::from_value::<Vec<WasitImportRow>>(payload.get("rows").cloned().unwrap_or(serde_json::Value::Array(vec![]))) {
+                Ok(r) => r,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Data impor tidak valid: {}", e) }))).into_response(),
+            };
+            match db.import_wasits(ev, rows).await {
+                Ok(v) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response() },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "save_wasit_photo" => {
+            let id = get_i64_val(&payload, &["wasitId", "wasit_id"]).unwrap_or(0);
+            let data = get_str_val(&payload, &["base64Data", "base64_data"]).unwrap_or_default();
+            match db.save_wasit_photo(id, &data).await {
+                Ok(v) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response() },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_bout_panel" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let t = get_i32_val(&payload, &["tatamiNumber", "tatami_number", "tatami"]).unwrap_or(1);
+            match db.get_bout_panel(m, t).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "save_bout_panel" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let seats = match serde_json::from_value::<Vec<BoutSeatInput>>(payload.get("seats").cloned().unwrap_or(serde_json::Value::Array(vec![]))) {
+                Ok(r) => r,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Data panel tidak valid: {}", e) }))).into_response(),
+            };
+            let judges = get_i64_val(&payload, &["judges"]);
+            let tatami = get_i32_val(&payload, &["tatamiNumber", "tatami_number"]);
+            match db.save_bout_panel(m, seats, judges, tatami).await {
+                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "set_bout_judges" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let t = get_i32_val(&payload, &["tatamiNumber", "tatami_number"]).unwrap_or(1);
+            let j = get_i64_val(&payload, &["judges"]).unwrap_or(0);
+            let kata = payload.get("kata").and_then(|v| v.as_bool()).unwrap_or(false);
+            match db.set_bout_judges(m, t, j, kata).await {
+                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "reset_bout_panel" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            match db.reset_bout_panel(m).await {
+                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "get_wasits" => {
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             match db.get_wasits(ev_id).await {
@@ -2570,7 +2642,7 @@ async fn dispatch_command_api(
         "save_wasit" => {
             match serde_json::from_value::<SaveWasitInput>(payload.get("input").unwrap_or(&payload).clone()) {
                 Ok(input) => match db.save_wasit(input).await {
-                    Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response(),
+                    Ok(id) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response() },
                     Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
                 },
                 Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
@@ -2579,7 +2651,7 @@ async fn dispatch_command_api(
         "delete_wasit" => {
             let wasit_id = get_i64_val(&payload, &["wasitId", "wasit_id", "id"]).unwrap_or(0);
             match db.delete_wasit(wasit_id).await {
-                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
@@ -2594,7 +2666,7 @@ async fn dispatch_command_api(
         "assign_wasit_tatami" => {
             match serde_json::from_value::<AssignWasitTatamiInput>(payload.get("input").unwrap_or(&payload).clone()) {
                 Ok(input) => match db.assign_wasit_tatami(input).await {
-                    Ok(id) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response(),
+                    Ok(id) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": id }))).into_response() },
                     Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
                 },
                 Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
@@ -2603,21 +2675,21 @@ async fn dispatch_command_api(
         "remove_wasit_tatami" => {
             let assign_id = get_i64_val(&payload, &["assignmentId", "assignment_id", "id"]).unwrap_or(0);
             match db.remove_wasit_tatami(assign_id).await {
-                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "clear_tatami_panel" => {
             let tatami_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]).unwrap_or(0);
             match db.clear_tatami_panel(tatami_id).await {
-                Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "auto_assign_tatami_panel" => {
             match serde_json::from_value::<AutoAssignPanelInput>(payload.get("input").unwrap_or(&payload).clone()) {
                 Ok(input) => match db.auto_assign_tatami_panel(input).await {
-                    Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
+                    Ok(()) => { let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) }); (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response() },
                     Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
                 },
                 Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Invalid payload: {}", e) }))).into_response(),
@@ -2747,6 +2819,10 @@ async fn media_file_api(
     let db = state.db.lock().await;
     if let Some(media_dir) = db.get_media_dir() {
         let clean_path = file_path.trim_start_matches('/').trim_start_matches('\\');
+        // only files inside the media folder (no "..", no drive or absolute paths)
+        if clean_path.split(['/', '\\']).any(|part| part == ".." || part.contains(':')) {
+            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        }
         let full_path = media_dir.join(clean_path);
         if full_path.exists() && full_path.is_file() {
             if let Ok(bytes) = tokio::fs::read(&full_path).await {

@@ -23,12 +23,17 @@ use crate::models::{
     RepechageInfo, RepechageResult,
     RoundRobinAthleteStanding, RoundRobinData, RoundRobinMatrixCell,
     AssignWasitTatamiInput, AutoAssignPanelInput, EnrichedWasit, EnrichedWasitTatami, SaveWasitInput,
-    TatamiPanelOverview,
+    TatamiPanelOverview, WasitImportRow, WasitImportPreview, WasitImportSummary, BoutWasit, BoutPanel, BoutSeatInput,
     MarshallingMatchItem, MarshallingOverview, TatamiQueue,
     ResultsBookletBeritaAcara, ResultsBookletData, ResultsBookletEventInfo, ResultsBookletSignatory,
     BobBaganResult, BobSourceCategory, CreateBobBaganInput,
 };
 use crate::referee::evaluate_panel_conflicts;
+
+/// A kata category ("KATA PERORANGAN PUTRA", "Kata Beregu") by its name.
+fn is_kata_name(name: &str) -> bool {
+    name.to_uppercase().split(|c: char| !c.is_alphanumeric()).any(|w| w == "KATA")
+}
 
 #[derive(Clone)]
 pub struct DatabaseManager {
@@ -89,6 +94,8 @@ impl DatabaseManager {
             Self::ensure_performance_indexes(p).await;
             Self::ensure_bagan_layout_column(p).await;
             Self::ensure_detailbagan_juri_columns(p).await;
+            Self::ensure_wasit_columns(p).await;
+            Self::ensure_referee_panel_tables(p).await;
             Self::auto_heal_legacy_master_data(p).await;
             // Reset stale tatami match state on database mount
             let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL").execute(p).await;
@@ -149,6 +156,53 @@ impl DatabaseManager {
                     .await;
             }
         }
+    }
+
+    /// Referee photo (webp media path) and free note (e.g. "CHIEF REFEREE") on backend_wasit
+    async fn ensure_wasit_columns(pool: &Pool<Sqlite>) {
+        for (col, ty) in [("foto", "VARCHAR(200)"), ("keterangan", "VARCHAR(100)")] {
+            let has_col: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('backend_wasit') WHERE name = ?"
+            )
+            .bind(col)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0) > 0;
+            if !has_col {
+                let _ = sqlx::query(&format!("ALTER TABLE backend_wasit ADD COLUMN {} {} NULL", col, ty))
+                    .execute(pool)
+                    .await;
+            }
+        }
+    }
+
+    /// App-only tables for the Tatami Manager (Django never reads them):
+    /// - ambrilindo_bout_panel: a bout's own panel (`custom` = its seats are the rows in
+    ///   backend_wasitdetailbagan, even none) and its number of judges;
+    /// - ambrilindo_tatami_judges: a tatami's default number of judges (kumite 2/4, kata 3/5/7).
+    async fn ensure_referee_panel_tables(pool: &Pool<Sqlite>) {
+        let _ = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ambrilindo_bout_panel (
+                detail_bagan_id INTEGER PRIMARY KEY,
+                custom INTEGER NOT NULL DEFAULT 0,
+                judges INTEGER NULL,
+                tatami_number INTEGER NULL,
+                updated_at TEXT NULL
+            )",
+        )
+        .execute(pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ambrilindo_tatami_judges (
+                event_id INTEGER NOT NULL,
+                tatami_number INTEGER NOT NULL,
+                kumite_judges INTEGER NULL,
+                kata_judges INTEGER NULL,
+                PRIMARY KEY (event_id, tatami_number)
+            )",
+        )
+        .execute(pool)
+        .await;
     }
 
     /// Auto-heals orphaned/unassigned master data records from older databases or imports
@@ -8374,7 +8428,9 @@ impl DatabaseManager {
                 w.is_active,
                 wt.tatami_id as assigned_tatami_id,
                 t.tatami_number as assigned_tatami_number,
-                wt.posisi as assigned_posisi
+                wt.posisi as assigned_posisi,
+                w.foto,
+                w.keterangan
             FROM backend_wasit w
             LEFT JOIN backend_perguruan p ON w.perguruan_id = p.id
             LEFT JOIN backend_wasittatami wt ON wt.wasit_id = w.id
@@ -8398,7 +8454,8 @@ impl DatabaseManager {
                 sqlx::query(
                     r#"
                     UPDATE backend_wasit
-                    SET nama_wasit = ?, perguruan_id = ?, kab_kota = ?, lisensi = ?, no_lisensi = ?, is_active = ?
+                    SET nama_wasit = ?, perguruan_id = ?, kab_kota = ?, lisensi = ?, no_lisensi = ?, is_active = ?,
+                        keterangan = ?
                     WHERE id = ? AND event_id = ?
                     "#
                 )
@@ -8408,6 +8465,7 @@ impl DatabaseManager {
                 .bind(&input.lisensi)
                 .bind(&input.no_lisensi)
                 .bind(input.is_active)
+                .bind(&input.keterangan)
                 .bind(id)
                 .bind(input.event_id)
                 .execute(pool)
@@ -8420,8 +8478,8 @@ impl DatabaseManager {
 
         let res = sqlx::query(
             r#"
-            INSERT INTO backend_wasit (nama_wasit, perguruan_id, kab_kota, lisensi, no_lisensi, is_active, event_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            INSERT INTO backend_wasit (nama_wasit, perguruan_id, kab_kota, lisensi, no_lisensi, is_active, event_id, created_at, keterangan)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
             "#
         )
         .bind(&input.nama_wasit)
@@ -8431,6 +8489,7 @@ impl DatabaseManager {
         .bind(&input.no_lisensi)
         .bind(input.is_active)
         .bind(input.event_id)
+        .bind(&input.keterangan)
         .execute(pool)
         .await
         .map_err(|e| format!("Gagal menambahkan wasit baru: {}", e))?;
@@ -8489,6 +8548,594 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal mengambil data atlet: {}", e))
     }
 
+    // ==================== REFEREES: IMPORT, PHOTO, PER-BOUT PANEL ====================
+
+    fn clean_cell(v: &str) -> Option<String> {
+        let t = v.split_whitespace().collect::<Vec<_>>().join(" ");
+        if t.is_empty() || t == "-" || t == "—" { None } else { Some(t) }
+    }
+
+    /// Reads an Excel (.xlsx/.xls/.ods) or CSV file with referees and tells, per row, what an
+    /// import would do. Columns are found by their header (Nama, Perguruan, Kab/Kota, Lisensi,
+    /// No Lisensi, Keterangan/Jabatan); a header-less column right after the known ones is
+    /// taken as Keterangan (the PORPROV sheet labels it "-").
+    pub async fn preview_wasit_import(&self, event_id: i64, file_name: &str, base64_data: &str) -> Result<WasitImportPreview, String> {
+        use base64::Engine;
+        let raw_b64 = match base64_data.find(";base64,") { Some(i) => &base64_data[i + 8..], None => base64_data };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw_b64.trim())
+            .map_err(|e| format!("File tidak terbaca: {}", e))?;
+
+        let lower = file_name.to_lowercase();
+        let mut sheet_name: Option<String> = None;
+        let table: Vec<Vec<String>> = if lower.ends_with(".csv") || lower.ends_with(".txt") {
+            let text = String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string();
+            let first = text.lines().next().unwrap_or("");
+            let delim = if first.matches(';').count() > first.matches(',').count() { ';' } else { ',' };
+            text.lines().map(|line| Self::split_csv_line(line, delim)).collect()
+        } else {
+            use calamine::Reader;
+            let mut wb = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(bytes))
+                .map_err(|e| format!("File Excel tidak bisa dibuka: {}", e))?;
+            let name = wb.sheet_names().first().cloned().ok_or("File Excel tidak punya sheet")?;
+            let range = wb.worksheet_range(&name).map_err(|e| format!("Sheet {} tidak terbaca: {}", name, e))?;
+            sheet_name = Some(name);
+            range.rows().map(|r| r.iter().map(|c| c.to_string()).collect()).collect()
+        };
+
+        // header row = first row with a cell containing "nama"
+        let header_idx = table
+            .iter()
+            .position(|r| r.iter().any(|c| c.trim().to_lowercase().starts_with("nama")))
+            .ok_or("Kolom 'Nama' tidak ditemukan di baris judul")?;
+        let header: Vec<String> = table[header_idx].iter().map(|c| c.trim().to_lowercase()).collect();
+        let find = |pred: &dyn Fn(&str) -> bool| header.iter().position(|h| pred(h));
+        let c_nama = find(&|h| h.starts_with("nama")).unwrap();
+        let c_no_lis = find(&|h| h.contains("lisensi") && (h.starts_with("no") || h.contains("nomor")));
+        let c_lis = find(&|h| h.contains("lisensi") && !(h.starts_with("no") || h.contains("nomor")));
+        let c_perg = find(&|h| h.contains("perguruan") || h.contains("dojo") || h == "pb");
+        let c_kab = find(&|h| h.contains("kab") || h.contains("kota") || h.contains("daerah") || h.contains("asal"));
+        let c_ket = find(&|h| h.contains("keterangan") || h.contains("jabatan") || h.contains("posisi") || h == "ket" || h == "-")
+            .or_else(|| {
+                let used = [Some(c_nama), c_no_lis, c_lis, c_perg, c_kab];
+                let last = used.iter().flatten().max().copied().unwrap_or(c_nama);
+                if last + 1 < header.len() && header[last + 1].trim().is_empty() { Some(last + 1) } else { None }
+            });
+
+        let mut columns = vec![format!("{} → Nama", table[header_idx][c_nama].trim())];
+        for (c, label) in [(c_perg, "Perguruan"), (c_kab, "Kab/Kota"), (c_lis, "Lisensi"), (c_no_lis, "No Lisensi"), (c_ket, "Keterangan")] {
+            if let Some(i) = c {
+                let h = table[header_idx][i].trim();
+                columns.push(format!("{} → {}", if h.is_empty() { "(tanpa judul)" } else { h }, label));
+            }
+        }
+
+        let pool = self.get_pool()?;
+        let existing: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT w.id, w.nama_wasit, p.nama_perguruan, w.kab_kota, w.lisensi, w.no_lisensi, w.keterangan
+             FROM backend_wasit w LEFT JOIN backend_perguruan p ON p.id = w.perguruan_id WHERE w.event_id = ?"
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal membaca wasit: {}", e))?;
+        let key = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_uppercase();
+
+        let cell = |r: &Vec<String>, c: Option<usize>| c.and_then(|i| r.get(i)).and_then(|v| Self::clean_cell(v));
+        let mut seen = std::collections::HashSet::new();
+        let mut rows = Vec::new();
+        for r in table.iter().skip(header_idx + 1) {
+            let Some(nama) = cell(r, Some(c_nama)) else { continue };
+            let mut row = WasitImportRow {
+                nama: nama.to_uppercase(),
+                perguruan: cell(r, c_perg).map(|v| v.to_uppercase()),
+                kab_kota: cell(r, c_kab).map(|v| v.to_uppercase()),
+                lisensi: cell(r, c_lis),
+                no_lisensi: cell(r, c_no_lis),
+                keterangan: cell(r, c_ket).map(|v| v.to_uppercase()),
+                action: String::new(),
+                existing_id: None,
+            };
+            let k = key(&row.nama);
+            if !seen.insert(k.clone()) {
+                row.action = "duplikat".into();
+            } else if let Some(e) = existing.iter().find(|e| key(&e.1) == k) {
+                row.existing_id = Some(e.0);
+                let same = |new: &Option<String>, old: &Option<String>| new.is_none() || new.as_deref().map(key) == old.as_deref().map(key);
+                let unchanged = same(&row.perguruan, &e.2) && same(&row.kab_kota, &e.3) && same(&row.lisensi, &e.4)
+                    && same(&row.no_lisensi, &e.5) && same(&row.keterangan, &e.6);
+                row.action = if unchanged { "sama".into() } else { "ubah".into() };
+            } else {
+                row.action = "baru".into();
+            }
+            rows.push(row);
+        }
+        Ok(WasitImportPreview { rows, columns, sheet: sheet_name })
+    }
+
+    fn split_csv_line(line: &str, delim: char) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut quoted = false;
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' if quoted && chars.peek() == Some(&'"') => { cur.push('"'); chars.next(); }
+                '"' => quoted = !quoted,
+                c if c == delim && !quoted => { out.push(std::mem::take(&mut cur)); }
+                c => cur.push(c),
+            }
+        }
+        out.push(cur);
+        out
+    }
+
+    /// Creates or updates referees (matched by name within the event); unknown perguruan is
+    /// created. Empty cells never overwrite existing data. One transaction.
+    pub async fn import_wasits(&self, event_id: i64, rows: Vec<WasitImportRow>) -> Result<WasitImportSummary, String> {
+        let pool = self.get_pool()?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut sum = WasitImportSummary { created: 0, updated: 0, unchanged: 0, perguruan_created: 0 };
+        let mut seen = std::collections::HashSet::new();
+        for r in rows {
+            let nama = r.nama.split_whitespace().collect::<Vec<_>>().join(" ").to_uppercase();
+            if nama.is_empty() || !seen.insert(nama.clone()) {
+                continue;
+            }
+            let perg_id: Option<i64> = match r.perguruan.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                None => None,
+                Some(pn) => {
+                    let pn = pn.to_uppercase();
+                    let found: Option<i64> = sqlx::query_scalar(
+                        "SELECT id FROM backend_perguruan WHERE event_id = ? AND UPPER(TRIM(nama_perguruan)) = ? LIMIT 1"
+                    )
+                    .bind(event_id)
+                    .bind(&pn)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal mencari perguruan: {}", e))?;
+                    match found {
+                        Some(id) => Some(id),
+                        None => {
+                            let res = sqlx::query("INSERT INTO backend_perguruan (nama_perguruan, event_id) VALUES (?, ?)")
+                                .bind(&pn)
+                                .bind(event_id)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(|e| format!("Gagal menambah perguruan {}: {}", pn, e))?;
+                            sum.perguruan_created += 1;
+                            Some(res.last_insert_rowid())
+                        }
+                    }
+                }
+            };
+            let existing: Option<(i64, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT id, perguruan_id, kab_kota, lisensi, no_lisensi, keterangan FROM backend_wasit
+                 WHERE event_id = ? AND UPPER(TRIM(nama_wasit)) = ? LIMIT 1"
+            )
+            .bind(event_id)
+            .bind(&nama)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal mencari wasit: {}", e))?;
+            match existing {
+                Some((id, old_perg, old_kab, old_lis, old_no, old_ket)) => {
+                    let kab = r.kab_kota.clone().or(old_kab.clone());
+                    let lis = r.lisensi.clone().or(old_lis.clone());
+                    let no = r.no_lisensi.clone().or(old_no.clone());
+                    let ket = r.keterangan.clone().or(old_ket.clone());
+                    let perg = perg_id.or(old_perg);
+                    if perg == old_perg && kab == old_kab && lis == old_lis && no == old_no && ket == old_ket {
+                        sum.unchanged += 1;
+                        continue;
+                    }
+                    sqlx::query(
+                        "UPDATE backend_wasit SET perguruan_id = ?, kab_kota = ?, lisensi = ?, no_lisensi = ?, keterangan = ? WHERE id = ?"
+                    )
+                    .bind(perg).bind(&kab).bind(&lis).bind(&no).bind(&ket).bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal mengubah wasit {}: {}", nama, e))?;
+                    sum.updated += 1;
+                }
+                None => {
+                    sqlx::query(
+                        "INSERT INTO backend_wasit (nama_wasit, perguruan_id, kab_kota, lisensi, no_lisensi, keterangan, is_active, event_id, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, 1, ?, datetime('now'))"
+                    )
+                    .bind(&nama).bind(perg_id).bind(&r.kab_kota).bind(&r.lisensi).bind(&r.no_lisensi).bind(&r.keterangan).bind(event_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Gagal menambah wasit {}: {}", nama, e))?;
+                    sum.created += 1;
+                }
+            }
+        }
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan impor: {}", e))?;
+        Ok(sum)
+    }
+
+    /// Stores a referee photo. Only WebP is accepted (the app converts other formats before
+    /// upload); the previous photo file is removed. Returns the media path.
+    pub async fn save_wasit_photo(&self, wasit_id: i64, base64_data: &str) -> Result<String, String> {
+        use base64::Engine;
+        let media_dir = self.get_media_dir().ok_or_else(|| "Media directory tidak aktif (database belum dimount)".to_string())?;
+        let raw_b64 = match base64_data.find(";base64,") { Some(i) => &base64_data[i + 8..], None => base64_data };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw_b64.trim())
+            .map_err(|e| format!("Gagal decode foto: {}", e))?;
+        if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+            return Err("Foto harus berformat WebP".into());
+        }
+        let pool = self.get_pool()?;
+        let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT nama_wasit, foto FROM backend_wasit WHERE id = ?")
+            .bind(wasit_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal membaca wasit: {}", e))?;
+        let (nama, old) = row.ok_or_else(|| format!("Wasit #{} tidak ditemukan", wasit_id))?;
+        let slug: String = nama
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect::<String>()
+            .split('_')
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("_");
+        let dir = media_dir.join("foto_wasit");
+        let _ = std::fs::create_dir_all(&dir);
+        // a fresh name per upload so tablets never show a cached old photo
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+        let file = format!("wasit_{}_{}_{}.webp", wasit_id, &slug[..slug.len().min(40)], stamp);
+        tokio::fs::write(dir.join(&file), &bytes).await.map_err(|e| format!("Gagal menyimpan foto: {}", e))?;
+        let rel = format!("foto_wasit/{}", file);
+        sqlx::query("UPDATE backend_wasit SET foto = ? WHERE id = ?")
+            .bind(&rel)
+            .bind(wasit_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal menyimpan foto wasit: {}", e))?;
+        if let Some(old) = old.filter(|o| o.starts_with("foto_wasit/") && !o.contains("..") && *o != rel) {
+            let _ = tokio::fs::remove_file(media_dir.join(old)).await;
+        }
+        Ok(rel)
+    }
+
+    /// The referee panel of one bout: its own panel (if set) and the team of its tatami.
+    pub async fn get_bout_panel(&self, match_id: i64, tatami_number: i32) -> Result<BoutPanel, String> {
+        let pool = self.get_pool()?;
+        let meta: Option<(i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT b.event_id, COALESCE(nt.nama_nomor_tanding, b.nama_bagan),
+                   p1.nama_perguruan, u1.nama_utusan, p2.nama_perguruan, u2.nama_utusan
+            FROM backend_detailbagan d
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            LEFT JOIN backend_atlet a1 ON a1.id = d.atlet1_id
+            LEFT JOIN backend_perguruan p1 ON p1.id = a1.perguruan_id
+            LEFT JOIN backend_utusan u1 ON u1.id = a1.utusan_id
+            LEFT JOIN backend_atlet a2 ON a2.id = d.atlet2_id
+            LEFT JOIN backend_perguruan p2 ON p2.id = a2.perguruan_id
+            LEFT JOIN backend_utusan u2 ON u2.id = a2.utusan_id
+            WHERE d.id = ?
+            "#
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat partai: {}", e))?;
+        let (event_id, category, aka_perguruan, aka_utusan, ao_perguruan, ao_utusan) =
+            meta.ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
+
+        let tatami_id: Option<i64> = sqlx::query_scalar("SELECT id FROM backend_tatami WHERE event_id = ? AND tatami_number = ? LIMIT 1")
+            .bind(event_id)
+            .bind(tatami_number)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat tatami: {}", e))?;
+
+        let bout = sqlx::query_as::<_, BoutWasit>(
+            r#"
+            SELECT wd.wasit_id, wd.posisi, w.nama_wasit, w.perguruan_id, p.nama_perguruan, w.kab_kota, w.lisensi, w.foto
+            FROM backend_wasitdetailbagan wd
+            JOIN backend_wasit w ON w.id = wd.wasit_id
+            LEFT JOIN backend_perguruan p ON p.id = w.perguruan_id
+            WHERE wd.detail_bagan_id = ?
+            ORDER BY wd.posisi
+            "#
+        )
+        .bind(match_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat panel partai: {}", e))?;
+
+        let team = match tatami_id {
+            Some(tid) => self.get_tatami_panel_overview(event_id, tid).await.map(|o| o.assignments).unwrap_or_default(),
+            None => Vec::new(),
+        };
+
+        let state: Option<(i64, Option<i64>)> = sqlx::query_as("SELECT custom, judges FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+        let (custom, judges) = match state {
+            Some((c, j)) => (c != 0 || !bout.is_empty(), j),
+            None => (!bout.is_empty(), None),
+        };
+        let defaults: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT kumite_judges, kata_judges FROM ambrilindo_tatami_judges WHERE event_id = ? AND tatami_number = ?"
+        )
+        .bind(event_id)
+        .bind(tatami_number)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+        let (tatami_kumite_judges, tatami_kata_judges) = defaults.unwrap_or((None, None));
+
+        let (prev_match_id, prev_label) = self.previous_bout(match_id, event_id, tatami_number).await;
+
+        Ok(BoutPanel {
+            match_id,
+            event_id,
+            tatami_id,
+            tatami_number,
+            category,
+            bout,
+            custom,
+            judges,
+            tatami_kumite_judges,
+            tatami_kata_judges,
+            team,
+            aka_perguruan,
+            aka_utusan,
+            ao_perguruan,
+            ao_utusan,
+            prev_match_id,
+            prev_label,
+        })
+    }
+
+    /// The bout whose officials "Pakai wasit partai sebelumnya" copies: the bout before this
+    /// one in its bagan (both corners filled), or for a bagan's first bout the bout set most
+    /// recently on this tatami.
+    async fn previous_bout(&self, match_id: i64, event_id: i64, tatami_number: i32) -> (Option<i64>, Option<String>) {
+        let Ok(pool) = self.get_pool() else { return (None, None) };
+        let same_bagan: Option<(i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT p.id, COALESCE(p.urutan, 0)
+            FROM backend_detailbagan d
+            JOIN backend_detailbagan p ON p.bagan_id = d.bagan_id
+            WHERE d.id = ? AND p.id != d.id AND COALESCE(p.team, 0) = 0
+              AND p.atlet1_id IS NOT NULL AND p.atlet2_id IS NOT NULL
+              AND (COALESCE(p.round, 0) < COALESCE(d.round, 0)
+                   OR (COALESCE(p.round, 0) = COALESCE(d.round, 0) AND COALESCE(p.urutan, 0) < COALESCE(d.urutan, 0)))
+            ORDER BY COALESCE(p.round, 0) DESC, COALESCE(p.urutan, 0) DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+        if let Some((id, urutan)) = same_bagan {
+            return (Some(id), Some(format!("Partai #{}", urutan)));
+        }
+        let recent: Option<(i64, i64, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT bp.detail_bagan_id, COALESCE(d.urutan, 0), COALESCE(nt.nama_nomor_tanding, b.nama_bagan)
+            FROM ambrilindo_bout_panel bp
+            JOIN backend_detailbagan d ON d.id = bp.detail_bagan_id
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            WHERE bp.tatami_number = ? AND b.event_id = ? AND bp.detail_bagan_id != ? AND bp.custom = 1
+            ORDER BY bp.updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(tatami_number)
+        .bind(event_id)
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+        match recent {
+            Some((id, urutan, cat)) => (Some(id), Some(format!("Partai #{} · {}", urutan, cat.unwrap_or_default()))),
+            None => (None, None),
+        }
+    }
+
+    /// Number of judges of one bout (kumite 2/4, kata 3/5/7); also becomes the tatami's
+    /// default for its next bouts of that kind.
+    pub async fn set_bout_judges(&self, match_id: i64, tatami_number: i32, judges: i64, kata: bool) -> Result<(), String> {
+        let allowed: &[i64] = if kata { &[3, 5, 7] } else { &[2, 4] };
+        if !allowed.contains(&judges) {
+            return Err(format!("Jumlah juri {} tidak valid", judges));
+        }
+        let pool = self.get_pool()?;
+        let event_id: i64 = sqlx::query_scalar(
+            "SELECT b.event_id FROM backend_detailbagan d JOIN backend_bagan b ON b.id = d.bagan_id WHERE d.id = ?"
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat partai: {}", e))?
+        .ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
+        sqlx::query(
+            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, judges, tatami_number, updated_at)
+             VALUES (?, 0, ?, ?, datetime('now'))
+             ON CONFLICT(detail_bagan_id) DO UPDATE SET judges = excluded.judges, tatami_number = excluded.tatami_number"
+        )
+        .bind(match_id)
+        .bind(judges)
+        .bind(tatami_number)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menyimpan jumlah juri: {}", e))?;
+        let col = if kata { "kata_judges" } else { "kumite_judges" };
+        sqlx::query(&format!(
+            "INSERT INTO ambrilindo_tatami_judges (event_id, tatami_number, {col}) VALUES (?, ?, ?)
+             ON CONFLICT(event_id, tatami_number) DO UPDATE SET {col} = excluded.{col}"
+        ))
+        .bind(event_id)
+        .bind(tatami_number)
+        .bind(judges)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menyimpan jumlah juri tatami: {}", e))?;
+        Ok(())
+    }
+
+    /// Replaces one bout's panel (all seats at once; a referee sits in one seat only).
+    /// No seats = the bout is explicitly empty (it no longer follows the tatami team).
+    pub async fn save_bout_panel(
+        &self,
+        match_id: i64,
+        seats: Vec<BoutSeatInput>,
+        judges: Option<i64>,
+        tatami_number: Option<i32>,
+    ) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let event_id: i64 = sqlx::query_scalar(
+            "SELECT b.event_id FROM backend_detailbagan d JOIN backend_bagan b ON b.id = d.bagan_id WHERE d.id = ?"
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat partai: {}", e))?
+        .ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
+        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        sqlx::query("DELETE FROM backend_wasitdetailbagan WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal mengosongkan panel partai: {}", e))?;
+        let mut used = std::collections::HashSet::new();
+        for s in seats {
+            if s.wasit_id <= 0 || s.posisi.trim().is_empty() || !used.insert(s.wasit_id) {
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO backend_wasitdetailbagan (posisi, assigned_at, detail_bagan_id, event_id, wasit_id) VALUES (?, datetime('now'), ?, ?, ?)"
+            )
+            .bind(s.posisi.trim())
+            .bind(match_id)
+            .bind(event_id)
+            .bind(s.wasit_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
+        }
+        sqlx::query(
+            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, judges, tatami_number, updated_at)
+             VALUES (?, 1, ?, ?, datetime('now'))
+             ON CONFLICT(detail_bagan_id) DO UPDATE SET custom = 1,
+                 judges = COALESCE(excluded.judges, ambrilindo_bout_panel.judges),
+                 tatami_number = COALESCE(excluded.tatami_number, ambrilindo_bout_panel.tatami_number),
+                 updated_at = excluded.updated_at"
+        )
+        .bind(match_id)
+        .bind(judges)
+        .bind(tatami_number)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
+        Ok(())
+    }
+
+    /// The bout goes back to its tatami's team (and the tatami's number of judges).
+    pub async fn reset_bout_panel(&self, match_id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query("DELETE FROM backend_wasitdetailbagan WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal mengembalikan panel partai: {}", e))?;
+        sqlx::query("DELETE FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Gagal mengembalikan panel partai: {}", e))?;
+        Ok(())
+    }
+
+    /// History: a finished bout without its own panel records the team of its tatami at that
+    /// moment (so later team changes do not rewrite who officiated).
+    pub async fn snapshot_bout_panel(&self, match_id: i64) {
+        let Ok(pool) = self.get_pool() else { return };
+        let has: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM backend_wasitdetailbagan WHERE detail_bagan_id = ?)
+                  + (SELECT COUNT(*) FROM ambrilindo_bout_panel WHERE detail_bagan_id = ? AND custom = 1)"
+        )
+        .bind(match_id)
+        .bind(match_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(1);
+        if has > 0 {
+            return; // the bout has its own panel (possibly explicitly empty)
+        }
+        // the bout's tatami, or the one its judges were set on in the Tatami Manager
+        let row: Option<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
+            r#"
+            SELECT b.event_id, COALESCE(nt.nama_nomor_tanding, b.nama_bagan),
+                   COALESCE(
+                     (SELECT t.id FROM backend_tatami t WHERE t.event_id = b.event_id
+                        AND (d.assigned_tatami_id = t.id OR d.assigned_tatami_id = t.tatami_number) LIMIT 1),
+                     (SELECT t.id FROM backend_tatami t JOIN ambrilindo_bout_panel bp ON bp.detail_bagan_id = d.id
+                        WHERE t.event_id = b.event_id AND t.tatami_number = bp.tatami_number LIMIT 1))
+            FROM backend_detailbagan d
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            WHERE d.id = ?
+            "#,
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+        let Some((event_id, category, Some(tatami_id))) = row else { return };
+        let team: Vec<(String, i64)> = sqlx::query_as("SELECT posisi, wasit_id FROM backend_wasittatami WHERE tatami_id = ? AND posisi != 'pool'")
+            .bind(tatami_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        if team.is_empty() {
+            return;
+        }
+        // Kata takes its judges from the team in order Referee, Juri 1, Juri 2, … (as shown)
+        let rows: Vec<(String, i64)> = if is_kata_name(category.as_deref().unwrap_or("")) {
+            ["referee", "judge_1", "judge_2", "judge_3", "judge_4", "judge_5", "judge_6"]
+                .iter()
+                .filter_map(|k| team.iter().find(|(p, _)| p == k).map(|(_, w)| *w))
+                .enumerate()
+                .map(|(i, w)| (format!("judge_{}", i + 1), w))
+                .collect()
+        } else {
+            team
+        };
+        for (posisi, wasit_id) in rows {
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO backend_wasitdetailbagan (posisi, assigned_at, detail_bagan_id, event_id, wasit_id) VALUES (?, datetime('now'), ?, ?, ?)"
+            )
+            .bind(posisi)
+            .bind(match_id)
+            .bind(event_id)
+            .bind(wasit_id)
+            .execute(pool)
+            .await;
+        }
+        let _ = sqlx::query(
+            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, updated_at) VALUES (?, 1, datetime('now'))
+             ON CONFLICT(detail_bagan_id) DO UPDATE SET custom = 1"
+        )
+        .bind(match_id)
+        .execute(pool)
+        .await;
+    }
+
     pub async fn get_tatami_panel_overview(&self, _event_id: i64, tatami_id: i64) -> Result<TatamiPanelOverview, String> {
         let pool = self.get_pool()?;
         
@@ -8516,7 +9163,8 @@ impl DatabaseManager {
                 p.nama_perguruan,
                 w.kab_kota,
                 wt.posisi,
-                wt.assigned_at
+                wt.assigned_at,
+                w.foto
             FROM backend_wasittatami wt
             JOIN backend_wasit w ON wt.wasit_id = w.id
             LEFT JOIN backend_perguruan p ON w.perguruan_id = p.id
@@ -8531,8 +9179,12 @@ impl DatabaseManager {
                     WHEN 'judge_2' THEN 5
                     WHEN 'judge_3' THEN 6
                     WHEN 'judge_4' THEN 7
-                    WHEN 'pool' THEN 8
-                    ELSE 9
+                    WHEN 'judge_5' THEN 8
+                    WHEN 'judge_6' THEN 9
+                    WHEN 'score_supervisor' THEN 10
+                    WHEN 'vr_wasit' THEN 11
+                    WHEN 'pool' THEN 12
+                    ELSE 13
                 END ASC
             "#
         )
