@@ -8,8 +8,10 @@
   import { page } from "$app/state";
   import { connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
   import { apiCall, getHostBaseUrl } from "$lib/api_client";
-  import type { BoutPanel, TatamiItem, TatamiPanelOverview, WasitItem } from "$lib/types";
+  import type { BoutPanel, BoutStatusRow, TatamiItem, TatamiPanelOverview, WasitItem } from "$lib/types";
   import {
+    BOUT_STATUS_CLASS,
+    BOUT_STATUS_LABEL,
     KATA_JUDGE_OPTIONS,
     KUMITE_JUDGE_OPTIONS,
     TEAM_SEATS,
@@ -22,6 +24,7 @@
   } from "$lib/refereeSeats";
   import RefereeAvatar from "$lib/components/RefereeAvatar.svelte";
   import RefereePicker from "$lib/components/RefereePicker.svelte";
+  import RefereeSeatCard from "$lib/components/RefereeSeatCard.svelte";
   import { computePodium, deriveBracketMeta, TREE_COL_GAP, TREE_COL_WIDTH, TREE_HEIGHT, treeWidthFor } from "$lib/bracket_layout";
   import BracketTree from "$lib/components/BracketTree.svelte";
   import PortalExitButton from "$lib/components/PortalExitButton.svelte";
@@ -199,9 +202,75 @@
     return next;
   }
 
+  /** Changing a submitted / approved bout makes it a draft again: ask first */
+  function confirmBackToDraft(): boolean {
+    const s = boutPanel?.status ?? "draft";
+    if (s === "draft") return true;
+    const what = s === "approved" ? "sudah disetujui Chief Referee" : s === "pending" ? "sedang menunggu Chief Referee" : "sudah ditetapkan";
+    return confirm(`Partai ini ${what}. Mengubah wasit membuatnya kembali Draft dan perlu di-submit ulang. Lanjutkan?`);
+  }
+
+  /** Submit: this bout's officials are final (the operator may then ask the chief referee) */
+  async function submitBout() {
+    if (!editMatchId || !effective) return;
+    const next = currentSeatIds();
+    if (Object.keys(next).length === 0) return;
+    if (Object.keys(next).length < seats.length && !confirm(`Baru ${Object.keys(next).length} dari ${seats.length} kursi terisi. Tetap submit?`)) return;
+    boutSaving = true;
+    try {
+      await apiCall("submit_bout_panel", {
+        matchId: editMatchId,
+        tatamiNumber,
+        judges: judgeCount,
+        seats: Object.entries(next).map(([posisi, wasit_id]) => ({ posisi, wasit_id })),
+      });
+      await Promise.all([loadBoutPanel(), loadStatuses()]);
+      showNotice("Wasit & juri partai ini sudah ditetapkan", false);
+    } catch (e) {
+      boutError = `Gagal submit: ${errText(e)}`;
+    } finally {
+      boutSaving = false;
+    }
+  }
+
+  // ---- Approval status of the bouts on screen (bracket badges) ----
+  let boutStatuses = $state<Record<number, BoutStatusRow>>({});
+  async function loadStatuses() {
+    const id = viewBaganId;
+    if (!id) return;
+    try {
+      const rows = await apiCall<BoutStatusRow[]>("get_bagan_bout_statuses", { baganId: id });
+      if (viewBaganId === id) boutStatuses = Object.fromEntries(rows.map((r) => [r.match_id, r]));
+    } catch (e) {
+      console.warn("Gagal memuat status partai:", e);
+    }
+  }
+  function statusBadge(m: any): { text: string; cls: string } | null {
+    if (!m || m.selesai || !m.atlet1_id || !m.atlet2_id) return null;
+    const s = boutStatuses[m.id]?.status ?? "draft";
+    const text = s === "draft" ? (boutStatuses[m.id]?.reject_note ? "DITOLAK" : "DRAFT") : s === "submitted" ? "DITETAPKAN" : s === "pending" ? "MENUNGGU CR" : "DISETUJUI";
+    const cls = s === "draft" && boutStatuses[m.id]?.reject_note ? "bg-red-600/30 text-red-200 border-red-500/60" : BOUT_STATUS_CLASS[s];
+    return { text, cls };
+  }
+
+  /** "Partai #3 … ditolak" notices for this tatami (until dismissed) */
+  let rejectNotices = $state<{ id: number; matchId: number; text: string }[]>([]);
+  async function onBoutStatus(msg: any) {
+    loadStatuses();
+    if (editMatchId && Number(msg.match_id) === editMatchId) loadBoutPanel();
+    if (msg.action !== "reject" || (msg.tatami != null && Number(msg.tatami) !== tatamiNumber)) return;
+    let label = `Partai ${msg.match_id}`;
+    try {
+      const p = await apiCall<BoutPanel>("get_bout_panel", { matchId: Number(msg.match_id), tatamiNumber });
+      label = `Partai #${p.urutan ?? ""} ${p.category ?? ""} (${p.aka_nama ?? "-"} vs ${p.ao_nama ?? "-"})`;
+    } catch {}
+    rejectNotices = [...rejectNotices, { id: Date.now(), matchId: Number(msg.match_id), text: `${label} ditolak Chief Referee: ${msg.note || "-"}` }];
+  }
+
   /** One seat changed (a referee moved here leaves their old seat) */
   async function setBoutSeat(seatKey: string, holder: SeatHolder | null) {
     if (!effective || !editMatchId) return;
+    if (!confirmBackToDraft()) return;
     const next = currentSeatIds();
     if (holder) {
       for (const k of Object.keys(next)) if (next[k] === holder.wasit_id) delete next[k];
@@ -215,28 +284,21 @@
     await saveBout(next);
   }
 
-  /** Every seat of this bout empty (the tatami team no longer applies to it) */
-  async function clearBout() {
-    await saveBout({});
-    showNotice("Semua kursi partai ini dikosongkan", false);
+  function openSeat(seat: { key: string; label: string }) {
+    if (!boutSaving) pickFor = { kind: "bout", seat: seat.key, label: seat.label };
   }
 
-  async function resetBout() {
-    if (!editMatchId) return;
-    boutSaving = true;
-    try {
-      await apiCall("reset_bout_panel", { matchId: editMatchId });
-      await loadBoutPanel();
-    } catch (e) {
-      boutError = `Gagal: ${errText(e)}`;
-    } finally {
-      boutSaving = false;
-    }
+  /** Every seat of this bout empty (the tatami team no longer applies to it) */
+  async function clearBout() {
+    if (!confirmBackToDraft()) return;
+    await saveBout({});
+    showNotice("Semua kursi partai ini dikosongkan", false);
   }
 
   /** Kumite 2/4, kata 3/5/7 judges for this bout; also the tatami's default for the next bouts */
   async function setJudges(n: number) {
     if (!editMatchId || n === judgeCount) return;
+    if (!confirmBackToDraft()) return;
     boutSaving = true;
     try {
       await apiCall("set_bout_judges", { matchId: editMatchId, tatamiNumber, judges: n, kata: boutIsKata });
@@ -259,6 +321,7 @@
   async function copyPreviousBout() {
     const prevId = boutPanel?.prev_match_id;
     if (!prevId || !boutPanel) return;
+    if (!confirmBackToDraft()) return;
     boutSaving = true;
     try {
       const prev = await apiCall<BoutPanel>("get_bout_panel", { matchId: prevId, tatamiNumber });
@@ -414,6 +477,7 @@
       const [b, list] = await Promise.all([getJson(`/api/bagan/${baganId}`), getJson(`/api/detail-bagan/${baganId}`)]);
       if (viewBaganId !== baganId) return;
       viewBagan = b;
+      loadStatuses();
       // the event of this tatami (URL has none): the bagan running in the control panel decides
       if (!eventFromUrl && b?.event_id && baganId === livePanelBaganId && Number(b.event_id) !== eventFromMatch) {
         eventFromMatch = Number(b.event_id);
@@ -496,6 +560,7 @@
       if (json?.data) handleLiveState(json.data);
       // no referee_updated pushes without the socket: reload what is open now and then
       if (++pollCount % 3 === 0) {
+        loadStatuses();
         if (editMatchId) loadBoutPanel();
         if (teamOpen) loadTeam();
       }
@@ -513,7 +578,10 @@
         linkStatus = "live";
         if (msg?.type === "tatami_live_state") handleLiveState(msg.payload || msg.data);
         else if (msg?.type === "bracket_updated") refreshAll();
-        else if (msg?.type === "referee_updated") refreshReferees();
+        else if (msg?.type === "referee_updated") {
+          refreshReferees();
+          loadStatuses();
+        } else if (msg?.type === "bout_status") onBoutStatus(msg);
       },
       (sock) => {
         linkStatus = "live";
@@ -645,6 +713,38 @@
     {/if}
   </div>
 
+  <!-- Chief referee rejected a bout of this tatami: stays until dismissed -->
+  {#if rejectNotices.length}
+    <div class="shrink-0 px-3 pt-2 flex flex-col gap-1.5">
+      {#each rejectNotices as n (n.id)}
+        <div class="flex items-center gap-2 rounded-xl border border-red-500/50 bg-red-950/60 px-3 py-2 text-xs font-semibold text-red-100 shadow-lg">
+          <span class="text-base leading-none">⚠</span>
+          <span class="flex-1 min-w-0">{n.text}</span>
+          {#if baganMatches.some((m) => m.id === n.matchId)}
+            <button
+              type="button"
+              onclick={() => {
+                editMatchId = n.matchId;
+                rejectNotices = rejectNotices.filter((x) => x.id !== n.id);
+              }}
+              class="h-8 px-3 rounded-lg bg-white text-black font-bold shrink-0"
+            >
+              Buka
+            </button>
+          {/if}
+          <button
+            type="button"
+            aria-label="Tutup"
+            onclick={() => (rejectNotices = rejectNotices.filter((x) => x.id !== n.id))}
+            class="h-8 w-8 rounded-lg hover:bg-white/10 text-red-200 shrink-0"
+          >
+            ✕
+          </button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
   <!-- The bracket: tap a bout to see / assign its officials -->
   <main bind:this={stageEl} class="flex-1 min-h-0 overflow-auto p-2">
     {#if !viewBagan || !treeMeta}
@@ -668,6 +768,7 @@
             highlightMatchId={livePanelMatchId}
             clickHint="Ketuk untuk mengatur wasit & juri"
             onMatchClick={openSheet}
+            matchBadge={statusBadge}
           />
         </div>
       </div>
@@ -697,13 +798,13 @@
   <!-- Officials of the tapped bout (template: the list of referees comes from the Wasit-Juri channel) -->
   {#if editMatch}
     <div
-      class="fixed inset-0 z-40 flex justify-center bg-black/60 backdrop-blur-xs {wideSheet ? 'items-center p-3' : 'items-end sm:items-center'}"
+      class="fixed inset-0 z-40 flex justify-center bg-black/60 backdrop-blur-xs {wideSheet ? 'items-center p-3' : 'items-end sm:items-center sm:p-3'}"
       role="presentation"
       onclick={() => (editMatchId = null)}
     >
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
-        class="w-full bg-[#181a20] border border-white/10 shadow-2xl flex flex-col {wideSheet ? 'max-w-5xl rounded-2xl max-h-[96vh]' : 'sm:max-w-xl rounded-t-2xl sm:rounded-2xl max-h-[92vh]'}"
+        class="w-full bg-[#181a20] border border-white/10 shadow-2xl flex flex-col {wideSheet ? 'max-w-[1400px] rounded-2xl max-h-[96vh]' : 'sm:max-w-3xl rounded-t-2xl sm:rounded-2xl max-h-[94vh]'}"
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -721,30 +822,44 @@
           </button>
         </div>
 
-        {#snippet athletes()}
-          <div class="grid grid-cols-2 gap-2">
-            {#each [["ao", "AO", editMatch.atlet2_nama, editMatch.atlet2_kontingen], ["aka", "AKA", editMatch.atlet1_nama, editMatch.atlet1_kontingen]] as [side, label, name, club] (side)}
-              <div class="rounded-xl border p-2.5 min-w-0 {side === 'aka' ? 'border-red-600/60 bg-red-950/20' : 'border-blue-600/60 bg-blue-950/20'}">
-                <span class="px-1.5 py-0.5 rounded text-white font-mono font-black text-[10px] {side === 'aka' ? 'bg-red-600' : 'bg-blue-600'}">{label}</span>
-                <div class="text-sm font-black text-white truncate mt-1">{name || "BYE"}</div>
-                <div class="text-[11px] text-zinc-400 truncate">{club || "-"}</div>
-              </div>
-            {/each}
+        <div class="p-3 flex flex-col gap-3 overflow-y-auto min-h-0">
+          <!-- Match in one line: category, AKA vs AO (as in Ambrilindo Local) -->
+          <div class="flex items-center justify-between flex-wrap gap-x-4 gap-y-2 px-3 py-2 rounded-xl bg-[#121722] border border-white/[0.12]">
+            <span class="text-sm font-black text-white uppercase tracking-wide shrink-0">{boutPanel?.category ?? viewBagan?.nama_bagan ?? ""}</span>
+            <div class="flex items-center flex-wrap gap-x-2 gap-y-1 text-[13px] min-w-0">
+              <span class="px-2 py-0.5 rounded bg-red-600 text-white font-mono font-black text-[11px]">AKA</span>
+              <span class="font-bold text-white">{editMatch.atlet1_nama || "BYE"}</span>
+              {#if editMatch.atlet1_kontingen}<span class="text-xs text-zinc-400">({editMatch.atlet1_kontingen})</span>{/if}
+              <span class="px-1.5 py-0.5 rounded bg-white/10 text-white font-mono font-black text-[10px] mx-1">VS</span>
+              <span class="px-2 py-0.5 rounded bg-sky-600 text-white font-mono font-black text-[11px]">AO</span>
+              <span class="font-bold text-white">{editMatch.atlet2_nama || "BYE"}</span>
+              {#if editMatch.atlet2_kontingen}<span class="text-xs text-zinc-400">({editMatch.atlet2_kontingen})</span>{/if}
+            </div>
           </div>
-        {/snippet}
 
-        {#snippet controls()}
-          <div class="flex flex-col gap-2">
-            <!-- number of judges: this bout, and the tatami's default for the next ones -->
-            <div class="flex items-center gap-2">
-              <span class="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400 shrink-0">Jumlah juri</span>
-              <div class="flex gap-1">
+          <!-- Panel bar: count, source, judges, actions -->
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <div class="flex items-center flex-wrap gap-2">
+              <span class="text-xs font-black uppercase tracking-wide text-white">Susunan Wasit & Juri Partai</span>
+              <span class="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold border {filledCount === seats.length
+                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                : 'bg-white/[0.06] text-zinc-300 border-white/10'}">{filledCount} / {seats.length} Terisi</span>
+              {#if boutPanel}
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase border {BOUT_STATUS_CLASS[boutPanel.status]}">
+                  {BOUT_STATUS_LABEL[boutPanel.status]}
+                </span>
+              {/if}
+            </div>
+            <div class="flex items-center flex-wrap gap-2">
+              <!-- number of judges: this bout, and the tatami's default for the next ones -->
+              <div class="flex items-center gap-1.5 pr-1">
+                <span class="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400">Juri</span>
                 {#each boutIsKata ? KATA_JUDGE_OPTIONS : KUMITE_JUDGE_OPTIONS as n (n)}
                   <button
                     type="button"
                     disabled={boutSaving || !boutPanel}
                     onclick={() => setJudges(n)}
-                    class="h-9 min-w-11 px-3 rounded-lg text-sm font-black font-mono border transition {judgeCount === n
+                    class="h-9 min-w-10 px-2.5 rounded-lg text-sm font-black font-mono border transition {judgeCount === n
                       ? 'bg-white text-black border-white'
                       : 'bg-white/[0.04] text-zinc-300 border-white/10 hover:text-white hover:border-white/30'}"
                   >
@@ -752,115 +867,78 @@
                   </button>
                 {/each}
               </div>
-            </div>
-            <div class="flex flex-wrap gap-2">
               <button
                 type="button"
                 disabled={boutSaving || !boutPanel?.prev_match_id}
                 onclick={copyPreviousBout}
-                class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl disabled:opacity-40"
+                class="h-9 px-3.5 bg-sky-700 hover:bg-sky-600 text-white border border-sky-400/60 font-bold text-xs rounded-xl disabled:opacity-40"
                 title={boutPanel?.prev_label ?? "Tidak ada partai sebelumnya"}
               >
-                Pakai wasit partai sebelumnya{boutPanel?.prev_label ? ` (${boutPanel.prev_label})` : ""}
+                Gunakan Wasit Partai Sebelumnya{boutPanel?.prev_label ? ` (${boutPanel.prev_label})` : ""}
               </button>
               <button
                 type="button"
                 disabled={boutSaving || !boutPanel || filledCount === 0}
                 onclick={clearBout}
-                class="h-9 px-3.5 bg-white/[0.04] text-red-300 border border-white/[0.1] font-semibold text-xs rounded-xl disabled:opacity-40"
+                class="h-9 px-3.5 bg-red-500/10 text-red-300 border border-red-500/30 font-semibold text-xs rounded-xl disabled:opacity-40"
               >
-                Kosongkan semua
+                Kosongkan
               </button>
-              {#if effective?.fromBout}
-                <button
-                  type="button"
+            </div>
+          </div>
+
+          {#if boutPanel?.status === "draft" && boutPanel.reject_note}
+            <div class="rounded-xl px-3 py-2 text-xs font-semibold bg-red-500/10 border border-red-500/40 text-red-200">
+              ⚠ Ditolak Chief Referee: {boutPanel.reject_note}. Perbaiki lalu Submit ulang.
+            </div>
+          {/if}
+          {#if boutNotice}
+            <div class="rounded-xl px-3 py-2 text-xs font-semibold {boutNotice.warn ? 'bg-red-500/10 border border-red-500/30 text-red-200' : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-200'}">
+              {boutNotice.text}
+            </div>
+          {/if}
+          {#if boutError}
+            <div class="text-xs text-red-300">{boutError}</div>
+          {/if}
+
+          <!-- Seats, left to right: badge, photo, name, perguruan • kota (as in Ambrilindo Local) -->
+          {#if !boutPanel && !boutError}
+            <div class="text-xs font-mono text-zinc-500 py-6 text-center">Memuat panel…</div>
+          {:else if effective}
+            <div class="grid gap-2.5" style="grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));">
+              {#each seats as seat (seat.key)}
+                {@const h = effective.seats[seat.key]}
+                <RefereeSeatCard
+                  {seat}
+                  holder={h}
+                  conflict={h ? conflictReason(h, boutPanel) : null}
                   disabled={boutSaving}
-                  onclick={resetBout}
-                  class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
-                >
-                  Kembali ke tim tatami
-                </button>
-              {/if}
+                  onOpen={() => openSeat(seat)}
+                  onRelease={() => setBoutSeat(seat.key, null)}
+                />
+              {/each}
             </div>
-            {#if boutNotice}
-              <div class="rounded-xl px-3 py-2 text-xs font-semibold {boutNotice.warn ? 'bg-amber-500/10 border border-amber-500/30 text-amber-200' : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-200'}">
-                {boutNotice.text}
-              </div>
+            {#if !effective.fromBout && boutPanel && boutPanel.team.length === 0}
+              <p class="text-[11px] text-zinc-500 px-1">Tim Tatami {tatamiNumber} belum diisi. Atur lewat tombol "Tim Tatami", atau pilih per kursi untuk partai ini saja.</p>
             {/if}
-          </div>
-        {/snippet}
+          {/if}
+        </div>
 
-        {#snippet officials()}
-          <div class="rounded-2xl border border-white/10 bg-[#13151b] p-3 flex flex-col gap-2 min-h-0">
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400">
-                {boutIsKata ? `Panel Juri Kata (${judgeCount})` : `Wasit & Juri Kumite (${judgeCount} juri)`} · {filledCount}/{seats.length}
-              </span>
-              {#if effective?.fromBout}
-                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">KHUSUS PARTAI INI</span>
-              {:else if boutPanel}
-                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/10">TIM TATAMI {tatamiNumber}</span>
-              {/if}
-            </div>
-            {#if boutError}
-              <div class="text-xs text-red-300">{boutError}</div>
-            {/if}
-            {#if !boutPanel && !boutError}
-              <div class="text-xs font-mono text-zinc-500 py-2">Memuat panel…</div>
-            {:else if effective}
-              <div class="grid gap-2 {wideSheet ? 'grid-cols-2' : 'grid-cols-1'}">
-                {#each seats as seat (seat.key)}
-                  {@const h = effective.seats[seat.key]}
-                  {@const conflict = h ? conflictReason(h, boutPanel) : null}
-                  <button
-                    type="button"
-                    disabled={boutSaving}
-                    onclick={() => (pickFor = { kind: "bout", seat: seat.key, label: seat.label })}
-                    class="text-left flex items-center gap-3 rounded-xl border px-3 py-2 transition {conflict
-                      ? 'bg-amber-500/[0.05] border-amber-500/30'
-                      : 'bg-[#101216] border-white/10 hover:border-white/30'}"
-                  >
-                    <RefereeAvatar foto={h?.foto} nama={h?.nama_wasit ?? seat.short} size={44} />
-                    <div class="min-w-0 flex-1">
-                      <div class="text-[10px] font-mono font-bold uppercase text-zinc-500">{seat.label}</div>
-                      {#if h}
-                        <div class="text-sm font-black text-white truncate">{h.nama_wasit}</div>
-                        <div class="text-[11px] text-zinc-400 truncate">{h.nama_perguruan || "PB / Umum"}{h.kab_kota ? ` • ${h.kab_kota}` : ""}</div>
-                        {#if conflict}<div class="text-[10px] font-mono font-bold text-amber-300 leading-tight">⚠ {conflict}</div>{/if}
-                      {:else}
-                        <div class="text-sm font-semibold text-zinc-500">Belum ditentukan</div>
-                      {/if}
-                    </div>
-                    <span class="text-xs font-semibold text-zinc-300 shrink-0">{h ? "Ganti" : "Pilih"}</span>
-                  </button>
-                {/each}
-              </div>
-              {#if !effective.fromBout && boutPanel && boutPanel.team.length === 0}
-                <p class="text-[11px] text-zinc-500 px-1">Tim Tatami {tatamiNumber} belum diisi. Atur lewat tombol "Tim Tatami", atau pilih per kursi untuk partai ini saja.</p>
-              {/if}
-            {/if}
-          </div>
-        {/snippet}
-
-        <!-- landscape: athletes and actions on the left, the seats on the right -->
-        {#if wideSheet}
-          <div class="p-3 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-3 overflow-y-auto min-h-0">
-            <div class="flex flex-col gap-3">
-              {@render athletes()}
-              {@render controls()}
-            </div>
-            {@render officials()}
-          </div>
-        {:else}
-          <div class="p-3 flex flex-col gap-3 overflow-y-auto">
-            {@render athletes()}
-            {@render controls()}
-            {@render officials()}
-          </div>
-        {/if}
-
-        <div class="px-4 py-3 border-t border-white/10 flex items-center justify-end">
-          <button onclick={() => (editMatchId = null)} class="h-10 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md">Tutup</button>
+        <div class="px-4 py-3 border-t border-white/10 flex items-center justify-end gap-2">
+          <button onclick={() => (editMatchId = null)} class="h-10 px-4 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl">Tutup</button>
+          {#if boutPanel}
+            {@const st = boutPanel.status}
+            <button
+              type="button"
+              disabled={st !== "draft" || boutSaving || filledCount === 0}
+              onclick={submitBout}
+              class="h-10 px-5 font-black text-xs rounded-xl shadow-md transition {st === 'draft'
+                ? 'bg-white text-black hover:bg-zinc-200 disabled:opacity-40'
+                : `border ${BOUT_STATUS_CLASS[st]}`}"
+            >
+              {st === "draft" ? "Submit" : `✓ ${BOUT_STATUS_LABEL[st]}`}
+            </button>
+          {/if}
         </div>
       </div>
     </div>

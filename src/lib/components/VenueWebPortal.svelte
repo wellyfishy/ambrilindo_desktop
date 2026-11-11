@@ -21,6 +21,8 @@
     color: string;
     icon: string;
     getUrl: (tatami: number, eventId: number | null) => string;
+    /** one screen for every tatami (no tatami in its link) */
+    allTatami?: boolean;
   }
 
   // In pairs that work together (shown side by side): VR, monitoring, kata, operator + board
@@ -96,6 +98,16 @@
       color: "yellow",
       icon: "tv",
       getUrl: (t, e) => `/scoreboard?tatami=${t}${e ? `&event=${e}` : ""}`,
+    },
+    {
+      id: "chief_referee",
+      title: "Chief Referee",
+      subtitle: "Persetujuan Wasit & Juri",
+      badge: "Semua Tatami",
+      color: "violet",
+      icon: "shield",
+      allTatami: true,
+      getUrl: (_t, e) => `/chief-referee${e ? `?event=${e}` : ""}`,
     },
   ];
 
@@ -272,7 +284,7 @@
         <button
           type="button"
           onclick={() => (selectedRole = role.id)}
-          class="text-left p-2.5 sm:p-3 rounded-2xl border transition-all relative flex flex-col justify-between min-w-0 {selectedRole === role.id
+          class="text-left p-2.5 sm:p-3 rounded-2xl border transition-all relative flex flex-col justify-between min-w-0 {role.allTatami ? 'col-span-2' : ''} {selectedRole === role.id
             ? 'bg-[#1a1c24] border-white/40 ring-1 ring-white/30 shadow-md'
             : 'bg-[#13151b] hover:bg-[#181a22] border-white/[0.06] text-zinc-300'}"
         >
@@ -358,7 +370,7 @@
       onclick={handleNavigate}
       class="w-full h-12 bg-white hover:bg-zinc-200 active:scale-[0.99] text-black font-black text-xs sm:text-sm rounded-2xl shadow-xl flex items-center justify-center gap-2 transition-all mt-4 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/50"
     >
-      <span class="truncate">Buka {activeRoleInfo.title} &bull; Tatami {selectedTatami}</span>
+      <span class="truncate">Buka {activeRoleInfo.title}{activeRoleInfo.allTatami ? "" : ` • Tatami ${selectedTatami}`}</span>
       <svg class="w-4 h-4 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
         <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
       </svg>

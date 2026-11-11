@@ -44,10 +44,37 @@
 
   const LICENSE_OPTIONS = ["Wasit WKF / AKF", "Wasit Nasional A", "Wasit Nasional B", "Juri Nasional A", "Juri Nasional B", "Wasit Daerah", "Juri Daerah"];
 
+  // Event setting: bouts need the chief referee's approval before they start
+  let requireApproval = $state(false);
+  let approvalSaving = $state(false);
+  async function loadSettings() {
+    try {
+      const s = await apiCall<{ require_chief_approval: boolean }>("get_event_referee_settings", { eventId });
+      requireApproval = !!s.require_chief_approval;
+    } catch (e) {
+      console.warn("loadSettings err:", e);
+    }
+  }
+  async function toggleApproval() {
+    approvalSaving = true;
+    try {
+      await apiCall("set_event_referee_settings", { eventId, requireChiefApproval: !requireApproval });
+      requireApproval = !requireApproval;
+      onShowToast?.(requireApproval ? "Partai wajib disetujui Chief Referee sebelum dimulai." : "Persetujuan Chief Referee dimatikan.");
+    } catch (e: any) {
+      onShowToast?.("Gagal menyimpan pengaturan: " + (e?.message || e));
+    } finally {
+      approvalSaving = false;
+    }
+  }
+
   onMount(() => {
-    Promise.all([loadWasits(), loadPerguruans()]).finally(() => (isLoading = false));
+    Promise.all([loadWasits(), loadPerguruans(), loadSettings()]).finally(() => (isLoading = false));
     // another laptop / tablet changed referees: reload
-    return subscribeRefereeUpdates(() => loadWasits());
+    return subscribeRefereeUpdates(() => {
+      loadWasits();
+      loadSettings();
+    });
   });
 
   async function loadWasits() {
@@ -211,6 +238,22 @@
     </div>
 
     <div class="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={requireApproval}
+        disabled={approvalSaving}
+        onclick={toggleApproval}
+        title="Partai baru bisa dimulai di control panel setelah wasit & juri disetujui Chief Referee"
+        class="h-9 px-3.5 font-semibold text-xs rounded-xl border transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 {requireApproval
+          ? 'bg-violet-500/15 text-violet-100 border-violet-400/50'
+          : 'bg-white/[0.04] text-zinc-300 border-white/[0.1] hover:bg-white/[0.08]'}"
+      >
+        <span class="relative inline-block w-7 h-4 rounded-full transition {requireApproval ? 'bg-violet-400' : 'bg-zinc-600'}">
+          <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all {requireApproval ? 'left-3.5' : 'left-0.5'}"></span>
+        </span>
+        <span>Persetujuan Chief Referee</span>
+      </button>
       <button
         type="button"
         onclick={() => (isImportOpen = true)}

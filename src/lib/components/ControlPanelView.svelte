@@ -3,7 +3,7 @@
   import PortalExitButton from "$lib/components/PortalExitButton.svelte";
   import { emit, listen } from "@tauri-apps/api/event";
   import { invoke, isHostUi, getHostBaseUrl, withHostParam } from "$lib/api_client";
-  import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput } from "$lib/types";
+  import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, TeamCandidateAthlete, AssignBoutAthletesInput, BoutApprovalState } from "$lib/types";
   import { KATA_ENTRIES, type KataItem } from "$lib/kata_data";
   import ServerStatusBadge from "$lib/components/ServerStatusBadge.svelte";
   import ScoreboardDisplay from "$lib/components/ScoreboardDisplay.svelte";
@@ -201,6 +201,42 @@
       console.warn("Gagal mencatat partai berjalan di host:", e);
     });
   }
+
+  // ==================== CHIEF REFEREE APPROVAL ====================
+  // Events that need it: opening a bout asks the chief referee (once the Tatami Manager
+  // has submitted its officials). Until approved the panel shows a waiting screen; the
+  // scoreboard still shows the bout. Checked every 2 s, so it continues by itself.
+  let approval = $state<BoutApprovalState | null>(null);
+  let approvalMatchId = $derived(teamMatchInfo?.is_team_match ? teamMatchInfo.parent_match_id : match?.id);
+  let approvalLocked = $derived(!!approval && approval.required && approval.status !== "approved" && !match?.selesai && !isFestival);
+
+  async function checkApproval() {
+    const id = approvalMatchId;
+    if (!id || id <= 0 || isFestival || claimStatus !== "owned") return;
+    try {
+      const res = await invoke<BoutApprovalState>("request_bout_approval", { matchId: id, tatamiNumber: activeTatami });
+      if (id === approvalMatchId) approval = res;
+    } catch (e) {
+      // an older host without approvals: never lock the operator out
+      console.warn("Status persetujuan tidak dapat diperiksa:", e);
+    }
+  }
+  $effect(() => {
+    void approvalMatchId;
+    untrack(() => {
+      approval = null;
+      checkApproval();
+    });
+  });
+  $effect(() => {
+    if (claimStatus === "owned") untrack(() => checkApproval());
+  });
+  $effect(() => {
+    if (!approvalLocked) return;
+    if (untrack(() => isTimerRunning)) pauseTimer();
+    const t = setInterval(checkApproval, 2000);
+    return () => clearInterval(t);
+  });
 
   async function takeOverTatami() {
     if (isTakingOver) return;
@@ -1937,6 +1973,8 @@
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore OS key-repeat to prevent rapid bouncing
       if (e.repeat) return;
+      // waiting for the chief referee: no timer / scoring hotkeys
+      if (approvalLocked) return;
 
       // Escape closes activeJudgePicker or active scoreboard banner
       if (e.key === "Escape") {
@@ -2007,6 +2045,46 @@
 </script>
 
 <svelte:window onkeydown={handleKataModalKeydown} />
+
+{#if approvalLocked && approval && claimStatus !== "blocked"}
+  {@const rejected = approval.status === "draft" && !!approval.reject_note}
+  <!-- Waiting for the chief referee: the panel stays empty, the scoreboard shows the bout -->
+  <div class="fixed inset-0 z-[150] bg-[#0d0f12] flex flex-col" role="alertdialog" aria-modal="true" aria-labelledby="approval-title">
+    <div class="flex items-center justify-between gap-3 p-3 m-3 mb-0 bg-[#181a20] border border-[#2b2d31] rounded-xl">
+      <div class="flex items-center gap-2 min-w-0">
+        <PortalExitButton title="Keluar dari Control Panel?" />
+        <span class="px-2.5 py-1 rounded-lg bg-white/[0.06] text-zinc-200 font-mono font-black text-xs border border-white/10 shrink-0">TATAMI {activeTatami}</span>
+        <span class="text-sm font-black text-white uppercase truncate">{baganName}</span>
+      </div>
+      <span class="text-xs font-mono text-zinc-400 shrink-0">Partai #{match.urutan || 1}</span>
+    </div>
+    <div class="flex-1 flex items-center justify-center p-6">
+      <div class="w-full max-w-2xl text-center">
+        <div class="flex items-center justify-center gap-3 text-base font-bold text-white mb-8 flex-wrap">
+          <span class="px-2 py-0.5 rounded bg-red-600 text-xs font-mono font-black">AKA</span>
+          <span>{teamMatchInfo?.is_team_match ? teamMatchInfo.team_aka_name : match.atlet1_nama || "-"}</span>
+          <span class="text-zinc-500 text-xs font-mono">VS</span>
+          <span class="px-2 py-0.5 rounded bg-sky-600 text-xs font-mono font-black">AO</span>
+          <span>{teamMatchInfo?.is_team_match ? teamMatchInfo.team_ao_name : match.atlet2_nama || "-"}</span>
+        </div>
+        {#if rejected}
+          <div class="text-[11px] font-mono font-bold uppercase tracking-widest text-red-400">Ditolak</div>
+          <h2 id="approval-title" class="mt-2 text-3xl font-black uppercase text-red-300">Match ditolak Chief Referee</h2>
+          <p class="mt-3 text-lg font-semibold text-red-100">{approval.reject_note}</p>
+          <p class="mt-4 text-sm text-zinc-400">Menunggu Tatami Manager menetapkan ulang wasit &amp; juri, lalu permintaan dikirim lagi otomatis.</p>
+        {:else if approval.status === "draft"}
+          <div class="text-[11px] font-mono font-bold uppercase tracking-widest text-amber-400">Belum bisa dimulai</div>
+          <h2 id="approval-title" class="mt-2 text-3xl font-black uppercase text-amber-200">Wasit belum ditetapkan</h2>
+          <p class="mt-4 text-sm text-zinc-400">Tatami Manager perlu Submit wasit &amp; juri partai ini. Setelah itu permintaan ke Chief Referee dikirim otomatis.</p>
+        {:else}
+          <div class="mx-auto mb-5 w-12 h-12 rounded-full border-4 border-violet-400/30 border-t-violet-300 animate-spin"></div>
+          <h2 id="approval-title" class="text-3xl font-black uppercase text-violet-100">Menunggu persetujuan Chief Referee</h2>
+          <p class="mt-4 text-sm text-zinc-400">Wasit &amp; juri partai ini sedang diperiksa. Panel terbuka otomatis setelah disetujui.</p>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if claimStatus === "blocked"}
   <div

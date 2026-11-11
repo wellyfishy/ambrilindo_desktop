@@ -40,6 +40,15 @@ fn notify_referees_changed(state: &DesktopState) {
     });
 }
 
+/// A bout's approval status changed (Tatami Manager, control panel, chief referee pages)
+fn notify_bout_status(state: &DesktopState, match_id: i64, status: &str, action: &str, note: Option<&str>) {
+    let _ = state.server_broadcast.send(ArenaMessage {
+        tatami_pk: 0,
+        channel: "bracket".into(),
+        payload: serde_json::json!({ "type": "bout_status", "match_id": match_id, "status": status, "action": action, "note": note }),
+    });
+}
+
 fn notify_bracket_changed(state: &DesktopState) {
     let _ = state.server_broadcast.send(ArenaMessage {
         tatami_pk: 0,
@@ -1814,6 +1823,84 @@ async fn save_bout_panel(
 }
 
 #[tauri::command]
+async fn submit_bout_panel(
+    match_id: i64,
+    tatami_number: i32,
+    seats: Vec<models::BoutSeatInput>,
+    judges: Option<i64>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.submit_bout_panel(match_id, tatami_number, seats, judges).await?;
+    notify_referees_changed(&state);
+    notify_bout_status(&state, match_id, "submitted", "submit", None);
+    Ok(())
+}
+
+#[tauri::command]
+async fn request_bout_approval(
+    match_id: i64,
+    tatami_number: i32,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::BoutApprovalState, String> {
+    let db = state.db.lock().await;
+    let res = db.request_bout_approval(match_id, tatami_number).await?;
+    if res.required && res.status == "pending" {
+        notify_bout_status(&state, match_id, "pending", "request", None);
+    }
+    Ok(res)
+}
+
+#[tauri::command]
+async fn decide_bout_approval(
+    match_id: i64,
+    approve: bool,
+    note: Option<String>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let tatami = db.decide_bout_approval(match_id, approve, note.clone()).await?;
+    let shown = note.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(if approve { "" } else { "Ditolak Chief Referee" });
+    let (status, action) = if approve { ("approved", "approve") } else { ("draft", "reject") };
+    let _ = state.server_broadcast.send(ArenaMessage {
+        tatami_pk: 0,
+        channel: "bracket".into(),
+        payload: serde_json::json!({ "type": "bout_status", "match_id": match_id, "status": status, "action": action, "note": shown, "tatami": tatami }),
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_bagan_bout_statuses(bagan_id: i64, state: tauri::State<'_, DesktopState>) -> Result<Vec<models::BoutStatusRow>, String> {
+    let db = state.db.lock().await;
+    db.get_bagan_bout_statuses(bagan_id).await
+}
+
+#[tauri::command]
+async fn get_approval_queue(event_id: i64, state: tauri::State<'_, DesktopState>) -> Result<models::ApprovalQueue, String> {
+    let db = state.db.lock().await;
+    db.get_approval_queue(event_id).await
+}
+
+#[tauri::command]
+async fn get_event_referee_settings(event_id: i64, state: tauri::State<'_, DesktopState>) -> Result<models::EventRefereeSettings, String> {
+    let db = state.db.lock().await;
+    db.get_event_referee_settings(event_id).await
+}
+
+#[tauri::command]
+async fn set_event_referee_settings(
+    event_id: i64,
+    require_chief_approval: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.set_event_referee_settings(event_id, require_chief_approval).await?;
+    notify_referees_changed(&state);
+    Ok(())
+}
+
+#[tauri::command]
 async fn set_bout_judges(
     match_id: i64,
     tatami_number: i32,
@@ -2211,6 +2298,13 @@ pub fn run() {
             save_wasit_photo,
             get_bout_panel,
             save_bout_panel,
+            submit_bout_panel,
+            request_bout_approval,
+            decide_bout_approval,
+            get_bagan_bout_statuses,
+            get_approval_queue,
+            get_event_referee_settings,
+            set_event_referee_settings,
             set_bout_judges,
             reset_bout_panel,
             export_tournament_excel,

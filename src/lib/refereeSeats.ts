@@ -34,6 +34,20 @@ export function isKataCategory(name: string | null | undefined): boolean {
   return /\bKATA\b/i.test(name || "");
 }
 
+/** Approval of a bout's officials, as shown to people */
+export const BOUT_STATUS_LABEL: Record<string, string> = {
+  draft: "Draft",
+  submitted: "Ditetapkan",
+  pending: "Menunggu Chief Referee",
+  approved: "Disetujui",
+};
+export const BOUT_STATUS_CLASS: Record<string, string> = {
+  draft: "bg-amber-500/15 text-amber-300 border-amber-500/40",
+  submitted: "bg-sky-500/15 text-sky-300 border-sky-500/40",
+  pending: "bg-violet-500/20 text-violet-200 border-violet-400/50",
+  approved: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
+};
+
 /** Judge counts an operator can pick per kind of bout */
 export const KUMITE_JUDGE_OPTIONS = [2, 4] as const;
 export const KATA_JUDGE_OPTIONS = [3, 5, 7] as const;

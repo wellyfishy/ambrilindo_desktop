@@ -126,7 +126,11 @@ export function applyLiveMatchPayload(data: any) {
 export function initLiveSync(hostUrl?: string) {
   if (typeof window === "undefined") return;
 
-  if (hostUrl) {
+  // A page served by the host (tablet browser) always uses that host, whatever is passed
+  const servedHere = !(window as any).__TAURI_INTERNALS__ && /^https?:$/.test(window.location.protocol) && window.location.port !== "1420";
+  if (servedHere) {
+    currentHostUrl = window.location.origin;
+  } else if (hostUrl) {
     currentHostUrl = hostUrl;
   } else {
     currentHostUrl = getConnectionConfig().hostUrl;

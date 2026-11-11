@@ -24,6 +24,7 @@ use crate::models::{
     RoundRobinAthleteStanding, RoundRobinData, RoundRobinMatrixCell,
     AssignWasitTatamiInput, AutoAssignPanelInput, EnrichedWasit, EnrichedWasitTatami, SaveWasitInput,
     TatamiPanelOverview, WasitImportRow, WasitImportPreview, WasitImportSummary, BoutWasit, BoutPanel, BoutSeatInput,
+    BoutApprovalState, BoutStatusRow, ApprovalQueue, ApprovalQueueItem, ApprovalLogItem, EventRefereeSettings,
     MarshallingMatchItem, MarshallingOverview, TatamiQueue,
     ResultsBookletBeritaAcara, ResultsBookletData, ResultsBookletEventInfo, ResultsBookletSignatory,
     BobBaganResult, BobSourceCategory, CreateBobBaganInput,
@@ -199,6 +200,39 @@ impl DatabaseManager {
                 kumite_judges INTEGER NULL,
                 kata_judges INTEGER NULL,
                 PRIMARY KEY (event_id, tatami_number)
+            )",
+        )
+        .execute(pool)
+        .await;
+        // Approval of a bout's officials: draft → submitted (Tatami Manager) → pending
+        // (operator wants to start) → approved by the chief referee, or back to draft
+        // with the reason when rejected.
+        for (col, ty) in [("status", "TEXT NOT NULL DEFAULT 'draft'"), ("reject_note", "TEXT NULL"), ("status_at", "TEXT NULL")] {
+            let has_col: bool = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('ambrilindo_bout_panel') WHERE name = ?")
+                .bind(col)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(0) > 0;
+            if !has_col {
+                let _ = sqlx::query(&format!("ALTER TABLE ambrilindo_bout_panel ADD COLUMN {} {}", col, ty)).execute(pool).await;
+            }
+        }
+        let _ = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ambrilindo_bout_panel_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detail_bagan_id INTEGER NOT NULL,
+                tatami_number INTEGER NULL,
+                action TEXT NOT NULL,
+                note TEXT NULL,
+                at TEXT NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await;
+        let _ = sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ambrilindo_event_settings (
+                event_id INTEGER PRIMARY KEY,
+                require_chief_approval INTEGER NOT NULL DEFAULT 0
             )",
         )
         .execute(pool)
@@ -8805,10 +8839,12 @@ impl DatabaseManager {
     /// The referee panel of one bout: its own panel (if set) and the team of its tatami.
     pub async fn get_bout_panel(&self, match_id: i64, tatami_number: i32) -> Result<BoutPanel, String> {
         let pool = self.get_pool()?;
-        let meta: Option<(i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        #[allow(clippy::type_complexity)]
+        let meta: Option<(i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
             r#"
             SELECT b.event_id, COALESCE(nt.nama_nomor_tanding, b.nama_bagan),
-                   p1.nama_perguruan, u1.nama_utusan, p2.nama_perguruan, u2.nama_utusan
+                   p1.nama_perguruan, u1.nama_utusan, p2.nama_perguruan, u2.nama_utusan,
+                   a1.nama_atlet, a2.nama_atlet, d.round, d.urutan
             FROM backend_detailbagan d
             JOIN backend_bagan b ON b.id = d.bagan_id
             LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
@@ -8825,7 +8861,7 @@ impl DatabaseManager {
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("Gagal memuat partai: {}", e))?;
-        let (event_id, category, aka_perguruan, aka_utusan, ao_perguruan, ao_utusan) =
+        let (event_id, category, aka_perguruan, aka_utusan, ao_perguruan, ao_utusan, aka_nama, ao_nama, round, urutan) =
             meta.ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
 
         let tatami_id: Option<i64> = sqlx::query_scalar("SELECT id FROM backend_tatami WHERE event_id = ? AND tatami_number = ? LIMIT 1")
@@ -8855,15 +8891,17 @@ impl DatabaseManager {
             None => Vec::new(),
         };
 
-        let state: Option<(i64, Option<i64>)> = sqlx::query_as("SELECT custom, judges FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
-            .bind(match_id)
-            .fetch_optional(pool)
-            .await
-            .unwrap_or(None);
-        let (custom, judges) = match state {
-            Some((c, j)) => (c != 0 || !bout.is_empty(), j),
-            None => (!bout.is_empty(), None),
+        let state: Option<(i64, Option<i64>, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT custom, judges, status, reject_note FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+                .bind(match_id)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None);
+        let (custom, judges, status, reject_note) = match state {
+            Some((c, j, s, n)) => (c != 0 || !bout.is_empty(), j, s.unwrap_or_else(|| "draft".into()), n),
+            None => (!bout.is_empty(), None, "draft".to_string(), None),
         };
+        let require_chief_approval = self.require_chief_approval(event_id).await;
         let defaults: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
             "SELECT kumite_judges, kata_judges FROM ambrilindo_tatami_judges WHERE event_id = ? AND tatami_number = ?"
         )
@@ -8894,7 +8932,209 @@ impl DatabaseManager {
             ao_utusan,
             prev_match_id,
             prev_label,
+            status,
+            reject_note,
+            require_chief_approval,
+            aka_nama,
+            ao_nama,
+            round,
+            urutan,
         })
+    }
+
+    // ---- Approval of a bout's officials (Tatami Manager → operator → chief referee) ----
+
+    pub async fn require_chief_approval(&self, event_id: i64) -> bool {
+        let Ok(pool) = self.get_pool() else { return false };
+        sqlx::query_scalar::<_, i64>("SELECT require_chief_approval FROM ambrilindo_event_settings WHERE event_id = ?")
+            .bind(event_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0)
+            != 0
+    }
+
+    pub async fn get_event_referee_settings(&self, event_id: i64) -> Result<EventRefereeSettings, String> {
+        Ok(EventRefereeSettings { require_chief_approval: self.require_chief_approval(event_id).await })
+    }
+
+    pub async fn set_event_referee_settings(&self, event_id: i64, require_chief_approval: bool) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query(
+            "INSERT INTO ambrilindo_event_settings (event_id, require_chief_approval) VALUES (?, ?)
+             ON CONFLICT(event_id) DO UPDATE SET require_chief_approval = excluded.require_chief_approval"
+        )
+        .bind(event_id)
+        .bind(require_chief_approval as i64)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menyimpan pengaturan: {}", e))?;
+        Ok(())
+    }
+
+    async fn bout_status(&self, match_id: i64) -> (String, Option<String>) {
+        let Ok(pool) = self.get_pool() else { return ("draft".into(), None) };
+        let row: Option<(Option<String>, Option<String>)> = sqlx::query_as("SELECT status, reject_note FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+        match row {
+            Some((s, n)) => (s.unwrap_or_else(|| "draft".into()), n),
+            None => ("draft".into(), None),
+        }
+    }
+
+    /// Moves a bout to `status` and logs `action`. `reject_note`: Some(..) sets it, None clears it.
+    async fn set_bout_status(&self, match_id: i64, status: &str, action: &str, note: Option<&str>, reject_note: Option<&str>, tatami_number: Option<i32>) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        sqlx::query(
+            "INSERT INTO ambrilindo_bout_panel (detail_bagan_id, custom, status, reject_note, tatami_number, status_at, updated_at)
+             VALUES (?, 0, ?, ?, ?, datetime('now', 'localtime'), datetime('now'))
+             ON CONFLICT(detail_bagan_id) DO UPDATE SET status = excluded.status, reject_note = excluded.reject_note,
+                 tatami_number = COALESCE(excluded.tatami_number, ambrilindo_bout_panel.tatami_number),
+                 status_at = excluded.status_at"
+        )
+        .bind(match_id)
+        .bind(status)
+        .bind(reject_note)
+        .bind(tatami_number)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Gagal menyimpan status partai: {}", e))?;
+        let _ = sqlx::query(
+            "INSERT INTO ambrilindo_bout_panel_log (detail_bagan_id, tatami_number, action, note, at)
+             VALUES (?, COALESCE(?, (SELECT tatami_number FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?)), ?, ?, datetime('now', 'localtime'))"
+        )
+        .bind(match_id)
+        .bind(tatami_number)
+        .bind(match_id)
+        .bind(action)
+        .bind(note)
+        .execute(pool)
+        .await;
+        Ok(())
+    }
+
+    /// Any change to a bout's officials makes it a draft again (to be submitted again).
+    async fn mark_bout_draft(&self, match_id: i64) {
+        let (status, note) = self.bout_status(match_id).await;
+        if status != "draft" {
+            let _ = self.set_bout_status(match_id, "draft", "edit", None, note.as_deref(), None).await;
+        }
+    }
+
+    /// Tatami Manager "Submit": saves the panel as shown and marks it submitted.
+    pub async fn submit_bout_panel(&self, match_id: i64, tatami_number: i32, seats: Vec<BoutSeatInput>, judges: Option<i64>) -> Result<(), String> {
+        if seats.is_empty() {
+            return Err("Belum ada wasit / juri yang dipilih".into());
+        }
+        self.save_bout_panel(match_id, seats, judges, Some(tatami_number)).await?;
+        self.set_bout_status(match_id, "submitted", "submit", None, None, Some(tatami_number)).await
+    }
+
+    /// The operator wants to start a bout. Submitted → pending (asks the chief referee);
+    /// a draft stays blocked until the Tatami Manager submits it.
+    pub async fn request_bout_approval(&self, match_id: i64, tatami_number: i32) -> Result<BoutApprovalState, String> {
+        let pool = self.get_pool()?;
+        let event_id: i64 = sqlx::query_scalar(
+            "SELECT b.event_id FROM backend_detailbagan d JOIN backend_bagan b ON b.id = d.bagan_id WHERE d.id = ?"
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat partai: {}", e))?
+        .ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
+        let required = self.require_chief_approval(event_id).await;
+        let (mut status, reject_note) = self.bout_status(match_id).await;
+        if required && status == "submitted" {
+            self.set_bout_status(match_id, "pending", "request", None, None, Some(tatami_number)).await?;
+            status = "pending".into();
+        }
+        Ok(BoutApprovalState { required, status, reject_note })
+    }
+
+    /// Chief referee: approve, or reject (back to draft, with the reason).
+    /// Returns the bout's tatami (who to tell).
+    pub async fn decide_bout_approval(&self, match_id: i64, approve: bool, note: Option<String>) -> Result<Option<i64>, String> {
+        let (status, _) = self.bout_status(match_id).await;
+        if status != "pending" {
+            return Err("Permintaan ini sudah tidak menunggu persetujuan".into());
+        }
+        let note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        if approve {
+            self.set_bout_status(match_id, "approved", "approve", note.as_deref(), None, None).await?;
+        } else {
+            let reason = note.clone().unwrap_or_else(|| "Ditolak Chief Referee".into());
+            self.set_bout_status(match_id, "draft", "reject", Some(&reason), Some(&reason), None).await?;
+        }
+        let pool = self.get_pool()?;
+        Ok(sqlx::query_scalar::<_, Option<i64>>("SELECT tatami_number FROM ambrilindo_bout_panel WHERE detail_bagan_id = ?")
+            .bind(match_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .flatten())
+    }
+
+    /// Statuses of the bouts of one bagan (Tatami Manager badges)
+    pub async fn get_bagan_bout_statuses(&self, bagan_id: i64) -> Result<Vec<BoutStatusRow>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, BoutStatusRow>(
+            r#"
+            SELECT bp.detail_bagan_id AS match_id, COALESCE(bp.status, 'draft') AS status, bp.reject_note
+            FROM ambrilindo_bout_panel bp
+            JOIN backend_detailbagan d ON d.id = bp.detail_bagan_id
+            WHERE d.bagan_id = ?
+            "#,
+        )
+        .bind(bagan_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat status partai: {}", e))
+    }
+
+    /// Chief referee page: bouts waiting for approval (oldest first) and the latest decisions.
+    pub async fn get_approval_queue(&self, event_id: i64) -> Result<ApprovalQueue, String> {
+        let pool = self.get_pool()?;
+        let pending = sqlx::query_as::<_, ApprovalQueueItem>(
+            r#"
+            SELECT bp.detail_bagan_id AS match_id, bp.tatami_number, bp.status, bp.status_at,
+                   COALESCE(nt.nama_nomor_tanding, b.nama_bagan) AS category
+            FROM ambrilindo_bout_panel bp
+            JOIN backend_detailbagan d ON d.id = bp.detail_bagan_id
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            WHERE b.event_id = ? AND bp.status = 'pending'
+            ORDER BY bp.status_at ASC
+            "#,
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat antrian: {}", e))?;
+        let recent = sqlx::query_as::<_, ApprovalLogItem>(
+            r#"
+            SELECT l.id, l.detail_bagan_id AS match_id, l.tatami_number, l.action, l.note, l.at,
+                   COALESCE(nt.nama_nomor_tanding, b.nama_bagan) AS category, d.urutan,
+                   a1.nama_atlet AS aka_nama, a2.nama_atlet AS ao_nama
+            FROM ambrilindo_bout_panel_log l
+            JOIN backend_detailbagan d ON d.id = l.detail_bagan_id
+            JOIN backend_bagan b ON b.id = d.bagan_id
+            LEFT JOIN backend_nomortanding nt ON nt.id = b.nomor_tanding_id
+            LEFT JOIN backend_atlet a1 ON a1.id = d.atlet1_id
+            LEFT JOIN backend_atlet a2 ON a2.id = d.atlet2_id
+            WHERE b.event_id = ? AND l.action IN ('approve', 'reject')
+            ORDER BY l.id DESC
+            LIMIT 20
+            "#,
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat riwayat: {}", e))?;
+        Ok(ApprovalQueue { pending, recent })
     }
 
     /// The bout whose officials "Pakai wasit partai sebelumnya" copies: the bout before this
@@ -8984,6 +9224,7 @@ impl DatabaseManager {
         .execute(pool)
         .await
         .map_err(|e| format!("Gagal menyimpan jumlah juri tatami: {}", e))?;
+        self.mark_bout_draft(match_id).await;
         Ok(())
     }
 
@@ -9042,6 +9283,7 @@ impl DatabaseManager {
         .await
         .map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
         tx.commit().await.map_err(|e| format!("Gagal menyimpan panel partai: {}", e))?;
+        self.mark_bout_draft(match_id).await;
         Ok(())
     }
 

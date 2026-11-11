@@ -2615,6 +2615,82 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "submit_bout_panel" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let t = get_i32_val(&payload, &["tatamiNumber", "tatami_number"]).unwrap_or(1);
+            let judges = get_i64_val(&payload, &["judges"]);
+            let seats = match serde_json::from_value::<Vec<BoutSeatInput>>(payload.get("seats").cloned().unwrap_or(serde_json::Value::Array(vec![]))) {
+                Ok(r) => r,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Data panel tidak valid: {}", e) }))).into_response(),
+            };
+            match db.submit_bout_panel(m, t, seats, judges).await {
+                Ok(()) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) });
+                    let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "bout_status", "match_id": m, "status": "submitted", "action": "submit" }) });
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                }
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "request_bout_approval" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let t = get_i32_val(&payload, &["tatamiNumber", "tatami_number"]).unwrap_or(1);
+            match db.request_bout_approval(m, t).await {
+                Ok(v) => {
+                    if v.required && v.status == "pending" {
+                        let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "bout_status", "match_id": m, "status": "pending", "action": "request" }) });
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                }
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "decide_bout_approval" => {
+            let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
+            let approve = payload.get("approve").and_then(|v| v.as_bool()).unwrap_or(false);
+            let note = get_str_val(&payload, &["note"]);
+            match db.decide_bout_approval(m, approve, note.clone()).await {
+                Ok(tatami) => {
+                    let (status, action) = if approve { ("approved", "approve") } else { ("draft", "reject") };
+                    let shown = note.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(if approve { "" } else { "Ditolak Chief Referee" }).to_string();
+                    let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "bout_status", "match_id": m, "status": status, "action": action, "note": shown, "tatami": tatami }) });
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                }
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_bagan_bout_statuses" => {
+            let b = get_i64_val(&payload, &["baganId", "bagan_id"]).unwrap_or(0);
+            match db.get_bagan_bout_statuses(b).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_approval_queue" => {
+            let ev = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            match db.get_approval_queue(ev).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_event_referee_settings" => {
+            let ev = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            match db.get_event_referee_settings(ev).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "set_event_referee_settings" => {
+            let ev = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            let on = payload.get("requireChiefApproval").or(payload.get("require_chief_approval")).and_then(|v| v.as_bool()).unwrap_or(false);
+            match db.set_event_referee_settings(ev, on).await {
+                Ok(()) => {
+                    let _ = state.broadcast_tx.send(ArenaMessage { tatami_pk: 0, channel: "bracket".into(), payload: serde_json::json!({ "type": "referee_updated" }) });
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                }
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "set_bout_judges" => {
             let m = get_i64_val(&payload, &["matchId", "match_id"]).unwrap_or(0);
             let t = get_i32_val(&payload, &["tatamiNumber", "tatami_number"]).unwrap_or(1);
@@ -3186,6 +3262,26 @@ async fn tatami_live_state_api(
     }
 }
 
+/// Tablets must not keep an old copy of the app: pages are always revalidated (a cheap
+/// 304 when unchanged), while the hashed `/_app/immutable/` files never change and can
+/// be cached for good. API, WebSocket and media responses are left as they are.
+async fn static_cache_headers(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let path = req.uri().path().to_string();
+    let mut res = next.run(req).await;
+    if path.starts_with("/api/") || path.starts_with("/ws/") || path.starts_with("/media/") {
+        return res;
+    }
+    let value = if path.starts_with("/_app/immutable/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    res.headers_mut()
+        .entry(axum::http::header::CACHE_CONTROL)
+        .or_insert(axum::http::HeaderValue::from_static(value));
+    res
+}
+
 pub fn create_router(state: Arc<AppState>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -3321,6 +3417,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     }
 
     router
+        .layer(axum::middleware::from_fn(static_cache_headers))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

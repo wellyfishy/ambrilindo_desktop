@@ -16,21 +16,27 @@ function getInitialMode(): AppMode {
   return "solo";
 }
 
-function getInitialHostUrl(): string {
-  if (typeof window !== "undefined" && window.sessionStorage) {
-    const saved = window.sessionStorage.getItem("ambrilindo_host_url");
-    if (saved) return saved;
-  }
-  // A browser device (tablet, TV) opened this page from the host itself, e.g.
-  // http://192.168.1.5:8000/scoreboard — the host is wherever the page came from.
-  // (Port 1420 is the Vite dev server, which has no API.)
-  if (
+/**
+ * A browser device (tablet, TV) that opened this page from the host itself, e.g.
+ * http://192.168.1.5:8000/scoreboard: the host is wherever the page came from.
+ * (Port 1420 is the Vite dev server, which has no API.)
+ */
+function servedByHost(): boolean {
+  return (
     typeof window !== "undefined" &&
     !(window as any).__TAURI_INTERNALS__ &&
     /^https?:$/.test(window.location.protocol) &&
     window.location.port !== "1420"
-  ) {
-    return window.location.origin;
+  );
+}
+
+function getInitialHostUrl(): string {
+  // Never a saved address here: the portal page used to store http://127.0.0.1:8000,
+  // which on a tablet is the tablet itself (every request failed, "menyambung ulang").
+  if (servedByHost()) return window.location.origin;
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    const saved = window.sessionStorage.getItem("ambrilindo_host_url");
+    if (saved) return saved;
   }
   return "http://127.0.0.1:8000";
 }
@@ -42,7 +48,10 @@ export const connectionState: AppConnectionState = {
 
 export function setConnectionConfig(mode: AppMode, hostUrl?: string) {
   connectionState.mode = mode;
-  if (hostUrl) {
+  if (servedByHost()) {
+    // a page served by the host always talks to that host
+    connectionState.hostUrl = window.location.origin;
+  } else if (hostUrl) {
     let clean = hostUrl.trim().replace(/\/$/, "");
     if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
       clean = "http://" + clean;

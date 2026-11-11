@@ -958,6 +958,56 @@ export interface BoutPanel {
   /** bout to copy officials from ("Pakai wasit partai sebelumnya") */
   prev_match_id: number | null;
   prev_label: string | null;
+  /** approval of the officials */
+  status: BoutStatus;
+  /** why the chief referee rejected it (until submitted again) */
+  reject_note: string | null;
+  require_chief_approval: boolean;
+  aka_nama: string | null;
+  ao_nama: string | null;
+  round: number | null;
+  urutan: number | null;
+}
+
+/** draft → submitted (Tatami Manager) → pending (operator wants to start) → approved (chief referee) */
+export type BoutStatus = "draft" | "submitted" | "pending" | "approved";
+
+export interface BoutApprovalState {
+  required: boolean;
+  status: BoutStatus;
+  reject_note: string | null;
+}
+
+export interface BoutStatusRow {
+  match_id: number;
+  status: BoutStatus;
+  reject_note: string | null;
+}
+
+export interface ApprovalQueueItem {
+  match_id: number;
+  tatami_number: number | null;
+  status: BoutStatus;
+  status_at: string | null;
+  category: string | null;
+}
+
+export interface ApprovalLogItem {
+  id: number;
+  match_id: number;
+  tatami_number: number | null;
+  action: "approve" | "reject";
+  note: string | null;
+  at: string;
+  category: string | null;
+  urutan: number | null;
+  aka_nama: string | null;
+  ao_nama: string | null;
+}
+
+export interface ApprovalQueue {
+  pending: ApprovalQueueItem[];
+  recent: ApprovalLogItem[];
 }
 
 export interface AssignWasitPayload {

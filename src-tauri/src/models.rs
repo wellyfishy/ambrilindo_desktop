@@ -451,6 +451,68 @@ pub struct BoutPanel {
     /// bout to copy officials from: the one before in this bagan, else the last one set on this tatami
     pub prev_match_id: Option<i64>,
     pub prev_label: Option<String>,
+    /// approval of the officials: draft | submitted | pending | approved
+    pub status: String,
+    /// why the chief referee rejected it (shown until it is submitted again)
+    pub reject_note: Option<String>,
+    /// the event needs the chief referee's approval before a bout starts
+    pub require_chief_approval: bool,
+    pub aka_nama: Option<String>,
+    pub ao_nama: Option<String>,
+    pub round: Option<i64>,
+    pub urutan: Option<i64>,
+}
+
+/// What the control panel learns when it wants to start a bout
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoutApprovalState {
+    pub required: bool,
+    pub status: String,
+    pub reject_note: Option<String>,
+}
+
+/// Status of one bout on a bracket (Tatami Manager badges)
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct BoutStatusRow {
+    pub match_id: i64,
+    pub status: String,
+    pub reject_note: Option<String>,
+}
+
+/// A bout waiting for the chief referee
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ApprovalQueueItem {
+    pub match_id: i64,
+    pub tatami_number: Option<i64>,
+    pub status: String,
+    pub status_at: Option<String>,
+    pub category: Option<String>,
+}
+
+/// One step of the approval history
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ApprovalLogItem {
+    pub id: i64,
+    pub match_id: i64,
+    pub tatami_number: Option<i64>,
+    pub action: String,
+    pub note: Option<String>,
+    pub at: String,
+    pub category: Option<String>,
+    pub urutan: Option<i64>,
+    pub aka_nama: Option<String>,
+    pub ao_nama: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalQueue {
+    pub pending: Vec<ApprovalQueueItem>,
+    pub recent: Vec<ApprovalLogItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventRefereeSettings {
+    pub require_chief_approval: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

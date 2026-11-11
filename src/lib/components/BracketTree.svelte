@@ -59,6 +59,8 @@
     highlightMatchId?: number | null;
     /** tooltip of a clickable card (default: opens the control panel) */
     clickHint?: string;
+    /** extra chip on a match card (e.g. referee approval status in the Tatami Manager) */
+    matchBadge?: ((m: DetailBaganItem) => { text: string; cls: string } | null) | null;
   }
 
   let {
@@ -83,6 +85,7 @@
     showKata = false,
     highlightMatchId = null,
     clickHint = "Klik untuk membuka Kontrol Pertandingan (Control Panel)",
+    matchBadge = null,
   }: Props = $props();
 
   /** Card size for a round: never taller than its slot, so connector lines stay on centre */
@@ -174,6 +177,12 @@
                       <span class="font-black">MATCH {match.urutan || slotNum}</span>
                     {/if}
                   </span>
+                  {#if matchBadge && interactive && !isEditMode}
+                    {@const badge = matchBadge(match)}
+                    {#if badge}
+                      <span class="ml-auto mr-1 text-[7.5px] font-black px-1 rounded border tracking-wide {badge.cls}">{badge.text}</span>
+                    {/if}
+                  {/if}
                   {#if !interactive}
                     <!-- paper: no screen status chips -->
                   {:else if isEditMode}
