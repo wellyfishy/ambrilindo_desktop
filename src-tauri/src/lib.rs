@@ -7,6 +7,10 @@ pub mod referee;
 pub mod server;
 pub mod sync;
 pub mod tatami_claim;
+#[cfg(test)]
+pub mod test_support;
+#[cfg(test)]
+mod qa_tests;
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};

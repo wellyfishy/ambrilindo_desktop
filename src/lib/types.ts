@@ -439,7 +439,12 @@ export interface EnrichedTimetableCell {
   remaining_matches: number;
   is_festival: boolean;
   is_break: boolean;
+  /** Part of a category split over tatamis; null/absent = the whole category. */
+  part?: SplitPart | null;
 }
+
+/** "top"/"bottom" = pool atas/bawah, "final" = the final; "*_final" = a half plus the final. */
+export type SplitPart = "top" | "bottom" | "final" | "top_final" | "bottom_final";
 
 export interface AthleteConflictDetail {
   athlete_name: string;
@@ -546,6 +551,7 @@ export interface SaveTimetableCellInput {
   tatami_id: number;
   nomor_tanding_id: number | null;
   custom_text: string;
+  part?: SplitPart | null;
 }
 
 export interface SaveTimetableRowInput {
@@ -583,6 +589,7 @@ export interface TatamiBookletCategory {
   /** 0 = final bagan, 1 = single, 2/4 = pool; festival = group count. */
   bagan_pool?: number | null;
   bagan_layout_type?: string | null;
+  part?: SplitPart | null;
 }
 
 export interface TatamiBookletData {

@@ -125,6 +125,7 @@ impl DatabaseManager {
             Self::ensure_performance_indexes(p).await;
             Self::ensure_bagan_layout_column(p).await;
             Self::ensure_detailbagan_juri_columns(p).await;
+            Self::ensure_timetable_part_column(p).await;
             Self::ensure_wasit_columns(p).await;
             Self::ensure_referee_panel_tables(p).await;
             Self::auto_heal_legacy_master_data(p).await;
@@ -166,6 +167,20 @@ impl DatabaseManager {
 
         if !has_col {
             let _ = sqlx::query("ALTER TABLE backend_bagan ADD COLUMN layout_type TEXT DEFAULT 'quadrant'").execute(pool).await;
+        }
+    }
+
+    /// `part` on backend_timetablecell: which part of a category split over tatamis a cell plays
+    /// (pool atas / pool bawah / final). NULL = the whole category. Local only, never synced.
+    async fn ensure_timetable_part_column(pool: &Pool<Sqlite>) {
+        let has_col: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('backend_timetablecell') WHERE name = 'part'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0) > 0;
+        if !has_col {
+            let _ = sqlx::query("ALTER TABLE backend_timetablecell ADD COLUMN part TEXT").execute(pool).await;
         }
     }
 
@@ -385,6 +400,7 @@ impl DatabaseManager {
     /// Creates a new tatami for an event
     pub async fn create_tatami(&self, event_id: i64, tatami_number: i32) -> Result<Tatami, String> {
         let pool = self.get_pool()?;
+        self.ensure_tatami_number_free(event_id, tatami_number, None).await?;
         let res = sqlx::query(
             "INSERT INTO backend_tatami (event_id, tatami_number, detail_bagan_id) VALUES (?, ?, NULL)"
         )
@@ -468,8 +484,39 @@ impl DatabaseManager {
     }
 
     /// Updates tatami number
+    /// Every LAN screen (scoreboard, jury, LO, marshalling) finds its tatami by number, so
+    /// a number must be positive and used once per event.
+    async fn ensure_tatami_number_free(&self, event_id: i64, tatami_number: i32, except_id: Option<i64>) -> Result<(), String> {
+        if tatami_number <= 0 {
+            return Err(format!("Nomor tatami harus 1 atau lebih (diterima: {})", tatami_number));
+        }
+        let pool = self.get_pool()?;
+        let taken: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM backend_tatami WHERE event_id = ? AND tatami_number = ? AND id != ? LIMIT 1"
+        )
+        .bind(event_id)
+        .bind(tatami_number)
+        .bind(except_id.unwrap_or(-1))
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memeriksa nomor tatami: {}", e))?;
+        if taken.is_some() {
+            return Err(format!("Tatami {} sudah ada di event ini. Pilih nomor lain.", tatami_number));
+        }
+        Ok(())
+    }
+
     pub async fn update_tatami_number(&self, tatami_id: i64, new_number: i32) -> Result<(), String> {
         let pool = self.get_pool()?;
+        let event_id: Option<i64> = sqlx::query_scalar("SELECT event_id FROM backend_tatami WHERE id = ?")
+            .bind(tatami_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat tatami: {}", e))?
+            .ok_or_else(|| format!("Tatami #{} tidak ditemukan", tatami_id))?;
+        if let Some(ev) = event_id {
+            self.ensure_tatami_number_free(ev, new_number, Some(tatami_id)).await?;
+        }
         sqlx::query("UPDATE backend_tatami SET tatami_number = ? WHERE id = ?")
             .bind(new_number)
             .bind(tatami_id)
@@ -1812,9 +1859,11 @@ impl DatabaseManager {
                     ELSE COALESCE(u2.nama_utusan, p2.nama_perguruan)
                 END as atlet2_kontingen,
                 u2.logo as atlet2_logo,
-                a2.is_priority as atlet2_is_priority
+                a2.is_priority as atlet2_is_priority,
+                b.nama_bagan as nama_bagan
             FROM backend_detailbagan d
             JOIN backend_tatami t ON t.detail_bagan_id = d.id
+            LEFT JOIN backend_bagan b ON b.id = d.bagan_id
             LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
             LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id
             LEFT JOIN backend_perguruan p1 ON a1.perguruan_id = p1.id
@@ -5900,7 +5949,7 @@ impl DatabaseManager {
         .map_err(|e| format!("Gagal memuat nomor tanding: {}", e))?;
 
         let athlete_counts_raw: Vec<(i64, i64)> = sqlx::query_as(
-            "SELECT nomor_tanding_id, COUNT(id) FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id IS NOT NULL GROUP BY nomor_tanding_id"
+            "SELECT nomor_tanding_id, COUNT(id) FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id IS NOT NULL AND (additional_code IS NULL OR additional_code NOT LIKE 'MEMBER_%') GROUP BY nomor_tanding_id"
         )
         .bind(event_id)
         .fetch_all(pool)
@@ -6142,7 +6191,7 @@ impl DatabaseManager {
         if !row_ids.is_empty() {
             let placeholders = row_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query_str = format!(
-                "SELECT id, row_id, tatami_id, nomor_tanding_id, custom_text FROM backend_timetablecell WHERE row_id IN ({})",
+                "SELECT id, row_id, tatami_id, nomor_tanding_id, custom_text, part FROM backend_timetablecell WHERE row_id IN ({})",
                 placeholders
             );
             let mut query = sqlx::query_as::<_, TimetableCell>(&query_str);
@@ -6224,6 +6273,10 @@ impl DatabaseManager {
                                     remaining_matches = prog.remaining_matches;
                                 }
                             }
+                            // A part of a split category carries only its own share.
+                            if let Some(p) = normalize_split_part(c.part.as_deref()) {
+                                (atlet_cnt, matches, est_dur) = split_part_share(atlet_cnt, matches, est_dur, p);
+                            }
                         } else if !c.custom_text.trim().is_empty() {
                             let ct_upper = c.custom_text.to_uppercase();
                             if ct_upper.contains("FESTIVAL") {
@@ -6253,6 +6306,7 @@ impl DatabaseManager {
                             remaining_matches,
                             is_festival: is_fest,
                             is_break,
+                            part: if nt_id.is_some() { normalize_split_part(c.part.as_deref()).map(str::to_string) } else { None },
                         });
                     } else {
                         enriched_cells.push(EnrichedTimetableCell {
@@ -6273,6 +6327,7 @@ impl DatabaseManager {
                             remaining_matches: 0,
                             is_festival: false,
                             is_break: false,
+                            part: None,
                         });
                     }
                 }
@@ -6288,6 +6343,10 @@ impl DatabaseManager {
                                 continue;
                             }
                             if let (Some(nt_a), Some(nt_b)) = (cell_a.nomor_tanding_id, cell_b.nomor_tanding_id) {
+                                // two pools of one category on two tatamis: different athletes
+                                if nt_a == nt_b {
+                                    continue;
+                                }
                                 if let (Some(ath_a), Some(ath_b)) = (nt_athletes_map.get(&nt_a), nt_athletes_map.get(&nt_b)) {
                                     for ath in ath_a {
                                         if ath_b.contains(ath) {
@@ -6561,12 +6620,13 @@ impl DatabaseManager {
                     for cell_input in row_input.cells {
                         if cell_input.tatami_id > 0 {
                             sqlx::query(
-                                "INSERT INTO backend_timetablecell (row_id, tatami_id, nomor_tanding_id, custom_text) VALUES (?, ?, ?, ?)"
+                                "INSERT INTO backend_timetablecell (row_id, tatami_id, nomor_tanding_id, custom_text, part) VALUES (?, ?, ?, ?, ?)"
                             )
                             .bind(new_row_id)
                             .bind(cell_input.tatami_id)
                             .bind(cell_input.nomor_tanding_id)
                             .bind(&cell_input.custom_text)
+                            .bind(if cell_input.nomor_tanding_id.is_some() { normalize_split_part(cell_input.part.as_deref()) } else { None })
                             .execute(&mut *tx)
                             .await
                             .map_err(|e| format!("Gagal menyimpan cell jadwal: {}", e))?;
@@ -6701,9 +6761,9 @@ impl DatabaseManager {
         let day_label = helper_format_day_label(day_order, &day_date);
 
         // 5. Sel terjadwal pada tatami ini di hari ini
-        let cells_raw: Vec<(i64, Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
+        let cells_raw: Vec<(i64, Option<i64>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
             r#"
-            SELECT r.[order], c.nomor_tanding_id, n.nama_nomor_tanding, c.custom_text
+            SELECT r.[order], c.nomor_tanding_id, n.nama_nomor_tanding, c.custom_text, c.part
             FROM backend_timetablerow r
             JOIN backend_timetablecell c ON c.row_id = r.id
             LEFT JOIN backend_nomortanding n ON c.nomor_tanding_id = n.id
@@ -6720,98 +6780,126 @@ impl DatabaseManager {
         let mut ordered_categories: Vec<TatamiBookletCategory> = Vec::new();
         let mut seq_counter = 0;
 
-        for (_order, nt_id_opt, nt_name_opt, custom_opt) in cells_raw {
+        for (_order, nt_id_opt, nt_name_opt, custom_opt, part_opt) in cells_raw {
             if let Some(nt_id) = nt_id_opt {
                 seq_counter += 1;
-                let cat_name = nt_name_opt.unwrap_or_else(|| format!("Kategori #{}", nt_id));
-                let is_kata = cat_name.to_lowercase().contains("kata");
+                let part = normalize_split_part(part_opt.as_deref());
+                let base_name = nt_name_opt.unwrap_or_else(|| format!("Kategori #{}", nt_id));
+                let cat_name = match part {
+                    Some(p) => format!("{} ({})", base_name, split_part_label(p)),
+                    None => base_name.clone(),
+                };
+                let is_kata = base_name.to_lowercase().contains("kata");
                 let discipline = if is_kata { "kata".to_string() } else { "kumite".to_string() };
 
-                // Hitung atlet
-                let ath_count: i64 = sqlx::query_scalar("SELECT COUNT(id) FROM backend_atlet WHERE nomor_tanding_id = ?")
+                // Hitung peserta (tim untuk beregu), lalu bagian untuk kategori yang dibagi
+                let all_entries: i64 = sqlx::query_scalar("SELECT COUNT(id) FROM backend_atlet WHERE nomor_tanding_id = ? AND (additional_code IS NULL OR additional_code NOT LIKE 'MEMBER_%')")
                     .bind(nt_id)
                     .fetch_one(pool)
                     .await
                     .unwrap_or(0);
+                let ath_count = match part {
+                    Some(p) => split_part_share(all_entries, 0, 0, p).0,
+                    None => all_entries,
+                };
 
-                // Cari bagan untuk kategori ini
-                let bagan_row: Option<(i64, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
-                    "SELECT id, nama_bagan, kode, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ? LIMIT 1"
+                // Bagan kategori ini: satu bagan, atau Pool A/B/C/D + Final (+ repechage)
+                let bagans: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
+                    "SELECT id, nama_bagan, kode, tipe_tanding, juara_1_id, juara_2_id, juara_3a_id, juara_3b_id, pool FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ? ORDER BY CAST(COALESCE(kode, '9999') AS INTEGER) ASC, id ASC"
                 )
                 .bind(event_id)
                 .bind(nt_id)
-                .fetch_optional(pool)
+                .fetch_all(pool)
                 .await
-                .unwrap_or(None);
+                .unwrap_or_default();
+                let picked = pick_part_bagans(
+                    &bagans.iter().map(|b| (b.0, b.1.clone().unwrap_or_default(), b.8.unwrap_or(1))).collect::<Vec<_>>(),
+                    part,
+                );
+                if picked.is_empty() {
+                    // belum diundi: tetap tercantum, tanpa halaman bagan
+                    ordered_categories.push(TatamiBookletCategory {
+                        match_seq: seq_counter,
+                        category_id: nt_id,
+                        category_name: cat_name,
+                        discipline,
+                        matches_count: 0,
+                        athletes_count: ath_count,
+                        bagan_id: None,
+                        bagan_kode: None,
+                        bagan_nama: None,
+                        tipe_tanding: None,
+                        winners: Vec::new(),
+                        matches: Vec::new(),
+                        bagan_pool: None,
+                        bagan_layout_type: None,
+                        part: part.map(str::to_string),
+                    });
+                    continue;
+                }
+                // one bracket shared by two tatamis (no Pool A/B + Final bagans)
+                let split_single = part.is_some()
+                    && !is_pool_split(&bagans.iter().map(|b| (b.0, b.1.clone().unwrap_or_default(), b.8.unwrap_or(1))).collect::<Vec<_>>());
 
-                let mut winners: Vec<SummaryBaganWinner> = Vec::new();
+                for b_id in picked {
+                    let Some((_, b_nama, b_kode, b_tipe, j1, j2, j3a, j3b, _)) = bagans.iter().find(|b| b.0 == b_id).cloned() else { continue };
+                    let matches = self.get_detail_bagan(b_id).await.unwrap_or_default();
 
-                let (bagan_id, bagan_nama, bagan_kode, tipe_tanding, matches) = match bagan_row {
-                    Some((b_id, b_nama, b_kode, b_tipe, j1, j2, j3a, j3b)) => {
-                        let matches = self.get_detail_bagan(b_id).await.unwrap_or_default();
-
-                        // Query juara untuk Hasil Juara podium box
-                        let rank_tuples = vec![
-                            ("1", j1),
-                            ("2", j2),
-                            ("3a", j3a),
-                            ("3b", j3b),
-                        ];
-
-                        for (rank, opt_aid) in rank_tuples {
-                            if let Some(aid) = opt_aid {
-                                let ath_info: Option<(String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-                                    r#"
-                                    SELECT a.nama_atlet, p.nama_perguruan, u.nama_utusan, u.logo
-                                    FROM backend_atlet a
-                                    LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
-                                    LEFT JOIN backend_utusan u ON a.utusan_id = u.id
-                                    WHERE a.id = ?
-                                    "#
-                                )
-                                .bind(aid)
-                                .fetch_optional(pool)
-                                .await
-                                .unwrap_or(None);
-
-                                if let Some((nama_atlet, nama_p, nama_u, logo)) = ath_info {
-                                    winners.push(SummaryBaganWinner {
-                                        juara: rank.to_string(),
-                                        athlete_id: aid,
-                                        nama_atlet,
-                                        perguruan_nama: nama_p.unwrap_or_else(|| "-".to_string()),
-                                        utusan_nama: nama_u.unwrap_or_else(|| "-".to_string()),
-                                        logo,
-                                        is_uncounted: false,
-                                    });
-                                }
-                            }
+                    // Query juara untuk Hasil Juara podium box
+                    let mut winners: Vec<SummaryBaganWinner> = Vec::new();
+                    for (rank, opt_aid) in [("1", j1), ("2", j2), ("3a", j3a), ("3b", j3b)] {
+                        let Some(aid) = opt_aid else { continue };
+                        let ath_info: Option<(String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                            r#"
+                            SELECT a.nama_atlet, p.nama_perguruan, u.nama_utusan, u.logo
+                            FROM backend_atlet a
+                            LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+                            LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+                            WHERE a.id = ?
+                            "#
+                        )
+                        .bind(aid)
+                        .fetch_optional(pool)
+                        .await
+                        .unwrap_or(None);
+                        if let Some((nama_atlet, nama_p, nama_u, logo)) = ath_info {
+                            winners.push(SummaryBaganWinner {
+                                juara: rank.to_string(),
+                                athlete_id: aid,
+                                nama_atlet,
+                                perguruan_nama: nama_p.unwrap_or_else(|| "-".to_string()),
+                                utusan_nama: nama_u.unwrap_or_else(|| "-".to_string()),
+                                logo,
+                                is_uncounted: false,
+                            });
                         }
-
-                        (Some(b_id), b_nama, b_kode, b_tipe, matches)
                     }
-                    None => (None, None, None, None, Vec::new()),
-                };
 
-                let matches_count = matches.len() as i64;
-                let (bagan_pool, bagan_layout_type) = Self::bagan_pool_and_layout(pool, bagan_id).await;
+                    // Satu bagan dibagi dua tatami: hitung hanya partai bagian ini
+                    let matches_count = match part {
+                        Some(p) if split_single => count_bouts_in_part(&matches.iter().map(|m| (m.round.unwrap_or(0), m.urutan.unwrap_or(0))).collect::<Vec<_>>(), p),
+                        _ => matches.len() as i64,
+                    };
+                    let (bagan_pool, bagan_layout_type) = Self::bagan_pool_and_layout(pool, Some(b_id)).await;
 
-                ordered_categories.push(TatamiBookletCategory {
-                    match_seq: seq_counter,
-                    category_id: nt_id,
-                    category_name: cat_name,
-                    discipline,
-                    matches_count,
-                    athletes_count: ath_count,
-                    bagan_id,
-                    bagan_kode,
-                    bagan_nama,
-                    tipe_tanding,
-                    winners,
-                    matches,
-                    bagan_pool,
-                    bagan_layout_type,
-                });
+                    ordered_categories.push(TatamiBookletCategory {
+                        match_seq: seq_counter,
+                        category_id: nt_id,
+                        category_name: cat_name.clone(),
+                        discipline: discipline.clone(),
+                        matches_count,
+                        athletes_count: ath_count,
+                        bagan_id: Some(b_id),
+                        bagan_kode: b_kode,
+                        bagan_nama: b_nama,
+                        tipe_tanding: b_tipe,
+                        winners,
+                        matches,
+                        bagan_pool,
+                        bagan_layout_type,
+                        part: part.map(str::to_string),
+                    });
+                }
             } else if let Some(cust) = custom_opt {
                 if !cust.trim().is_empty() {
                     seq_counter += 1;
@@ -6830,21 +6918,24 @@ impl DatabaseManager {
                         matches: Vec::new(),
                         bagan_pool: None,
                         bagan_layout_type: None,
+                        part: None,
                     });
                 }
             }
         }
 
         // 6. Hitung kelas yang tidak ditandingkan (unscheduled list)
-        let scheduled_nt_ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT DISTINCT c.nomor_tanding_id FROM backend_timetablecell c JOIN backend_timetablerow r ON c.row_id = r.id JOIN backend_timetableday d ON r.day_id = d.id WHERE d.event_id = ? AND c.nomor_tanding_id IS NOT NULL"
+        let scheduled_parts: Vec<(i64, Option<String>)> = sqlx::query_as(
+            "SELECT c.nomor_tanding_id, c.part FROM backend_timetablecell c JOIN backend_timetablerow r ON c.row_id = r.id JOIN backend_timetableday d ON r.day_id = d.id WHERE d.event_id = ? AND c.nomor_tanding_id IS NOT NULL"
         )
         .bind(event_id)
         .fetch_all(pool)
         .await
         .unwrap_or_default();
-
-        let scheduled_set: std::collections::HashSet<i64> = scheduled_nt_ids.into_iter().collect();
+        let mut placed_by_nt: std::collections::HashMap<i64, Vec<Option<String>>> = std::collections::HashMap::new();
+        for (nt, part) in scheduled_parts {
+            placed_by_nt.entry(nt).or_default().push(part);
+        }
 
         let all_nts: Vec<(i64, String)> = sqlx::query_as(
             "SELECT id, nama_nomor_tanding FROM backend_nomortanding WHERE event_id = ? ORDER BY nama_nomor_tanding ASC"
@@ -6856,13 +6947,25 @@ impl DatabaseManager {
 
         let mut unscheduled_list = Vec::new();
         for (nt_id, nt_nama) in all_nts {
-            if !scheduled_set.contains(&nt_id) && !nt_nama.to_lowercase().contains("festival") {
-                let cnt: i64 = sqlx::query_scalar("SELECT COUNT(id) FROM backend_atlet WHERE nomor_tanding_id = ?")
-                    .bind(nt_id)
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
-                unscheduled_list.push(format!("{} ({})", nt_nama, cnt));
+            if nt_nama.to_lowercase().contains("festival") {
+                continue;
+            }
+            match placed_by_nt.get(&nt_id) {
+                None => {
+                    let cnt: i64 = sqlx::query_scalar("SELECT COUNT(id) FROM backend_atlet WHERE nomor_tanding_id = ? AND (additional_code IS NULL OR additional_code NOT LIKE 'MEMBER_%')")
+                        .bind(nt_id)
+                        .fetch_one(pool)
+                        .await
+                        .unwrap_or(0);
+                    unscheduled_list.push(format!("{} ({})", nt_nama, cnt));
+                }
+                Some(parts) => {
+                    // a split category with a part (e.g. its final) not on the timetable
+                    let placed: Vec<Option<&str>> = parts.iter().map(|p| p.as_deref()).collect();
+                    for missing in missing_split_parts(&placed) {
+                        unscheduled_list.push(format!("{} ({})", nt_nama, split_part_label(missing)));
+                    }
+                }
             }
         }
 
@@ -8208,6 +8311,8 @@ impl DatabaseManager {
             p1_nt_id: Option<i64>,
             p2_utusan_id: Option<i64>,
             p2_perguruan_id: Option<i64>,
+            p1_code: Option<String>,
+            p2_code: Option<String>,
         }
 
         let ctx: BoutContext = sqlx::query_as(
@@ -8215,7 +8320,8 @@ impl DatabaseManager {
             SELECT db.bagan_id,
                    p.atlet1_id AS parent_a1_id, p.atlet2_id AS parent_a2_id,
                    a1.utusan_id AS p1_utusan_id, a1.perguruan_id AS p1_perguruan_id, a1.event_id AS p1_event_id, a1.nomor_tanding_id AS p1_nt_id,
-                   a2.utusan_id AS p2_utusan_id, a2.perguruan_id AS p2_perguruan_id
+                   a2.utusan_id AS p2_utusan_id, a2.perguruan_id AS p2_perguruan_id,
+                   a1.additional_code AS p1_code, a2.additional_code AS p2_code
             FROM backend_detailbagan db
             JOIN backend_matchup m ON m.db_id = db.id
             JOIN backend_detailbagan p ON m.detail_bagan_id = p.id
@@ -8250,13 +8356,14 @@ impl DatabaseManager {
                         target_aka_id = Some(aid);
                     } else {
                         let new_id: i64 = sqlx::query_scalar(
-                            "INSERT INTO backend_atlet (event_id, nama_atlet, utusan_id, perguruan_id, nomor_tanding_id, is_priority) VALUES (?, ?, ?, ?, ?, 0) RETURNING id"
+                            "INSERT INTO backend_atlet (event_id, nama_atlet, utusan_id, perguruan_id, nomor_tanding_id, is_priority, additional_code) VALUES (?, ?, ?, ?, ?, 0, ?) RETURNING id"
                         )
                         .bind(ev_id)
                         .bind(&clean_name)
                         .bind(ctx.p1_utusan_id)
                         .bind(ctx.p1_perguruan_id)
                         .bind(ctx.p1_nt_id)
+                        .bind(substitute_member_code(ctx.p1_code.as_deref(), ctx.parent_a1_id))
                         .fetch_one(pool)
                         .await
                         .map_err(|e| format!("Gagal membuat atlet AKA kustom: {}", e))?;
@@ -8286,13 +8393,14 @@ impl DatabaseManager {
                         target_ao_id = Some(aid);
                     } else {
                         let new_id: i64 = sqlx::query_scalar(
-                            "INSERT INTO backend_atlet (event_id, nama_atlet, utusan_id, perguruan_id, nomor_tanding_id, is_priority) VALUES (?, ?, ?, ?, ?, 0) RETURNING id"
+                            "INSERT INTO backend_atlet (event_id, nama_atlet, utusan_id, perguruan_id, nomor_tanding_id, is_priority, additional_code) VALUES (?, ?, ?, ?, ?, 0, ?) RETURNING id"
                         )
                         .bind(ev_id)
                         .bind(&clean_name)
                         .bind(ctx.p2_utusan_id)
                         .bind(ctx.p2_perguruan_id)
                         .bind(ctx.p1_nt_id)
+                        .bind(substitute_member_code(ctx.p2_code.as_deref(), ctx.parent_a2_id))
                         .fetch_one(pool)
                         .await
                         .map_err(|e| format!("Gagal membuat atlet AO kustom: {}", e))?;
@@ -10384,6 +10492,7 @@ impl DatabaseManager {
                 matches,
                 bagan_pool,
                 bagan_layout_type,
+                part: None,
             });
         }
 
@@ -11007,6 +11116,135 @@ fn helper_load_festival_roster_state(db_path: Option<&std::path::Path>, event_id
 }
 
 /// Estimated minutes per bout, from the (upper-case) category name.
+/// Parts of a category split over tatamis. "top"/"bottom" are the two halves of the bracket
+/// (Pool A/B on a pool-split category), "final" the decisive bout; "top_final" /
+/// "bottom_final" are a half that also plays the final.
+pub const SPLIT_PARTS: [&str; 5] = ["top", "bottom", "final", "top_final", "bottom_final"];
+
+pub(crate) fn normalize_split_part(part: Option<&str>) -> Option<&'static str> {
+    let p = part?.trim();
+    SPLIT_PARTS.iter().copied().find(|x| *x == p)
+}
+
+/// Printed label of a part, e.g. "POOL ATAS + FINAL".
+pub(crate) fn split_part_label(part: &str) -> &'static str {
+    match part {
+        "top" => "POOL ATAS",
+        "bottom" => "POOL BAWAH",
+        "final" => "FINAL",
+        "top_final" => "POOL ATAS + FINAL",
+        "bottom_final" => "POOL BAWAH + FINAL",
+        _ => "",
+    }
+}
+
+/// Entries, bouts and minutes of one part, from the whole category's numbers. The top half
+/// takes the odd entry; the final is one bout between the two halves' winners. Keep in step
+/// with `splitPartShare` in src/lib/timetable_split.ts.
+pub(crate) fn split_part_share(entries: i64, matches: i64, minutes: i64, part: &str) -> (i64, i64, i64) {
+    let top = (entries + 1) / 2;
+    let bottom = entries / 2;
+    let fin = if entries >= 2 { 1 } else { 0 };
+    let (e, m) = match part {
+        "top" => (top, (top - 1).max(0)),
+        "bottom" => (bottom, (bottom - 1).max(0)),
+        "final" => (entries.min(2), fin),
+        "top_final" => (top, (top - 1).max(0) + fin),
+        "bottom_final" => (bottom, (bottom - 1).max(0) + fin),
+        _ => return (entries, matches, minutes),
+    };
+    let est = if matches > 0 { ((minutes as f64) * (m as f64) / (matches as f64)).round() as i64 } else { 0 };
+    (e, m, if m > 0 { est.max(5) } else { 0 })
+}
+
+/// The bagans a tatami prints for (a part of) a category. `bagans` is (id, nama, pool) in
+/// kode order: one bracket, or Pool A/B/C/D bagans plus a Final bagan (pool 0), plus maybe a
+/// repechage bagan. A part of a single bracket prints the whole bracket.
+pub(crate) fn pick_part_bagans(bagans: &[(i64, String, i64)], part: Option<&str>) -> Vec<i64> {
+    let is_rep = |n: &str| {
+        let u = n.to_uppercase();
+        u.contains("REFERCHANGE") || u.contains("REPECHAGE")
+    };
+    let rep: Vec<i64> = bagans.iter().filter(|b| is_rep(&b.1)).map(|b| b.0).collect();
+    let main: Vec<&(i64, String, i64)> = bagans.iter().filter(|b| !is_rep(&b.1)).collect();
+    let final_bagan: Vec<i64> = main.iter().filter(|b| b.2 == 0).map(|b| b.0).collect();
+    let pools: Vec<i64> = main.iter().filter(|b| b.2 != 0).map(|b| b.0).collect();
+    let Some(part) = part else { return bagans.iter().map(|b| b.0).collect() };
+    let mut out: Vec<i64> = Vec::new();
+    let mut add = |ids: &[i64]| {
+        for id in ids {
+            if !out.contains(id) {
+                out.push(*id);
+            }
+        }
+    };
+    if !is_pool_split(bagans) {
+        // single bracket: both halves and the final are on the same bagan
+        add(&main.iter().map(|b| b.0).collect::<Vec<_>>());
+        if split_part_covers(part, "final") {
+            add(&rep);
+        }
+        return out;
+    }
+    let half = (pools.len() + 1) / 2;
+    if split_part_covers(part, "top") {
+        add(&pools[..half]);
+    }
+    if split_part_covers(part, "bottom") {
+        add(&pools[half..]);
+    }
+    if split_part_covers(part, "final") {
+        add(&final_bagan);
+        add(&rep);
+    }
+    out
+}
+
+/// A category drawn as Pool A/B/C/D bagans plus a Final bagan (pool 0), not one bracket.
+pub(crate) fn is_pool_split(bagans: &[(i64, String, i64)]) -> bool {
+    let main = bagans.iter().filter(|b| {
+        let u = b.1.to_uppercase();
+        !(u.contains("REFERCHANGE") || u.contains("REPECHAGE"))
+    });
+    let (finals, pools): (Vec<_>, Vec<_>) = main.partition(|b| b.2 == 0);
+    !finals.is_empty() && pools.len() >= 2
+}
+
+/// Bouts of one bracket that belong to a part: in a round with two or more bouts the first
+/// half is the top pool; a round with a single bout is the final.
+pub(crate) fn count_bouts_in_part(bouts: &[(i32, i32)], part: &str) -> i64 {
+    let mut per_round: std::collections::HashMap<i32, i32> = std::collections::HashMap::new();
+    for (r, _) in bouts {
+        *per_round.entry(*r).or_default() += 1;
+    }
+    bouts
+        .iter()
+        .filter(|(r, u)| {
+            let n = per_round[r];
+            let half = if n <= 1 { "final" } else if *u <= n / 2 { "top" } else { "bottom" };
+            split_part_covers(part, half)
+        })
+        .count() as i64
+}
+
+/// Whether a placed part covers `half` ("top", "bottom" or "final").
+fn split_part_covers(part: &str, half: &str) -> bool {
+    part == half || (half == "final" && part.ends_with("_final")) || part == format!("{half}_final")
+}
+
+/// Parts of a split category not on the timetable yet, given the parts placed (None =
+/// whole). Empty when the category is fully scheduled or not scheduled at all.
+pub(crate) fn missing_split_parts(placed: &[Option<&str>]) -> Vec<&'static str> {
+    let parts: Vec<Option<&str>> = placed.iter().map(|p| normalize_split_part(*p)).collect();
+    if parts.is_empty() || parts.iter().any(|p| p.is_none()) {
+        return vec![];
+    }
+    ["top", "bottom", "final"]
+        .into_iter()
+        .filter(|h| !parts.iter().flatten().any(|p| split_part_covers(p, h)))
+        .collect()
+}
+
 pub(crate) fn helper_minutes_per_match(upper: &str) -> f64 {
     if upper.contains("KATA") {
         3.5
@@ -11195,15 +11433,21 @@ mod festival_format_tests {
     }
 }
 
+/// A team member typed in by name at the table (substitute) is a member of that team,
+/// never a new team entry: draws, rosters and counts skip `MEMBER_*` rows.
+fn substitute_member_code(team_code: Option<&str>, team_atlet_id: Option<i64>) -> String {
+    match team_code.map(str::trim).filter(|c| !c.is_empty() && !c.starts_with("MEMBER_")) {
+        Some(code) => format!("MEMBER_{code}_SUB"),
+        None => format!("MEMBER_TEAM{}_SUB", team_atlet_id.unwrap_or(0)),
+    }
+}
+
 #[cfg(test)]
 mod festival_tests {
     #[tokio::test]
     async fn test_draw_event9_real() {
-        let db_path = std::path::Path::new("../tournament_data/db.sqlite3");
-        if !db_path.exists() { return; }
-
-        let mut db = DatabaseManager::new();
-        db.mount_database(&db_path).await.expect("Mount real db failed");
+        let Some(t) = crate::test_support::real_db_copy().await else { return; };
+        let db = &t.db;
 
         // Draw categories 881 (15 athletes), 888 (8 athletes), 904 (4 athletes)
         let summary = db.execute_drawing_festival_bagan(9, vec![881, 888, 904], "both").await.expect("Real draw failed");
@@ -11214,18 +11458,8 @@ mod festival_tests {
 
     #[tokio::test]
     async fn test_drawing_and_progression_festival() {
-        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
-        if !original_db.exists() {
-            println!("Skipping test: db.sqlite3 not found at {:?}", original_db);
-            return;
-        }
-
-        let temp_dir = std::env::temp_dir();
-        let test_db_path = temp_dir.join(format!("test_fest_{}.sqlite3", rand::random::<u64>()));
-        std::fs::copy(original_db, &test_db_path).expect("Gagal copy test db");
-
-        let mut db = DatabaseManager::new();
-        db.mount_database(&test_db_path).await.expect("Mount db failed");
+        let Some(t) = crate::test_support::real_db_copy().await else { return; };
+        let db = &t.db;
 
         // 1. Test drawing eligible festival categories for Event 9
         let eligible = db.get_drawing_eligible_festival_categories(9).await.expect("get eligible failed");
@@ -11350,24 +11584,12 @@ mod festival_tests {
         assert_eq!(g4_final.atlet2_id, g4_semi2.atlet1_id, "Final slot 2 holds the waiting 3rd athlete");
         assert!(!g4_final.selesai, "Final must not be selesai initially");
 
-        // Cleanup
-        let _ = std::fs::remove_file(&test_db_path);
         println!("test_drawing_and_progression_festival PASSED successfully!");
     }
     #[tokio::test]
     async fn test_balanced_festival_drawing_multi_bagan() {
-        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
-        if !original_db.exists() {
-            println!("Skipping test: db.sqlite3 not found at {:?}", original_db);
-            return;
-        }
-
-        let temp_dir = std::env::temp_dir();
-        let test_db_path = temp_dir.join(format!("test_fest_bal_{}.sqlite3", rand::random::<u64>()));
-        std::fs::copy(original_db, &test_db_path).expect("Gagal copy test db");
-
-        let mut db = DatabaseManager::new();
-        db.mount_database(&test_db_path).await.expect("Mount db failed");
+        let Some(t) = crate::test_support::real_db_copy().await else { return; };
+        let db = &t.db;
         let pool = db.get_pool().expect("pool failed");
 
         // Create a synthetic festival category with 28 athletes (7 groups -> 2 bagans: 4 and 3 groups)
@@ -11399,25 +11621,13 @@ mod festival_tests {
         assert_eq!(fest_bagans[0].pool, 4, "Bagan 1 harus memiliki 4 grup (Pool A, B, C, D)");
         assert_eq!(fest_bagans[1].pool, 3, "Bagan 2 harus memiliki 3 grup (Pool A, B, C)");
 
-        // Cleanup
-        let _ = std::fs::remove_file(&test_db_path);
         println!("test_balanced_festival_drawing_multi_bagan PASSED successfully (3-3 balance verified)!");
     }
 
     #[tokio::test]
     async fn test_delete_all_festival_bagans_preserves_regular_bagans() {
-        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
-        if !original_db.exists() {
-            println!("Skipping test: db.sqlite3 not found at {:?}", original_db);
-            return;
-        }
-
-        let temp_dir = std::env::temp_dir();
-        let test_db_path = temp_dir.join(format!("test_del_fest_{}.sqlite3", rand::random::<u64>()));
-        std::fs::copy(original_db, &test_db_path).expect("Gagal copy test db");
-
-        let mut db = DatabaseManager::new();
-        db.mount_database(&test_db_path).await.expect("Mount db failed");
+        let Some(t) = crate::test_support::real_db_copy().await else { return; };
+        let db = &t.db;
         let pool = db.get_pool().expect("pool failed");
 
         // 1. Create a regular/open tournament category & bagan
@@ -11466,38 +11676,13 @@ mod festival_tests {
         let open_matches = db.get_detail_bagan(open_bagan_id).await.expect("get open matches failed");
         assert_eq!(open_matches.len(), 1, "Partai bagan prestasi/open harus tetap utuh");
 
-        // Cleanup
-        let _ = std::fs::remove_file(&test_db_path);
         println!("test_delete_all_festival_bagans_preserves_regular_bagans PASSED successfully!");
     }
 
     #[tokio::test]
     async fn test_reset_total_tournament_cleans_all_data() {
-        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
-        if !original_db.exists() {
-            return;
-        }
-
-        let test_db_path = std::path::Path::new("../tournament_data/test_reset_total.sqlite3");
-        let orig_wal = std::path::Path::new("../tournament_data/db.sqlite3-wal");
-        let test_wal = std::path::Path::new("../tournament_data/test_reset_total.sqlite3-wal");
-        let orig_shm = std::path::Path::new("../tournament_data/db.sqlite3-shm");
-        let test_shm = std::path::Path::new("../tournament_data/test_reset_total.sqlite3-shm");
-
-        let _ = std::fs::remove_file(&test_db_path);
-        let _ = std::fs::remove_file(&test_wal);
-        let _ = std::fs::remove_file(&test_shm);
-
-        let _ = std::fs::copy(original_db, &test_db_path);
-        if orig_wal.exists() {
-            let _ = std::fs::copy(orig_wal, &test_wal);
-        }
-        if orig_shm.exists() {
-            let _ = std::fs::copy(orig_shm, &test_shm);
-        }
-
-        let mut db = DatabaseManager::new();
-        db.mount_database(&test_db_path).await.expect("mount failed");
+        let Some(t) = crate::test_support::real_db_copy().await else { return; };
+        let db = &t.db;
 
         // Execute reset on Event 14
         let summary = db.reset_total_tournament(14).await.expect("reset_total_tournament failed");
@@ -11528,21 +11713,13 @@ mod festival_tests {
             .fetch_one(pool).await.unwrap();
         assert!(other_cat_count.0 > 0, "Event lain tidak boleh terhapus!");
 
-        let _ = std::fs::remove_file(&test_db_path);
-        let _ = std::fs::remove_file(&test_wal);
-        let _ = std::fs::remove_file(&test_shm);
         println!("test_reset_total_tournament_cleans_all_data PASSED: {:?}", summary);
     }
 
     #[tokio::test]
     async fn test_get_festival_booklet_data_single_source_of_truth() {
-        let original_db = std::path::Path::new("../tournament_data/db.sqlite3");
-        if !original_db.exists() {
-            return;
-        }
-
-        let mut db = DatabaseManager::new();
-        db.mount_database(&original_db).await.expect("mount failed");
+        let Some(t) = crate::test_support::real_db_copy().await else { return; };
+        let db = &t.db;
 
         // 1. Load booklet data for Event 14 (Festival Bushido I)
         let booklet = db.get_festival_booklet_data(14, None).await.expect("load booklet failed");
@@ -11611,17 +11788,8 @@ mod delete_event_tests {
     /// Runs on a temporary copy; the real tournament database is never opened for writing.
     #[tokio::test]
     async fn delete_event_removes_only_that_event() {
-        let original = std::path::Path::new("../tournament_data/db.sqlite3");
-        if !original.exists() {
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("ambr_del_evt_{}", rand::random::<u64>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let copy = dir.join("db.sqlite3");
-        std::fs::copy(original, &copy).unwrap();
-
-        let mut db = DatabaseManager::new();
-        db.mount_database(&copy).await.unwrap();
+        let Some(t) = crate::test_support::real_db_copy().await else { return; };
+        let db = &t.db;
         let pool = db.get_pool_cloned().unwrap();
 
         let events: Vec<i64> = sqlx::query_scalar("SELECT id FROM backend_event ORDER BY id").fetch_all(&pool).await.unwrap();
@@ -11642,7 +11810,5 @@ mod delete_event_tests {
         assert!(db.delete_event(target).await.is_err());
 
         drop(pool);
-        drop(db);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

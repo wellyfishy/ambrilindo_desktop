@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { cellDisplayName, missingSplitParts, splitPartShare, SPLIT_PART_LABEL, MIN_SPLIT_ENTRIES } from "$lib/timetable_split";
   import { onMount } from "svelte";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import { invoke } from "$lib/api_client";
@@ -35,6 +36,7 @@
     SaveTimetablePayload,
     SaveTimetableRowInput,
     TatamiBookletCategory,
+    SplitPart,
     TatamiBookletData,
     TatamiItem,
     TatamiLiveStatus,
@@ -151,6 +153,7 @@
               r.cells.forEach((c) => {
                 c.nomor_tanding_id = null;
                 c.nomor_tanding_nama = null;
+                c.part = null;
                 c.custom_text = "";
                 c.atlet_count = 0;
                 c.matches = 0;
@@ -380,6 +383,28 @@
     return days.reduce((sum, d) => sum + d.rows.filter((r) => r.row_type === "slot").length, 0);
   });
 
+  /** Split categories with a part (e.g. the final) not on the timetable yet. */
+  let missingPartsByCat = $derived.by(() => {
+    const placed = new Map<number, (SplitPart | null | undefined)[]>();
+    days.forEach((d) =>
+      d.rows.forEach((r) => {
+        if (r.row_type !== "slot") return;
+        r.cells.forEach((c) => {
+          if (!c.nomor_tanding_id) return;
+          const list = placed.get(c.nomor_tanding_id) || [];
+          list.push(c.part);
+          placed.set(c.nomor_tanding_id, list);
+        });
+      })
+    );
+    const out = new Map<number, ("top" | "bottom" | "final")[]>();
+    placed.forEach((parts, id) => {
+      const missing = missingSplitParts(parts);
+      if (missing.length > 0) out.set(id, missing);
+    });
+    return out;
+  });
+
   let assignedCategoryIds = $derived.by(() => {
     const ids = new Set<number>();
     days.forEach((d) => {
@@ -494,11 +519,12 @@
     )
   );
 
-  function getTatamiCellSeq(targetTatamiId: number, targetRowIdx: number): number {
-    if (!activeDay) return 1;
+  function getTatamiCellSeq(targetTatamiId: number, targetRowIdx: number, dayRows?: EnrichedTimetableRow[]): number {
+    const rows = dayRows ?? activeDay?.rows;
+    if (!rows) return 1;
     let seq = 1;
-    for (let r = 0; r < activeDay.rows.length; r++) {
-      const row = activeDay.rows[r];
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
       if (row.row_type === "label") continue;
       const cell = row.cells.find((c) => c.tatami_id === targetTatamiId);
       if (r === targetRowIdx) {
@@ -511,9 +537,28 @@
     return seq;
   }
 
+  // "Roster 1 halaman" covers the whole event: every day that has a schedule (or the open
+  // day when nothing is scheduled yet), each with every tatami.
+  let rosterDays = $derived.by(() => {
+    const withRows = days.filter((d) => d.rows.length > 0);
+    return withRows.length > 0 ? withRows : activeDay ? [activeDay] : [];
+  });
+
+  /** Per tatami of one day: bouts and athletes, the same numbers as the grid header. */
+  function dayTatamiTotals(day: EnrichedTimetableDay): Record<number, { matches: number; athletes: number }> {
+    const start = parseTimeToMinutes(startTimeStr);
+    const out: Record<number, { matches: number; athletes: number }> = {};
+    for (const t of tatamis) {
+      const c = computeColumnTimes(day.rows, t.id, start);
+      out[t.id] = { matches: c.matches, athletes: c.athletes };
+    }
+    return out;
+  }
+
   let simpleRosterDensityClass = $derived.by(() => {
-    if (!activeDay) return "density-normal";
-    const totalRows = activeDay.rows.length;
+    if (rosterDays.length === 0) return "density-normal";
+    // a day bar + table header count as rows too
+    const totalRows = rosterDays.reduce((n, d) => n + d.rows.length + (rosterDays.length > 1 ? 2 : 0), 0);
     if (totalRows <= 20) return "density-spacious";
     if (totalRows <= 35) return "density-normal";
     if (totalRows <= 50) return "density-compact";
@@ -524,6 +569,8 @@
   // the roster is shrunk (CSS zoom) when it is taller than one page.
   let rosterPageEl = $state<HTMLDivElement | null>(null);
   let rosterFitZoom = $state(1);
+  /** A short roster prints on A4 landscape; one that does not fit there at full size goes portrait. */
+  let rosterLandscape = $state(true);
   /** The kop logo could not be loaded (e.g. a local path on a client laptop): show the default logos. */
   let kopLogoFailed = $state(false);
   $effect(() => {
@@ -534,15 +581,32 @@
   $effect(() => {
     const el = rosterPageEl;
     if (printMode !== "simple_roster" || !el) return;
-    void activeDay?.rows.length;
+    void rosterDays.map((d) => d.rows.length).join(",");
     void simpleRosterDensityClass;
+    void tatamis.length;
+    // 1. try landscape at full size; 2. too tall -> portrait, shrunk if still needed
     rosterFitZoom = 1;
-    const frame = requestAnimationFrame(() => {
-      const need = el.scrollHeight;
-      const have = el.clientHeight;
-      rosterFitZoom = need > have + 1 ? Math.max(0.5, have / need) : 1;
+    rosterLandscape = true;
+    let frame = requestAnimationFrame(() => {
+      if (el.scrollHeight <= el.clientHeight + 1) return;
+      rosterLandscape = false;
+      frame = requestAnimationFrame(() => {
+        const need = el.scrollHeight;
+        const have = el.clientHeight;
+        rosterFitZoom = need > have + 1 ? Math.max(0.3, have / need) : 1;
+      });
     });
     return () => cancelAnimationFrame(frame);
+  });
+
+  let unassignedLabelsForPrint = $derived.by(() => {
+    const out: string[] = [];
+    for (const c of categories) {
+      if (c.is_festival) continue;
+      if (!assignedCategoryIds.has(c.id)) out.push(`${c.nama} (${c.atlet_count})`);
+      else for (const part of missingPartsByCat.get(c.id) || []) out.push(`${c.nama} (${SPLIT_PART_LABEL[part]})`);
+    }
+    return out;
   });
 
   let unassignedCategoriesForPrint = $derived.by(() => {
@@ -587,7 +651,7 @@
           list.push({ type: "label", label: cell.custom_text });
         } else if (cell && (cell.nomor_tanding_id || (cell.custom_text && !cell.is_break))) {
           const seq = getTatamiCellSeq(cell.tatami_id, rIdx);
-          const name = cell.nomor_tanding_nama || cell.custom_text || "";
+          const name = cellDisplayName(cell);
           const isKata = name.toUpperCase().includes("KATA");
           const isFest = Boolean(cell.is_festival || name.toUpperCase().includes("FESTIVAL"));
           list.push({
@@ -1040,6 +1104,7 @@
       remaining_matches: 0,
       is_festival: false,
       is_break: false,
+      part: null,
     };
   }
 
@@ -1148,6 +1213,7 @@
     "remaining_matches",
     "is_festival",
     "is_break",
+    "part",
   ] as const;
 
   /** The cell of `row` for `tatamiId`, created if the tatami was added after the row. */
@@ -1173,17 +1239,19 @@
     row.conflicts = detectRowConflicts(row.cells);
   }
 
-  function placeCategory(cat: TimetableCategoryOption, rowIdx: number, tatamiId: number) {
+  function placeCategory(cat: TimetableCategoryOption, rowIdx: number, tatamiId: number, part: SplitPart | null = null) {
     const row = activeDay?.rows[rowIdx];
     if (!row) return;
     const cell = ensureCell(row, tatamiId);
     if (!cell) return;
+    const share = splitPartShare(cat.atlet_count, cat.matches, cat.est_duration_minutes, part);
     cell.nomor_tanding_id = cat.id;
     cell.nomor_tanding_nama = cat.nama;
-    cell.atlet_count = cat.atlet_count;
-    cell.matches = cat.matches;
+    cell.part = part;
+    cell.atlet_count = share.entries;
+    cell.matches = share.matches;
     cell.discipline = cat.discipline;
-    cell.est_duration_minutes = cat.est_duration_minutes;
+    cell.est_duration_minutes = share.minutes;
     cell.is_festival = cat.is_festival;
     cell.is_break = false;
     cell.custom_text = "";
@@ -1212,6 +1280,19 @@
           getAgeGroupRank(a.age_group) - getAgeGroupRank(b.age_group) ||
           a.nama.localeCompare(b.nama)
       );
+  });
+
+  /** Parts of split categories still to place (e.g. a final kept for a later session). */
+  let pickerPartOptions = $derived.by(() => {
+    if (!pickerTarget) return [];
+    const q = catPickSearch.trim().toLowerCase();
+    const out: { cat: TimetableCategoryOption; part: "top" | "bottom" | "final" }[] = [];
+    missingPartsByCat.forEach((parts, id) => {
+      const cat = categories.find((c) => c.id === id);
+      if (!cat || (q && !cat.nama.toLowerCase().includes(q) && !cat.age_group.toLowerCase().includes(q))) return;
+      parts.forEach((part) => out.push({ cat, part }));
+    });
+    return out;
   });
 
   function openPicker(rowIdx: number, tatamiId: number) {
@@ -1298,6 +1379,7 @@
 
     cell.nomor_tanding_id = null;
     cell.nomor_tanding_nama = null;
+    cell.part = null;
     cell.custom_text = "";
     cell.atlet_count = 0;
     cell.matches = 0;
@@ -1307,6 +1389,65 @@
     cell.progress_status = "belum_disentuh";
     refreshRowConflicts(rowIdx);
     markDirty();
+  }
+
+  // ==================== SPLIT A CATEGORY OVER TWO TATAMIS ====================
+  // Pool atas on this tatami, pool bawah on another in the same session; the final goes with
+  // one of them or is left to place in a later session (it then shows in the cell picker).
+  let splitTarget = $state<{ rowIdx: number; tatamiId: number } | null>(null);
+  let splitOtherTatami = $state<number | null>(null);
+  let splitFinal = $state<"top" | "bottom" | "separate">("top");
+
+  function splitCandidates(rowIdx: number, tatamiId: number) {
+    const row = activeDay?.rows[rowIdx];
+    return tatamis
+      .filter((t) => t.id !== tatamiId)
+      .map((t) => ({ t, free: !cellHasContent(row?.cells.find((c) => c.tatami_id === t.id)) }));
+  }
+
+  function openSplit(rowIdx: number, tatamiId: number) {
+    splitTarget = { rowIdx, tatamiId };
+    splitOtherTatami = splitCandidates(rowIdx, tatamiId).find((x) => x.free)?.t.id ?? null;
+    splitFinal = "top";
+  }
+
+  function applySplit() {
+    if (!activeDay || !splitTarget || splitOtherTatami == null) return;
+    const { rowIdx, tatamiId } = splitTarget;
+    const cell = activeDay.rows[rowIdx]?.cells.find((c) => c.tatami_id === tatamiId);
+    const cat = categories.find((c) => c.id === cell?.nomor_tanding_id);
+    if (!cell || !cat) return;
+    placeCategory(cat, rowIdx, tatamiId, splitFinal === "top" ? "top_final" : "top");
+    placeCategory(cat, rowIdx, splitOtherTatami, splitFinal === "bottom" ? "bottom_final" : "bottom");
+    const tNum = (id: number) => tatamis.find((t) => t.id === id)?.tatami_number ?? "";
+    notify(
+      splitFinal === "separate"
+        ? `${cat.nama} dibagi ke Tatami ${tNum(tatamiId)} dan ${tNum(splitOtherTatami)}. Final belum terjadwal: klik sel kosong lalu pilih ${cat.nama} (FINAL).`
+        : `${cat.nama} dibagi ke Tatami ${tNum(tatamiId)} dan ${tNum(splitOtherTatami)}.`
+    );
+    splitTarget = null;
+  }
+
+  /** Puts the whole category back on this cell and removes its other parts everywhere. */
+  function mergeSplit(rowIdx: number, tatamiId: number) {
+    if (!activeDay) return;
+    const cell = activeDay.rows[rowIdx]?.cells.find((c) => c.tatami_id === tatamiId);
+    const cat = categories.find((c) => c.id === cell?.nomor_tanding_id);
+    if (!cell || !cat) return;
+    days.forEach((d) =>
+      d.rows.forEach((r) => {
+        let touched = false;
+        r.cells.forEach((c) => {
+          if (c !== cell && c.nomor_tanding_id === cat.id && c.part) {
+            Object.assign(c, { ...emptyCellFor(tatamis.find((t) => t.id === c.tatami_id) ?? ({ id: c.tatami_id, tatami_number: c.tatami_number } as TatamiItem)), id: c.id, row_id: c.row_id });
+            touched = true;
+          }
+        });
+        if (touched && r.row_type === "slot") r.conflicts = detectRowConflicts(r.cells);
+      })
+    );
+    placeCategory(cat, rowIdx, tatamiId, null);
+    notify(`${cat.nama} digabung kembali di Tatami ${cell.tatami_number}.`);
   }
 
   // --- Save Timetable Transaction ---
@@ -1322,6 +1463,7 @@
                   tatami_id: c.tatami_id,
                   nomor_tanding_id: c.nomor_tanding_id,
                   custom_text: c.custom_text || "",
+                  part: c.nomor_tanding_id ? (c.part ?? null) : null,
                 }))
               : [];
 
@@ -1368,7 +1510,17 @@
   // Trigger browser print
   function triggerPrint() {
     if (printMode === "simple_roster") {
-      printWithOrientation("portrait", "6mm");
+      // "Simpan PDF" names the file after the page title: ROSTER JADWAL {nama event}
+      const prevTitle = document.title;
+      const name = (eventName || "").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+      document.title = `ROSTER JADWAL ${name}`.trim();
+      const restore = () => {
+        document.title = prevTitle;
+        window.removeEventListener("afterprint", restore);
+      };
+      window.addEventListener("afterprint", restore);
+      printWithOrientation(rosterLandscape ? "landscape" : "portrait", "6mm");
+      setTimeout(restore, 1000);
       return;
     }
     if (printMode === "booklet") {
@@ -1666,7 +1818,7 @@
           {#each poolSortedCategories as cat}
             {@const isAssigned = assignedCategoryIds.has(cat.id)}
             <div
-              class="p-2 rounded-lg border transition {isAssigned ? 'bg-[#14161b]/40 border-white/[0.04] opacity-50' : 'bg-[#14161b] border-white/[0.08] hover:border-white/20'}"
+              class="p-2 rounded-lg border transition {isAssigned && !missingPartsByCat.has(cat.id) ? 'bg-[#14161b]/40 border-white/[0.04] opacity-50' : 'bg-[#14161b] border-white/[0.08] hover:border-white/20'}"
             >
               <!-- Row 1: Discipline Badge, Title & Tatami Assign Buttons -->
               <div class="flex items-center justify-between gap-1.5">
@@ -1679,7 +1831,9 @@
                   </span>
                 </div>
 
-                {#if isAssigned}
+                {#if isAssigned && missingPartsByCat.has(cat.id)}
+                  <span class="text-[8.5px] font-mono font-bold text-amber-300 shrink-0">{(missingPartsByCat.get(cat.id) || []).map((p) => SPLIT_PART_LABEL[p]).join(", ")} belum</span>
+                {:else if isAssigned}
                   <span class="text-[8.5px] font-mono font-bold text-emerald-400 shrink-0">✓ Terjadwal</span>
                 {:else}
                   <div class="flex items-center space-x-0.5 shrink-0">
@@ -1998,6 +2152,29 @@
                               </div>
 
                             <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
+                              {#if cell.part}
+                                <button
+                                  onclick={() => mergeSplit(rIdx, tatami.id)}
+                                  class="text-[10px] text-zinc-500 hover:text-amber-300 p-0.5 rounded hover:bg-amber-500/10 transition"
+                                  title="Gabung kembali jadi satu tatami"
+                                  aria-label="Gabung kembali pool atas, pool bawah dan final ke tatami ini"
+                                >
+                                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h8M8 17h8M12 7v10" />
+                                  </svg>
+                                </button>
+                              {:else if !cell.is_festival && tatamis.length > 1 && cell.atlet_count >= MIN_SPLIT_ENTRIES}
+                                <button
+                                  onclick={() => openSplit(rIdx, tatami.id)}
+                                  class="text-[10px] text-zinc-500 hover:text-amber-300 p-0.5 rounded hover:bg-amber-500/10 transition"
+                                  title="Bagi ke 2 tatami (pool atas / pool bawah)"
+                                  aria-label="Bagi kategori ini ke 2 tatami"
+                                >
+                                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16M4 8h5M4 16h5M15 8h5M15 16h5" />
+                                  </svg>
+                                </button>
+                              {/if}
                               <button
                                 onclick={() => startMove(rIdx, tatami.id)}
                                 class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
@@ -2024,6 +2201,9 @@
                             <div class="font-bold text-white text-xs leading-snug line-clamp-2">
                               {cell.nomor_tanding_nama || `Kategori #${cell.nomor_tanding_id}`}
                             </div>
+                            {#if cell.part}
+                              <span class="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">{SPLIT_PART_LABEL[cell.part]}</span>
+                            {/if}
 
                             <div class="flex items-center justify-between mt-2 pt-1.5 border-t border-white/[0.04] text-[10px] font-mono text-zinc-400">
                               <span class="truncate">{cell.atlet_count} Atlet • {cell.matches} Match</span>
@@ -2160,7 +2340,12 @@
           type="text"
           bind:value={catPickSearch}
           onkeydown={(e) => {
-            if (e.key === "Enter" && pickerOptions.length > 0) {
+            if (e.key === "Enter" && pickerPartOptions.length > 0 && pickerTarget) {
+              e.preventDefault();
+              const first = pickerPartOptions[0];
+              placeCategory(first.cat, pickerTarget.rowIdx, pickerTarget.tatamiId, first.part);
+              pickerTarget = null;
+            } else if (e.key === "Enter" && pickerOptions.length > 0) {
               e.preventDefault();
               pickCategory(pickerOptions[0]);
             }
@@ -2174,6 +2359,27 @@
         </label>
       </div>
       <div class="flex-1 overflow-y-auto p-2 scrollbar-thin">
+        {#each pickerPartOptions as opt (`${opt.cat.id}:${opt.part}`)}
+          {@const share = splitPartShare(opt.cat.atlet_count, opt.cat.matches, opt.cat.est_duration_minutes, opt.part)}
+          <button
+            type="button"
+            onclick={() => {
+              if (!pickerTarget) return;
+              placeCategory(opt.cat, pickerTarget.rowIdx, pickerTarget.tatamiId, opt.part);
+              pickerTarget = null;
+            }}
+            class="w-full text-left px-3 py-2 rounded-lg hover:bg-white/[0.06] focus:bg-white/[0.06] outline-none transition flex items-center gap-3"
+          >
+            <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase shrink-0 {opt.cat.discipline === 'kata' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'}">{opt.cat.discipline}</span>
+            <span class="flex-1 min-w-0">
+              <span class="block text-xs font-bold text-white leading-snug">{opt.cat.nama}</span>
+              <span class="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">{SPLIT_PART_LABEL[opt.part]}</span>
+            </span>
+            <span class="shrink-0 text-right text-[10px] font-mono text-zinc-400 tabular-nums">
+              {share.entries} atlet • {share.matches} match<br />~{share.minutes} menit
+            </span>
+          </button>
+        {/each}
         {#each pickerOptions as cat (cat.id)}
           <button
             type="button"
@@ -2191,10 +2397,89 @@
           </button>
         {:else}
           <div class="py-10 text-center text-xs text-zinc-500">
-            {catPickSearch ? "Tidak ada kategori yang cocok." : "Semua kategori sudah terjadwal."}
+            {pickerPartOptions.length > 0 ? "" : catPickSearch ? "Tidak ada kategori yang cocok." : "Semua kategori sudah terjadwal."}
           </div>
         {/each}
       </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Bagi kategori ke 2 tatami -->
+{#if splitTarget && activeDay}
+  {@const srcCell = activeDay.rows[splitTarget.rowIdx]?.cells.find((c) => c.tatami_id === splitTarget?.tatamiId)}
+  {@const srcCat = categories.find((c) => c.id === srcCell?.nomor_tanding_id)}
+  {@const candidates = splitCandidates(splitTarget.rowIdx, splitTarget.tatamiId)}
+  {@const thisNum = tatamis.find((t) => t.id === splitTarget?.tatamiId)?.tatami_number}
+  {@const otherNum = tatamis.find((t) => t.id === splitOtherTatami)?.tatami_number}
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+    role="presentation"
+    onclick={(e) => { if (e.target === e.currentTarget) splitTarget = null; }}
+  >
+    <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl max-w-md w-full" role="dialog" aria-modal="true" aria-labelledby="split-title">
+      <div class="flex items-center justify-between pb-3 border-b border-white/[0.08]">
+        <h3 id="split-title" class="text-base font-black text-white uppercase tracking-tight">Bagi ke 2 Tatami</h3>
+        <button onclick={() => (splitTarget = null)} class="text-zinc-400 hover:text-white p-1" title="Tutup dialog" aria-label="Tutup dialog">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      {#if srcCat}
+        {@const top = splitPartShare(srcCat.atlet_count, srcCat.matches, srcCat.est_duration_minutes, "top")}
+        {@const bottom = splitPartShare(srcCat.atlet_count, srcCat.matches, srcCat.est_duration_minutes, "bottom")}
+        <div class="py-4 space-y-4 text-xs text-zinc-300">
+          <div class="font-bold text-white text-sm leading-snug">{srcCat.nama}</div>
+
+          <div class="grid grid-cols-2 gap-2">
+            <div class="bg-[#14161b] border border-white/[0.08] rounded-xl p-3">
+              <div class="text-[10px] font-bold tracking-wider uppercase text-amber-300">Pool Atas</div>
+              <div class="mt-1 font-mono text-white">Tatami {thisNum}</div>
+              <div class="mt-1 font-mono text-[10px] text-zinc-500">{top.entries} atlet • {top.matches} match</div>
+            </div>
+            <div class="bg-[#14161b] border border-white/[0.08] rounded-xl p-3">
+              <div class="text-[10px] font-bold tracking-wider uppercase text-amber-300">Pool Bawah</div>
+              <select
+                bind:value={splitOtherTatami}
+                class="mt-1 w-full bg-[#181a20] text-xs text-white px-2 py-1 rounded-lg border border-white/[0.1] focus:border-white outline-none font-mono"
+                aria-label="Tatami untuk pool bawah"
+              >
+                {#each candidates as c (c.t.id)}
+                  <option value={c.t.id} disabled={!c.free}>Tatami {c.t.tatami_number}{c.free ? "" : " (terisi)"}</option>
+                {/each}
+              </select>
+              <div class="mt-1 font-mono text-[10px] text-zinc-500">{bottom.entries} atlet • {bottom.matches} match</div>
+            </div>
+          </div>
+
+          <fieldset class="space-y-1.5">
+            <legend class="text-[10px] font-bold tracking-wider uppercase text-zinc-400 mb-1.5">Final</legend>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" bind:group={splitFinal} value="top" class="accent-white" />
+              Tatami {thisNum}, setelah pool atas
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" bind:group={splitFinal} value="bottom" class="accent-white" disabled={splitOtherTatami == null} />
+              Tatami {otherNum ?? "-"}, setelah pool bawah
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" bind:group={splitFinal} value="separate" class="accent-white" />
+              Sesi terpisah (pilih selnya nanti)
+            </label>
+          </fieldset>
+
+          {#if candidates.every((c) => !c.free)}
+            <div class="text-rose-300 text-[11px]">Semua tatami lain sudah terisi di sesi ini. Kosongkan satu sel dulu.</div>
+          {/if}
+        </div>
+        <div class="flex justify-end gap-2 pt-3 border-t border-white/[0.08]">
+          <button onclick={() => (splitTarget = null)} class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl">Batal</button>
+          <button
+            onclick={applySplit}
+            disabled={splitOtherTatami == null}
+            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md disabled:opacity-40"
+          >Bagi</button>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -2490,14 +2775,14 @@
 <!-- Printable Document Views (Simple Roster, Call Sheet, Booklet) -->
   <div class="print-overlay-wrapper fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-6 select-text text-black">
     <!-- Screen-Only Toolbar -->
-    <div class="no-print mb-4 pb-3 border-b border-white/10 flex items-center justify-between text-zinc-200 mx-auto w-full {printMode === 'simple_roster' ? 'max-w-[210mm]' : 'max-w-5xl'}">
+    <div class="no-print mb-4 pb-3 border-b border-white/10 flex items-center justify-between text-zinc-200 mx-auto w-full {printMode === 'simple_roster' ? (rosterLandscape ? 'max-w-[297mm]' : 'max-w-[210mm]') : 'max-w-5xl'}">
       <div class="flex items-center space-x-3">
         <h3 class="text-sm font-black text-white uppercase tracking-tight">
           {printMode === "simple_roster" ? "Cetak Roster" : "Pratinjau Dokumen Siap Cetak"}
         </h3>
         {#if printMode === "simple_roster"}
           <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
-            A4 PORTRAIT{rosterFitZoom < 1 ? ` • DIPERKECIL ${Math.round(rosterFitZoom * 100)}%` : ""}
+            A4 {rosterLandscape ? "LANDSCAPE" : "PORTRAIT"}{rosterFitZoom < 1 ? ` • DIPERKECIL ${Math.round(rosterFitZoom * 100)}%` : ""}
           </span>
         {/if}
         {#if printMode === "booklet" && tatamiBookletData}
@@ -2541,8 +2826,8 @@
     </div>
 
     <!-- Print Paper Page Container (White Paper A4 Landscape) -->
-    <div class="print-page-box {printMode === 'simple_roster' ? 'roster-a4-sheet' : printMode === 'booklet' ? 'max-w-5xl mx-auto w-full booklet-preview-container' : 'max-w-5xl mx-auto w-full bg-white p-6 shadow-2xl rounded-lg text-black font-sans'}">
-      {#if printMode === "simple_roster" && activeDay}
+    <div class="print-page-box {printMode === 'simple_roster' ? `roster-a4-sheet${rosterLandscape ? ' is-landscape' : ''}` : printMode === 'booklet' ? 'max-w-5xl mx-auto w-full booklet-preview-container' : 'max-w-5xl mx-auto w-full bg-white p-6 shadow-2xl rounded-lg text-black font-sans'}">
+      {#if printMode === "simple_roster" && rosterDays.length > 0}
         <!-- Simple 1-Page Synchronized Roster Table (1:1 Ambrilindo Local Spec) -->
         <div
           class="simple-roster-page {simpleRosterDensityClass}"
@@ -2571,40 +2856,50 @@
                 <div class="simple-roster-doc-title">ROSTER PERTANDINGAN / RUN SHEET</div>
               </div>
             </div>
-            <div class="simple-roster-day-badge-box">
-              <div class="simple-roster-day-label">{activeDay.label}</div>
-              {#if activeDay.tanggal}
-                <div class="simple-roster-day-date">{activeDay.tanggal}</div>
-              {/if}
-            </div>
+            {#if rosterDays.length === 1}
+              <div class="simple-roster-day-badge-box">
+                <div class="simple-roster-day-label">{rosterDays[0].label}</div>
+                {#if rosterDays[0].tanggal}
+                  <div class="simple-roster-day-date">{rosterDays[0].tanggal}</div>
+                {/if}
+              </div>
+            {/if}
           </div>
 
+          {#each rosterDays as day (day.id)}
+          {@const dayTotals = dayTatamiTotals(day)}
           <!-- Day Section -->
           <div class="simple-roster-day-section">
+            {#if rosterDays.length > 1}
+              <div class="simple-roster-day-bar">
+                <span class="day-bar-title">{day.label}</span>
+                {#if day.tanggal}<span class="day-bar-date">{day.tanggal}</span>{/if}
+              </div>
+            {/if}
             <!-- Synchronized Run Sheet Table -->
             <table class="simple-roster-table">
               <thead>
                 <tr>
                   {#each tatamis as t}
-                    {@const tMeta = tatamiTimelines[t.id]}
+                    {@const tMeta = dayTotals[t.id]}
                     <th style="width: {100 / tatamis.length}%;">
                       TATAMI {t.tatami_number}
                       {#if tMeta}
-                        <span class="th-sub">({tMeta.totalMatches} Partai • {tMeta.totalAthletes} Atlet)</span>
+                        <span class="th-sub">({tMeta.matches} Partai • {tMeta.athletes} Atlet)</span>
                       {/if}
                     </th>
                   {/each}
                 </tr>
               </thead>
               <tbody>
-                {#if activeDay.rows.length === 0}
+                {#if day.rows.length === 0}
                   <tr>
                     <td colspan={tatamis.length} style="text-align:center; padding:8px; color:#94a3b8; font-style:italic;">
                       Belum ada nomor tanding yang dijadwalkan pada hari ini.
                     </td>
                   </tr>
                 {:else}
-                  {#each activeDay.rows as row, rIdx}
+                  {#each day.rows as row, rIdx}
                     {#if row.row_type === "label"}
                       <tr class="roster-ishoma-row">
                         <td colspan={tatamis.length} class="roster-ishoma-cell">
@@ -2618,17 +2913,17 @@
                         {#each tatamis as t}
                           {@const cell = row.cells.find((c) => c.tatami_id === t.id)}
                           {#if cell && cell.nomor_tanding_id}
-                            {@const seq = getTatamiCellSeq(t.id, rIdx)}
+                            {@const seq = getTatamiCellSeq(t.id, rIdx, day.rows)}
                             <td class="roster-match-cell">
                               <div class="roster-item-line">
                                 <span class="roster-num-badge">#{seq}</span>
-                                <span class="roster-item-title">{cell.nomor_tanding_nama}</span>
+                                <span class="roster-item-title">{cellDisplayName(cell)}</span>
                                 <span class="roster-atlet-count">({cell.atlet_count})</span>
                               </div>
                             </td>
                           {:else if cell && cell.custom_text}
                             {@const isFest = cell.is_festival || cell.custom_text.toUpperCase().includes('FESTIVAL')}
-                            {@const seq = getTatamiCellSeq(t.id, rIdx)}
+                            {@const seq = getTatamiCellSeq(t.id, rIdx, day.rows)}
                             <td class="roster-match-cell {isFest ? 'is-festival' : ''}">
                               <div class="roster-item-line">
                                 <span class="roster-num-badge">#{seq}</span>
@@ -2651,6 +2946,7 @@
               </tbody>
             </table>
           </div>
+          {/each}
 
           <!-- Bottom Section (Ambrilindo Local Spec - Pure - NO SIGNATURES) -->
           <div class="simple-roster-bottom-section">
@@ -2660,11 +2956,11 @@
                 <span class="reminder-text">Jadwal bersifat estimasi. Atlet &amp; official wajib berada di area pemanasan 30 menit sebelum partai dimulai.</span>
               </div>
 
-              {#if unassignedCategoriesForPrint.length > 0}
+              {#if unassignedLabelsForPrint.length > 0}
                 <div class="simple-roster-unassigned">
                   <span class="unassigned-title">Kelas tidak ditandingkan:</span>
                   <span class="unassigned-items">
-                    {unassignedCategoriesForPrint.map((c) => `${c.nama} (${c.atlet_count})`).join(', ')}
+                    {unassignedLabelsForPrint.join(', ')}
                   </span>
                 </div>
               {/if}
@@ -2742,7 +3038,7 @@
                             </div>
                             <div class="detailed-title">
                               <span class="roster-num-badge">#{seq}</span>
-                              {cell.nomor_tanding_nama} ({cell.atlet_count} Atlet • {cell.matches} Partai)
+                              {cellDisplayName(cell)} ({cell.atlet_count} Atlet • {cell.matches} Partai)
                             </div>
                           </div>
                         {:else if cell && cell.custom_text}
@@ -2793,7 +3089,7 @@
                 <tr>
                   <td class="border border-zinc-400 p-2 text-center font-bold font-mono">#{idx + 1}</td>
                   <td class="border border-zinc-400 p-2">
-                    <div class="font-bold">{cell.nomor_tanding_nama}</div>
+                    <div class="font-bold">{cellDisplayName(cell)}</div>
                     <div class="text-[10px] text-zinc-600">{cell.atlet_count} Atlet • {cell.matches} Match</div>
                   </td>
                   <td class="border border-zinc-400 p-2 text-center uppercase font-mono">{cell.discipline}</td>
@@ -2931,7 +3227,7 @@
                                         <span class="roster-num-badge">#{seq}</span>
                                         <span class="roster-item-title">
                                           {cell.discipline === 'kata' ? '🥋 ' : '🥊 '}
-                                          {cell.nomor_tanding_nama}
+                                          {cellDisplayName(cell)}
                                         </span>
                                         {#if cell.atlet_count}
                                           <span class="roster-atlet-count">({cell.atlet_count})</span>
@@ -2975,11 +3271,11 @@
                       <span class="reminder-text">Jadwal bersifat estimasi. Atlet &amp; official wajib berada di area pemanasan 30 menit sebelum partai dimulai.</span>
                     </div>
 
-                    {#if unassignedCategoriesForPrint.length > 0}
+                    {#if unassignedLabelsForPrint.length > 0}
                       <div class="simple-roster-unassigned">
                         <span class="unassigned-title">KELAS TIDAK DITANDINGKAN:</span>
                         <span class="unassigned-items">
-                          {unassignedCategoriesForPrint.map((c) => `${c.nama} (${c.atlet_count})`).join(', ')}
+                          {unassignedLabelsForPrint.join(', ')}
                         </span>
                       </div>
                     {/if}
@@ -3187,6 +3483,10 @@
     box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.45);
     flex-shrink: 0;
     overflow: hidden;
+  }
+  .roster-a4-sheet.is-landscape {
+    width: 297mm;
+    height: 210mm;
   }
   .roster-a4-sheet .simple-roster-page {
     display: flex;
@@ -5200,6 +5500,10 @@
       padding: 0 !important;
       overflow: hidden !important;
       display: block !important;
+    }
+    /* landscape: 210 mm minus the 6 mm margins */
+    .print-page-box.roster-a4-sheet.is-landscape {
+      height: 198mm !important;
     }
     /* Compact roster: never stretch the table to fill the page (the booklet roster does). */
     .roster-a4-sheet .simple-roster-day-section {

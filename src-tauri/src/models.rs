@@ -607,6 +607,8 @@ pub struct TimetableCell {
     pub tatami_id: i64,
     pub nomor_tanding_id: Option<i64>,
     pub custom_text: String,
+    /// Part of a category split over tatamis (`crate::db::SPLIT_PARTS`); None = whole category.
+    pub part: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -821,6 +823,10 @@ pub struct EnrichedTimetableCell {
     pub remaining_matches: i64,
     pub is_festival: bool,
     pub is_break: bool,
+    /// Part of a category split over tatamis ("top", "bottom", "final", "top_final",
+    /// "bottom_final"); None = the whole category. Counts above are for this part only.
+    #[serde(default)]
+    pub part: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -932,6 +938,8 @@ pub struct SaveTimetableCellInput {
     pub tatami_id: i64,
     pub nomor_tanding_id: Option<i64>,
     pub custom_text: String,
+    #[serde(default)]
+    pub part: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -976,6 +984,9 @@ pub struct TatamiBookletCategory {
     pub bagan_pool: Option<i64>,
     #[serde(default)]
     pub bagan_layout_type: Option<String>,
+    /// Part of a split category this tatami plays (see `EnrichedTimetableCell::part`).
+    #[serde(default)]
+    pub part: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

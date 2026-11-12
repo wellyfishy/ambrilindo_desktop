@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke, getConnectionConfig } from "$lib/api_client";
   import type { EnrichedUtusanItem, ActiveChannel } from "$lib/types";
+  import ContingentLogoBulkModal from "./ContingentLogoBulkModal.svelte";
 
   interface Props {
     eventId: number;
@@ -35,6 +36,7 @@
 
   // Modals State
   let modalOpen = $state(false);
+  let isBulkLogoOpen = $state(false);
   let isEditMode = $state(false);
   let isSaving = $state(false);
   let formError = $state<string | null>(null);
@@ -356,7 +358,17 @@
 
     <!-- Action Buttons -->
     <div class="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
-
+      <button
+        type="button"
+        onclick={() => (isBulkLogoOpen = true)}
+        disabled={contingents.length === 0}
+        class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors flex items-center space-x-1.5 active:scale-95 disabled:opacity-40 cursor-pointer"
+      >
+        <svg class="w-3.5 h-3.5 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        <span>Logo Massal</span>
+      </button>
       <button
         type="button"
         onclick={openAddModal}
@@ -680,6 +692,21 @@
 </div>
 
 <!-- Modal: Tambah / Edit Kontingen -->
+{#if isBulkLogoOpen}
+  <ContingentLogoBulkModal
+    {contingents}
+    onClose={() => {
+      isBulkLogoOpen = false;
+      loadData();
+    }}
+    onDone={(n) => {
+      isBulkLogoOpen = false;
+      showToast(`${n} logo kontingen tersimpan.`);
+      loadData();
+    }}
+  />
+{/if}
+
 {#if modalOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 select-none">
     <div class="bg-[#181a20] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150">

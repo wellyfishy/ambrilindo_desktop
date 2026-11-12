@@ -3230,15 +3230,25 @@ async fn submit_urgent_call_api(
     (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
 }
 
+/// Same rule as `isKataCategory` in src/lib/refereeSeats.ts: the word KATA in the name.
+pub fn is_kata_name(name: Option<&str>) -> bool {
+    name.unwrap_or("")
+        .to_uppercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w == "KATA")
+}
+
 pub fn build_live_state_from_match(tatami_num: i64, m: &crate::models::EnrichedDetailBagan) -> serde_json::Value {
     serde_json::json!({
         "tatami": tatami_num,
         "matchId": m.id,
         "baganId": m.bagan_id,
-        "category": "",
+        "category": m.nama_bagan.as_deref().unwrap_or(""),
         "round": m.round.map(|r| if r == 4 { "PARTAI FINAL".to_string() } else if r == 3 { "SEMIFINAL".to_string() } else { format!("BABAK {}", r) }).unwrap_or_default(),
         "matchNumber": m.urutan.unwrap_or(1),
-        "isKata": m.kata1.is_some() || m.kata2.is_some(),
+        // Kata by its category, like the frontend's isKataCategory: a kata bout whose kata is
+        // not chosen yet is still kata (tablets otherwise show "Partai Ini Adalah Kumite").
+        "isKata": m.kata1.is_some() || m.kata2.is_some() || is_kata_name(m.nama_bagan.as_deref()),
         "isFinished": m.selesai,
         "aka": {
             "name": m.atlet1_nama.as_deref().unwrap_or("Sudut Merah"),
@@ -3250,7 +3260,7 @@ pub fn build_live_state_from_match(tatami_num: i64, m: &crate::models::EnrichedD
             "senshu": false,
             "penalties": { "c1": false, "c2": false, "c3": false, "hc": false, "h": false },
             "vr": false,
-            "logo": null
+            "logo": m.atlet1_logo
         },
         "ao": {
             "name": m.atlet2_nama.as_deref().unwrap_or("Sudut Biru"),
@@ -3262,7 +3272,7 @@ pub fn build_live_state_from_match(tatami_num: i64, m: &crate::models::EnrichedD
             "senshu": false,
             "penalties": { "c1": false, "c2": false, "c3": false, "hc": false, "h": false },
             "vr": false,
-            "logo": null
+            "logo": m.atlet2_logo
         },
         "winner": "",
         "isFinished": m.selesai,

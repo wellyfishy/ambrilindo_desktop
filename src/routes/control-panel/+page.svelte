@@ -15,7 +15,7 @@
   let teamMatchInfo = $state<TeamMatchInfo | null>(null);
   let baganInfo = $state<BaganItem | null>(null);
   let baganName = $state<string>("");
-  let eventName = $state<string>("AMBRILINDO OPEN KARATE CHAMPIONSHIP");
+  let eventName = $state<string>("AMBRILINDO KARATE CHAMPIONSHIP"); // placeholder: the scoreboard hides it
   let tatamiNumber = $state<number>(1);
   let logoMap = $state<Record<string, string>>({});
   let isLoading = $state<boolean>(true);
@@ -228,6 +228,18 @@
             baganName = b.nama_bagan || "";
           }
         } catch (_) {}
+      }
+
+      // 3b. The event's real name for the scoreboard header (otherwise every scoreboard
+      //     shows this page's placeholder title instead of the championship's name)
+      if (baganInfo?.event_id) {
+        try {
+          const events: { id: number; nama_event: string | null }[] = await invoke("get_events");
+          const ev = events.find((e) => e.id === baganInfo?.event_id);
+          if (ev?.nama_event) eventName = ev.nama_event;
+        } catch (e) {
+          console.warn("Gagal memuat nama event:", e);
+        }
       }
 
       // 4. Resolve logos if present

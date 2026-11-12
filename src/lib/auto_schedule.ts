@@ -141,7 +141,8 @@ export function computeColumnTimes(rows: EnrichedTimetableRow[], tatamiId: numbe
     cur += dur;
     if (cell.nomor_tanding_id) {
       matches += cell.matches || 0;
-      athletes += cell.atlet_count || 0;
+      // a final on its own plays the winners of the two pools: no new athletes
+      if (cell.part !== "final") athletes += cell.atlet_count || 0;
     } else if (!cell.is_break) {
       const n = cell.atlet_count || customTextAthletes(cell.custom_text);
       athletes += n;
@@ -163,6 +164,7 @@ export function rowConflicts(cells: EnrichedTimetableCell[], ntAthletes: Record<
       const a = cells[i];
       const b = cells[j];
       if (a.tatami_id === b.tatami_id || !a.nomor_tanding_id || !b.nomor_tanding_id) continue;
+      if (a.nomor_tanding_id === b.nomor_tanding_id) continue; // pool atas + pool bawah of one category
       const setB = new Set(ntAthletes[b.nomor_tanding_id] || []);
       for (const ath of ntAthletes[a.nomor_tanding_id] || []) {
         if (setB.has(ath)) {
@@ -209,6 +211,7 @@ export function findTimeClashes(
       const x = items[i];
       const y = items[j];
       if (x.cell.tatami_id === y.cell.tatami_id || !(x.start < y.end && y.start < x.end)) continue;
+      if (x.cell.nomor_tanding_id === y.cell.nomor_tanding_id) continue; // split category: different halves
       const setY = new Set(ntAthletes[y.cell.nomor_tanding_id!] || []);
       for (const ath of ntAthletes[x.cell.nomor_tanding_id!] || []) {
         if (!setY.has(ath)) continue;

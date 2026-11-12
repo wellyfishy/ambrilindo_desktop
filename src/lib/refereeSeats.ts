@@ -383,3 +383,39 @@ function readAsDataUrl(b: Blob): Promise<string> {
 export function fileToBase64(file: File): Promise<string> {
   return readAsDataUrl(file);
 }
+
+// ---- logo file name → contingent ------------------------------------------------
+
+const REGION_TYPE = new Set(["kabupaten", "kota"]);
+
+/** "Logo Kab. Kutai Timur.webp" → { full: "kabupaten kutai timur", core: "kutai timur", type: "kabupaten" } */
+function regionKey(s: string): { full: string; core: string; type: string | null } {
+  const words = nameKey(s)
+    .split(" ")
+    .filter((w) => w && !["logo", "lambang", "pemkab", "pemkot", "pemerintah"].includes(w))
+    .map((w) => (w === "kab" ? "kabupaten" : w));
+  const type = words.find((w) => REGION_TYPE.has(w)) ?? null;
+  return { full: words.join(" "), core: words.filter((w) => !REGION_TYPE.has(w)).join(" "), type };
+}
+
+/** 0..1 similarity of a logo file name to a contingent name ("kab"/"kota"/"logo" aware) */
+export function contingentLogoScore(file: string, name: string): number {
+  const f = regionKey(file);
+  const n = regionKey(name);
+  if (!f.core || !n.core) return 0;
+  let s = nameScore(f.full, n.full);
+  // "logo berau" ~ "KABUPATEN BERAU", but "kota x" vs "kabupaten x" are different contingents
+  const clash = f.type && n.type && f.type !== n.type;
+  s = Math.max(s, nameScore(f.core, n.core) - (clash ? 0.25 : 0.02));
+  return s;
+}
+
+export function matchContingentLogo(fileName: string, contingents: { id: number; nama_utusan: string | null }[]): PhotoMatch {
+  const scored = contingents
+    .map((c) => ({ id: c.id, s: contingentLogoScore(fileName, c.nama_utusan ?? "") }))
+    .sort((a, b) => b.s - a.s);
+  const best = scored[0];
+  if (!best || best.s < 0.8) return { wasitId: null, score: best?.s ?? 0, ambiguous: false };
+  const ambiguous = !!scored[1] && scored[1].s >= best.s - 0.03 && best.s < 1;
+  return { wasitId: ambiguous ? null : best.id, score: best.s, ambiguous };
+}

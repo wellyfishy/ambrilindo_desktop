@@ -10,7 +10,10 @@
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:rust": "cd src-tauri && cargo test",
+    "qa": "npm run check && npm run test && npm run test:rust"
   },
   "license": "MIT",
   "dependencies": {
@@ -30,6 +33,7 @@
     "svelte-check": "^4.6.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "5.0.5"
   }
 }
