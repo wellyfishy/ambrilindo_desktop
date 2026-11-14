@@ -312,6 +312,16 @@ pub fn current() -> LicenseStatus {
     status_cell().read().unwrap().clone()
 }
 
+/// Credentials for the web sync API: the signed token and this device id, only while the license is
+/// active. The web checks the token and lets it touch only the events granted to this license.
+pub fn sync_credentials() -> Option<(String, String)> {
+    if current().state != "active" {
+        return None;
+    }
+    let token = read_file(DIR.get()?).token?;
+    Some((token, device_id()))
+}
+
 /// Gate used by the drawing and control-panel code paths.
 pub fn ensure(module: Module) -> Result<(), String> {
     #[cfg(test)]

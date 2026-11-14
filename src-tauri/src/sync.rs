@@ -6,6 +6,45 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+use std::sync::atomic::{AtomicI64, Ordering};
+
+/// Authorization for one request to the web sync API.
+pub struct SyncAuth {
+    pub authorization: String,
+    pub device_id: Option<String>,
+    pub mode: &'static str,
+}
+
+impl SyncAuth {
+    pub fn apply(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let rb = rb.header("Authorization", &self.authorization);
+        match &self.device_id {
+            Some(id) => rb.header("X-Device-Id", id),
+            None => rb,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncAuthStatus {
+    /// license | legacy | none
+    pub mode: String,
+    pub message: Option<String>,
+    /// Set while the queue is paused because the web refused this computer (401/403).
+    pub blocked_reason: Option<String>,
+}
+
+/// After a 401/403 the queue pauses this long instead of hammering the server every tick.
+const AUTH_BLOCK_SECS: i64 = 300;
+static AUTH_BLOCKED_UNTIL: AtomicI64 = AtomicI64::new(0);
+static AUTH_BLOCK_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SyncConfig {
@@ -95,49 +134,90 @@ impl SyncService {
         Self::get_config_dir(db_path).join("media")
     }
 
-    /// Read hosted API token from env with automatic .env search and dev fallback
-    pub fn get_api_token() -> String {
+    /// Shared legacy token (HOSTED_API_TOKEN) for web servers that still accept it during the move to
+    /// license-based sync. Read from the environment or a `.env` next to the app; debug builds fall
+    /// back to the local dev server's default. Release builds carry no token of their own.
+    fn legacy_api_token() -> Option<String> {
         if let Ok(token) = std::env::var("HOSTED_API_TOKEN").or_else(|_| std::env::var("API_TOKEN")) {
             if !token.trim().is_empty() {
-                return token.trim().to_string();
+                return Some(token.trim().to_string());
             }
         }
-
-        // Search for .env in current and parent/adjacent directories
-        let candidates = [
-            PathBuf::from(".env"),
-            PathBuf::from("../.env"),
-            PathBuf::from("../../.env"),
-            PathBuf::from("tournament_data/.env"),
-            PathBuf::from("../ambrilindo/ambrilindo/.env"),
-            PathBuf::from("../../ambrilindo/ambrilindo/.env"),
-            PathBuf::from("../ambrilindo_web/ambrilindo_web_pub/.env"),
-            PathBuf::from("../../ambrilindo_web/ambrilindo_web_pub/.env"),
-        ];
-
-        for path in &candidates {
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with('#') || trimmed.is_empty() {
-                            continue;
-                        }
-                        if let Some((key, val)) = trimmed.split_once('=') {
-                            let k = key.trim();
-                            if k == "HOSTED_API_TOKEN" || k == "API_TOKEN" {
-                                let v = val.trim().trim_matches('"').trim_matches('\'').trim();
-                                if !v.is_empty() {
-                                    return v.to_string();
-                                }
-                            }
+        for path in [PathBuf::from(".env"), PathBuf::from("../.env"), PathBuf::from("tournament_data/.env")] {
+            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, val)) = trimmed.split_once('=') {
+                    let k = key.trim();
+                    if k == "HOSTED_API_TOKEN" || k == "API_TOKEN" {
+                        let v = val.trim().trim_matches('"').trim_matches('\'').trim();
+                        if !v.is_empty() {
+                            return Some(v.to_string());
                         }
                     }
                 }
             }
         }
+        #[cfg(debug_assertions)]
+        {
+            return Some("ambrilindo-secret-api-token-dev".to_string());
+        }
+        #[allow(unreachable_code)]
+        None
+    }
 
-        "ambrilindo-secret-api-token-dev".to_string()
+    /// How this computer authenticates to the web sync API: the activated license (preferred; the web
+    /// only lets it touch the events granted to that license), else the legacy shared token.
+    pub fn auth_headers() -> Result<SyncAuth, String> {
+        if let Some((token, device_id)) = crate::license::sync_credentials() {
+            return Ok(SyncAuth { authorization: format!("License {token}"), device_id: Some(device_id), mode: "license" });
+        }
+        if let Some(token) = Self::legacy_api_token() {
+            return Ok(SyncAuth { authorization: format!("Bearer {token}"), device_id: None, mode: "legacy" });
+        }
+        Err("Sinkron web butuh lisensi aktif. Aktifkan lisensi di menu Lisensi.".to_string())
+    }
+
+    /// Error text for a non-2xx response, using the server's `error` message when it sent one.
+    pub async fn http_error(resp: reqwest::Response) -> String {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        let server_msg = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+            .filter(|m| !m.trim().is_empty());
+        match server_msg {
+            Some(m) => format!("HTTP {}: {}", status.as_u16(), m),
+            None => format!("Server web mengembalikan status HTTP {}", status),
+        }
+    }
+
+    /// Current auth mode for the UI (`get_sync_auth_status`).
+    pub fn auth_status() -> SyncAuthStatus {
+        let blocked_until = AUTH_BLOCKED_UNTIL.load(Ordering::Relaxed);
+        let blocked_reason = if blocked_until > now_secs() { AUTH_BLOCK_REASON.lock().ok().and_then(|g| g.clone()) } else { None };
+        match Self::auth_headers() {
+            Ok(a) => SyncAuthStatus { mode: a.mode.to_string(), message: None, blocked_reason },
+            Err(m) => SyncAuthStatus { mode: "none".into(), message: Some(m), blocked_reason },
+        }
+    }
+
+    /// Manual send/retry from the UI: try again right away instead of waiting out the back-off.
+    pub fn clear_auth_block() {
+        AUTH_BLOCKED_UNTIL.store(0, Ordering::Relaxed);
+        if let Ok(mut g) = AUTH_BLOCK_REASON.lock() {
+            *g = None;
+        }
+    }
+
+    fn set_auth_block(reason: &str) {
+        AUTH_BLOCKED_UNTIL.store(now_secs() + AUTH_BLOCK_SECS, Ordering::Relaxed);
+        if let Ok(mut g) = AUTH_BLOCK_REASON.lock() {
+            *g = Some(reason.to_string());
+        }
     }
 
     /// Loads sync target server configuration
@@ -283,12 +363,14 @@ impl SyncService {
         };
 
         let target_url = format!("{}/api/sync/events/", url.trim_end_matches('/'));
-        let token = Self::get_api_token();
+        let auth = match Self::auth_headers() {
+            Ok(a) => a,
+            Err(message) => return PingResult { success: false, status_code: None, latency_ms: 0, message },
+        };
         let start = Instant::now();
 
-        match client
-            .get(&target_url)
-            .header("Authorization", format!("Bearer {}", token))
+        match auth
+            .apply(client.get(&target_url))
             .send()
             .await
         {
@@ -307,7 +389,7 @@ impl SyncService {
                         success: false,
                         status_code: Some(status.as_u16()),
                         latency_ms,
-                        message: format!("Server merespons kode HTTP {}", status.as_u16()),
+                        message: Self::http_error(resp).await,
                     }
                 }
             }
@@ -338,17 +420,16 @@ impl SyncService {
             .map_err(|e| e.to_string())?;
 
         let target_url = format!("{}/api/sync/events/", url.trim_end_matches('/'));
-        let token = Self::get_api_token();
+        let auth = Self::auth_headers()?;
 
-        let resp = client
-            .get(&target_url)
-            .header("Authorization", format!("Bearer {}", token))
+        let resp = auth
+            .apply(client.get(&target_url))
             .send()
             .await
             .map_err(|e| format!("Gagal memuat event dari web server: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Server mengembalikan status HTTP {}", resp.status()));
+            return Err(Self::http_error(resp).await);
         }
 
         let body: serde_json::Value = resp
@@ -560,17 +641,16 @@ impl SyncService {
             sync_cfg.url.trim_end_matches('/'),
             hosted_event_id
         );
-        let token = Self::get_api_token();
+        let auth = Self::auth_headers()?;
 
-        let resp = client
-            .get(&target_url)
-            .header("Authorization", format!("Bearer {}", token))
+        let resp = auth
+            .apply(client.get(&target_url))
             .send()
             .await
             .map_err(|e| format!("Gagal koneksi ke server web saat menarik atlet: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Server web mengembalikan status HTTP {}", resp.status()));
+            return Err(Self::http_error(resp).await);
         }
 
         let body: serde_json::Value = resp
@@ -1251,18 +1331,17 @@ impl SyncService {
             .map_err(|e| e.to_string())?;
 
         let target_url = format!("{}/api/sync/push-bagan/", sync_cfg.url.trim_end_matches('/'));
-        let token = Self::get_api_token();
+        let auth = Self::auth_headers()?;
 
-        let resp = client
-            .post(&target_url)
-            .header("Authorization", format!("Bearer {}", token))
+        let resp = auth
+            .apply(client.post(&target_url))
             .json(&payload)
             .send()
             .await
             .map_err(|e| format!("Gagal mengirim bagan ke server web: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Server web mengembalikan status HTTP {}", resp.status()));
+            return Err(Self::http_error(resp).await);
         }
 
         let body: serde_json::Value = resp
@@ -1446,18 +1525,17 @@ impl SyncService {
 
         let target_url =
             format!("{}/api/sync/force-results/", sync_cfg.url.trim_end_matches('/'));
-        let token = Self::get_api_token();
+        let auth = Self::auth_headers()?;
 
-        let resp = client
-            .post(&target_url)
-            .header("Authorization", format!("Bearer {}", token))
+        let resp = auth
+            .apply(client.post(&target_url))
             .json(&payload)
             .send()
             .await
             .map_err(|e| format!("Gagal mengirim force sync results: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("Server web mengembalikan status HTTP {}", resp.status()));
+            return Err(Self::http_error(resp).await);
         }
 
         let body: serde_json::Value = resp
@@ -1727,7 +1805,8 @@ impl SyncService {
 
         let sync_cfg = Self::get_sync_config(db_path);
         let url = format!("{}/{}", sync_cfg.url.trim_end_matches('/'), endpoint.trim_start_matches('/'));
-        let token = Self::get_api_token();
+        Self::clear_auth_block();
+        let auth = Self::auth_headers()?;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
@@ -1737,9 +1816,8 @@ impl SyncService {
         let payload_json: serde_json::Value = serde_json::from_str(&payload_str)
             .unwrap_or_else(|_| serde_json::json!({}));
 
-        match client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
+        match auth
+            .apply(client.post(&url))
             .json(&payload_json)
             .send()
             .await
@@ -1755,7 +1833,7 @@ impl SyncService {
                 Ok(true)
             }
             Ok(resp) => {
-                let err_msg = format!("HTTP error: {}", resp.status());
+                let err_msg = Self::http_error(resp).await;
                 sqlx::query(
                     "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
                 )
@@ -1870,6 +1948,14 @@ impl SyncService {
         .execute(pool)
         .await;
 
+        if AUTH_BLOCKED_UNTIL.load(Ordering::Relaxed) > now_secs() {
+            return Ok((0, 0));
+        }
+        // No license and no legacy token: keep everything queued; the Sinkronisasi web channel says why.
+        let Ok(auth) = Self::auth_headers() else {
+            return Ok((0, 0));
+        };
+
         loop {
             // Find oldest active pending or failed item whose event has is_live_sync_enabled = 1 (or no event)
             let row = sqlx::query(
@@ -1904,8 +1990,6 @@ impl SyncService {
 
             let sync_cfg = Self::get_sync_config(db_path);
             let url = format!("{}/{}", sync_cfg.url.trim_end_matches('/'), endpoint.trim_start_matches('/'));
-            let token = Self::get_api_token();
-
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(6))
                 .build()
@@ -1914,9 +1998,8 @@ impl SyncService {
             let payload_json: serde_json::Value = serde_json::from_str(&payload_str)
                 .unwrap_or_else(|_| serde_json::json!({}));
 
-            match client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", token))
+            match auth
+                .apply(client.post(&url))
                 .json(&payload_json)
                 .send()
                 .await
@@ -1935,8 +2018,25 @@ impl SyncService {
                 }
                 Ok(resp) => {
                     let status = resp.status();
-                    let err_msg = format!("HTTP error: {}", status);
+                    let err_msg = Self::http_error(resp).await;
                     let new_retry = retry_count + 1;
+
+                    // 401/403: the web refused this license (not active, or the event is not granted).
+                    // Every following item would be refused too, so keep them all queued and pause.
+                    if status.as_u16() == 401 || status.as_u16() == 403 {
+                        let _ = sqlx::query(
+                            "UPDATE backend_syncqueue SET status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                        )
+                        .bind(&err_msg)
+                        .bind(item_id)
+                        .execute(pool)
+                        .await;
+                        Self::set_auth_block(&err_msg);
+                        failed_count += 1;
+                        warn!("SyncQueue #{} to {} refused ({}); queue paused: {}", item_id, endpoint, status, err_msg);
+                        break;
+                    }
+
                     let is_unrecoverable = status.as_u16() == 400 || status.as_u16() == 404 || new_retry >= 5;
 
                     let final_status = if is_unrecoverable { "abandoned" } else { "failed" };

@@ -1365,6 +1365,11 @@ async fn set_sync_config(
 }
 
 #[tauri::command]
+fn get_sync_auth_status() -> sync::SyncAuthStatus {
+    sync::SyncService::auth_status()
+}
+
+#[tauri::command]
 async fn test_sync_connection(url: String) -> Result<sync::PingResult, String> {
     Ok(sync::SyncService::ping_server(&url).await)
 }
@@ -2408,6 +2413,7 @@ pub fn run() {
             close_scoreboard,
             get_running_scoreboards,
             get_sync_config,
+            get_sync_auth_status,
             set_sync_config,
             test_sync_connection,
             get_hosted_events,
