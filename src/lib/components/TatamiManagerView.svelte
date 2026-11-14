@@ -21,6 +21,9 @@
     onShowToast,
   }: Props = $props();
 
+  // Card menu (rename / delete) open for this tatami id
+  let menuFor = $state<number | null>(null);
+
   // Filter & Search State
   let searchKeyword = $state("");
   let selectedStatusFilter = $state<"all" | "live" | "ready">("all");
@@ -324,382 +327,183 @@
     </div>
   {/if}
 
-  <!-- Header Bar -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-white/[0.08] gap-4 shrink-0">
+  <!-- Header -->
+  <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-white/[0.08] shrink-0">
     <div>
-      <div class="flex items-center space-x-2.5">
-        <h2 class="text-xl font-black text-white tracking-tight uppercase">MANAJEMEN TATAMI</h2>
-        <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
-          {totalTatamis} ARENA
-        </span>
+      <div class="flex items-center gap-2.5">
+        <h2 class="text-xl font-black text-white tracking-tight uppercase">Tatami</h2>
+        <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">{totalTatamis}</span>
       </div>
-      <p class="text-xs text-zinc-400 mt-1 font-normal">
-        Alokasi arena pertandingan dan tautan akses venue (Scoreboard TV, Operator Meja, dan Juri)
+      <p class="text-sm text-zinc-400 mt-1" role="status">
+        {#if totalTatamis === 0}
+          Belum ada tatami
+        {:else}
+          <span class={activeMatchesCount > 0 ? "text-amber-300 font-semibold" : ""}>{activeMatchesCount} sedang tanding</span>
+          <span class="text-zinc-600"> · </span>
+          <span>{readyCount} siap</span>
+        {/if}
       </p>
     </div>
 
-    <!-- Actions (No manual refresh button needed, realtime sync active) -->
-    <div class="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
-      <button
-        onclick={openAddModal}
-        class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors active:scale-[0.98] flex items-center space-x-2 cursor-pointer"
-      >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-        </svg>
-        <span>Tambah Tatami</span>
-      </button>
-    </div>
+    <button
+      onclick={openAddModal}
+      class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors active:scale-[0.98] flex items-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#14161b]"
+    >
+      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+      <span>Tambah tatami</span>
+    </button>
   </div>
 
-  <!-- KPI Stats Cards (4-Column Clean Grid) -->
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 my-4 shrink-0">
-    <!-- 1. Total Tatami -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TOTAL ARENA</span>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-white tabular-nums">{totalTatamis}</span>
-        <span class="text-[10px] font-mono text-zinc-500">tatami</span>
-      </div>
-    </div>
-
-    <!-- 2. Tatami Live -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <div class="flex items-center justify-between">
-        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TATAMI LIVE</span>
-        {#if activeMatchesCount > 0}
-          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-        {/if}
-      </div>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-amber-400 tabular-nums">{activeMatchesCount}</span>
-        <span class="text-[10px] font-mono text-zinc-500">partai aktif</span>
-      </div>
-    </div>
-
-    <!-- 3. Standby / Siap -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">STANDBY / READY</span>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-emerald-400 tabular-nums">{readyCount}</span>
-        <span class="text-[10px] font-mono text-zinc-500">siap tanding</span>
-      </div>
-    </div>
-
-    <!-- 4. Status Server Host LAN -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">HUB SERVER LAN</span>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-xl sm:text-2xl font-black font-mono text-white truncate">{hostAddress ? 'ONLINE' : 'LOKAL'}</span>
-        <span class="text-[10px] font-mono text-zinc-500">port 8000</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Toolbar: Filter Pills, Sort & Search -->
-  <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-3 shrink-0">
-    <!-- Quick Status Filter Pills -->
-    <div class="flex flex-wrap items-center gap-1.5 overflow-x-auto py-0.5">
-      <button
-        onclick={() => {
-          selectedStatusFilter = 'all';
-          currentPage = 1;
-        }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {selectedStatusFilter === 'all'
-          ? 'bg-white text-black border-white shadow-sm'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Semua ({totalTatamis})
-      </button>
-
-      <button
-        onclick={() => {
-          selectedStatusFilter = 'live';
-          currentPage = 1;
-        }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {selectedStatusFilter === 'live'
-          ? 'bg-amber-400 text-black border-amber-400 shadow-sm font-bold'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Running ({activeMatchesCount})
-      </button>
-
-      <button
-        onclick={() => {
-          selectedStatusFilter = 'ready';
-          currentPage = 1;
-        }}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {selectedStatusFilter === 'ready'
-          ? 'bg-emerald-400 text-black border-emerald-400 shadow-sm font-bold'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Standby ({readyCount})
-      </button>
-    </div>
-
-    <!-- Sort & Search Bar -->
-    <div class="flex items-center space-x-2.5 shrink-0">
-      <!-- Sort Select -->
-      <select
-        bind:value={selectedSort}
-        class="bg-[#181a20] text-xs text-white px-3 py-1.5 rounded-xl border border-white/[0.1] focus:border-white outline-none cursor-pointer"
-      >
-        <option value="tatami_asc">Nomor Tatami (1 → N)</option>
-        <option value="tatami_desc">Nomor Tatami (N → 1)</option>
-        <option value="live_first">Partai Live Dahulu</option>
-      </select>
-
-      <!-- Search Input -->
-      <div class="relative w-56">
-        <svg
-          class="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          stroke-width="2"
+  <!-- Filter pills only when the venue has many tatami -->
+  {#if totalTatamis > 8}
+    <div class="flex flex-wrap items-center gap-1.5 mt-4 shrink-0" role="radiogroup" aria-label="Filter status tatami">
+      {#each [["all", `Semua (${totalTatamis})`], ["live", `Sedang tanding (${activeMatchesCount})`], ["ready", `Siap (${readyCount})`]] as [value, label]}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={selectedStatusFilter === value}
+          onclick={() => (selectedStatusFilter = value as "all" | "live" | "ready")}
+          class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {selectedStatusFilter === value
+            ? 'bg-white text-black border-white'
+            : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
         >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-          />
-        </svg>
-        <input
-          type="text"
-          bind:value={searchKeyword}
-          placeholder="Cari tatami, partai..."
-          class="w-full bg-[#181a20] text-xs text-white pl-8 pr-7 py-1.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500"
-        />
-        {#if searchKeyword}
+          {label}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- Tatami cards -->
+  <div class="flex-1 min-h-0 overflow-y-auto mt-4 -mx-1 px-1 pb-2">
+    {#if filteredTatamis.length === 0}
+      <div class="h-full min-h-[240px] flex flex-col items-center justify-center text-center gap-3 rounded-2xl border border-dashed border-white/[0.12] bg-[#181a20]/50 p-8">
+        <svg class="w-10 h-10 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" /></svg>
+        {#if totalTatamis === 0}
+          <p class="text-sm font-semibold text-zinc-300">Tambahkan tatami pertama</p>
           <button
-            onclick={() => (searchKeyword = "")}
-            aria-label="Hapus pencarian"
-            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white text-xs cursor-pointer"
+            onclick={openAddModal}
+            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md cursor-pointer"
           >
-            ✕
+            Tambah tatami
           </button>
-        {/if}
-      </div>
-    </div>
-  </div>
-
-  <!-- Data Table Container (Clean 5-Column Layout) -->
-  <div class="flex-1 overflow-y-auto min-h-0 rounded-2xl border border-white/[0.08] bg-[#181a20] shadow-lg flex flex-col">
-    <table class="w-full text-left text-xs border-collapse">
-      <thead class="bg-[#111215] text-zinc-400 font-mono text-[11px] uppercase tracking-wider sticky top-0 z-10 border-b border-white/[0.08]">
-        <tr>
-          <th class="w-12 px-3 py-3 font-bold text-center">NO</th>
-          <th class="px-4 py-3 font-bold">ARENA TATAMI</th>
-          <th class="px-4 py-3 font-bold">BAGAN AKTIF</th>
-          <th class="px-4 py-3 font-bold">STATUS ARENA</th>
-          <th class="px-4 py-3 font-bold">AKSES VENUE</th>
-          <th class="w-24 px-4 py-3 font-bold text-center pr-6">AKSI</th>
-        </tr>
-      </thead>
-
-      <tbody class="divide-y divide-white/[0.06] font-medium">
-        {#if paginatedTatamis.length === 0}
-          <tr>
-            <td colspan="6" class="py-16 text-center text-zinc-500">
-              <div class="flex flex-col items-center justify-center space-y-2">
-                <svg class="w-8 h-8 text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                </svg>
-                <span class="text-xs font-semibold text-zinc-400">Tidak ada data tatami yang sesuai</span>
-                <span class="text-[11px] text-zinc-600">Gunakan tombol "Tambah Tatami" di atas untuk menambah arena.</span>
-              </div>
-            </td>
-          </tr>
         {:else}
-          {#each paginatedTatamis as tatami, idx}
-            {@const tNum = tatami.tatami_number ?? 1}
-            <tr class="hover:bg-white/[0.02] transition-colors">
-              <!-- No -->
-              <td class="px-3 py-3 font-mono text-zinc-500 text-center text-[11px] tabular-nums">
-                {(currentPage - 1) * pageSize + idx + 1}
-              </td>
-
-              <!-- Tatami Number Badge (Clean, no inline edit icon) -->
-              <td class="px-4 py-3">
-                <div class="flex items-center space-x-3">
-                  <div class="w-8 h-8 rounded-lg bg-white/[0.04] border border-white/[0.08] font-mono font-bold text-sm flex items-center justify-center text-white shrink-0">
-                    {tNum}
-                  </div>
-                  <div>
-                    <span class="font-bold text-white text-xs block">Tatami {tNum}</span>
-                    <span class="text-[10px] font-mono text-zinc-500 block">ID #{tatami.id}</span>
-                  </div>
-                </div>
-              </td>
-
-              <!-- Bagan / Kelas Aktif -->
-              <td class="px-4 py-3">
-                {#if tatami.nama_bagan}
-                  <div class="flex items-center space-x-2 text-white font-bold text-xs truncate max-w-xs xl:max-w-md">
-                    <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0 animate-pulse"></span>
-                    <span class="truncate uppercase tracking-tight" title={tatami.nama_bagan}>{tatami.nama_bagan}</span>
-                  </div>
-                  {#if tatami.detail_bagan_id}
-                    <div class="flex items-center space-x-1.5 mt-0.5">
-                      <span class="text-[10px] font-mono text-zinc-400 pl-4 block tabular-nums">Partai #{tatami.detail_bagan_id}</span>
-                      <span class="text-[9px] font-mono font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider animate-pulse">Running</span>
-                    </div>
-                  {/if}
-                {:else if tatami.detail_bagan_id}
-                  <div class="flex items-center space-x-2 text-zinc-200 font-bold text-xs">
-                    <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0 animate-pulse"></span>
-                    <span class="font-mono tabular-nums">Partai #{tatami.detail_bagan_id}</span>
-                    <span class="text-[9px] font-mono font-black px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider animate-pulse">Running</span>
-                  </div>
-                {:else}
-                  <span class="text-zinc-600 font-mono text-[11px]">-</span>
-                {/if}
-              </td>
-
-              <!-- Status Arena -->
-              <td class="px-4 py-3">
-                {#if tatami.detail_bagan_id}
-                  <span class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded text-[10px] font-mono font-black bg-amber-500/15 text-amber-300 border border-amber-500/30 animate-pulse shadow-xs">
-                    <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-                    <span>MATCH RUNNING</span>
-                  </span>
-                {:else}
-                  <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-white/[0.04] text-zinc-400 border border-white/[0.08]">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                    <span>READY</span>
-                  </span>
-                {/if}
-              </td>
-
-              <!-- Akses Venue (Dedicated Portal Shortcuts) -->
-              <td class="px-4 py-3">
-                <div class="flex items-center space-x-2">
-                  <!-- Scoreboard TV Display Link -->
-                  <a
-                    href="{hostAddress}/scoreboard?tatami={tNum}"
-                    target="_blank"
-                    class="h-7 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold transition-colors flex items-center space-x-1.5"
-                    title="Buka Scoreboard TV Arena Tatami {tNum} di browser / proyektor"
-                  >
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                      <line x1="8" y1="21" x2="16" y2="21"/>
-                      <line x1="12" y1="17" x2="12" y2="21"/>
-                    </svg>
-                    <span>Scoreboard</span>
-                  </a>
-
-                  <!-- Operator Meja Link -->
-                  <a
-                    href="{hostAddress}/tatami-{tNum}/"
-                    target="_blank"
-                    class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] text-[11px] font-semibold transition-colors flex items-center"
-                    title="Buka panel operator meja tatami di browser"
-                  >
-                    Operator
-                  </a>
-
-                  <!-- Juri Link -->
-                  <a
-                    href="{hostAddress}/jury/{tNum}/"
-                    target="_blank"
-                    class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.08] text-[11px] font-semibold transition-colors flex items-center"
-                    title="Buka panel wasit / juri di browser"
-                  >
-                    Juri
-                  </a>
-
-                  <!-- QR Code Button -->
-                  <button
-                    onclick={() => openQrModal(tatami, "jury")}
-                    class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/[0.08] hover:border-white/20 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
-                    title="Pindai QR code untuk smartphone/tablet juri & operator"
-                    aria-label="Akses QR Code Tatami"
-                  >
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 3.75 9.375v-4.5ZM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 0 1-1.125-1.125v-4.5ZM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0 1 13.5 9.375v-4.5Z" />
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 6.75h.75v.75h-.75v-.75ZM6.75 16.5h.75v.75h-.75v-.75ZM16.5 6.75h.75v.75h-.75v-.75ZM13.5 13.5h3v3h-3v-3ZM13.5 19.5h3v1.5h-3v-1.5ZM19.5 13.5h1.5v3H19.5v-3ZM19.5 19.5h1.5v1.5H19.5v-1.5ZM16.5 16.5h3v3h-3v-3Z" />
-                    </svg>
-                  </button>
-                </div>
-              </td>
-
-              <!-- Aksi (Dedicated Arena Management Actions) -->
-              <td class="w-24 px-4 py-3 text-center pr-6">
-                <div class="flex items-center justify-center space-x-1.5">
-                  <!-- Ubah Nomor Tatami Button -->
-                  <button
-                    onclick={() => openEditModal(tatami)}
-                    class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-sky-500/15 text-zinc-400 hover:text-sky-300 border border-white/[0.08] hover:border-sky-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
-                    title="Ubah nomor tatami"
-                    aria-label="Ubah nomor tatami"
-                  >
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
-                    </svg>
-                  </button>
-
-                  <!-- Hapus Tatami Button -->
-                  <button
-                    onclick={() => promptDeleteTatami(tatami)}
-                    class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 border border-white/[0.08] hover:border-rose-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
-                    title={`Hapus Tatami ${tNum}`}
-                    aria-label={`Hapus Tatami ${tNum}`}
-                  >
-                    <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                    </svg>
-                  </button>
-                </div>
-              </td>
-            </tr>
-          {/each}
+          <p class="text-sm text-zinc-400">Tidak ada tatami dengan status ini</p>
         {/if}
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Pagination Footer -->
-  <div class="bg-[#111215] border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-xs text-zinc-400 shrink-0 font-sans">
-    <div class="tabular-nums">
-      Menampilkan {paginatedTatamis.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, filteredTatamis.length)} dari {filteredTatamis.length} tatami
-    </div>
-
-    <div class="flex items-center space-x-4">
-      <div class="flex items-center space-x-1.5">
-        <span>Per baris:</span>
-        <select
-          bind:value={pageSize}
-          onchange={() => (currentPage = 1)}
-          class="bg-[#181a20] text-white border border-white/[0.1] rounded-lg px-2 py-0.5 text-xs outline-none focus:border-white cursor-pointer"
-        >
-          <option value={10}>10</option>
-          <option value={25}>25</option>
-          <option value={50}>50</option>
-          <option value={100}>100</option>
-        </select>
       </div>
+    {:else}
+      <div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+        {#each filteredTatamis as tatami (tatami.id)}
+          {@const tNum = tatami.tatami_number ?? 1}
+          {@const live = tatami.detail_bagan_id !== null && tatami.detail_bagan_id !== undefined}
+          <article
+            aria-label={`Tatami ${tNum}`}
+            class="relative rounded-2xl bg-[#181a20] border p-4 flex flex-col gap-4 shadow-lg {live ? 'border-amber-500/35' : 'border-white/[0.08]'}"
+          >
+            <div class="flex items-start gap-3">
+              <div class="w-12 h-12 rounded-xl bg-white/[0.05] border border-white/[0.1] flex items-center justify-center font-mono font-black text-2xl text-white tabular-nums shrink-0">
+                {tNum}
+              </div>
+              <div class="flex-1 min-w-0">
+                {#if live}
+                  <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+                    Sedang tanding
+                  </span>
+                  <p class="mt-1.5 text-sm text-white font-semibold truncate" title={tatami.nama_bagan || ""}>
+                    {tatami.nama_bagan || "Partai berjalan"}
+                  </p>
+                  <p class="text-xs text-zinc-400 font-mono tabular-nums">Partai #{tatami.detail_bagan_id}</p>
+                {:else}
+                  <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/25">
+                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    Siap
+                  </span>
+                  <p class="mt-1.5 text-sm text-zinc-500">Belum ada partai berjalan</p>
+                {/if}
+              </div>
 
-      <div class="flex items-center space-x-1">
-        <button
-          onclick={() => (currentPage = Math.max(1, currentPage - 1))}
-          disabled={currentPage === 1}
-          class="h-7 px-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
-        >
-          ‹
-        </button>
-        <span class="px-2 font-mono text-zinc-300 tabular-nums">
-          {currentPage} / {totalPages}
-        </span>
-        <button
-          onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
-          disabled={currentPage >= totalPages}
-          class="h-7 px-2.5 rounded-lg bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
-        >
-          ›
-        </button>
+              <!-- Card menu (rename / delete) -->
+              <div class="relative shrink-0">
+                <button
+                  type="button"
+                  onclick={() => (menuFor = menuFor === tatami.id ? null : tatami.id)}
+                  aria-haspopup="menu"
+                  aria-expanded={menuFor === tatami.id}
+                  aria-label={`Menu tatami ${tNum}`}
+                  class="w-8 h-8 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] flex items-center justify-center transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                >
+                  <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
+                </button>
+                {#if menuFor === tatami.id}
+                  <button type="button" class="fixed inset-0 z-30 cursor-default" tabindex="-1" aria-label="Tutup menu" onclick={() => (menuFor = null)}></button>
+                  <div role="menu" class="absolute right-0 top-9 z-40 w-44 bg-[#14161b] border border-white/[0.14] rounded-xl shadow-2xl p-1">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => {
+                        menuFor = null;
+                        openEditModal(tatami);
+                      }}
+                      class="w-full text-left px-3 py-2 rounded-lg text-sm text-zinc-200 hover:bg-white/[0.06] hover:text-white transition cursor-pointer"
+                    >
+                      Ubah nomor
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onclick={() => {
+                        menuFor = null;
+                        promptDeleteTatami(tatami);
+                      }}
+                      class="w-full text-left px-3 py-2 rounded-lg text-sm text-rose-300 hover:bg-rose-500/10 transition cursor-pointer"
+                    >
+                      Hapus tatami
+                    </button>
+                  </div>
+                {/if}
+              </div>
+            </div>
+
+            <!-- Venue access -->
+            <div class="flex flex-wrap items-center gap-2 pt-3 border-t border-white/[0.06]">
+              <a
+                href="{hostAddress}/scoreboard?tatami={tNum}"
+                target="_blank"
+                class="h-9 px-3 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition-colors flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/50"
+                title={`Buka scoreboard tatami ${tNum} di browser`}
+              >
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5h18v12H3zM8 21h8M12 17v4" /></svg>
+                Scoreboard
+              </a>
+              <a
+                href="{hostAddress}/tatami-{tNum}/"
+                target="_blank"
+                class="h-9 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white border border-white/[0.1] text-xs font-semibold transition-colors flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                title={`Buka panel operator tatami ${tNum} di browser`}
+              >
+                Operator
+              </a>
+              <a
+                href="{hostAddress}/jury/{tNum}/"
+                target="_blank"
+                class="h-9 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white border border-white/[0.1] text-xs font-semibold transition-colors flex items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                title={`Buka panel juri tatami ${tNum} di browser`}
+              >
+                Juri
+              </a>
+              <button
+                onclick={() => openQrModal(tatami, "jury")}
+                class="h-9 w-9 ml-auto rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 hover:text-white border border-white/[0.1] transition flex items-center justify-center cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                title="QR untuk tablet juri dan operator"
+                aria-label={`QR tablet tatami ${tNum}`}
+              >
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2v2h-2zM18 14h2v2h-2z" /></svg>
+              </button>
+            </div>
+          </article>
+        {/each}
       </div>
-    </div>
+    {/if}
   </div>
 
   <!-- Modal: Tambah Tatami Baru -->

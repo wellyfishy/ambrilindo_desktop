@@ -32,9 +32,16 @@
     onFestivalFormatChanged?: (format: FestivalFormat) => void;
     onNotify?: (msg: string) => void;
     onReturnToLanding: () => void;
+    /** Event switcher (replaces the old event rail). */
+    events?: EventItem[];
+    onSelectEvent?: (eventId: number) => void;
+    onAddEvent?: () => void;
   }
 
   let {
+    events = [],
+    onSelectEvent,
+    onAddEvent,
     activeChannel,
     mode,
     activeEvent,
@@ -107,9 +114,67 @@
   // Live synchronization state version for reactivity
   let liveSyncVersion = $state(0);
 
-  let collapseDashboard = $state(false);
-  let collapseRekapan = $state(false);
-  let collapseAdminTools = $state(false);
+  // ---------------------------------------------------------------------------
+  // Navigation groups (labels + icons; matched to the active channel by type)
+  // ---------------------------------------------------------------------------
+  type NavItem = { type: ActiveChannel["type"]; id: string; name: string; subtitle: string; icon: string };
+  const ICONS = {
+    tatami: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+    tv: "M3 5h18v12H3zM8 21h8M12 17v4",
+    users: "M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM22 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
+    flag: "M4 22V4M4 4h13l-2 4 2 4H4",
+    school: "M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6",
+    list: "M10 6h11M10 12h11M10 18h11M4 6h1M4 12h1M4 18h1",
+    calendar: "M3 5h18v16H3zM16 3v4M8 3v4M3 10h18",
+    referee: "M16 11l2 2 4-4M2 21v-2a4 4 0 014-4h6a4 4 0 014 4v2M9 11a4 4 0 100-8 4 4 0 000 8z",
+    trophy: "M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0V4zM17 5h3v2a3 3 0 01-3 3M7 5H4v2a3 3 0 003 3",
+    medal: "M12 15a6 6 0 100-12 6 6 0 000 12zM8.2 13.9L7 22l5-3 5 3-1.2-8.1",
+    printer: "M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z",
+    book: "M4 19.5A2.5 2.5 0 016.5 17H20V2H6.5A2.5 2.5 0 004 4.5v15zM20 17v5H6.5A2.5 2.5 0 014 19.5",
+    cloud: "M17.5 19H9a7 7 0 116.71-9h1.79a4.5 4.5 0 010 9z",
+    database: "M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3",
+  } as const;
+
+  const PERSIAPAN: NavItem[] = [
+    { type: "roster", id: "athletes", name: "Atlet", subtitle: "Daftar atlet dan roster peserta", icon: ICONS.users },
+    { type: "contingent", id: "contingents", name: "Kontingen", subtitle: "Data kontingen dan logo", icon: ICONS.flag },
+    { type: "perguruan", id: "perguruans", name: "Perguruan", subtitle: "Data perguruan", icon: ICONS.school },
+    { type: "nomor_tanding", id: "categories", name: "Nomor tanding", subtitle: "Kategori dan nomor pertandingan", icon: ICONS.list },
+    { type: "timetable", id: "timetable-editor", name: "Jadwal", subtitle: "Jadwal pertandingan", icon: ICONS.calendar },
+    { type: "wasit", id: "wasit-manager", name: "Wasit dan juri", subtitle: "Data wasit dan juri", icon: ICONS.referee },
+  ];
+  const HASIL: NavItem[] = [
+    { type: "summary_bagan", id: "summary-bagan", name: "Juara per bagan", subtitle: "Daftar juara seluruh bagan", icon: ICONS.trophy },
+    { type: "summary_juara", id: "summary-juara", name: "Juara umum", subtitle: "Perolehan medali kontingen dan perguruan", icon: ICONS.medal },
+    { type: "cetak", id: "cetak", name: "Cetak", subtitle: "Preview dan cetak dokumen", icon: ICONS.printer },
+    { type: "buku_hasil", id: "buku-hasil-turnamen", name: "Buku hasil", subtitle: "Buku hasil turnamen dan berita acara", icon: ICONS.book },
+  ];
+  const PENGATURAN: NavItem[] = [
+    { type: "sync", id: "cloud-sync", name: "Sinkronisasi web", subtitle: "Live sync ke ambrilindo.com", icon: ICONS.cloud },
+    { type: "master", id: "master-data", name: "Data master", subtitle: "Reset bagan dan data master", icon: ICONS.database },
+  ];
+  const TATAMI_ITEM: NavItem = { type: "tatami", id: "tatami-manager", name: "Tatami", subtitle: "Arena dan akses venue", icon: ICONS.tatami };
+
+  function selectNav(item: NavItem) {
+    onSelectChannel({ type: item.type, id: item.id, name: item.name, subtitle: item.subtitle });
+  }
+
+  let liveTatamiCount = $derived(tatamis.filter((t) => !!t.detail_bagan_id).length);
+
+  let collapsed = $state<Record<string, boolean>>({});
+  function toggleGroup(key: string) {
+    collapsed[key] = !collapsed[key];
+  }
+
+  // Event switcher
+  let isEventMenuOpen = $state(false);
+  function eventInitials(nama: string | null | undefined): string {
+    const words = (nama || "").trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return "EV";
+    if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+
   let collapseBagan = $state(false);
   let searchBagan = $state("");
   let isRoleDropdownOpen = $state(false);
@@ -242,8 +307,8 @@
     document.body.style.cursor = "col-resize";
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      // Leftmost rail width is 72px
-      const newWidth = moveEvent.clientX - 72;
+      // The sidebar starts at the window's left edge (no event rail any more).
+      const newWidth = moveEvent.clientX;
       if (newWidth >= 200 && newWidth <= 550) {
         sidebarWidth = newWidth;
       }
@@ -310,6 +375,7 @@
   onkeydown={(e) => {
     if (e.key !== "Escape") return;
     if (isRoleDropdownOpen) isRoleDropdownOpen = false;
+    if (isEventMenuOpen) isEventMenuOpen = false;
     if (isScoreboardMenuOpen) {
       isScoreboardMenuOpen = false;
       hoveredTatami = null;
@@ -321,116 +387,127 @@
   style="width: {sidebarWidth}px;"
   class="no-print bg-[#111216] flex flex-col justify-between shrink-0 select-none z-30 border-r border-white/[0.08] font-sans relative"
 >
-  <!-- Top Tournament Event Header -->
-  <div class="h-14 border-b border-white/[0.08] px-4 flex items-center justify-between shadow-sm">
-    <div class="truncate mr-2">
-      <h2 class="text-xs font-black tracking-wide text-white uppercase truncate">
-        {activeEvent?.nama_event || 'Ambrilindo'}
-      </h2>
-      <span class="text-[10px] font-mono text-zinc-400 uppercase tracking-wider block">
-        {activeEvent?.kode_event || 'LOCAL'} • {tatamis.length} TATAMI
+  <!-- Event switcher -->
+  <div class="relative h-14 border-b border-white/[0.08] px-2 flex items-center">
+    <button
+      type="button"
+      onclick={() => (isEventMenuOpen = !isEventMenuOpen)}
+      aria-haspopup="menu"
+      aria-expanded={isEventMenuOpen}
+      class="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-white/[0.05] transition text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+    >
+      <span class="w-8 h-8 rounded-lg bg-red-600/15 border border-red-500/30 text-red-300 text-[11px] font-mono font-bold flex items-center justify-center shrink-0">
+        {eventInitials(activeEvent?.nama_event)}
       </span>
-    </div>
+      <span class="flex-1 min-w-0">
+        <span class="block text-[13px] font-bold text-white truncate" title={activeEvent?.nama_event || ""}>{activeEvent?.nama_event || "Pilih event"}</span>
+        <span class="block text-[11px] text-zinc-500 truncate">{activeEvent?.kode_event || "Lokal"} · {tatamis.length} tatami</span>
+      </span>
+      <svg class="w-4 h-4 text-zinc-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 9l4-4 4 4M16 15l-4 4-4-4" /></svg>
+    </button>
+
+    {#if isEventMenuOpen}
+      <button type="button" class="fixed inset-0 z-40 cursor-default" onclick={() => (isEventMenuOpen = false)} tabindex="-1" aria-label="Tutup menu event"></button>
+      <div role="menu" class="absolute top-[52px] left-2 right-2 z-50 bg-[#181a20] border border-white/[0.14] rounded-xl shadow-2xl p-1.5 max-h-[70vh] overflow-y-auto">
+        <p class="px-2.5 pt-1 pb-1.5 text-[11px] font-semibold text-zinc-500">Event</p>
+        {#each events as ev (ev.id)}
+          {@const current = ev.id === activeEvent?.id}
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={current}
+            onclick={() => {
+              isEventMenuOpen = false;
+              if (!current) onSelectEvent?.(ev.id);
+            }}
+            class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[13px] transition {current ? 'bg-white/[0.08] text-white font-semibold' : 'text-zinc-300 hover:bg-white/[0.05] hover:text-white'}"
+          >
+            <span class="w-6 h-6 rounded-md bg-white/[0.06] border border-white/[0.08] text-[10px] font-mono font-bold text-zinc-300 flex items-center justify-center shrink-0">{eventInitials(ev.nama_event)}</span>
+            <span class="flex-1 min-w-0 truncate" title={ev.nama_event || ""}>{ev.nama_event || `Event ${ev.id}`}</span>
+            {#if current}
+              <svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+            {/if}
+          </button>
+        {:else}
+          <p class="px-2.5 py-2 text-[13px] text-zinc-500">Belum ada event</p>
+        {/each}
+        <div class="border-t border-white/[0.08] mt-1.5 pt-1.5 space-y-0.5">
+          {#if onAddEvent}
+            <button
+              type="button"
+              role="menuitem"
+              onclick={() => {
+                isEventMenuOpen = false;
+                onAddEvent?.();
+              }}
+              class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[13px] text-zinc-300 hover:bg-white/[0.05] hover:text-white transition"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14" /></svg>
+              Tambah event
+            </button>
+          {/if}
+          <button
+            type="button"
+            role="menuitem"
+            onclick={() => {
+              isEventMenuOpen = false;
+              onReturnToLanding();
+            }}
+            class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left text-[13px] text-zinc-300 hover:bg-white/[0.05] hover:text-white transition"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
+            Kembali ke layar awal
+          </button>
+        </div>
+      </div>
+    {/if}
   </div>
+
+  {#snippet navIcon(d: string)}
+    <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={d} /></svg>
+  {/snippet}
+
+  {#snippet navButton(item: NavItem, badge: string = "")}
+    {@const active = activeChannel.type === item.type}
+    <button
+      type="button"
+      onclick={() => selectNav(item)}
+      aria-current={active ? "page" : undefined}
+      class="w-full h-8 flex items-center gap-2.5 px-2.5 rounded-lg text-[13px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 {active ? 'bg-white/[0.08] text-white font-semibold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100'}"
+    >
+      {@render navIcon(item.icon)}
+      <span class="flex-1 min-w-0 truncate text-left">{item.name}</span>
+      {#if badge}<span class="text-[11px] text-zinc-500 shrink-0">{badge}</span>{/if}
+    </button>
+  {/snippet}
+
+  {#snippet groupHeader(key: string, label: string)}
+    <button
+      type="button"
+      onclick={() => toggleGroup(key)}
+      aria-expanded={!collapsed[key]}
+      class="w-full flex items-center justify-between px-2.5 py-1 text-[11px] font-semibold text-zinc-500 hover:text-zinc-300 transition rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+    >
+      <span>{label}</span>
+      <svg class="w-3.5 h-3.5 transition-transform {collapsed[key] ? '-rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+    </button>
+  {/snippet}
 
   <!-- Channel Navigation (Scrollable) -->
   <div class="flex-1 overflow-y-auto overflow-x-hidden px-2 py-3 space-y-4 scrollbar-thin">
-    <!-- Group 1: Dashboard -->
+    <!-- Pertandingan -->
     <div>
-      <button
-        onclick={() => (collapseDashboard = !collapseDashboard)}
-        class="w-full flex items-center justify-between px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-zinc-500 hover:text-zinc-300 uppercase transition"
-      >
-        <span>DASHBOARD</span>
-        <span class="text-[9px]">{collapseDashboard ? '▶' : '▼'}</span>
-      </button>
-
-      {#if !collapseDashboard}
+      {@render groupHeader("pertandingan", "Pertandingan")}
+      {#if !collapsed["pertandingan"]}
         <div class="mt-1 space-y-0.5">
-          <!-- Tatami Manager (CRUD) -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "tatami",
-                id: "tatami-manager",
-                name: "tatami",
-                subtitle: "Manajemen Tatami Turnamen",
-              })}
-            class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'tatami' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <div class="flex items-center space-x-2 truncate">
-              <span class="text-zinc-500 font-mono">#</span>
-              <span class="truncate">tatami</span>
-            </div>
-            <span class="text-[10px] font-mono text-zinc-500">{tatamis.length}</span>
-          </button>
+          {@render navButton(TATAMI_ITEM, liveTatamiCount > 0 ? `${liveTatamiCount} live` : `${tatamis.length}`)}
 
-          <!-- Data Atlet -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "roster",
-                id: "athletes",
-                name: "data-atlet",
-                subtitle: "Daftar Atlet & Roster Peserta",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'data-atlet' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>data-atlet</span>
-          </button>
-
-          <!-- Kontingen -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "contingent",
-                id: "contingents",
-                name: "kontingen",
-                subtitle: "Master Data Kontingen & Logo Official",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'kontingen' || (activeChannel.type === 'contingent' && activeChannel.name !== 'perguruan') ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>kontingen</span>
-          </button>
-
-          <!-- Perguruan -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "perguruan",
-                id: "perguruans",
-                name: "perguruan",
-                subtitle: "Master Data Perguruan Karate FORKI",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'perguruan' || activeChannel.type === 'perguruan' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>perguruan</span>
-          </button>
-
-          <!-- Nomor Tanding -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "nomor_tanding",
-                id: "categories",
-                name: "nomor-tanding",
-                subtitle: "Kategori & Nomor Pertandingan",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'nomor-tanding' || activeChannel.type === 'nomor_tanding' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>nomor-tanding</span>
-          </button>
-
-          <!-- Buka Scoring Board Channel Item -->
+          <!-- Scoreboard (flyout: pick tatami, then monitor) -->
           <div
             bind:this={scoreboardBtnEl}
             class="relative"
             role="region"
-            aria-label="Menu Scoring Board"
+            aria-label="Menu scoreboard"
             onmouseenter={() => {
               if (scoreboardBtnEl) openScoreboardMenu(scoreboardBtnEl);
             }}
@@ -448,18 +525,19 @@
                   }
                 }
               }}
-              class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200"
-              title="Buka Layar Scoring Board Arena"
+              aria-haspopup="menu"
+              aria-expanded={isScoreboardMenuOpen}
+              class="w-full h-8 flex items-center gap-2.5 px-2.5 rounded-lg text-[13px] transition text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
             >
-              <div class="flex items-center space-x-2 truncate">
-                <span class="text-amber-500 font-mono">#</span>
-                <span class="truncate">buka-scoring-board</span>
-              </div>
+              {@render navIcon(ICONS.tv)}
+              <span class="flex-1 min-w-0 truncate text-left">Scoreboard</span>
               {#if runningScoreboards.length > 0}
-                <span class="flex items-center space-x-1 px-1.5 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-[9px] font-mono font-bold text-red-400 shadow-sm">
-                  <span class="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span>
-                  <span>{runningScoreboards.length} AKTIF</span>
+                <span class="flex items-center gap-1 text-[11px] text-red-300 shrink-0">
+                  <span class="w-1.5 h-1.5 rounded-full bg-red-500" aria-hidden="true"></span>
+                  {runningScoreboards.length} tampil
                 </span>
+              {:else}
+                <svg class="w-3.5 h-3.5 text-zinc-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
               {/if}
             </button>
 
@@ -586,170 +664,53 @@
       {/if}
     </div>
 
-    <!-- Group 2: Rekapan & Summary -->
+    <!-- Persiapan -->
     <div>
-      <button
-        onclick={() => (collapseRekapan = !collapseRekapan)}
-        class="w-full flex items-center justify-between px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-zinc-500 hover:text-zinc-300 uppercase transition"
-      >
-        <span>REKAPAN & SUMMARY</span>
-        <span class="text-[9px]">{collapseRekapan ? '▶' : '▼'}</span>
-      </button>
-
-      {#if !collapseRekapan}
+      {@render groupHeader("persiapan", "Persiapan")}
+      {#if !collapsed["persiapan"]}
         <div class="mt-1 space-y-0.5">
-          <!-- Summary Bagan (Daftar Juara Seluruh Bagan) -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "summary_bagan",
-                id: "summary-bagan",
-                name: "summary-bagan",
-                subtitle: "Daftar Juara Seluruh Bagan Pertandingan",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'summary-bagan' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>summary-bagan</span>
-          </button>
-
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "summary_juara",
-                id: "summary-juara",
-                name: "summary-juara",
-                subtitle: "Perhitungan Medali Juara Umum (Kontingen & Perguruan)",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'summary-juara' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>summary-juara</span>
-          </button>
-
-          <!-- Cetak: print preview hub (booklet + custom cover) -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "cetak",
-                id: "cetak",
-                name: "cetak",
-                subtitle: "Preview & cetak dokumen",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'cetak' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>cetak</span>
-          </button>
-
-          <!-- Buku Hasil Resmi & Berita Acara (In-App Channel) -->
-          <button
-            type="button"
-            onclick={() =>
-              onSelectChannel({
-                type: "buku_hasil",
-                id: "buku-hasil-turnamen",
-                name: "buku-hasil-turnamen",
-                subtitle: "Buku Hasil Turnamen & Berita Acara Resmi",
-              })}
-            class="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer {activeChannel.name === 'buku-hasil-turnamen' ? 'bg-white/[0.08] text-white font-bold' : 'text-amber-300/80 hover:text-amber-300 hover:bg-amber-500/[0.08]'}"
-            title="Buka Buku Hasil Kejuaraan & Berita Acara Resmi di dalam aplikasi"
-          >
-            <div class="flex items-center space-x-2 truncate">
-              <span class="text-amber-400 font-mono text-[11px]">📜</span>
-              <span class="truncate">buku-hasil-turnamen</span>
-            </div>
-            <span class="text-[10px] font-mono px-1 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
-              DOC
-            </span>
-          </button>
+          {#each PERSIAPAN as item (item.id)}
+            {@render navButton(item)}
+          {/each}
         </div>
       {/if}
     </div>
 
-    <!-- Group 3: Admin Tools -->
+    <!-- Hasil -->
     <div>
-      <button
-        onclick={() => (collapseAdminTools = !collapseAdminTools)}
-        class="w-full flex items-center justify-between px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-zinc-500 hover:text-zinc-300 uppercase transition"
-      >
-        <span>ADMIN TOOLS</span>
-        <span class="text-[9px]">{collapseAdminTools ? '▶' : '▼'}</span>
-      </button>
-
-      {#if !collapseAdminTools}
+      {@render groupHeader("hasil", "Hasil")}
+      {#if !collapsed["hasil"]}
         <div class="mt-1 space-y-0.5">
-          <!-- Jadwal Pertandingan (Timetable Editor) -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "timetable",
-                id: "timetable-editor",
-                name: "jadwal-pertandingan",
-                subtitle: "Jadwal Pertandingan & Timetable Run-Sheet",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'jadwal-pertandingan' || activeChannel.type === 'timetable' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>jadwal-pertandingan</span>
-          </button>
+          {#each HASIL as item (item.id)}
+            {@render navButton(item)}
+          {/each}
+        </div>
+      {/if}
+    </div>
 
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "sync",
-                id: "cloud-sync",
-                name: "sinkronisasi-web",
-                subtitle: "Integrasi Live Sync Portal Publik ambrilindo.com",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'sinkronisasi-web' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>sinkronisasi-web</span>
-          </button>
-
-          <!-- Data Master & Reset -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "master",
-                id: "master-data",
-                name: "data-master",
-                subtitle: "Reset Bagan & Manajemen Data Master",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'data-master' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>data-master</span>
-          </button>
-
-          <!-- Wasit & Dewan Juri (Wasit Manager) -->
-          <button
-            onclick={() =>
-              onSelectChannel({
-                type: "wasit",
-                id: "wasit-manager",
-                name: "wasit-juri",
-                subtitle: "Data wasit & juri: import Excel, foto",
-              })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.name === 'wasit-juri' || activeChannel.type === 'wasit' ? 'bg-white/[0.08] text-white font-bold' : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200'}"
-          >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>wasit-juri</span>
-          </button>
+    <!-- Pengaturan -->
+    <div>
+      {@render groupHeader("pengaturan", "Pengaturan")}
+      {#if !collapsed["pengaturan"]}
+        <div class="mt-1 space-y-0.5">
+          {#each PENGATURAN as item (item.id)}
+            {@render navButton(item)}
+          {/each}
         </div>
       {/if}
     </div>
 
     <!-- Group 4: Bagan Kategori ({openBagans.length}) -->
     <div>
-      <div class="flex items-center justify-between px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-zinc-500 uppercase transition">
+      <div class="flex items-center justify-between gap-2 px-2.5 py-1">
         <button
+          type="button"
           onclick={() => (collapseBagan = !collapseBagan)}
-          class="flex items-center space-x-1.5 hover:text-zinc-300 uppercase transition"
+          aria-expanded={!collapseBagan}
+          class="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500 hover:text-zinc-300 transition rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
         >
-          <span>BAGAN KATEGORI ({openBagans.length})</span>
-          <span class="text-[9px]">{collapseBagan ? '▶' : '▼'}</span>
+          <span>Bagan ({openBagans.length})</span>
+          <svg class="w-3.5 h-3.5 transition-transform {collapseBagan ? '-rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
         </button>
 
         <button
@@ -758,13 +719,15 @@
             e.stopPropagation();
             onOpenDrawingModal?.();
           }}
-          title="Buka Drawing Bagan Prestasi Otomatis"
-          class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-amber-400 hover:text-amber-300 hover:bg-amber-400/10 border border-amber-500/20 transition flex items-center space-x-1"
+          title="Drawing bagan prestasi otomatis"
+          class="h-7 px-2 rounded-lg text-[11px] font-semibold text-amber-300 hover:text-amber-200 hover:bg-amber-400/10 border border-amber-500/25 transition flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/50"
         >
           {#if !hasModule("drawing")}
             <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-label="Terkunci"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+          {:else}
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14" /></svg>
           {/if}
-          <span>+ DRAWING</span>
+          <span>Drawing</span>
         </button>
       </div>
 
@@ -774,8 +737,9 @@
             <input
               type="text"
               bind:value={searchBagan}
-              placeholder="Cari kategori bagan..."
-              class="w-full bg-black/40 text-zinc-200 text-[11px] px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-white/[0.2] outline-none"
+              placeholder="Cari bagan atau kode"
+              aria-label="Cari bagan"
+              class="w-full bg-black/40 text-zinc-200 text-[13px] px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-white/[0.3] outline-none select-text"
             />
           </div>
         {/if}
@@ -796,7 +760,7 @@
                     subtitle: `Bagan [${baganCode}]: ${bagan.nama_bagan || ''}`,
                   })}
                 title={`[${baganCode}] ${bagan.nama_bagan || `bagan-${bagan.id}`}`}
-                class="w-full flex items-start space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition text-left group {isActive ? (isKata ? 'bg-sky-500/10 text-sky-200 font-semibold border border-sky-500/20 shadow-sm' : 'bg-amber-500/10 text-amber-200 font-semibold border border-amber-500/20 shadow-sm') : 'hover:bg-white/[0.04]'}"
+                class="w-full flex items-start space-x-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition text-left group {isActive ? (isKata ? 'bg-sky-500/10 text-sky-200 font-semibold border border-sky-500/20 shadow-sm' : 'bg-amber-500/10 text-amber-200 font-semibold border border-amber-500/20 shadow-sm') : 'hover:bg-white/[0.04]'}"
               >
                 <!-- Monospace Bagan Code Badge -->
                 <span class="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded tracking-wider shrink-0 mt-0.5 {isKata ? 'bg-sky-950/50 text-sky-400/80 border border-sky-500/20' : 'bg-amber-950/50 text-amber-400/80 border border-amber-500/20'}">
@@ -804,25 +768,24 @@
                 </span>
 
                 <div class="flex-1 min-w-0">
-                  <span class="line-clamp-2 leading-snug break-words block {isActive ? (isKata ? 'text-sky-200 font-bold' : 'text-amber-200 font-bold') : (isKata ? 'text-sky-300/70 group-hover:text-sky-200' : 'text-amber-300/70 group-hover:text-amber-200')}">
+                  <span class="line-clamp-2 leading-snug break-words block {isActive ? (isKata ? 'text-sky-200 font-bold' : 'text-amber-200 font-bold') : (isKata ? 'text-sky-300/80 group-hover:text-sky-200' : 'text-amber-300/80 group-hover:text-amber-200')}">
                     {bagan.nama_bagan || `bagan-${bagan.id}`}
                   </span>
-                  {#if runningTatamis.length > 0}
-                    <div class="mt-1 flex items-center gap-1.5 flex-wrap">
-                      {#each runningTatamis as tNum}
-                        <span class="inline-flex items-center space-x-1 px-1.5 py-0.2 rounded text-[9px] font-mono font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-xs animate-pulse">
-                          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
-                          <span>T{tNum} RUNNING</span>
-                        </span>
-                      {/each}
-                    </div>
-                  {/if}
+                  <div class="mt-0.5 flex items-center gap-1.5 flex-wrap text-[11px]">
+                    <span class="text-zinc-500">{isKata ? "Kata" : "Kumite"}</span>
+                    {#each runningTatamis as tNum}
+                      <span class="inline-flex items-center gap-1 text-amber-300 font-semibold">
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>
+                        Tatami {tNum}
+                      </span>
+                    {/each}
+                  </div>
                 </div>
               </button>
             {/each}
           {:else}
-            <div class="px-3 py-2 text-[11px] text-zinc-500 italic">
-              {openBagans.length === 0 ? 'Belum ada bagan prestasi' : 'Bagan prestasi tidak ditemukan'}
+            <div class="px-3 py-2 text-[13px] text-zinc-500">
+              {openBagans.length === 0 ? 'Belum ada bagan. Klik Drawing untuk membuat.' : 'Bagan tidak ditemukan'}
             </div>
           {/if}
         </div>
@@ -831,13 +794,15 @@
 
     <!-- Group 5: Festival (one format per event: Roster or Bagan Grup) -->
     <div class="pt-2 border-t border-white/[0.06]">
-      <div class="flex items-center justify-between gap-2 px-2 py-1 text-[10px] font-mono font-bold tracking-widest text-emerald-400 uppercase transition">
+      <div class="flex items-center justify-between gap-2 px-2.5 py-1">
         <button
+          type="button"
           onclick={() => (collapseFestival = !collapseFestival)}
-          class="flex items-center space-x-1.5 hover:text-emerald-300 uppercase transition"
+          aria-expanded={!collapseFestival}
+          class="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400/90 hover:text-emerald-300 transition rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/50"
         >
-          <span class="whitespace-nowrap">FESTIVAL{isBaganFormat ? ` (${festivalBagans.length})` : ""}</span>
-          <span class="text-[9px]">{collapseFestival ? '▶' : '▼'}</span>
+          <span class="whitespace-nowrap">Festival{isBaganFormat ? ` (${festivalBagans.length})` : ""}</span>
+          <svg class="w-3.5 h-3.5 transition-transform {collapseFestival ? '-rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
         </button>
 
         {#if festivalFormat}
@@ -871,13 +836,13 @@
               onSelectChannel({
                 type: "festival",
                 id: "festival-roster",
-                name: "roster-festival",
-                subtitle: "Roster & Auto-Pairing Festival",
+                name: "Roster festival",
+                subtitle: "Roster dan auto-pairing festival",
               })}
-            class="w-full flex items-center space-x-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition {activeChannel.type === 'festival' ? 'bg-emerald-500/15 text-emerald-200 font-bold' : 'text-zinc-400 hover:bg-emerald-500/[0.06] hover:text-zinc-200'}"
+            class="w-full h-8 flex items-center gap-2.5 px-2.5 rounded-lg text-[13px] transition {activeChannel.type === 'festival' ? 'bg-emerald-500/15 text-emerald-200 font-semibold' : 'text-zinc-400 hover:bg-emerald-500/[0.06] hover:text-zinc-100'}"
           >
-            <span class="text-zinc-500 font-mono">#</span>
-            <span>roster-festival</span>
+            {@render navIcon(ICONS.users)}
+            <span>Roster festival</span>
           </button>
         </div>
       {/if}
@@ -943,14 +908,12 @@
                     <span class="text-[9px] font-mono text-zinc-400">
                       {isKata ? 'Kata' : 'Kumite'}
                     </span>
-                    {#if runningTatamis.length > 0}
-                      {#each runningTatamis as tNum}
-                        <span class="inline-flex items-center space-x-1 px-1.5 py-0.2 rounded text-[9px] font-mono font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-xs animate-pulse">
-                          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
-                          <span>T{tNum} RUNNING</span>
-                        </span>
-                      {/each}
-                    {/if}
+                    {#each runningTatamis as tNum}
+                      <span class="inline-flex items-center gap-1 text-[11px] text-amber-300 font-semibold">
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>
+                        Tatami {tNum}
+                      </span>
+                    {/each}
                   </div>
                 </div>
               </button>
@@ -985,9 +948,9 @@
           <p class="text-xs font-bold text-white truncate leading-tight group-hover:text-zinc-200">
             {activeRoleLabel}
           </p>
-          <p class="text-[10px] font-mono text-zinc-500 truncate leading-tight flex items-center space-x-1">
-            <span>Ganti Role</span>
-            <span class="text-[8px]">▼</span>
+          <p class="text-[11px] text-zinc-500 truncate leading-tight flex items-center gap-1">
+            <span>Ganti peran</span>
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7" /></svg>
           </p>
         </div>
       </button>
@@ -1066,8 +1029,9 @@
     <div class="flex items-center space-x-1 shrink-0">
       <button
         onclick={onOpenQrModal}
-        class="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] transition"
-        title="QR Code Tablet"
+        class="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] transition"
+        title="QR untuk tablet"
+        aria-label="QR untuk tablet"
       >
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <rect x="3" y="3" width="7" height="7"/>
@@ -1079,8 +1043,9 @@
 
       <button
         onclick={onReturnToLanding}
-        class="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] transition"
-        title="Keluar / Ganti Mode"
+        class="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] transition"
+        title="Kembali ke layar awal"
+        aria-label="Kembali ke layar awal"
       >
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />

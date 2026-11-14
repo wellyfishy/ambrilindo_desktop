@@ -256,6 +256,14 @@
     }
     if (toastTimer) clearTimeout(toastTimer);
   });
+
+  // Stat cards double as the filter (replaces the separate metric cards + pills).
+  type FilterKey = typeof filterType;
+  let statusTabs = $derived<{ key: FilterKey; label: string; count: number; warn?: boolean }[]>([
+    { key: "all", label: "Semua", count: totalPerguruans },
+    { key: "has_athletes", label: "Dengan atlet", count: perguruansWithAthletes },
+    { key: "no_athletes", label: "Tanpa atlet", count: perguruansWithoutAthletes },
+  ]);
 </script>
 
 <div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
@@ -269,254 +277,198 @@
     </div>
   {/if}
 
-  <!-- Header Section -->
-  <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-white/[0.08] gap-4 shrink-0">
-    <div>
-      <div class="flex items-center space-x-2.5">
-        <h2 class="text-xl font-black text-white tracking-tight uppercase">
-          MANAJEMEN PERGURUAN KARATE (FORKI)
-        </h2>
-        <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] tabular-nums">
-          {totalPerguruans} PERGURUAN
-        </span>
-      </div>
-      <p class="text-xs text-zinc-400 mt-1 font-normal">
-        Kelola data perguruan resmi FORKI (INKAI, LEMKARI, KKI, INKANAS, dll.) dan keanggotaan atlet
-      </p>
+  <!-- Header -->
+  <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-white/[0.08] shrink-0">
+    <div class="flex items-center gap-2.5">
+      <h2 class="text-xl font-black text-white tracking-tight uppercase">Perguruan</h2>
+      <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] tabular-nums">{totalPerguruans}</span>
+      <span class="text-sm text-zinc-500 tabular-nums">· {totalAthletes} atlet</span>
     </div>
 
-    <!-- Action Buttons -->
-    <div class="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
-
+    <div class="flex items-center gap-2 shrink-0">
       <button
         type="button"
         onclick={openAddModal}
-        class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors flex items-center space-x-1.5 active:scale-95 shadow-md cursor-pointer"
+        class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-md cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#14161b]"
       >
-        <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
-        </svg>
-        <span>Tambah Perguruan</span>
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14M5 12h14" /></svg>
+        <span>Tambah perguruan</span>
       </button>
     </div>
   </div>
 
-  <!-- Metric Statistics Cards (3-Column Modern Grid) -->
-  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 my-4 shrink-0">
-    <!-- Card 1: Total Perguruan -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TOTAL PERGURUAN FORKI</span>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-white tabular-nums">{totalPerguruans}</span>
-        <span class="text-[10px] font-mono text-zinc-500">perguruan terdaftar</span>
-      </div>
-    </div>
-
-    <!-- Card 2: Total Atlet Berperguruan -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">TOTAL ATLET BERPERGURUAN</span>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-emerald-400 tabular-nums">{totalAthletes}</span>
-        <span class="text-[10px] font-mono text-zinc-500">atlet terafiliasi</span>
-      </div>
-    </div>
-
-    <!-- Card 3: Perguruan Aktif -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-      <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">PERGURUAN AKTIF DIIKUTI</span>
-      <div class="flex items-baseline justify-between mt-2">
-        <span class="text-2xl font-black font-mono text-sky-400 tabular-nums">{perguruansWithAthletes}</span>
-        <span class="text-[10px] font-mono text-zinc-500">/ {totalPerguruans} aktif</span>
-      </div>
-    </div>
+  <!-- Status: stat cards that are also the filter -->
+  <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 my-4 shrink-0" role="radiogroup" aria-label="Filter perguruan">
+    {#each statusTabs as tab (tab.key)}
+      {@const selected = filterType === tab.key}
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        onclick={() => (filterType = tab.key)}
+        class="text-left rounded-xl px-3 py-2.5 border transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 {selected
+          ? 'bg-white/[0.08] border-white/50'
+          : tab.warn
+            ? 'bg-[#181a20] border-amber-500/30 hover:border-amber-500/50'
+            : 'bg-[#181a20] border-white/[0.08] hover:border-white/20'}"
+      >
+        <span class="flex items-center gap-1.5 text-xs font-semibold {tab.warn ? 'text-amber-300' : 'text-zinc-400'}">
+          {#if tab.warn}
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
+          {/if}
+          {tab.label}
+        </span>
+        <span class="block mt-1 text-2xl font-black font-mono tabular-nums {tab.warn ? 'text-amber-300' : 'text-white'}">{tab.count}</span>
+      </button>
+    {/each}
   </div>
 
-  <!-- Filter & Search Toolbar -->
-  <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-3 shrink-0">
-    <!-- Quick Status Pills -->
-    <div class="flex flex-wrap items-center gap-1.5 overflow-x-auto py-0.5">
-      <button
-        onclick={() => (filterType = 'all')}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {filterType === 'all'
-          ? 'bg-white text-black border-white shadow-xs font-bold'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Semua ({totalPerguruans})
-      </button>
-      <button
-        onclick={() => (filterType = 'has_athletes')}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {filterType === 'has_athletes'
-          ? 'bg-emerald-400 text-black border-emerald-400 shadow-xs font-bold'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Dengan Atlet ({perguruansWithAthletes})
-      </button>
-      <button
-        onclick={() => (filterType = 'no_athletes')}
-        class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer {filterType === 'no_athletes'
-          ? 'bg-amber-400 text-black border-amber-400 shadow-xs font-bold'
-          : 'bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white'}"
-      >
-        Tanpa Atlet ({perguruansWithoutAthletes})
-      </button>
+  <!-- Toolbar: search first, then sort -->
+  <div class="flex flex-wrap items-center gap-2 mb-3 shrink-0">
+    <div class="relative flex-1 min-w-[220px]">
+      <svg class="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+      <input
+        type="text"
+        bind:value={searchKeyword}
+        placeholder="Cari nama perguruan"
+        aria-label="Cari perguruan"
+        class="w-full h-9 bg-[#181a20] text-sm text-white pl-9 pr-9 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500 select-text"
+      />
+      {#if searchKeyword}
+        <button
+          type="button"
+          onclick={() => (searchKeyword = "")}
+          aria-label="Hapus pencarian"
+          class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md text-zinc-500 hover:text-white hover:bg-white/[0.08] flex items-center justify-center cursor-pointer"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      {/if}
     </div>
 
-    <!-- Sort & Search Bar -->
-    <div class="flex items-center space-x-2 shrink-0">
-      <!-- Sort Dropdown -->
+    <label class="flex items-center gap-2 text-xs text-zinc-400">
+      <span>Urutkan</span>
       <select
         bind:value={sortBy}
-        class="bg-[#181a20] border border-white/[0.1] text-xs text-zinc-300 rounded-xl px-2.5 py-1.5 outline-none focus:border-white transition-colors cursor-pointer"
+        class="h-9 bg-[#181a20] border border-white/[0.1] text-sm text-zinc-200 rounded-xl px-2.5 outline-none focus:border-white transition-colors cursor-pointer"
       >
-        <option value="name_asc">Nama (A - Z)</option>
-        <option value="name_desc">Nama (Z - A)</option>
-        <option value="athletes_desc">Atlet Terbanyak</option>
-        <option value="athletes_asc">Atlet Paling Sedikit</option>
+        <option value="name_asc">Nama A–Z</option>
+        <option value="name_desc">Nama Z–A</option>
+        <option value="athletes_desc">Atlet terbanyak</option>
+        <option value="athletes_asc">Atlet paling sedikit</option>
       </select>
+    </label>
 
-      <!-- Search Input -->
-      <div class="relative w-56">
-        <input
-          type="text"
-          bind:value={searchKeyword}
-          placeholder="Cari perguruan..."
-          class="w-full bg-[#181a20] text-xs text-white pl-8 pr-7 py-1.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500"
-        />
-        <svg class="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
-        {#if searchKeyword}
-          <button
-            onclick={() => (searchKeyword = "")}
-            aria-label="Hapus pencarian"
-            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white text-xs cursor-pointer"
-          >
-            ✕
-          </button>
-        {/if}
-      </div>
-    </div>
+    {#if searchKeyword || filterType !== "all"}
+      <button
+        type="button"
+        onclick={() => {
+          searchKeyword = "";
+          filterType = "all";
+        }}
+        class="h-9 px-3 rounded-xl text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+      >
+        Reset filter
+      </button>
+    {/if}
   </div>
 
-  <!-- Table Container (Clean 5-Column Layout) -->
-  <div class="flex-1 bg-[#181a20] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col shadow-inner min-h-0">
+  <!-- Perguruan table -->
+  <div class="flex-1 bg-[#181a20] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col shadow-lg min-h-0">
     {#if isLoading && perguruans.length === 0}
-      <div class="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
-        <svg class="w-8 h-8 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-        <p class="text-xs text-zinc-400 font-mono">Memuat data perguruan...</p>
+      <div class="flex-1 flex flex-col items-center justify-center p-8 gap-3" role="status">
+        <svg class="w-8 h-8 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" /><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" /></svg>
+        <p class="text-sm text-zinc-400">Memuat data perguruan…</p>
       </div>
     {:else if filteredPerguruans.length === 0}
-      <!-- Empty State -->
-      <div class="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
-        <div class="w-12 h-12 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-500">
-          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-          </svg>
+      <div class="flex-1 flex flex-col items-center justify-center p-8 gap-3 text-center">
+        <div class="w-12 h-12 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-500" aria-hidden="true">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6" /></svg>
         </div>
-        <p class="text-sm font-bold text-white">Tidak Ada Perguruan Ditemukan</p>
-        <p class="text-xs text-zinc-500 max-w-sm text-center">
-          Tidak ada perguruan yang cocok dengan filter atau kata kunci yang dipilih. Coba reset filter atau tambahkan perguruan baru.
-        </p>
-        {#if searchKeyword || filterType !== "all"}
+        {#if perguruans.length === 0}
+          <p class="text-sm font-bold text-white">Belum ada perguruan</p>
           <button
+            type="button"
+            onclick={openAddModal}
+            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md cursor-pointer"
+          >
+            Tambah perguruan
+          </button>
+        {:else}
+          <p class="text-sm font-bold text-white">Tidak ada perguruan yang cocok</p>
+          <button
+            type="button"
             onclick={() => {
               searchKeyword = "";
               filterType = "all";
             }}
-            class="h-8 px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-xs font-semibold text-zinc-300 hover:text-white transition-colors cursor-pointer"
+            class="h-9 px-3.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-xs font-semibold text-zinc-200 hover:text-white border border-white/[0.1] transition-colors cursor-pointer"
           >
-            Reset Semua Filter
+            Reset filter
           </button>
         {/if}
       </div>
     {:else}
       <div class="flex-1 overflow-y-auto min-h-0">
-        <table class="w-full text-left border-collapse text-xs">
-          <thead class="bg-[#111215] sticky top-0 z-10 border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[10px] font-mono">
+        <table class="w-full text-left border-collapse text-[13px] select-text">
+          <thead class="bg-[#111215] sticky top-0 z-10 border-b border-white/[0.08] text-zinc-400 text-xs select-none">
             <tr>
-              <th class="w-12 px-3 py-3 text-center font-bold">NO</th>
-              <th class="px-4 py-3 font-bold">NAMA PERGURUAN KARATE</th>
-              <th class="w-36 px-4 py-3 text-center font-bold">AFILIASI FEDERASI</th>
-              <th class="w-36 px-4 py-3 text-center font-bold">TOTAL ATLET</th>
-              <th class="w-24 px-4 py-3 text-center pr-6 font-bold">AKSI</th>
+              <th scope="col" class="px-4 py-2.5 font-semibold">Perguruan</th>
+              <th scope="col" class="w-48 px-4 py-2.5 font-semibold">Atlet</th>
+              <th scope="col" class="w-24 px-4 py-2.5"><span class="sr-only">Aksi</span></th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-white/[0.04]">
-            {#each paginatedPerguruans as item, idx (item.id)}
-              <tr class="hover:bg-white/[0.02] transition-colors group">
-                <!-- No -->
-                <td class="px-3 py-3 text-center font-mono text-zinc-500 text-[11px] tabular-nums">
-                  {(currentPage - 1) * pageSize + idx + 1}
+          <tbody class="divide-y divide-white/[0.05]">
+            {#each paginatedPerguruans as item (item.id)}
+              <tr class="hover:bg-white/[0.025] transition-colors">
+                <!-- Nama perguruan -->
+                <td class="px-4 py-2.5">
+                  <span class="font-semibold text-white">{item.nama_perguruan}</span>
                 </td>
 
-                <!-- Nama Perguruan -->
-                <td class="px-4 py-3">
-                  <div class="font-bold text-white uppercase tracking-tight text-xs flex items-center space-x-2">
-                    <span>{item.nama_perguruan}</span>
-                  </div>
-                  <div class="text-[10px] text-zinc-500 font-mono mt-0.5">
-                    ID #{item.id}
-                  </div>
-                </td>
-
-                <!-- Afiliasi Federasi -->
-                <td class="px-4 py-3 text-center">
-                  <span class="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                    <span>FORKI</span>
-                  </span>
-                </td>
-
-                <!-- Total Atlet -->
-                <td class="px-4 py-3 text-center">
+                <!-- Athlete count -->
+                <td class="px-4 py-2">
                   {#if (item.athlete_count || 0) > 0}
                     <button
+                      type="button"
                       onclick={() => onNavigate?.({
                         type: "roster",
                         id: "athletes",
-                        name: "data-atlet",
-                        subtitle: `Daftar Atlet - Perguruan ${item.nama_perguruan}`,
+                        name: "Atlet",
+                        subtitle: `Daftar atlet perguruan ${item.nama_perguruan}`,
                       })}
-                      class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all cursor-pointer active:scale-95"
-                      title="Lihat daftar atlet pada perguruan ini"
+                      class="inline-flex items-center gap-1 h-8 px-2 -ml-2 rounded-lg text-zinc-200 hover:text-white hover:bg-white/[0.06] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                      title="Lihat atlet"
                     >
-                      <span class="tabular-nums">{item.athlete_count} Atlet</span>
-                      <svg class="w-3 h-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-                      </svg>
+                      <span class="tabular-nums font-semibold">{item.athlete_count}</span>
+                      <span class="text-zinc-500">atlet</span>
+                      <svg class="w-3.5 h-3.5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
                     </button>
                   {:else}
-                    <span class="text-[11px] font-mono text-zinc-500">0 Atlet</span>
+                    <span class="text-zinc-500">Belum ada atlet</span>
                   {/if}
                 </td>
 
-                <!-- Actions (Dedicated Edit & Delete Buttons) -->
-                <td class="w-24 px-4 py-3 text-center pr-6">
-                  <div class="flex items-center justify-center space-x-1.5">
-                    <!-- Edit Button -->
+                <!-- Actions -->
+                <td class="px-4 py-2">
+                  <div class="flex items-center justify-end gap-1">
                     <button
+                      type="button"
                       onclick={() => openEditModal(item)}
-                      class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-sky-500/15 text-zinc-400 hover:text-sky-300 border border-white/[0.08] hover:border-sky-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
-                      title={`Ubah nama ${item.nama_perguruan}`}
-                      aria-label={`Ubah nama ${item.nama_perguruan}`}
+                      class="w-9 h-9 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] flex items-center justify-center transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                      title={`Ubah ${item.nama_perguruan}`}
+                      aria-label={`Ubah ${item.nama_perguruan}`}
                     >
-                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
-                      </svg>
+                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.9 4.5l1.6-1.7a1.9 1.9 0 112.7 2.7L10.6 16.1a4.5 4.5 0 01-1.9 1.1L6 18l.8-2.7a4.5 4.5 0 011.1-1.9l9-8.9z" /></svg>
                     </button>
-
-                    <!-- Delete Button -->
                     <button
+                      type="button"
                       onclick={() => openDeleteModal(item)}
-                      class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 border border-white/[0.08] hover:border-rose-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95 shadow-xs"
+                      class="w-9 h-9 rounded-lg text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 flex items-center justify-center transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/50"
                       title={`Hapus ${item.nama_perguruan}`}
                       aria-label={`Hapus ${item.nama_perguruan}`}
                     >
-                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                      </svg>
+                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 002 2h8a2 2 0 002-2l1-12M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3" /></svg>
                     </button>
                   </div>
                 </td>
@@ -526,42 +478,45 @@
         </table>
       </div>
 
-      <!-- Pagination / Footer Info -->
-      <div class="bg-[#111215] border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-xs text-zinc-400 shrink-0 font-sans">
-        <div class="flex items-center space-x-2 tabular-nums">
-          <span>Menampilkan {paginatedPerguruans.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} - {Math.min(currentPage * pageSize, filteredPerguruans.length)} dari {filteredPerguruans.length} perguruan</span>
-          <span>•</span>
-          <div class="flex items-center space-x-1.5">
-            <span>Per baris:</span>
+      <!-- Pagination -->
+      <div class="bg-[#111215] border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-xs text-zinc-400 shrink-0">
+        <div class="flex items-center gap-3 tabular-nums">
+          <span>{paginatedPerguruans.length > 0 ? (currentPage - 1) * (pageSize === -1 ? 0 : pageSize) + 1 : 0}–{pageSize === -1 ? filteredPerguruans.length : Math.min(currentPage * pageSize, filteredPerguruans.length)} dari {filteredPerguruans.length}</span>
+          <label class="flex items-center gap-1.5">
+            <span>Per halaman</span>
             <select
               bind:value={pageSize}
               onchange={() => (currentPage = 1)}
-              class="bg-[#181a20] text-zinc-300 text-xs px-2 py-0.5 rounded-lg border border-white/[0.1] outline-none focus:border-white cursor-pointer"
+              class="bg-[#181a20] text-zinc-200 text-xs px-2 py-1 rounded-lg border border-white/[0.1] outline-none focus:border-white cursor-pointer"
             >
               <option value={25}>25</option>
               <option value={50}>50</option>
               <option value={100}>100</option>
               <option value={-1}>Semua</option>
             </select>
-          </div>
+          </label>
         </div>
 
         {#if pageSize !== -1 && totalPages > 1}
-          <div class="flex items-center space-x-1 font-mono">
+          <div class="flex items-center gap-1">
             <button
+              type="button"
               disabled={currentPage <= 1}
               onclick={() => (currentPage = Math.max(1, currentPage - 1))}
-              class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
+              aria-label="Halaman sebelumnya"
+              class="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center transition-colors cursor-pointer"
             >
-              ‹
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" /></svg>
             </button>
-            <span class="px-2 text-zinc-400 tabular-nums">{currentPage} / {totalPages}</span>
+            <span class="px-2 font-mono text-zinc-300 tabular-nums">{currentPage} / {totalPages}</span>
             <button
+              type="button"
               disabled={currentPage >= totalPages}
               onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
-              class="h-7 px-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none transition-colors cursor-pointer"
+              aria-label="Halaman berikutnya"
+              class="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-300 hover:text-white disabled:opacity-30 disabled:pointer-events-none flex items-center justify-center transition-colors cursor-pointer"
             >
-              ›
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
             </button>
           </div>
         {/if}
@@ -579,8 +534,13 @@
         <h3 class="text-sm font-bold text-white tracking-tight flex items-center space-x-2">
           <span>{isEditMode ? "Edit Perguruan Karate" : "Tambah Perguruan Baru"}</span>
         </h3>
-        <button onclick={() => (modalOpen = false)} class="text-zinc-500 hover:text-white transition-colors cursor-pointer">
-          ✕
+        <button
+          type="button"
+          onclick={() => (modalOpen = false)}
+          aria-label="Tutup"
+          class="w-8 h-8 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] flex items-center justify-center transition-colors cursor-pointer"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
       </div>
 

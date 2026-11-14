@@ -15,7 +15,6 @@
   } from "$lib/types";
 
   import LandingGateway from "$lib/components/LandingGateway.svelte";
-  import ServerSidebar from "$lib/components/ServerSidebar.svelte";
   import ChannelSidebar from "$lib/components/ChannelSidebar.svelte";
   import TopNavbar from "$lib/components/TopNavbar.svelte";
   import TatamiManagerView from "$lib/components/TatamiManagerView.svelte";
@@ -102,8 +101,8 @@
   const DEFAULT_CHANNEL: ActiveChannel = {
     type: "tatami",
     id: "tatami-manager",
-    name: "tatami",
-    subtitle: "Manajemen Tatami Turnamen",
+    name: "Tatami",
+    subtitle: "Arena dan akses venue",
   };
 
   /** A bracket channel from another event must not stay open after switching. */
@@ -117,8 +116,8 @@
   let activeChannel = $state<ActiveChannel>({
     type: "tatami",
     id: "tatami-manager",
-    name: "tatami",
-    subtitle: "Manajemen Tatami Turnamen",
+    name: "Tatami",
+    subtitle: "Arena dan akses venue",
   });
 
   // Tournament Data State
@@ -438,7 +437,27 @@
     }
   }
 
+  /** Readable navbar/window titles for the fixed channels (other views still pass old slugs). */
+  const CHANNEL_LABELS: Partial<Record<ActiveChannel["type"], string>> = {
+    tatami: "Tatami",
+    roster: "Atlet",
+    contingent: "Kontingen",
+    perguruan: "Perguruan",
+    nomor_tanding: "Nomor tanding",
+    timetable: "Jadwal",
+    wasit: "Wasit dan juri",
+    summary_bagan: "Juara per bagan",
+    summary_juara: "Juara umum",
+    cetak: "Cetak",
+    buku_hasil: "Buku hasil",
+    sync: "Sinkronisasi web",
+    master: "Data master",
+    festival: "Roster festival",
+  };
+
   async function handleSelectChannel(channel: ActiveChannel) {
+    const label = CHANNEL_LABELS[channel.type];
+    if (label) channel = { ...channel, name: label };
     if (channel.type === "bagan" && (channel.id === 0 || channel.name === "Festival")) {
       const assignedTatami = activeRole.startsWith("admin_tatami_")
         ? parseInt(activeRole.replace("admin_tatami_", "")) || 1
@@ -557,7 +576,9 @@
       }
       if (savedChannel) {
         try {
-          activeChannel = JSON.parse(savedChannel);
+          const restored: ActiveChannel = JSON.parse(savedChannel);
+          const restoredLabel = CHANNEL_LABELS[restored.type];
+          activeChannel = restoredLabel ? { ...restored, name: restoredLabel } : restored;
         } catch (_) {}
       }
       // Skip an event that no longer exists (deleted or re-created under a new id meanwhile);
@@ -635,20 +656,11 @@
   {:else}
     <!-- Discord 1:1 Workspace Layout -->
 
-    <!-- 1. Leftmost Server Rail (72px) - Events ONLY as servers -->
-    <ServerSidebar
+    <!-- Sidebar: event switcher + navigation (the old event rail now lives in the switcher) -->
+    <ChannelSidebar
       events={databaseSummary?.events || []}
-      {selectedEventId}
       onSelectEvent={(id) => selectEvent(id)}
       onAddEvent={() => (addEventModal = true)}
-      onReturnToLanding={() => {
-        appMode = "landing";
-        setConnectionConfig("solo");
-      }}
-    />
-
-    <!-- 2. Channel Sidebar (256px) - Matching base-dashboard.html -->
-    <ChannelSidebar
       {activeChannel}
       mode={appMode}
       {activeEvent}
