@@ -4,6 +4,7 @@
   import { listen } from "@tauri-apps/api/event";
   import type { ActiveChannel, AppMode, BaganItem, EventItem, FestivalFormat, FestivalFormatInfo, TatamiItem } from "$lib/types";
   import { initLiveSync, getLiveTatamisForBagan, subscribeLiveSync } from "$lib/liveSync";
+  import { hasModule } from "$lib/license.svelte";
 
   interface MonitorOption {
     id: number;
@@ -760,6 +761,9 @@
           title="Buka Drawing Bagan Prestasi Otomatis"
           class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-amber-400 hover:text-amber-300 hover:bg-amber-400/10 border border-amber-500/20 transition flex items-center space-x-1"
         >
+          {#if !hasModule("drawing")}
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-label="Terkunci"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+          {/if}
           <span>+ DRAWING</span>
         </button>
       </div>
@@ -884,8 +888,11 @@
             type="button"
             onclick={() => onOpenDrawingFestivalModal?.()}
             title="Drawing bagan festival otomatis (4 atlet per grup)"
-            class="w-full px-2 py-1 rounded-lg text-[10px] font-mono font-bold text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10 border border-emerald-500/30 transition"
+            class="w-full px-2 py-1 rounded-lg text-[10px] font-mono font-bold text-emerald-400 hover:text-emerald-300 hover:bg-emerald-400/10 border border-emerald-500/30 transition inline-flex items-center justify-center gap-1"
           >
+            {#if !hasModule("drawing")}
+              <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-label="Terkunci"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+            {/if}
             + DRAWING
           </button>
         </div>

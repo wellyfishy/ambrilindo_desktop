@@ -1773,6 +1773,15 @@ async fn dispatch_command_api(
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({ "status": "error", "message": "Server hanya bisa dinyalakan/dihentikan dari laptop host." })),
         ).into_response(),
+        // Operator laptops follow the host's license: they may read it, never change it.
+        "get_license_status" => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "success", "data": crate::license::current() })),
+        ).into_response(),
+        "activate_license" | "refresh_license" | "deactivate_license" => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "status": "error", "message": "Lisensi hanya bisa diatur dari laptop host / solo." })),
+        ).into_response(),
         "claim_tatami" => {
             let tatami = get_i64_val(&payload, &["tatami", "tatamiNumber", "tatami_number"]).unwrap_or(0);
             let owner_id = get_str_val(&payload, &["ownerId", "owner_id"]).unwrap_or_default();

@@ -3208,6 +3208,7 @@ impl DatabaseManager {
         shuffle_type: &str,
         vr_category_ids: Vec<i64>,
     ) -> Result<DrawingSummary, String> {
+        crate::license::ensure(crate::license::Module::Drawing)?;
         self.ensure_no_results(&category_ids).await?;
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
@@ -3584,6 +3585,7 @@ impl DatabaseManager {
         category_ids: Vec<i64>,
         shuffle_type: &str,
     ) -> Result<DrawingSummary, String> {
+        crate::license::ensure(crate::license::Module::Drawing)?;
         self.ensure_no_results(&category_ids).await?;
         let pool = self.get_pool()?;
         let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
@@ -10560,6 +10562,7 @@ impl DatabaseManager {
 
     /// Creates a Best of the Best (BOB) tournament bracket from the gold medalists of selected categories
     pub async fn create_bob_bagan(&self, input: CreateBobBaganInput) -> Result<BobBaganResult, String> {
+        crate::license::ensure(crate::license::Module::Drawing)?;
         let pool = self.get_pool()?;
 
         let nama_bob = input.nama_bob.trim();

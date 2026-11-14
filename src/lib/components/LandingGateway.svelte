@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "$lib/api_client";
+  import { license, openLicensePanel } from "$lib/license.svelte";
   import type { AppMode, DatabaseSummary, NetworkInfo, IpAvailabilityInfo } from "$lib/types";
 
   interface Props {
@@ -154,6 +155,7 @@
       </div>
     </div>
 
+    <div class="flex items-center gap-2">
     <!-- Active DB & Environment Card -->
     <div class="flex items-center gap-3 surface-card px-4 py-2 rounded-xl border border-white/[0.08] shadow-sm">
       <div class="flex items-center gap-2.5">
@@ -182,6 +184,19 @@
       >
         <span>Ganti</span>
       </button>
+    </div>
+    <button
+      type="button"
+      onclick={openLicensePanel}
+      class="h-11 px-3.5 rounded-xl border flex items-center gap-2 text-xs font-semibold transition cursor-pointer {license.status?.state === 'active'
+        ? 'bg-emerald-500/[0.06] border-emerald-500/30 text-emerald-200 hover:bg-emerald-500/10'
+        : 'bg-amber-500/[0.06] border-amber-500/30 text-amber-200 hover:bg-amber-500/10'}"
+    >
+      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+      </svg>
+      <span>{license.status?.state === "active" ? "Lisensi Aktif" : "Aktivasi Lisensi"}</span>
+    </button>
     </div>
   </header>
 

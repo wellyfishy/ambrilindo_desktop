@@ -2,6 +2,7 @@ pub mod audio;
 pub mod bracket;
 pub mod db;
 pub mod excel_exporter;
+pub mod license;
 pub mod models;
 pub mod referee;
 pub mod server;
@@ -605,6 +606,32 @@ async fn open_control_panel_window(
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+    // License: Kata / Kumite module, decided by the bracket's discipline.
+    if let Some(host) = host_url.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        // Operator laptop: the host's license applies (its DB holds the bracket).
+        let st = host_license_status(host).await?;
+        license::check(&st, license::Module::Kata, license::now_secs())
+            .or_else(|_| license::check(&st, license::Module::Kumite, license::now_secs()))?;
+    } else {
+        let discipline = if bagan_id > 0 {
+            let row = match state.db.lock().await.get_pool() {
+                Ok(pool) => sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                    "SELECT CAST(tipe_tanding AS TEXT), nama_bagan FROM backend_bagan WHERE id = ?",
+                )
+                .bind(bagan_id)
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten(),
+                Err(_) => None,
+            };
+            row.and_then(|(tt, name)| license::discipline_of(tt.as_deref(), name.as_deref()))
+        } else {
+            None
+        };
+        license::ensure_discipline(discipline)?;
+    }
+
     let win_label = format!("control-panel-{}", match_id);
     let mut t_num = tatami.unwrap_or(1);
 
@@ -713,6 +740,58 @@ async fn open_control_panel_window(
     Ok(())
 }
 
+/// License status of the host laptop (operator laptops follow the host's license).
+async fn host_license_status(host: &str) -> Result<license::LicenseStatus, String> {
+    let url = format!("{}/api/command/get_license_status", host.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .post(&url)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|_| "Tidak bisa mengecek lisensi laptop host. Pastikan terhubung ke host.".to_string())?;
+    let body: serde_json::Value = res.json().await.map_err(|_| "Balasan lisensi dari host tidak dikenali.".to_string())?;
+    serde_json::from_value(body.get("data").cloned().unwrap_or_default())
+        .map_err(|_| "Host belum mendukung lisensi. Perbarui aplikasi di laptop host.".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// License commands (run on the host/solo computer only)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn get_license_status() -> Result<license::LicenseStatus, String> {
+    Ok(license::current())
+}
+
+#[tauri::command]
+async fn activate_license(key: String, app: tauri::AppHandle) -> Result<license::LicenseStatus, String> {
+    let st = license::activate(&key).await?;
+    let _ = app.emit("license_changed", &st);
+    Ok(st)
+}
+
+#[tauri::command]
+async fn refresh_license(app: tauri::AppHandle) -> Result<license::LicenseStatus, String> {
+    let res = license::refresh().await;
+    let st = license::current();
+    let _ = app.emit("license_changed", &st);
+    match res {
+        Ok(_) => Ok(st),
+        Err(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+async fn deactivate_license(app: tauri::AppHandle) -> Result<license::LicenseStatus, String> {
+    let st = license::deactivate().await?;
+    let _ = app.emit("license_changed", &st);
+    Ok(st)
+}
+
 /// `&hostUrl=<encoded>` when a host URL is given, otherwise empty.
 fn host_query_param(host_url: Option<&str>) -> String {
     match host_url.map(str::trim) {
@@ -748,6 +827,20 @@ async fn open_festival_control_panel(
     host_url: Option<String>,
 ) -> Result<(), String> {
     use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    // License: festival panels need the module of their discipline.
+    let fest_discipline = license::discipline_of(discipline.as_deref(), cat_name.as_deref());
+    if let Some(host) = host_url.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        let st = host_license_status(host).await?;
+        let now = license::now_secs();
+        match fest_discipline {
+            Some(m) => license::check(&st, m, now)?,
+            None => license::check(&st, license::Module::Kata, now)
+                .or_else(|_| license::check(&st, license::Module::Kumite, now))?,
+        }
+    } else {
+        license::ensure_discipline(fest_discipline)?;
+    }
 
     let win_label = "control-panel-0".to_string();
     let fest_tatami_num = tatami.unwrap_or(1);
@@ -2189,6 +2282,23 @@ pub fn run() {
             let app_handle = app.handle().clone();
             sync::SyncService::spawn_sync_worker(db_arc, Some(app_handle));
 
+            // License: verify the saved token offline, then quietly re-check online when possible
+            // (picks up extensions, module changes and revocations; network errors are ignored).
+            match app.path().app_config_dir() {
+                Ok(dir) => {
+                    license::init(dir);
+                }
+                Err(e) => eprintln!("[license] app config dir unavailable: {e}"),
+            }
+            let license_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(Some(st)) = license::refresh().await {
+                    let _ = license_app.emit("license_changed", &st);
+                } else {
+                    let _ = license_app.emit("license_changed", &license::current());
+                }
+            });
+
             // Native IPC bridge: forward tatami_live_state from any webview to Axum server & cache
             let bcast_tx = bcast_tx_for_setup.clone();
             let cache_arc = live_cache_for_setup.clone();
@@ -2219,6 +2329,10 @@ pub fn run() {
         })
         .manage(desktop_state)
         .invoke_handler(tauri::generate_handler![
+            get_license_status,
+            activate_license,
+            refresh_license,
+            deactivate_license,
             get_network_info,
             check_ip_availability,
             start_arena_server,

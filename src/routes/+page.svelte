@@ -40,6 +40,8 @@
   import DrawingBaganModal from "$lib/components/DrawingBaganModal.svelte";
   import DrawingFestivalModal from "$lib/components/DrawingFestivalModal.svelte";
   import VenueWebPortal from "$lib/components/VenueWebPortal.svelte";
+  import LicensePanel from "$lib/components/LicensePanel.svelte";
+  import { hasModule, loadLicense, watchLicense, lockedMessage, openLicensePanel } from "$lib/license.svelte";
 
   // Application Flow State
   let appMode = $state<AppMode>("landing");
@@ -169,6 +171,18 @@
     }, 3000);
   }
 
+  /** Drawing is a licensed module: open the license panel instead when it is locked. */
+  async function openDrawing(kind: "bagan" | "festival") {
+    if (!hasModule("drawing")) await loadLicense();
+    if (!hasModule("drawing")) {
+      showToast(lockedMessage("drawing"));
+      openLicensePanel();
+      return;
+    }
+    if (kind === "bagan") drawingModal = true;
+    else drawingFestivalModal = true;
+  }
+
   async function handleDrawingComplete() {
     if (selectedEventId) {
       await selectEvent(selectedEventId);
@@ -199,6 +213,8 @@
       initLiveSync(remoteUrl);
       await connectToRemoteHost(remoteUrl);
     }
+    // Client mode reads the host's license; solo/host read this computer's.
+    await loadLicense();
   }
 
   async function startHostServer(selectedIp?: string) {
@@ -488,6 +504,7 @@
   onMount(async () => {
     isBrowserClient = typeof window !== "undefined" && !(window as any).__TAURI_INTERNALS__;
     initLiveSync(hostUrl);
+    if (!isBrowserClient) void watchLicense();
     try {
       networkInfo = await invoke<NetworkInfo>("get_network_info");
     } catch (_) {}
@@ -645,8 +662,8 @@
       }}
       onSelectChannel={handleSelectChannel}
       onOpenQrModal={() => (qrModal = true)}
-      onOpenDrawingModal={() => (drawingModal = true)}
-      onOpenDrawingFestivalModal={() => (drawingFestivalModal = true)}
+      onOpenDrawingModal={() => openDrawing("bagan")}
+      onOpenDrawingFestivalModal={() => openDrawing("festival")}
       onFestivalFormatChanged={async (format) => {
         if (format === "bagan" && activeChannel.type === "festival") activeChannel = { ...DEFAULT_CHANNEL };
         if (selectedEventId) await selectEvent(selectedEventId);
@@ -755,7 +772,7 @@
             eventName={activeEvent?.nama_event || ""}
             hostAddress={hostUrl}
             onNavigate={(channel) => handleSelectChannel(channel)}
-            onOpenDrawingModal={() => (drawingModal = true)}
+            onOpenDrawingModal={() => openDrawing("bagan")}
             onShowToast={showToast}
           />
         {:else if activeChannel.type === "timetable"}
@@ -848,6 +865,10 @@
       onClose={() => (drawingFestivalModal = false)}
       onComplete={handleDrawingFestivalComplete}
     />
+  {/if}
+
+  {#if !isBrowserClient}
+    <LicensePanel onShowToast={showToast} />
   {/if}
 
   <!-- Toast Notification Overlay -->

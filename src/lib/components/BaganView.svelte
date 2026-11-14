@@ -21,6 +21,7 @@
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
   import { initLiveSync, isMatchLive, getRunningTatamiForMatch, subscribeLiveSync, subscribeBracketUpdates } from "$lib/liveSync";
   import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
+  import { isLicenseError, errorText, openLicensePanel } from "$lib/license.svelte";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import FestivalBracketSheet from "./FestivalBracketSheet.svelte";
   import BracketTree from "./BracketTree.svelte";
@@ -501,6 +502,12 @@
         tatami: targetTatamiNum,
       });
     } catch (err) {
+      // Licensed module locked: say so, and do not fall back to opening the panel another way.
+      if (isLicenseError(err)) {
+        onShowToast(errorText(err), "error");
+        openLicensePanel();
+        return;
+      }
       console.warn("Tauri open_control_panel_window failed, fallback to window.open or in-page:", err);
       if (typeof window !== "undefined" && window.open) {
         window.open(

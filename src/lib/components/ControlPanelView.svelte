@@ -12,6 +12,7 @@
   import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
   import { startTicker, type Ticker } from "$lib/ticker";
   import { broadcastLiveMatch, initLiveSync, connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
+  import { license, loadLicense, disciplineOf, canOpenDiscipline, lockedMessage, type LicenseModule } from "$lib/license.svelte";
 
   interface Props {
     match: DetailBaganItem;
@@ -60,6 +61,16 @@
     (baganName || baganInfo?.nama_bagan || "").toUpperCase().includes("FESTIVAL")
   );
   let manualDiscipline = $state<"kumite" | "kata" | null>(null);
+
+  // License: this panel needs the Kata or Kumite module (the host's license for operator laptops).
+  let requiredModule = $derived<LicenseModule | null>(
+    manualDiscipline ??
+      (isFestival ? null : disciplineOf(baganInfo?.tipe_tanding, baganName || baganInfo?.nama_bagan))
+  );
+  let licenseBlocked = $derived(!!license.status && !canOpenDiscipline(requiredModule));
+  onMount(() => {
+    void loadLicense();
+  });
 
   // Match Alarm Threshold Options (30s, 15s, 0s)
   let alarm30sEnabled = $state<boolean>(false);
@@ -2082,6 +2093,35 @@
           <p class="mt-4 text-sm text-zinc-400">Wasit &amp; juri partai ini sedang diperiksa. Panel terbuka otomatis setelah disetujui.</p>
         {/if}
       </div>
+    </div>
+  </div>
+{/if}
+
+{#if licenseBlocked}
+  <div
+    class="fixed inset-0 z-[210] bg-black/85 backdrop-blur-xs flex items-center justify-center p-6"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="license-lock-title"
+  >
+    <div class="w-full max-w-md bg-[#161820] border border-amber-500/25 rounded-xl p-6 shadow-2xl">
+      <div class="text-[10px] font-mono font-bold uppercase tracking-wider text-amber-400">Lisensi</div>
+      <h2 id="license-lock-title" class="mt-2 text-lg font-black tracking-tight text-white uppercase">
+        {lockedMessage(requiredModule).split(". ")[0]}
+      </h2>
+      {#if license.status?.message}
+        <p class="mt-2 text-xs font-medium text-zinc-300">{license.status.message}</p>
+      {/if}
+      <p class="mt-2 text-[11px] text-zinc-500">Aktivasi lisensi di menu Lisensi pada laptop host / solo, lalu buka ulang panel ini.</p>
+      {#if isFestival && manualDiscipline}
+        <button
+          type="button"
+          onclick={() => (manualDiscipline = manualDiscipline === "kata" ? "kumite" : "kata")}
+          class="mt-4 h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl"
+        >
+          Ganti ke {manualDiscipline === "kata" ? "Kumite" : "Kata"}
+        </button>
+      {/if}
     </div>
   </div>
 {/if}

@@ -37,6 +37,9 @@ rand = "0.8"
 base64 = "0.22"
 rust_xlsxwriter = "0.102.0"
 calamine = "0.30"
+ed25519-dalek = "2"
+sha2 = "0.10"
+machine-uid = "0.5"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
