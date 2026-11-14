@@ -103,7 +103,7 @@
   let perguruanCount = $derived(new Set(uniqueWasits.map((w) => w.perguruan_id).filter(Boolean)).size);
 
   let perguruanFilterOptions = $derived<SelectOption[]>([
-    { value: "all", label: "Semua Perguruan" },
+    { value: "all", label: "Semua perguruan" },
     ...[...new Map(uniqueWasits.filter((w) => w.perguruan_id).map((w) => [w.perguruan_id, w.nama_perguruan || `#${w.perguruan_id}`])).entries()]
       .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
       .map(([id, nama]) => ({ value: String(id), label: String(nama) })),
@@ -222,6 +222,14 @@
   const pill = (active: boolean, on: string) =>
     `px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border cursor-pointer ${active ? on + " shadow-xs font-bold" : "bg-[#181a20] text-zinc-400 border-white/[0.08] hover:border-white/20 hover:text-white"}`;
   const inputCls = "w-full bg-[#111215] text-xs text-zinc-200 px-3 py-2 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500";
+
+  // Stat cards double as the filter (replaces the separate metric cards + pills).
+  let statusTabs = $derived<{ key: typeof statusFilter; label: string; count: number; warn?: boolean }[]>([
+    { key: "all", label: "Semua", count: uniqueWasits.length },
+    { key: "aktif", label: "Aktif", count: activeCount },
+    { key: "nonaktif", label: "Non-aktif", count: inactiveCount },
+    { key: "tanpa_foto", label: "Tanpa foto", count: noPhotoCount, warn: noPhotoCount > 0 },
+  ]);
 </script>
 
 <div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
@@ -229,12 +237,12 @@
   <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-white/[0.08] gap-4 shrink-0">
     <div>
       <div class="flex items-center space-x-2.5">
-        <h2 class="text-xl font-black text-white tracking-tight uppercase">WASIT &amp; JURI</h2>
+        <h2 class="text-xl font-black text-white tracking-tight uppercase">Wasit dan juri</h2>
         <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] tabular-nums">
-          {uniqueWasits.length} WASIT
+          {uniqueWasits.length}
         </span>
       </div>
-      <p class="text-xs text-zinc-400 mt-1 font-normal">Penugasan ke tatami dan partai dilakukan di Tatami Manager.</p>
+      <p class="text-xs text-zinc-400 mt-1">Penugasan ke tatami dan partai dilakukan di Tatami Manager.</p>
     </div>
 
     <div class="flex items-center space-x-2 shrink-0 self-start sm:self-auto">
@@ -262,7 +270,7 @@
         <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
         </svg>
-        <span>Import Excel / CSV</span>
+        <span>Import Excel</span>
       </button>
       <button
         type="button"
@@ -273,7 +281,7 @@
         <svg class="w-3.5 h-3.5 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
-        <span>Foto Massal</span>
+        <span>Foto massal</span>
       </button>
       <button
         type="button"
@@ -283,177 +291,195 @@
         <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4" />
         </svg>
-        <span>Tambah Wasit</span>
+        <span>Tambah wasit</span>
       </button>
     </div>
   </div>
 
-  <!-- Stat cards -->
-  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 my-4 shrink-0">
-    {#each [
-      { t: "TOTAL WASIT", n: uniqueWasits.length, u: "wasit", c: "text-white" },
-      { t: "AKTIF", n: activeCount, u: "wasit", c: "text-emerald-400" },
-      { t: "NON-AKTIF", n: inactiveCount, u: "wasit", c: "text-zinc-400" },
-      { t: "BERFOTO", n: photoCount, u: "foto", c: "text-sky-400" },
-      { t: "PERGURUAN", n: perguruanCount, u: "perguruan", c: "text-amber-400" },
-    ] as s (s.t)}
-      <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 flex flex-col justify-between">
-        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">{s.t}</span>
-        <div class="flex items-baseline justify-between mt-2">
-          <span class="text-2xl font-black font-mono tabular-nums {s.c}">{s.n}</span>
-          <span class="text-[10px] font-mono text-zinc-500">{s.u}</span>
-        </div>
-      </div>
+  <!-- Status: stat cards that are also the filter -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 my-4 shrink-0" role="radiogroup" aria-label="Filter wasit">
+    {#each statusTabs as tab (tab.key)}
+      {@const selected = statusFilter === tab.key}
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        onclick={() => (statusFilter = tab.key)}
+        class="text-left rounded-xl px-3 py-2.5 border transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 {selected
+          ? 'bg-white/[0.08] border-white/50'
+          : tab.warn
+            ? 'bg-[#181a20] border-amber-500/30 hover:border-amber-500/50'
+            : 'bg-[#181a20] border-white/[0.08] hover:border-white/20'}"
+      >
+        <span class="flex items-center gap-1.5 text-xs font-semibold {tab.warn ? 'text-amber-300' : 'text-zinc-400'}">
+          {#if tab.warn}
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
+          {/if}
+          {tab.label}
+        </span>
+        <span class="block mt-1 text-2xl font-black font-mono tabular-nums {tab.warn ? 'text-amber-300' : 'text-white'}">{tab.count}</span>
+      </button>
     {/each}
   </div>
 
-  <!-- Toolbar -->
-  <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-3 shrink-0">
-    <div class="flex flex-wrap items-center gap-1.5 py-0.5">
-      <button type="button" onclick={() => (statusFilter = "all")} class={pill(statusFilter === "all", "bg-white text-black border-white")}>Semua ({uniqueWasits.length})</button>
-      <button type="button" onclick={() => (statusFilter = "aktif")} class={pill(statusFilter === "aktif", "bg-emerald-400 text-black border-emerald-400")}>Aktif ({activeCount})</button>
-      <button type="button" onclick={() => (statusFilter = "nonaktif")} class={pill(statusFilter === "nonaktif", "bg-zinc-300 text-black border-zinc-300")}>Non-aktif ({inactiveCount})</button>
-      <button type="button" onclick={() => (statusFilter = "tanpa_foto")} class={pill(statusFilter === "tanpa_foto", "bg-rose-500 text-white border-rose-500")}>Tanpa Foto ({noPhotoCount})</button>
+  <!-- Toolbar: search first, then perguruan -->
+  <div class="flex flex-wrap items-center gap-2 mb-3 shrink-0">
+    <div class="relative flex-1 min-w-[220px]">
+      <svg class="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+      <input
+        type="text"
+        bind:value={searchKeyword}
+        placeholder="Cari nama, perguruan, kota, atau lisensi"
+        aria-label="Cari wasit"
+        class="w-full h-9 bg-[#181a20] text-sm text-white pl-9 pr-9 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500 select-text"
+      />
+      {#if searchKeyword}
+        <button
+          type="button"
+          onclick={() => (searchKeyword = "")}
+          aria-label="Hapus pencarian"
+          class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md text-zinc-500 hover:text-white hover:bg-white/[0.08] flex items-center justify-center cursor-pointer"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      {/if}
     </div>
 
-    <div class="flex items-center space-x-2 shrink-0">
-      <FuzzySelect
-        items={perguruanFilterOptions}
-        bind:value={perguruanFilter}
-        placeholder="Filter Perguruan"
-        allowClear={true}
-        clearLabel="Semua Perguruan"
-        clearValue="all"
-        compact={true}
-        class="w-40"
-      />
-      <div class="relative w-56">
-        <input
-          type="text"
-          bind:value={searchKeyword}
-          placeholder="Cari nama, perguruan, kota..."
-          class="w-full bg-[#181a20] text-xs text-white pl-8 pr-7 py-1.5 rounded-xl border border-white/[0.1] focus:border-white outline-none transition-colors placeholder-zinc-500"
-        />
-        <svg class="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
-        {#if searchKeyword}
-          <button type="button" onclick={() => (searchKeyword = "")} aria-label="Hapus pencarian" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white text-xs cursor-pointer">✕</button>
-        {/if}
-      </div>
-    </div>
+    <FuzzySelect
+      items={perguruanFilterOptions}
+      bind:value={perguruanFilter}
+      placeholder="Perguruan"
+      allowClear={true}
+      clearLabel="Semua perguruan"
+      clearValue="all"
+      compact={true}
+      class="w-48"
+    />
+
+    {#if statusFilter !== "all" || perguruanFilter !== "all" || searchKeyword}
+      <button
+        type="button"
+        onclick={resetFilters}
+        class="h-9 px-3 rounded-xl text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+      >
+        Reset filter
+      </button>
+    {/if}
   </div>
 
-  <!-- Table -->
-  <div class="flex-1 bg-[#181a20] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col shadow-inner min-h-0">
+  <!-- Referee table -->
+  <div class="flex-1 bg-[#181a20] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col shadow-lg min-h-0">
     {#if isLoading && uniqueWasits.length === 0}
-      <div class="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
-        <svg class="w-8 h-8 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-        <p class="text-xs text-zinc-400 font-mono">Memuat data wasit...</p>
+      <div class="flex-1 flex flex-col items-center justify-center p-8 gap-3" role="status">
+        <svg class="w-8 h-8 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" /><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" /></svg>
+        <p class="text-sm text-zinc-400">Memuat data wasit…</p>
       </div>
     {:else if filtered.length === 0}
-      <div class="flex-1 flex flex-col items-center justify-center p-8 space-y-3">
-        <div class="w-12 h-12 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-500">
-          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-          </svg>
+      <div class="flex-1 flex flex-col items-center justify-center p-8 gap-3 text-center">
+        <div class="w-12 h-12 rounded-2xl bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-500" aria-hidden="true">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
         </div>
         {#if uniqueWasits.length === 0}
-          <p class="text-sm font-bold text-white">Belum Ada Wasit</p>
-          <button type="button" onclick={() => (isImportOpen = true)} class="h-8 px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-xs font-semibold text-zinc-300 hover:text-white transition-colors cursor-pointer">
-            Import Excel / CSV
-          </button>
+          <p class="text-sm font-bold text-white">Belum ada wasit</p>
+          <div class="flex items-center gap-2">
+            <button type="button" onclick={() => (isImportOpen = true)} class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md cursor-pointer">
+              Import Excel
+            </button>
+            <button type="button" onclick={openCreate} class="h-9 px-3.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-xs font-semibold text-zinc-200 hover:text-white border border-white/[0.1] transition-colors cursor-pointer">
+              Tambah manual
+            </button>
+          </div>
         {:else}
-          <p class="text-sm font-bold text-white">Tidak Ada Wasit Ditemukan</p>
-          <button type="button" onclick={resetFilters} class="h-8 px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-xs font-semibold text-zinc-300 hover:text-white transition-colors cursor-pointer">
-            Reset Semua Filter
+          <p class="text-sm font-bold text-white">Tidak ada wasit yang cocok</p>
+          <button type="button" onclick={resetFilters} class="h-9 px-3.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-xs font-semibold text-zinc-200 hover:text-white border border-white/[0.1] transition-colors cursor-pointer">
+            Reset filter
           </button>
         {/if}
       </div>
     {:else}
       <div class="flex-1 overflow-y-auto min-h-0">
-        <table class="w-full text-left border-collapse text-xs">
-          <thead class="bg-[#111215] sticky top-0 z-10 border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[10px] font-mono">
+        <table class="w-full text-left border-collapse text-[13px] select-text">
+          <thead class="bg-[#111215] sticky top-0 z-10 border-b border-white/[0.08] text-zinc-400 text-xs select-none">
             <tr>
-              <th class="w-12 px-3 py-3 text-center font-bold">NO</th>
-              <th class="px-4 py-3 font-bold">NAMA WASIT / JURI</th>
-              <th class="px-4 py-3 font-bold">PERGURUAN</th>
-              <th class="px-4 py-3 font-bold">KAB / KOTA</th>
-              <th class="px-4 py-3 font-bold">LISENSI</th>
-              <th class="w-24 px-3 py-3 text-center font-bold">STATUS</th>
-              <th class="w-24 px-4 py-3 text-center pr-6 font-bold">AKSI</th>
+              <th scope="col" class="px-4 py-2.5 font-semibold">Wasit / juri</th>
+              <th scope="col" class="px-4 py-2.5 font-semibold">Asal</th>
+              <th scope="col" class="px-4 py-2.5 font-semibold">Lisensi</th>
+              <th scope="col" class="w-28 px-4 py-2.5 font-semibold">Status</th>
+              <th scope="col" class="w-24 px-4 py-2.5"><span class="sr-only">Aksi</span></th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-white/[0.04]">
-            {#each filtered as w, index (w.id)}
-              <tr class="hover:bg-white/[0.02] transition-colors {w.is_active ? '' : 'opacity-60'}">
-                <td class="px-3 py-3 text-center font-mono text-zinc-500 text-[11px] tabular-nums">{index + 1}</td>
-                <td class="px-4 py-2.5">
-                  <div class="flex items-center gap-3">
+          <tbody class="divide-y divide-white/[0.05]">
+            {#each filtered as w (w.id)}
+              <tr class="hover:bg-white/[0.025] transition-colors">
+                <!-- Wasit -->
+                <td class="px-4 py-2">
+                  <div class="flex items-center gap-3 min-w-0">
                     <RefereeAvatar foto={w.foto} nama={w.nama_wasit} size={36} />
                     <div class="min-w-0">
-                      <div class="flex items-center space-x-2">
-                        <span class="font-bold text-white text-xs uppercase tracking-tight">{w.nama_wasit}</span>
+                      <p class="flex items-center gap-2 min-w-0">
+                        <span class="font-semibold truncate {w.is_active ? 'text-white' : 'text-zinc-400'}">{w.nama_wasit}</span>
                         {#if w.keterangan}
-                          <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-black bg-amber-500/15 text-amber-300 border border-amber-500/30 uppercase">{w.keterangan}</span>
+                          <span class="px-1.5 rounded text-[11px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">{w.keterangan}</span>
                         {/if}
-                      </div>
-                      {#if w.no_lisensi}
-                        <div class="font-mono text-[10px] text-zinc-500 mt-0.5">{w.no_lisensi}</div>
-                      {/if}
+                      </p>
+                      <p class="mt-0.5 text-xs flex items-center gap-2">
+                        {#if !w.foto}
+                          <span class="text-amber-300/90">Belum berfoto</span>
+                        {/if}
+                      </p>
                     </div>
                   </div>
                 </td>
-                <td class="px-4 py-3">
-                  {#if w.nama_perguruan}
-                    <span class="inline-flex items-center space-x-1.5 text-xs font-semibold text-amber-300 bg-amber-500/10 px-2 py-0.5 rounded-lg border border-amber-500/20 uppercase tracking-tight">
-                      <span class="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"></span>
-                      <span class="truncate max-w-[130px]" title={w.nama_perguruan}>{w.nama_perguruan}</span>
+
+                <!-- Asal: kota + perguruan -->
+                <td class="px-4 py-2">
+                  <p class="text-zinc-100">{w.kab_kota || "—"}</p>
+                  <p class="mt-0.5 text-xs text-zinc-500 truncate max-w-[220px]" title={w.nama_perguruan || ""}>{w.nama_perguruan || "Tanpa perguruan"}</p>
+                </td>
+
+                <!-- Lisensi -->
+                <td class="px-4 py-2">
+                  <p class="text-zinc-100">{w.lisensi || "—"}</p>
+                  {#if w.no_lisensi}
+                    <p class="mt-0.5 text-xs font-mono text-zinc-500">{w.no_lisensi}</p>
+                  {/if}
+                </td>
+
+                <!-- Status (icon + text) -->
+                <td class="px-4 py-2">
+                  {#if w.is_active}
+                    <span class="inline-flex items-center gap-1.5 text-zinc-200">
+                      <svg class="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+                      Aktif
                     </span>
                   {:else}
-                    <span class="text-xs font-mono text-zinc-500">—</span>
+                    <span class="inline-flex items-center gap-1.5 text-zinc-500">
+                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path stroke-linecap="round" d="M8 12h8" /></svg>
+                      Non-aktif
+                    </span>
                   {/if}
                 </td>
-                <td class="px-4 py-3 font-bold text-zinc-200 text-xs uppercase">{w.kab_kota || "—"}</td>
-                <td class="px-4 py-3">
-                  {#if w.lisensi}
-                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.08]">{w.lisensi}</span>
-                  {:else}
-                    <span class="text-xs font-mono text-zinc-500">—</span>
-                  {/if}
-                </td>
-                <td class="w-24 px-3 py-3 text-center">
-                  {#if w.is_active}
-                    <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">AKTIF</span>
-                  {:else}
-                    <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-white/[0.06] text-zinc-400 border border-white/[0.08]">NON-AKTIF</span>
-                  {/if}
-                </td>
-                <td class="w-24 px-4 py-3 text-center pr-6">
-                  <div class="flex items-center justify-center space-x-1.5">
+
+                <!-- Actions -->
+                <td class="px-4 py-2">
+                  <div class="flex items-center justify-end gap-1">
                     <button
                       type="button"
                       onclick={() => openEdit(w)}
-                      class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-sky-500/15 text-zinc-400 hover:text-sky-300 border border-white/[0.08] hover:border-sky-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95"
-                      title={`Ubah data ${w.nama_wasit}`}
-                      aria-label={`Ubah data ${w.nama_wasit}`}
+                      class="w-9 h-9 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] flex items-center justify-center transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                      title={`Ubah ${w.nama_wasit}`}
+                      aria-label={`Ubah ${w.nama_wasit}`}
                     >
-                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
-                      </svg>
+                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.9 4.5l1.6-1.7a1.9 1.9 0 112.7 2.7L10.6 16.1a4.5 4.5 0 01-1.9 1.1L6 18l.8-2.7a4.5 4.5 0 011.1-1.9l9-8.9z" /></svg>
                     </button>
                     <button
                       type="button"
                       onclick={() => (toDelete = w)}
-                      class="h-7 w-7 rounded-lg bg-white/[0.04] hover:bg-rose-500/15 text-zinc-400 hover:text-rose-400 border border-white/[0.08] hover:border-rose-500/30 transition-all duration-150 flex items-center justify-center cursor-pointer active:scale-95"
+                      class="w-9 h-9 rounded-lg text-zinc-400 hover:text-rose-300 hover:bg-rose-500/10 flex items-center justify-center transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/50"
                       title={`Hapus ${w.nama_wasit}`}
                       aria-label={`Hapus ${w.nama_wasit}`}
                     >
-                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                      </svg>
+                      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 002 2h8a2 2 0 002-2l1-12M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3" /></svg>
                     </button>
                   </div>
                 </td>
@@ -464,10 +490,7 @@
       </div>
 
       <div class="bg-[#111215] border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-xs text-zinc-400 shrink-0 tabular-nums">
-        <span>Menampilkan {filtered.length} dari {uniqueWasits.length} wasit</span>
-        {#if noPhotoCount > 0}
-          <button type="button" onclick={() => (statusFilter = "tanpa_foto")} class="text-zinc-400 hover:text-white cursor-pointer">{noPhotoCount} belum berfoto</button>
-        {/if}
+        <span>{filtered.length} dari {uniqueWasits.length} wasit</span>
       </div>
     {/if}
   </div>

@@ -146,8 +146,7 @@
   const HASIL: NavItem[] = [
     { type: "summary_bagan", id: "summary-bagan", name: "Juara per bagan", subtitle: "Daftar juara seluruh bagan", icon: ICONS.trophy },
     { type: "summary_juara", id: "summary-juara", name: "Juara umum", subtitle: "Perolehan medali kontingen dan perguruan", icon: ICONS.medal },
-    { type: "cetak", id: "cetak", name: "Cetak", subtitle: "Preview dan cetak dokumen", icon: ICONS.printer },
-    { type: "buku_hasil", id: "buku-hasil-turnamen", name: "Buku hasil", subtitle: "Buku hasil turnamen dan berita acara", icon: ICONS.book },
+    { type: "cetak", id: "cetak", name: "Cetak", subtitle: "Buku hasil dan dokumen cetak", icon: ICONS.printer },
   ];
   const PENGATURAN: NavItem[] = [
     { type: "sync", id: "cloud-sync", name: "Sinkronisasi web", subtitle: "Live sync ke ambrilindo.com", icon: ICONS.cloud },

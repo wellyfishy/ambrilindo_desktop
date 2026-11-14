@@ -1,7 +1,7 @@
 export type AppMode = 'landing' | 'solo' | 'host' | 'client';
 
 export interface ActiveChannel {
-  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'perguruan' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival' | 'wasit' | 'buku_hasil' | 'cetak';
+  type: 'tatami' | 'bagan' | 'roster' | 'contingent' | 'perguruan' | 'nomor_tanding' | 'sync' | 'overview' | 'master' | 'summary_juara' | 'summary_bagan' | 'timetable' | 'festival' | 'wasit' | 'cetak';
   id: number | string;
   name: string;
   subtitle?: string;

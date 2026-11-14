@@ -111,144 +111,75 @@
   </style>
 </svelte:head>
 
-<div class="h-full flex flex-col p-4 md:p-6 select-none bg-[#14161b] text-zinc-200 overflow-y-auto font-sans print-sheet">
+<div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-y-auto font-sans print-sheet">
   <!-- Screen View (Hidden when printing) -->
   <div class="no-print flex-1 flex flex-col min-h-0">
-    <!-- Top Bar / Header Section -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between pb-3.5 mb-3.5 border-b border-white/[0.08] gap-3 shrink-0">
+    <!-- Header -->
+    <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/[0.08] shrink-0">
       <div class="min-w-0">
-        <div class="flex items-center space-x-2.5">
-          <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0">
-            # summary-juara
-          </span>
-          <h1 class="text-base sm:text-lg font-black tracking-tight text-white uppercase truncate font-sans">
-            Klasemen Medali & Juara Umum
-          </h1>
-          <span class="text-xs text-zinc-500 font-mono truncate hidden sm:inline">
-            {summaryData?.event_name || eventName || "Turnamen Karate"}
-          </span>
-        </div>
-        <p class="text-xs text-zinc-400 mt-1 font-normal truncate">
-          Perhitungan klasemen Juara Umum resmi berdasarkan hasil bagan tunggal & final (kategori tanpa lawan mendapat emas mandiri tanpa poin juara umum)
-        </p>
+        <h1 class="text-xl font-black tracking-tight text-white uppercase">Juara umum</h1>
+        <p class="text-xs text-zinc-400 mt-1">Emas tanpa lawan tidak dihitung ke poin juara umum.</p>
       </div>
-
-      <!-- Action Buttons (No manual refresh needed, realtime on action) -->
-      <div class="flex items-center space-x-2 shrink-0 self-start md:self-auto">
-        <!-- Print Button -->
-        <button
-          type="button"
-          onclick={() => printWithOrientation("portrait", "8mm")}
-          class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors flex items-center space-x-1.5 active:scale-95 cursor-pointer shadow-xs"
-          title="Cetak Rekapan Juara (A4 Portrait)"
-        >
-          <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-          </svg>
-          <span>Cetak</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        onclick={() => printWithOrientation("portrait", "8mm")}
+        class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+        title="Cetak klasemen medali (A4 portrait)"
+      >
+        <svg class="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
+        <span>Cetak</span>
+      </button>
     </div>
 
-  <!-- 4 KPI Metrics (DESIGN_SYSTEM.md Section 4.B) -->
-  <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4 shrink-0 no-print">
-    <!-- Stat 1: Emas Resmi -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-      <div>
-        <span class="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Emas Terhitung</span>
-        <div class="flex items-baseline space-x-1.5 mt-0.5">
-          <span class="text-2xl font-black font-mono text-amber-300 tabular-nums">{summaryData?.total_gold ?? 0}</span>
-          <span class="text-[10px] font-mono text-amber-500/80">Poin Juara Umum</span>
-        </div>
+  <!-- Medal tally -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 my-4 shrink-0 no-print" aria-label="Jumlah medali terhitung">
+    {#each [["Emas", summaryData?.total_gold ?? 0, "bg-amber-400"], ["Perak", summaryData?.total_silver ?? 0, "bg-slate-300"], ["Perunggu", summaryData?.total_bronze ?? 0, "bg-amber-700"], ["Emas tanpa lawan", summaryData?.total_uncounted ?? 0, "bg-zinc-500"]] as [label, count, dot]}
+      <div class="rounded-xl px-3 py-2.5 border border-white/[0.08] bg-[#181a20]">
+        <span class="flex items-center gap-1.5 text-xs font-semibold text-zinc-400">
+          <span class="w-2.5 h-2.5 rounded-full {dot}" aria-hidden="true"></span>{label}
+        </span>
+        <span class="block mt-1 text-2xl font-black font-mono tabular-nums text-white">{count}</span>
       </div>
-      <div class="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center justify-center shrink-0">
-        <svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-        </svg>
-      </div>
-    </div>
-
-    <!-- Stat 2: Perak Resmi -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-      <div>
-        <span class="text-[10px] font-bold text-slate-300 uppercase tracking-wider block">Perak Terhitung</span>
-        <div class="flex items-baseline space-x-1.5 mt-0.5">
-          <span class="text-2xl font-black font-mono text-slate-200 tabular-nums">{summaryData?.total_silver ?? 0}</span>
-          <span class="text-[10px] font-mono text-slate-400">Medali Perak</span>
-        </div>
-      </div>
-      <div class="w-9 h-9 rounded-xl bg-slate-300/10 text-slate-300 border border-slate-300/20 flex items-center justify-center shrink-0">
-        <svg class="w-4 h-4 text-slate-300" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-        </svg>
-      </div>
-    </div>
-
-    <!-- Stat 3: Perunggu Resmi -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-      <div>
-        <span class="text-[10px] font-bold text-amber-600 uppercase tracking-wider block">Perunggu Terhitung</span>
-        <div class="flex items-baseline space-x-1.5 mt-0.5">
-          <span class="text-2xl font-black font-mono text-amber-500 tabular-nums">{summaryData?.total_bronze ?? 0}</span>
-          <span class="text-[10px] font-mono text-amber-600/80">Medali Perunggu</span>
-        </div>
-      </div>
-      <div class="w-9 h-9 rounded-xl bg-amber-700/15 text-amber-500 border border-amber-700/30 flex items-center justify-center shrink-0">
-        <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-        </svg>
-      </div>
-    </div>
-
-    <!-- Stat 4: Tanpa Lawan (BYE) -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-      <div>
-        <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Tanpa Lawan (BYE)</span>
-        <div class="flex items-baseline space-x-1.5 mt-0.5">
-          <span class="text-2xl font-black font-mono text-zinc-300 tabular-nums">{summaryData?.total_uncounted ?? 0}</span>
-          <span class="text-[10px] font-mono text-zinc-500">Emas Mandiri</span>
-        </div>
-      </div>
-      <div class="w-9 h-9 rounded-xl bg-white/[0.04] text-zinc-400 border border-white/[0.06] flex items-center justify-center shrink-0">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-        </svg>
-      </div>
-    </div>
+    {/each}
   </div>
 
   <!-- Filter & Tab Switcher Toolbar (DESIGN_SYSTEM.md Section 4.C) -->
-  <div class="no-print bg-[#181a20] border border-white/[0.08] rounded-2xl p-3 mb-4 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+  <div class="no-print mb-3 flex flex-wrap items-center gap-2">
     <!-- Tab Switcher (Perguruan ALWAYS first, then Kontingen) -->
-    <div class="flex items-center bg-[#111216] p-1 rounded-xl border border-white/[0.08]">
+    <div class="flex items-center bg-[#181a20] p-1 rounded-xl border border-white/[0.08]" role="radiogroup" aria-label="Klasemen berdasarkan">
       <button
         type="button"
+        role="radio"
+        aria-checked={activeTab === "perguruan"}
         onclick={() => (activeTab = "perguruan")}
-        class="h-8 px-3.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer {activeTab === 'perguruan' ? 'bg-white text-black shadow-sm font-semibold' : 'text-zinc-400 hover:text-white'}"
+        class="h-8 px-3.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer {activeTab === 'perguruan' ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-white'}"
       >
-        <span>Berdasarkan Perguruan</span>
-        <span class="text-[10px] font-mono opacity-80">({summaryData?.perguruan_standings.length ?? 0})</span>
+        <span>Perguruan</span>
+        <span class="font-mono opacity-70 tabular-nums">{summaryData?.perguruan_standings.length ?? 0}</span>
       </button>
 
       <button
         type="button"
+        role="radio"
+        aria-checked={activeTab === "kontingen"}
         onclick={() => (activeTab = "kontingen")}
-        class="h-8 px-3.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer {activeTab === 'kontingen' ? 'bg-white text-black shadow-sm font-semibold' : 'text-zinc-400 hover:text-white'}"
+        class="h-8 px-3.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer {activeTab === 'kontingen' ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-white'}"
       >
-        <span>Berdasarkan Kontingen</span>
-        <span class="text-[10px] font-mono opacity-80">({summaryData?.utusan_standings.length ?? 0})</span>
+        <span>Kontingen</span>
+        <span class="font-mono opacity-70 tabular-nums">{summaryData?.utusan_standings.length ?? 0}</span>
       </button>
     </div>
 
     <!-- Search & Filter Controls -->
-    <div class="flex flex-wrap items-center gap-2">
+    <div class="flex flex-1 flex-wrap items-center gap-2">
       <!-- Search Input -->
-      <div class="relative min-w-[200px]">
+      <div class="relative flex-1 min-w-[200px]">
         <input
           type="text"
           bind:value={searchQuery}
-          placeholder="Cari nama {activeTab === 'perguruan' ? 'perguruan' : 'kontingen'}..."
-          class="w-full bg-[#111216] border border-white/[0.1] rounded-xl pl-9 pr-3.5 h-8 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500/50 transition-colors"
+          placeholder="Cari nama {activeTab === 'perguruan' ? 'perguruan' : 'kontingen'}"
+          aria-label="Cari {activeTab === 'perguruan' ? 'perguruan' : 'kontingen'}"
+          class="w-full bg-[#181a20] border border-white/[0.1] rounded-xl pl-9 pr-3.5 h-9 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-white transition-colors select-text"
         />
         <svg
           class="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -263,10 +194,15 @@
       <!-- Filter Medals Only Button -->
       <button
         type="button"
+        role="switch"
+        aria-checked={filterOnlyWithMedals}
         onclick={() => (filterOnlyWithMedals = !filterOnlyWithMedals)}
-        class="h-8 px-3 text-xs font-semibold rounded-xl border transition-colors flex items-center space-x-1.5 cursor-pointer {filterOnlyWithMedals ? 'bg-amber-500/10 border-amber-500/25 text-amber-300' : 'bg-white/[0.04] border-white/[0.1] text-zinc-400 hover:text-white'}"
+        class="h-9 px-3 text-xs font-semibold rounded-xl border transition-colors flex items-center gap-2 cursor-pointer bg-white/[0.04] border-white/[0.1] text-zinc-200 hover:bg-white/[0.08]"
       >
-        <span>{filterOnlyWithMedals ? "Hanya Peraih Medali" : "Semua Terdaftar"}</span>
+        <span class="relative inline-block w-7 h-4 rounded-full transition {filterOnlyWithMedals ? 'bg-emerald-400' : 'bg-zinc-600'}" aria-hidden="true">
+          <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all {filterOnlyWithMedals ? 'left-3.5' : 'left-0.5'}"></span>
+        </span>
+        <span>Hanya peraih medali</span>
       </button>
 
       <div class="h-4 w-px bg-white/[0.1] mx-0.5 hidden sm:block"></div>
@@ -276,18 +212,18 @@
         <button
           type="button"
           onclick={expandAll}
-          class="h-8 px-2.5 text-[11px] font-medium text-zinc-400 hover:text-white hover:bg-white/[0.05] rounded-xl border border-white/[0.06] transition-colors cursor-pointer"
+          class="h-9 px-3 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.05] rounded-xl border border-white/[0.08] transition-colors cursor-pointer"
           title="Buka seluruh rincian pemenang"
         >
-          Buka Semua
+          Buka semua
         </button>
         <button
           type="button"
           onclick={collapseAll}
-          class="h-8 px-2.5 text-[11px] font-medium text-zinc-400 hover:text-white hover:bg-white/[0.05] rounded-xl border border-white/[0.06] transition-colors cursor-pointer"
+          class="h-9 px-3 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.05] rounded-xl border border-white/[0.08] transition-colors cursor-pointer"
           title="Tutup seluruh rincian pemenang"
         >
-          Tutup Semua
+          Tutup semua
         </button>
       </div>
     </div>
@@ -300,21 +236,21 @@
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
       </svg>
-      <p class="text-xs font-mono tracking-wider uppercase text-zinc-300">Memuat Klasemen Medali...</p>
+      <p class="text-sm text-zinc-300" role="status">Memuat klasemen…</p>
     </div>
   {:else if errorMessage}
     <div class="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-6 text-center text-rose-300 my-auto max-w-lg mx-auto">
       <svg class="w-10 h-10 mx-auto text-rose-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
       </svg>
-      <h3 class="text-sm font-bold text-white mb-1">Terjadi Kesalahan</h3>
+      <h3 class="text-sm font-bold text-white mb-1">Klasemen gagal dimuat</h3>
       <p class="text-xs text-rose-300/90">{errorMessage}</p>
       <button
         type="button"
         onclick={loadSummaryData}
         class="mt-4 px-4 py-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-xs font-semibold rounded-xl border border-rose-500/30 transition-colors"
       >
-        Coba Muat Ulang
+        Coba lagi
       </button>
     </div>
   {:else if (summaryData?.total_gold ?? 0) === 0 && (summaryData?.total_silver ?? 0) === 0 && (summaryData?.total_bronze ?? 0) === 0}
@@ -325,13 +261,8 @@
           <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7" />
         </svg>
       </div>
-      <h3 class="text-sm font-bold text-white">Belum Ada Data Perolehan Medali</h3>
-      <p class="text-xs text-zinc-400 mt-1.5 leading-relaxed">
-        Pertandingan belum dimulai atau belum ada juara bagan yang disahkan untuk event <span class="text-amber-400 font-semibold">{eventName}</span>.
-      </p>
-      <p class="text-[11px] text-zinc-500 mt-1 leading-relaxed">
-        Perolehan medali dan klasemen Juara Umum akan terhitung otomatis saat pertandingan selesai di Tatami.
-      </p>
+      <h3 class="text-sm font-bold text-white">Belum ada perolehan medali</h3>
+      <p class="text-sm text-zinc-400 mt-1.5 leading-relaxed">Klasemen terisi otomatis saat bagan selesai di tatami.</p>
     </div>
   {:else if filteredList.length === 0}
     <!-- Empty State: Filter / Search yielding no results -->
@@ -339,30 +270,27 @@
       <svg class="w-10 h-10 mx-auto text-zinc-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
-      <p class="text-sm font-bold text-white">Tidak Ada Data yang Cocok</p>
-      <p class="text-xs text-zinc-500 mt-1">Coba sesuaikan kata kunci pencarian atau matikan filter "Hanya Peraih Medali".</p>
+      <p class="text-sm font-bold text-white">Tidak ada yang cocok</p>
       <button
         type="button"
         onclick={resetFilters}
         class="mt-4 px-3.5 py-1.5 bg-white/[0.05] hover:bg-white/[0.1] text-zinc-200 text-xs font-semibold rounded-xl border border-white/[0.1] transition-colors active:scale-95 cursor-pointer"
       >
-        Reset Filter
+        Reset filter
       </button>
     </div>
   {:else}
     <!-- Main Standings Table (DESIGN_SYSTEM.md Section 4.D) -->
     <div class="rounded-2xl border border-white/[0.08] bg-[#181a20] overflow-hidden shadow-lg flex-1 flex flex-col min-h-0">
       <!-- Standings Table Header (Sticky) -->
-      <div class="sticky top-0 z-10 bg-[#111215] text-zinc-400 font-mono text-[11px] uppercase tracking-wider border-b border-white/[0.08] px-4 py-2.5 grid grid-cols-12 gap-2 items-center shrink-0 select-none">
-        <div class="col-span-1 text-center font-bold">Rank</div>
-        <div class="col-span-5 sm:col-span-6 font-bold truncate">
-          {activeTab === "perguruan" ? "PERGURUAN (FORKI)" : "KONTINGEN / UTUSAN"}
-        </div>
-        <div class="col-span-1 text-center text-amber-400 font-black">EMAS</div>
-        <div class="col-span-1 text-center text-slate-300 font-bold">PERAK</div>
-        <div class="col-span-1 text-center text-amber-600 font-bold">PERUNGGU</div>
-        <div class="col-span-1 text-center text-white font-black">TOTAL</div>
-        <div class="col-span-2 sm:col-span-1 text-right font-bold pr-1">RINCIAN</div>
+      <div class="sticky top-0 z-10 bg-[#111215] text-zinc-400 text-xs font-semibold border-b border-white/[0.08] px-4 py-2.5 grid grid-cols-12 gap-2 items-center shrink-0 select-none">
+        <div class="col-span-1 text-center">Peringkat</div>
+        <div class="col-span-5 sm:col-span-6 truncate">{activeTab === "perguruan" ? "Perguruan" : "Kontingen"}</div>
+        <div class="col-span-1 flex items-center justify-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400" aria-hidden="true"></span>Emas</div>
+        <div class="col-span-1 flex items-center justify-center gap-1"><span class="w-2 h-2 rounded-full bg-slate-300" aria-hidden="true"></span>Perak</div>
+        <div class="col-span-1 flex items-center justify-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-700" aria-hidden="true"></span>Perunggu</div>
+        <div class="col-span-1 text-center text-zinc-200">Total</div>
+        <div class="col-span-2 sm:col-span-1 text-right pr-1"><span class="sr-only">Rincian</span></div>
       </div>
 
       <!-- Standings Table Body (Scrollable) -->
@@ -376,9 +304,11 @@
             <div
               role="button"
               tabindex="0"
+              aria-expanded={isExpanded}
+              aria-label="{item.nama}: {item.gold} emas, {item.silver} perak, {item.bronze} perunggu. {isExpanded ? 'Tutup' : 'Buka'} rincian"
               onclick={() => toggleRow(item.id)}
-              onkeydown={(e) => { if (e.key === 'Enter') toggleRow(item.id); }}
-              class="grid grid-cols-12 gap-2 px-4 py-3 items-center cursor-pointer select-none"
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRow(item.id); } }}
+              class="grid grid-cols-12 gap-2 px-4 py-3 items-center cursor-pointer select-none focus-visible:outline-none focus-visible:bg-white/[0.04]"
             >
               <!-- Rank Column -->
               <div class="col-span-1 flex items-center justify-center">
@@ -411,15 +341,15 @@
                     onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
                   />
                 {/if}
-                <span class="text-xs sm:text-sm font-black text-white truncate tracking-tight uppercase print:text-black">
+                <span class="text-[13px] font-semibold text-white truncate print:text-black">
                   {item.nama}
                 </span>
                 {#if item.uncounted_gold > 0}
                   <span
-                    class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/25 shrink-0 font-mono tracking-tight print:text-amber-800 print:border-amber-400"
+                    class="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/25 shrink-0 print:text-amber-800 print:border-amber-400"
                     title="{item.uncounted_gold} Medali Emas Tanpa Lawan (Tidak Dihitung ke Poin Juara Umum)"
                   >
-                    +{item.uncounted_gold} Tanpa Lawan
+                    +{item.uncounted_gold} tanpa lawan
                   </span>
                 {/if}
               </div>
@@ -446,7 +376,7 @@
 
               <!-- Rincian Accordion Toggle Button -->
               <div class="col-span-2 sm:col-span-1 flex items-center justify-end space-x-1.5 text-zinc-400 pr-1">
-                <span class="text-[10px] font-mono text-zinc-500 hidden sm:inline">[{item.winners.length}]</span>
+                <span class="text-xs font-mono text-zinc-500 hidden sm:inline tabular-nums" title="Jumlah atlet peraih medali">{item.winners.length}</span>
                 <svg
                   class="w-4 h-4 transform transition-transform duration-200 {isExpanded ? 'rotate-180 text-amber-400' : 'text-zinc-500'}"
                   fill="none"
@@ -461,13 +391,13 @@
             <!-- Expanded Medalists Athlete Cards Grid -->
             {#if isExpanded}
               <div class="px-4 py-3 bg-[#111216]/60 border-t border-white/[0.06] transition-colors">
-                <div class="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-wider mb-2.5 flex items-center justify-between">
-                  <span>Rincian Atlet Peraih Medali</span>
-                  <span class="text-zinc-500">Total: {item.winners.length} atlet</span>
+                <div class="text-xs font-semibold text-zinc-400 mb-2.5 flex items-center justify-between">
+                  <span>Atlet peraih medali</span>
+                  <span class="text-zinc-500 tabular-nums">{item.winners.length} atlet</span>
                 </div>
 
                 {#if item.winners.length === 0}
-                  <div class="py-3 text-center text-xs text-zinc-500 italic">
+                  <div class="py-3 text-center text-sm text-zinc-500">
                     Belum ada perolehan medali yang tercatat untuk {item.nama}.
                   </div>
                 {:else}
@@ -494,27 +424,27 @@
                         <!-- Athlete & Category Details -->
                         <div class="min-w-0 flex-1 leading-tight">
                           <div class="flex items-center space-x-1.5 flex-wrap">
-                            <span class="text-xs font-bold text-white uppercase truncate">
+                            <span class="text-[13px] font-semibold text-white truncate select-text">
                               {winner.nama_atlet}
                             </span>
                             {#if !winner.is_counted}
-                              <span class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono">
-                                (Tanpa Lawan)
+                              <span class="text-[11px] font-semibold px-1.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/35">
+                                Tanpa lawan
                               </span>
                             {/if}
                           </div>
 
                           <!-- STRICT DOMAIN RULE: Perguruan first, then Kontingen -->
-                          <div class="text-[10px] font-mono text-zinc-400 truncate mt-1 tracking-tight">
-                            <span class="text-zinc-200 font-semibold">{winner.perguruan_nama}</span>
-                            <span class="text-zinc-500 mx-1">•</span>
-                            <span class="text-zinc-400">{winner.utusan_nama}</span>
+                          <div class="text-xs text-zinc-400 truncate mt-1 select-text">
+                            <span class="text-zinc-200">{winner.utusan_nama}</span>
+                            <span class="text-zinc-600 mx-1" aria-hidden="true">·</span>
+                            <span>{winner.perguruan_nama}</span>
                           </div>
 
                           <!-- Match Bracket Info -->
-                          <div class="text-[10px] font-semibold {winner.is_counted ? 'text-amber-300/90' : 'text-zinc-400'} truncate mt-1">
+                          <div class="text-xs {winner.is_counted ? 'text-zinc-300' : 'text-zinc-500'} truncate mt-1">
                             {#if winner.bagan_kode}
-                              <span class="font-mono text-amber-400/80 mr-1">[{winner.bagan_kode}]</span>
+                              <span class="font-mono text-zinc-500 mr-1">{winner.bagan_kode}</span>
                             {/if}
                             <span>{winner.bagan_nama}</span>
                           </div>

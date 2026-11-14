@@ -30,7 +30,6 @@
   import WasitManagerView from "$lib/components/WasitManagerView.svelte";
   import ContingentManagerView from "$lib/components/ContingentManagerView.svelte";
   import PerguruanManagerView from "$lib/components/PerguruanManagerView.svelte";
-  import ResultsBookletView from "$lib/components/ResultsBookletView.svelte";
   import PrintCenterView from "$lib/components/PrintCenterView.svelte";
   import MonitorPickerModal from "$lib/components/MonitorPickerModal.svelte";
   import PortConflictModal from "$lib/components/PortConflictModal.svelte";
@@ -41,6 +40,7 @@
   import VenueWebPortal from "$lib/components/VenueWebPortal.svelte";
   import LicensePanel from "$lib/components/LicensePanel.svelte";
   import { hasModule, loadLicense, watchLicense, lockedMessage, openLicensePanel } from "$lib/license.svelte";
+  import { guardedNavigate, leaveRequest, cancelLeave, saveAndLeave, discardAndLeave } from "$lib/unsavedGuard.svelte";
 
   // Application Flow State
   let appMode = $state<AppMode>("landing");
@@ -449,7 +449,6 @@
     summary_bagan: "Juara per bagan",
     summary_juara: "Juara umum",
     cetak: "Cetak",
-    buku_hasil: "Buku hasil",
     sync: "Sinkronisasi web",
     master: "Data master",
     festival: "Roster festival",
@@ -576,7 +575,9 @@
       }
       if (savedChannel) {
         try {
-          const restored: ActiveChannel = JSON.parse(savedChannel);
+          let restored: ActiveChannel = JSON.parse(savedChannel);
+          // The "Buku hasil" channel was folded into "Cetak".
+          if ((restored.type as string) === "buku_hasil") restored = { type: "cetak", id: "cetak", name: "Cetak" };
           const restoredLabel = CHANNEL_LABELS[restored.type];
           activeChannel = restoredLabel ? { ...restored, name: restoredLabel } : restored;
         } catch (_) {}
@@ -659,7 +660,7 @@
     <!-- Sidebar: event switcher + navigation (the old event rail now lives in the switcher) -->
     <ChannelSidebar
       events={databaseSummary?.events || []}
-      onSelectEvent={(id) => selectEvent(id)}
+      onSelectEvent={(id) => guardedNavigate(() => selectEvent(id))}
       onAddEvent={() => (addEventModal = true)}
       {activeChannel}
       mode={appMode}
@@ -672,7 +673,11 @@
         setRole(role);
         showToast(`Role aktif: ${roleLabel(role)}`);
       }}
-      onSelectChannel={handleSelectChannel}
+      onSelectChannel={(channel) => {
+        const same = channel.type === activeChannel.type && channel.id === activeChannel.id;
+        if (same) handleSelectChannel(channel);
+        else guardedNavigate(() => handleSelectChannel(channel));
+      }}
       onOpenQrModal={() => (qrModal = true)}
       onOpenDrawingModal={() => openDrawing("bagan")}
       onOpenDrawingFestivalModal={() => openDrawing("festival")}
@@ -681,10 +686,11 @@
         if (selectedEventId) await selectEvent(selectedEventId);
       }}
       onNotify={showToast}
-      onReturnToLanding={() => {
-        appMode = "landing";
-        setConnectionConfig("solo");
-      }}
+      onReturnToLanding={() =>
+        guardedNavigate(() => {
+          appMode = "landing";
+          setConnectionConfig("solo");
+        })}
     />
 
     <!-- 3. Channel Main Workspace -->
@@ -811,13 +817,6 @@
             hostAddress={hostUrl}
             onShowToast={showToast}
           />
-        {:else if activeChannel.type === "buku_hasil"}
-          <!-- Results Booklet & Official Tournament Book View (In-App) -->
-          <ResultsBookletView
-            eventId={selectedEventId || 1}
-            eventName={activeEvent?.nama_event || ""}
-            hostAddress={hostUrl}
-          />
         {/if}
       </main>
     </div>
@@ -881,6 +880,49 @@
 
   {#if !isBrowserClient}
     <LicensePanel onShowToast={showToast} />
+  {/if}
+
+  <!-- Unsaved changes: ask before leaving an editor (e.g. the timetable) -->
+  {#if leaveRequest.guard}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+      role="presentation"
+      onclick={(e) => e.target === e.currentTarget && !leaveRequest.saving && cancelLeave()}
+      onkeydown={(e) => e.key === "Escape" && !leaveRequest.saving && cancelLeave()}
+    >
+      <div class="w-full max-w-md bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl" role="alertdialog" aria-modal="true" aria-labelledby="leave-title" aria-describedby="leave-desc">
+        <h2 id="leave-title" class="text-base font-black text-white tracking-tight">Perubahan belum disimpan</h2>
+        <p id="leave-desc" class="mt-2 text-sm text-zinc-300">
+          {leaveRequest.guard.label} punya perubahan yang belum disimpan. Simpan dulu sebelum pindah?
+        </p>
+        <div class="flex flex-wrap items-center justify-end gap-2 mt-6">
+          <button
+            type="button"
+            onclick={cancelLeave}
+            disabled={leaveRequest.saving}
+            class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] disabled:opacity-50 mr-auto"
+          >
+            Tetap di sini
+          </button>
+          <button
+            type="button"
+            onclick={discardAndLeave}
+            disabled={leaveRequest.saving}
+            class="h-9 px-3.5 text-rose-300 border border-rose-500/30 hover:bg-rose-500/10 font-semibold text-xs rounded-xl disabled:opacity-50"
+          >
+            Buang perubahan
+          </button>
+          <button
+            type="button"
+            onclick={saveAndLeave}
+            disabled={leaveRequest.saving}
+            class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md disabled:opacity-50"
+          >
+            {leaveRequest.saving ? "Menyimpan…" : "Simpan dan lanjut"}
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   <!-- Toast Notification Overlay -->

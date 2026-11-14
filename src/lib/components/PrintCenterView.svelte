@@ -124,21 +124,13 @@
   <!-- Settings -->
   <aside class="w-80 shrink-0 border-r border-white/[0.08] bg-[#111215] flex flex-col min-h-0">
     <div class="px-5 pt-5 pb-4 border-b border-white/[0.08] shrink-0">
-      <h2 class="text-base font-black text-white tracking-tight uppercase">Cetak</h2>
-      <label class="block mt-3">
-        <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Dokumen</span>
-        <select
-          bind:value={documentKind}
-          class="mt-1.5 w-full bg-[#181a20] text-xs text-white px-2.5 py-2 rounded-xl border border-white/[0.1] focus:border-white/30 outline-none"
-        >
-          <option value="booklet_hasil">Booklet Hasil Turnamen</option>
-        </select>
-      </label>
+      <h2 class="text-xl font-black text-white tracking-tight uppercase">Cetak</h2>
+      <p class="mt-1 text-sm text-zinc-300">Buku hasil turnamen</p>
     </div>
 
     <div class="flex-1 overflow-y-auto px-5 py-4 space-y-5 scrollbar-thin">
       <div class="flex items-center justify-between">
-        <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Sampul</span>
+        <span class="text-sm font-semibold text-zinc-200">Sampul pembuka</span>
         <label class="inline-flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
           <input type="checkbox" bind:checked={settings.enabled} class="w-4 h-4 accent-white cursor-pointer" />
           Sertakan
@@ -151,22 +143,22 @@
         <div class="space-y-3">
           {#each TEXT_FIELDS as field (field.key)}
             <label class="block">
-              <span class="text-[11px] text-zinc-400">{field.label}</span>
+              <span class="text-xs text-zinc-400">{field.label}</span>
               <input
                 type="text"
                 value={settings[field.key] ?? ""}
                 oninput={(e) => setText(field.key, (e.currentTarget as HTMLInputElement).value)}
                 placeholder={placeholders[field.key] || "—"}
-                class="mt-1 w-full bg-[#181a20] text-xs text-white px-2.5 py-1.5 rounded-lg border outline-none placeholder:text-zinc-500 {settings[field.key] !== null ? 'border-amber-500/40' : 'border-white/[0.1] focus:border-white/30'}"
+                class="mt-1 w-full bg-[#181a20] text-sm text-white px-2.5 py-1.5 rounded-lg border outline-none placeholder:text-zinc-500 select-text {settings[field.key] !== null ? 'border-amber-500/40' : 'border-white/[0.1] focus:border-white/30'}"
               />
             </label>
           {/each}
-          <p class="text-[10px] text-zinc-500">Kosongkan kolom untuk memakai data event.</p>
+          <p class="text-[11px] text-zinc-500">Kosongkan kolom untuk memakai data event.</p>
         </div>
         {/if}
 
         <div>
-          <span class="text-[11px] text-zinc-400">Logo</span>
+          <span class="text-xs text-zinc-400">Logo</span>
           <div class="mt-1 grid grid-cols-3 gap-1 p-1 rounded-xl bg-[#181a20] border border-white/[0.08]">
             {#each LOGO_MODES as mode (mode.value)}
               <button
@@ -179,7 +171,7 @@
             {/each}
           </div>
           {#if settings.logoMode === "event" && !eventDefaults.hasEventLogo}
-            <p class="mt-1.5 text-[10px] text-amber-300/80">Event ini belum punya logo kop surat.</p>
+            <p class="mt-1.5 text-[11px] text-amber-300/80">Event ini belum punya logo kop surat.</p>
           {/if}
           {#if settings.logoMode === "custom"}
             <input
@@ -192,7 +184,7 @@
         </div>
 
         <div>
-          <span class="text-[11px] text-zinc-400">Gambar latar</span>
+          <span class="text-xs text-zinc-400">Gambar latar</span>
           <div class="mt-1 flex items-center gap-2">
             <span class="flex-1 text-xs text-zinc-300 truncate">
               {settings.customBackground ? "Gambar unggahan" : "Default (Ambrilindo)"}
@@ -213,12 +205,12 @@
             onchange={handleBackgroundFile}
             class="mt-2 w-full text-[11px] text-zinc-400 file:mr-2 file:px-2.5 file:py-1 file:rounded-lg file:border-0 file:bg-white/[0.08] file:text-zinc-200 file:text-[11px] file:font-semibold"
           />
-          <p class="mt-1 text-[10px] text-zinc-500">Rasio 16:9, misalnya 2000 × 1125 px.</p>
+          <p class="mt-1 text-[11px] text-zinc-500">Rasio 16:9, misalnya 2000 × 1125 px.</p>
         </div>
 
         <label class="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
           <input type="checkbox" bind:checked={settings.showSupportedBy} class="w-4 h-4 accent-white cursor-pointer" />
-          Tampilkan "SUPPORTED BY"
+          Tampilkan "Supported by"
         </label>
 
         {#if storageWarning}
@@ -229,7 +221,7 @@
       {/if}
       <div class="pt-4 border-t border-white/[0.08] space-y-3">
           <div class="flex items-center justify-between">
-            <span class="text-[10px] font-bold tracking-wider uppercase text-zinc-400">Sampul penutup</span>
+            <span class="text-sm font-semibold text-zinc-200">Sampul penutup</span>
             <label class="inline-flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
               <input type="checkbox" bind:checked={settings.penutupEnabled} class="w-4 h-4 accent-white cursor-pointer" />
               Sertakan
@@ -237,26 +229,26 @@
           </div>
           {#if settings.penutupEnabled}
             <label class="block">
-              <span class="text-[11px] text-zinc-400">Judul</span>
+              <span class="text-xs text-zinc-400">Judul</span>
               <input
                 type="text"
                 value={settings.penutupJudul ?? ""}
                 oninput={(e) => (settings.penutupJudul = (e.currentTarget as HTMLInputElement).value || null)}
                 placeholder={placeholders.penutupJudul}
-                class="mt-1 w-full bg-[#181a20] text-xs text-white px-2.5 py-1.5 rounded-lg border outline-none placeholder:text-zinc-500 {settings.penutupJudul !== null ? 'border-amber-500/40' : 'border-white/[0.1] focus:border-white/30'}"
+                class="mt-1 w-full bg-[#181a20] text-sm text-white px-2.5 py-1.5 rounded-lg border outline-none placeholder:text-zinc-500 select-text {settings.penutupJudul !== null ? 'border-amber-500/40' : 'border-white/[0.1] focus:border-white/30'}"
               />
             </label>
             <label class="block">
-              <span class="text-[11px] text-zinc-400">Ucapan</span>
+              <span class="text-xs text-zinc-400">Ucapan</span>
               <textarea
                 rows="3"
                 value={settings.penutupPesan ?? ""}
                 oninput={(e) => (settings.penutupPesan = (e.currentTarget as HTMLTextAreaElement).value || null)}
                 placeholder={placeholders.penutupPesan}
-                class="mt-1 w-full resize-none bg-[#181a20] text-xs text-white px-2.5 py-1.5 rounded-lg border outline-none placeholder:text-zinc-500 {settings.penutupPesan !== null ? 'border-amber-500/40' : 'border-white/[0.1] focus:border-white/30'}"
+                class="mt-1 w-full resize-none bg-[#181a20] text-sm text-white select-text px-2.5 py-1.5 rounded-lg border outline-none placeholder:text-zinc-500 {settings.penutupPesan !== null ? 'border-amber-500/40' : 'border-white/[0.1] focus:border-white/30'}"
               ></textarea>
             </label>
-            <p class="text-[10px] text-zinc-500">Latar, logo, label, nama event dan tanggal mengikuti sampul pembuka.</p>
+            <p class="text-[11px] text-zinc-500">Latar, logo, label, nama event dan tanggal mengikuti sampul pembuka.</p>
           {/if}
         </div>
 

@@ -120,6 +120,13 @@
     filterDivision = "all";
     filterStatus = "all";
   }
+
+  // Stat cards double as the status filter.
+  let statusTabs = $derived<{ key: typeof filterStatus; label: string; count: number }[]>([
+    { key: "all", label: "Semua bagan", count: summaryData?.total_bagans ?? 0 },
+    { key: "completed", label: "Sudah ada juara", count: summaryData?.completed_bagans ?? 0 },
+    { key: "uncompleted", label: "Belum selesai", count: Math.max(0, (summaryData?.total_bagans ?? 0) - (summaryData?.completed_bagans ?? 0)) },
+  ]);
 </script>
 
 <svelte:head>
@@ -131,121 +138,65 @@
   </style>
 </svelte:head>
 
-<div class="h-full flex flex-col p-4 md:p-6 select-none bg-[#14161b] text-zinc-200 overflow-y-auto font-sans print-sheet">
+<div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-y-auto font-sans print-sheet">
   <!-- ================= SCREEN VIEW: INTERACTIVE DARK THEME UI ================= -->
   <div class="no-print flex flex-col flex-1 min-h-0">
-    <!-- Top Bar / Header Section -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between pb-3.5 mb-3.5 border-b border-white/[0.08] gap-3 shrink-0">
-      <div class="min-w-0">
-        <div class="flex items-center space-x-2.5">
-          <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0">
-            # summary-bagan
-          </span>
-          <h1 class="text-base sm:text-lg font-black tracking-tight text-white uppercase truncate font-sans">
-            Rekap Bagan & Daftar Juara
-          </h1>
-          <span class="text-xs text-zinc-500 font-mono truncate hidden sm:inline">
-            {summaryData?.event_name || eventName}
-          </span>
-        </div>
-        <p class="text-xs text-zinc-400 mt-1 font-normal truncate">
-          Rekapitulasi peraih medali juara 1 (emas), 2 (perak), dan 3 (perunggu) per nomor pertandingan
-        </p>
+    <!-- Header -->
+    <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/[0.08] shrink-0">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <h1 class="text-xl font-black tracking-tight text-white uppercase">Juara per bagan</h1>
+        <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] tabular-nums">{summaryData?.total_bagans ?? 0}</span>
       </div>
-
-      <!-- Action Buttons (Single source: Print only, exports reside in # buku-hasil-turnamen) -->
-      <div class="flex items-center space-x-2 shrink-0 self-start md:self-auto">
-        <button
-          type="button"
-          onclick={() => printWithOrientation("portrait", "8mm")}
-          class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors flex items-center space-x-1.5 active:scale-95 cursor-pointer shadow-xs"
-          title="Cetak Daftar Juara Persis Buku Hasil Turnamen (A4 Portrait)"
-        >
-          <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-          </svg>
-          <span>Cetak</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        onclick={() => printWithOrientation("portrait", "8mm")}
+        class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 hover:text-white font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+        title="Cetak daftar juara yang sedang ditampilkan (A4 portrait)"
+      >
+        <svg class="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4H7v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
+        <span>Cetak</span>
+      </button>
     </div>
 
-    <!-- 4 KPI Metrics (DESIGN_SYSTEM.md Section 4.B) -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4 shrink-0">
-      <!-- Stat 1: Total Bagan -->
-      <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-        <div>
-          <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">Total Bagan</span>
-          <div class="flex items-baseline space-x-1.5 mt-0.5">
-            <span class="text-2xl font-black font-mono text-white tabular-nums">{summaryData?.total_bagans ?? 0}</span>
-            <span class="text-[10px] font-mono text-zinc-500">Bagan</span>
-          </div>
-        </div>
-        <div class="w-9 h-9 rounded-xl bg-white/[0.04] text-zinc-400 border border-white/[0.06] flex items-center justify-center shrink-0">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h4v4H4V6zm12 0h4v4h-4V6zM4 14h4v4H4v-4zm12 0h4v4h-4v-4zm-8-5h8M8 17h8" />
-          </svg>
-        </div>
+    <!-- Status: stat cards that are also the filter, plus the medal tally -->
+    <div class="flex flex-wrap items-stretch gap-2 my-4 shrink-0">
+      <div class="grid grid-cols-3 gap-2 flex-1 min-w-[320px]" role="radiogroup" aria-label="Filter status bagan">
+        {#each statusTabs as tab (tab.key)}
+          {@const selected = filterStatus === tab.key}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onclick={() => (filterStatus = tab.key)}
+            class="text-left rounded-xl px-3 py-2.5 border transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 {selected ? 'bg-white/[0.08] border-white/50' : 'bg-[#181a20] border-white/[0.08] hover:border-white/20'}"
+          >
+            <span class="block text-xs font-semibold text-zinc-400">{tab.label}</span>
+            <span class="block mt-1 text-2xl font-black font-mono tabular-nums text-white">{tab.count}</span>
+          </button>
+        {/each}
       </div>
-
-      <!-- Stat 2: Bagan Selesai -->
-      <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-        <div>
-          <span class="text-[10px] font-bold text-emerald-400 uppercase tracking-wider block">Bagan Selesai</span>
-          <div class="flex items-baseline space-x-1.5 mt-0.5">
-            <span class="text-2xl font-black font-mono text-emerald-300 tabular-nums">{summaryData?.completed_bagans ?? 0}</span>
-            <span class="text-[10px] font-mono text-emerald-500/80">Ada Juara</span>
+      <div class="rounded-xl px-4 py-2.5 border border-white/[0.08] bg-[#181a20] flex items-center gap-5" aria-label="Jumlah medali">
+        {#each [["Emas", summaryData?.total_gold ?? 0, "bg-amber-400"], ["Perak", summaryData?.total_silver ?? 0, "bg-slate-300"], ["Perunggu", summaryData?.total_bronze ?? 0, "bg-amber-700"]] as [label, count, dot]}
+          <div>
+            <span class="flex items-center gap-1.5 text-xs font-semibold text-zinc-400">
+              <span class="w-2.5 h-2.5 rounded-full {dot}" aria-hidden="true"></span>{label}
+            </span>
+            <span class="block mt-1 text-2xl font-black font-mono tabular-nums text-white">{count}</span>
           </div>
-        </div>
-        <div class="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center shrink-0">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </div>
-      </div>
-
-      <!-- Stat 3: Medali Emas & Perak -->
-      <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-        <div>
-          <span class="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Emas & Perak</span>
-          <div class="flex items-baseline space-x-2 mt-0.5">
-            <span class="text-2xl font-black font-mono text-amber-300 tabular-nums">{summaryData?.total_gold ?? 0}</span>
-            <span class="text-xs text-zinc-500 font-mono">/</span>
-            <span class="text-2xl font-black font-mono text-slate-300 tabular-nums">{summaryData?.total_silver ?? 0}</span>
-          </div>
-        </div>
-        <div class="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center justify-center shrink-0">
-          <svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-          </svg>
-        </div>
-      </div>
-
-      <!-- Stat 4: Medali Perunggu -->
-      <div class="bg-[#181a20] border border-white/[0.08] rounded-xl p-3 sm:p-3.5 flex items-center justify-between shadow-xs">
-        <div>
-          <span class="text-[10px] font-bold text-amber-600 uppercase tracking-wider block">Medali Perunggu</span>
-          <div class="flex items-baseline space-x-1.5 mt-0.5">
-            <span class="text-2xl font-black font-mono text-amber-500 tabular-nums">{summaryData?.total_bronze ?? 0}</span>
-            <span class="text-[10px] font-mono text-amber-600/80">Perunggu</span>
-          </div>
-        </div>
-        <div class="w-9 h-9 rounded-xl bg-amber-700/15 text-amber-500 border border-amber-700/30 flex items-center justify-center shrink-0">
-          <svg class="w-4 h-4 text-amber-500" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-          </svg>
-        </div>
+        {/each}
       </div>
     </div>
 
     <!-- Filter & Search Toolbar (DESIGN_SYSTEM.md Section 4.C) -->
-    <div class="bg-[#181a20] border border-white/[0.08] rounded-2xl p-3 mb-4 flex flex-wrap items-center gap-2.5 shadow-sm shrink-0">
+    <div class="mb-4 flex flex-wrap items-center gap-2 shrink-0">
       <!-- Search Bar -->
       <div class="relative flex-1 min-w-[200px]">
         <input
           type="text"
           bind:value={searchQuery}
-          placeholder="Cari bagan, kode, atlet, perguruan, kontingen..."
-          class="w-full bg-[#111216] border border-white/[0.1] rounded-xl pl-9 pr-3.5 h-9 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500/50 transition-colors"
+          placeholder="Cari bagan, kode, atlet, perguruan, atau kontingen"
+          aria-label="Cari bagan atau juara"
+          class="w-full bg-[#181a20] border border-white/[0.1] rounded-xl pl-9 pr-3.5 h-9 text-sm text-white placeholder-zinc-500 focus:outline-none focus:border-white transition-colors select-text"
         />
         <svg
           class="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -260,32 +211,22 @@
       <!-- Division Filter (Prestasi / Festival / BOB) -->
       <select
         bind:value={filterDivision}
-        class="h-9 bg-[#111216] border border-white/[0.1] hover:border-white/20 rounded-xl px-3 text-xs text-zinc-200 focus:outline-none focus:border-amber-500/50 transition-colors cursor-pointer"
+        class="h-9 bg-[#181a20] border border-white/[0.1] hover:border-white/20 rounded-xl px-3 text-sm text-zinc-200 focus:outline-none focus:border-white transition-colors cursor-pointer"
       >
-        <option value="all">Semua Divisi</option>
+        <option value="all">Semua divisi</option>
         <option value="prestasi">Prestasi</option>
         <option value="festival">Festival</option>
-        <option value="bob">Best of the Best (BOB)</option>
+        <option value="bob">Best of the best (BOB)</option>
       </select>
 
       <!-- Type Filter (Kata / Kumite) -->
       <select
         bind:value={filterType}
-        class="h-9 bg-[#111216] border border-white/[0.1] hover:border-white/20 rounded-xl px-3 text-xs text-zinc-200 focus:outline-none focus:border-amber-500/50 transition-colors cursor-pointer"
+        class="h-9 bg-[#181a20] border border-white/[0.1] hover:border-white/20 rounded-xl px-3 text-sm text-zinc-200 focus:outline-none focus:border-white transition-colors cursor-pointer"
       >
-        <option value="all">Semua Tipe</option>
+        <option value="all">Kata dan kumite</option>
         <option value="kata">Kata</option>
         <option value="kumite">Kumite</option>
-      </select>
-
-      <!-- Status Filter -->
-      <select
-        bind:value={filterStatus}
-        class="h-9 bg-[#111216] border border-white/[0.1] hover:border-white/20 rounded-xl px-3 text-xs text-zinc-200 focus:outline-none focus:border-amber-500/50 transition-colors cursor-pointer"
-      >
-        <option value="all">Semua Status</option>
-        <option value="completed">Sudah Selesai (Ada Juara)</option>
-        <option value="uncompleted">Belum Selesai</option>
       </select>
 
       <!-- Clear Filter Button (if filtered) -->
@@ -294,12 +235,8 @@
           type="button"
           onclick={resetFilters}
           class="h-9 px-3 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-white text-xs font-semibold rounded-xl border border-white/[0.08] transition-colors flex items-center space-x-1 cursor-pointer"
-          title="Reset Filter"
         >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-          <span>Reset</span>
+          <span>Reset filter</span>
         </button>
       {/if}
     </div>
@@ -311,21 +248,21 @@
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
         </svg>
-        <p class="text-xs font-mono tracking-wider uppercase text-zinc-300">Memuat Rekapitulasi Bagan...</p>
+        <p class="text-sm text-zinc-300" role="status">Memuat daftar juara…</p>
       </div>
     {:else if errorMessage}
       <div class="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-6 text-center text-rose-300 my-auto max-w-lg mx-auto">
         <svg class="w-10 h-10 mx-auto text-rose-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
         </svg>
-        <h3 class="text-sm font-bold text-white mb-1">Terjadi Kesalahan</h3>
+        <h3 class="text-sm font-bold text-white mb-1">Daftar juara gagal dimuat</h3>
         <p class="text-xs text-rose-300/90">{errorMessage}</p>
         <button
           type="button"
           onclick={loadSummaryBagan}
           class="mt-4 px-4 py-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-xs font-semibold rounded-xl border border-rose-500/30 transition-colors"
         >
-          Coba Muat Ulang
+          Coba lagi
         </button>
       </div>
     {:else if (summaryData?.total_bagans ?? 0) === 0}
@@ -336,12 +273,9 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
           </svg>
         </div>
-        <h3 class="text-sm font-bold text-white">Bagan Pertandingan Belum Di-generate</h3>
-        <p class="text-xs text-zinc-400 mt-1.5 leading-relaxed">
-          Belum ada bagan pertandingan yang di-drawing untuk event <span class="text-amber-400 font-semibold">{eventName}</span>.
-        </p>
-        <p class="text-[11px] text-zinc-500 mt-1 leading-relaxed">
-          Silakan buka channel <strong class="text-zinc-300"># nomor-tanding</strong> atau <strong class="text-zinc-300"># bagan</strong> untuk melakukan drawing peserta ke dalam bagan pertandingan.
+        <h3 class="text-sm font-bold text-white">Belum ada bagan</h3>
+        <p class="text-sm text-zinc-400 mt-1.5 leading-relaxed">
+          Lakukan drawing dari <strong class="text-zinc-200">Nomor tanding</strong> atau tombol <strong class="text-zinc-200">Drawing</strong> di daftar bagan.
         </p>
       </div>
     {:else if filteredBagans.length === 0}
@@ -350,19 +284,18 @@
         <svg class="w-10 h-10 mx-auto text-zinc-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-        <p class="text-sm font-bold text-white">Tidak Ada Bagan yang Cocok</p>
-        <p class="text-xs text-zinc-500 mt-1">Coba sesuaikan kata kunci pencarian atau ganti filter yang aktif.</p>
+        <p class="text-sm font-bold text-white">Tidak ada bagan yang cocok</p>
         <button
           type="button"
           onclick={resetFilters}
           class="mt-4 px-3.5 py-1.5 bg-white/[0.05] hover:bg-white/[0.1] text-zinc-200 text-xs font-semibold rounded-xl border border-white/[0.1] transition-colors active:scale-95 cursor-pointer"
         >
-          Reset Filter
+          Reset filter
         </button>
       </div>
     {:else}
       <!-- Main Bagan Cards Grid (Screen Mode) -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5 items-start">
         {#each filteredBagans as bagan (bagan.id)}
           {@const div = getDivision(bagan)}
           {@const kata = isKata(bagan)}
@@ -372,52 +305,25 @@
             <div class="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/[0.06] gap-2">
               <div class="flex items-center space-x-2 min-w-0">
                 <!-- Bracket Code Badge e.g. [003] -->
-                <span class="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono font-black text-xs shrink-0 tracking-wider">
-                  [{bagan.kode}]
+                <span class="px-1.5 py-0.5 rounded-md bg-white/[0.06] text-zinc-300 border border-white/[0.1] font-mono font-bold text-xs shrink-0">
+                  {bagan.kode}
                 </span>
 
                 <!-- Category / Bagan Name -->
-                <h3 class="text-xs sm:text-[13px] font-bold text-white uppercase break-words leading-tight tracking-wide" title={bagan.nama_bagan}>
+                <h3 class="text-[13px] font-bold text-white break-words leading-tight" title={bagan.nama_bagan}>
                   {bagan.nama_bagan}
                 </h3>
               </div>
 
-              <!-- Tipe Badges: Kata/Kumite & Division -->
-              <div class="flex items-center space-x-1.5 shrink-0">
-                <!-- Division Badge -->
-                {#if div === "festival"}
-                  <span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[9px] font-bold tracking-wider uppercase">
-                    FESTIVAL
-                  </span>
-                {:else if div === "bob"}
-                  <span class="px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20 text-[9px] font-bold tracking-wider uppercase">
-                    BOB
-                  </span>
-                {/if}
-
-                <!-- Kata / Kumite Badge -->
-                {#if kata}
-                  <span class="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-400 border border-sky-500/20 text-[10px] font-bold tracking-wider uppercase">
-                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    <span>KATA</span>
-                  </span>
-                {:else}
-                  <span class="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px] font-bold tracking-wider uppercase">
-                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z" />
-                    </svg>
-                    <span>KUMITE</span>
-                  </span>
-                {/if}
-              </div>
+              <span class="shrink-0 text-xs text-zinc-500 whitespace-nowrap">
+                {kata ? "Kata" : "Kumite"}{#if div === "festival"} · <span class="text-amber-300/90">Festival</span>{:else if div === "bob"} · <span class="px-1.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30 font-semibold">BOB</span>{/if}
+              </span>
             </div>
 
             <!-- Card Body: Winners List -->
             {#if bagan.winners.length === 0}
-              <div class="py-3 text-center text-xs text-zinc-500 italic bg-white/[0.01] rounded-lg border border-dashed border-white/[0.05]">
-                Pertandingan belum selesai / belum ada data juara
+              <div class="py-3 text-center text-sm text-zinc-500 rounded-lg border border-dashed border-white/[0.08]">
+                Belum ada juara
               </div>
             {:else}
               <div class="space-y-1.5">
@@ -450,7 +356,7 @@
                       {/if}
 
                       <!-- Avatar / Logo Icon -->
-                      <div class="w-6 h-6 rounded bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-[10px] font-bold text-zinc-400 shrink-0 uppercase overflow-hidden">
+                      <div class="w-6 h-6 rounded bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-[11px] font-bold text-zinc-400 shrink-0 uppercase overflow-hidden" aria-hidden="true">
                         {#if winner.logo && logoMap[winner.logo]}
                           <img src={logoMap[winner.logo]} alt="" class="w-full h-full object-contain" />
                         {:else}
@@ -460,12 +366,12 @@
 
                       <!-- Athlete Name -->
                       <div class="min-w-0">
-                        <span class="text-xs font-bold text-white uppercase tracking-tight truncate block" title={winner.nama_atlet}>
+                        <span class="text-[13px] font-semibold text-white truncate block select-text" title={winner.nama_atlet}>
                           {winner.nama_atlet}
                         </span>
                         {#if winner.is_uncounted}
-                          <span class="text-[9px] text-amber-400/90 font-mono font-medium block">
-                            (Tanpa Lawan)
+                          <span class="text-[11px] text-amber-300/90 block">
+                            Tanpa lawan
                           </span>
                         {/if}
                       </div>
@@ -473,11 +379,8 @@
 
                     <!-- Right: Affiliation (STRICT: Perguruan first, then Kontingen) -->
                     <div class="shrink-0 text-right min-w-[140px] max-w-[220px]">
-                      <span class="text-[11px] font-mono text-zinc-300 truncate block tracking-tight" title="{winner.perguruan_nama} • {winner.utusan_nama}">
-                        <span class="text-white font-bold">{winner.perguruan_nama}</span>
-                        <span class="text-zinc-500 mx-1">•</span>
-                        <span class="text-zinc-200 font-bold">{winner.utusan_nama}</span>
-                      </span>
+                      <span class="text-xs text-zinc-200 truncate block select-text" title="{winner.utusan_nama} · {winner.perguruan_nama}">{winner.utusan_nama || "—"}</span>
+                      <span class="text-[11px] text-zinc-500 truncate block select-text">{winner.perguruan_nama || ""}</span>
                     </div>
                   </div>
                 {/each}

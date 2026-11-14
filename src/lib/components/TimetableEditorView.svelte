@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cellDisplayName, missingSplitParts, splitPartShare, SPLIT_PART_LABEL, MIN_SPLIT_ENTRIES } from "$lib/timetable_split";
   import { onMount } from "svelte";
+  import { registerUnsavedGuard } from "$lib/unsavedGuard.svelte";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import { invoke } from "$lib/api_client";
   import { printWithOrientation } from "$lib/print_helper";
@@ -60,7 +61,7 @@
   let isSaving = $state(false);
   let isDirty = $state(false);
   /** Open header dropdown (Cetak, Atur Jadwal, + Sesi). */
-  let openMenu = $state<"cetak" | "atur" | "sesi" | null>(null);
+  let openMenu = $state<"cetak" | "atur" | "sesi" | `tatami-${number}` | null>(null);
 
   // --- Confirmation Modal State (Explicit Bulletproof Confirmation) ---
   let showConfirmModal = $state(false);
@@ -1314,12 +1315,34 @@
     node.focus();
   }
 
+  // --- Place mode: pick a category in the pool, then click an empty cell ---
+  let placeSource = $state<TimetableCategoryOption | null>(null);
+
+  function startPlace(cat: TimetableCategoryOption) {
+    moveSource = null;
+    placeSource = placeSource?.id === cat.id ? null : cat;
+  }
+
+  function cancelPlace() {
+    placeSource = null;
+  }
+
+  function dropPlaceOn(rowIdx: number, tatamiId: number) {
+    const cat = placeSource;
+    placeSource = null;
+    if (!cat) return;
+    placeCategory(cat, rowIdx, tatamiId);
+    const tNum = tatamis.find((t) => t.id === tatamiId)?.tatami_number ?? "";
+    notify(`${cat.nama} ditempatkan di Tatami ${tNum}, sesi #${rowIdx + 1}.`);
+  }
+
   // --- Move / swap mode ---
   let moveSource = $state<{ rowIdx: number; tatamiId: number; name: string } | null>(null);
 
   function startMove(rowIdx: number, tatamiId: number) {
     const cell = activeDay?.rows[rowIdx]?.cells.find((c) => c.tatami_id === tatamiId);
     if (!cellHasContent(cell)) return;
+    placeSource = null;
     moveSource = { rowIdx, tatamiId, name: cell!.nomor_tanding_nama || cell!.custom_text || "Kategori" };
   }
 
@@ -1363,6 +1386,9 @@
       } else if (moveSource) {
         cancelMove();
         e.preventDefault();
+      } else if (placeSource) {
+        cancelPlace();
+        e.preventDefault();
       }
       return;
     }
@@ -1370,6 +1396,25 @@
       e.preventDefault();
       if (isDirty && !isSaving) handleSaveTimetable();
     }
+  }
+
+  /** Opens the first session with an athlete clash (switching day if needed). */
+  function showFirstConflict() {
+    for (let d = 0; d < days.length; d++) {
+      const idx = (activeDayIndex + d) % days.length;
+      const row = days[idx]?.rows.find((r) => r.row_type === "slot" && r.conflicts.length > 0);
+      if (row) {
+        activeDayIndex = idx;
+        activeConflictRow = row;
+        conflictModalOpen = true;
+        return;
+      }
+    }
+  }
+
+  function showUnscheduled() {
+    isSidebarOpen = true;
+    poolGroupFilter = "UNASSIGNED";
   }
 
   function clearCell(rowIdx: number, tatamiId: number) {
@@ -1451,8 +1496,8 @@
   }
 
   // --- Save Timetable Transaction ---
-  async function handleSaveTimetable() {
-    if (!eventId) return;
+  async function handleSaveTimetable(): Promise<boolean> {
+    if (!eventId) return false;
     isSaving = true;
     try {
       const daysPayload: SaveTimetableDayInput[] = days.map((d) => {
@@ -1485,11 +1530,13 @@
       });
 
       await invoke("save_timetable_data", { eventId, payload: { days: daysPayload } });
-      notify("Jadwal pertandingan berhasil disimpan!");
+      notify("Jadwal tersimpan.");
       await loadTimetable();
+      return true;
     } catch (err: any) {
       console.error("Gagal menyimpan jadwal:", err);
       notify(`Gagal menyimpan jadwal: ${err}`);
+      return false;
     } finally {
       isSaving = false;
     }
@@ -1541,6 +1588,15 @@
     }
   });
 
+  // Ask before the shell navigates away from unsaved edits.
+  onMount(() =>
+    registerUnsavedGuard({
+      label: "Jadwal pertandingan",
+      isDirty: () => isDirty,
+      save: handleSaveTimetable,
+    })
+  );
+
   onMount(() => {
     loadTimetable();
     const handleBeforePrint = () => {
@@ -1569,11 +1625,11 @@
 
 <div class="h-full flex flex-col p-6 select-none bg-[#14161b] text-zinc-200 overflow-hidden font-sans relative">
   <!-- Top Live Tatamis Strip (Matching Ambrilindo Local Live Banner) -->
-  {#if summary.tatamis_live && summary.tatamis_live.length > 0}
+  {#if summary.tatamis_live && summary.tatamis_live.some((t) => t.is_running)}
     <div class="mb-3 px-3.5 py-2 bg-[#181a20] border border-white/[0.08] rounded-xl flex items-center justify-between shrink-0 overflow-x-auto gap-3 scrollbar-none">
       <div class="flex items-center space-x-2 shrink-0">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-        <span class="text-[10px] font-mono font-bold uppercase tracking-wider text-zinc-400">Live Tatami:</span>
+        <span class="w-2 h-2 rounded-full bg-emerald-400" aria-hidden="true"></span>
+        <span class="text-xs font-semibold text-zinc-400">Live</span>
       </div>
 
       <div class="flex items-center space-x-4 overflow-x-auto text-xs scrollbar-none">
@@ -1582,9 +1638,9 @@
             <span class="font-bold">Tatami {tLive.tatami_number}:</span>
             {#if tLive.is_running}
               <span class="font-semibold text-white">{tLive.category_name}</span>
-              <span class="text-[10px] font-mono text-zinc-400">({tLive.atlet1_name || 'Aka'} vs {tLive.atlet2_name || 'Ao'})</span>
+              <span class="text-[11px] text-zinc-400">({tLive.atlet1_name || 'Aka'} vs {tLive.atlet2_name || 'Ao'})</span>
             {:else}
-              <span class="text-[11px] font-mono opacity-60">Standby</span>
+              <span class="text-[11px] text-zinc-500">Siap</span>
             {/if}
           </div>
         {/each}
@@ -1599,11 +1655,12 @@
         Jadwal Pertandingan
       </h2>
       <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] whitespace-nowrap">
-        {days.length} HARI • {totalSlotsCount} SESI
+        {days.length} hari · {totalSlotsCount} sesi
       </span>
       {#if isDirty}
-        <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">
-          BELUM DISIMPAN
+        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/35 whitespace-nowrap" role="status">
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>
+          Belum disimpan
         </span>
       {/if}
     </div>
@@ -1746,15 +1803,37 @@
       Pertandingan <strong class="font-mono tabular-nums text-white">{summary.finished_matches}</strong><span class="font-mono tabular-nums text-zinc-500">/{summary.total_matches}</span>
       <span class="ml-1 font-mono tabular-nums text-emerald-400">{summary.overall_pct}%</span>
     </span>
-    <span class="text-zinc-400">
-      Belum terjadwal
-      <strong class="font-mono tabular-nums {unscheduledTournamentCount > 0 ? 'text-amber-400' : 'text-emerald-400'}">{unscheduledTournamentCount}</strong>
-    </span>
-    <span class="{summary.total_conflicts > 0 ? 'text-rose-400' : 'text-zinc-400'}">
-      Bentrok atlet <strong class="font-mono tabular-nums {summary.total_conflicts > 0 ? 'text-rose-400' : 'text-white'}">{summary.total_conflicts}</strong>
-    </span>
+    {#if unscheduledTournamentCount > 0}
+      <button
+        type="button"
+        onclick={showUnscheduled}
+        class="inline-flex items-center gap-1.5 h-7 px-2 -mx-1 rounded-lg text-amber-300 hover:bg-amber-500/10 transition cursor-pointer"
+        title="Tampilkan kategori yang belum terjadwal"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
+        Belum terjadwal <strong class="font-mono tabular-nums">{unscheduledTournamentCount}</strong>
+      </button>
+    {:else}
+      <span class="inline-flex items-center gap-1.5 text-emerald-400">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+        Semua terjadwal
+      </span>
+    {/if}
+    {#if summary.total_conflicts > 0}
+      <button
+        type="button"
+        onclick={showFirstConflict}
+        class="inline-flex items-center gap-1.5 h-7 px-2 -mx-1 rounded-lg text-rose-300 hover:bg-rose-500/10 transition cursor-pointer"
+        title="Lihat sesi yang bentrok"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
+        Bentrok atlet <strong class="font-mono tabular-nums">{summary.total_conflicts}</strong>
+      </button>
+    {:else}
+      <span class="text-zinc-400">Bentrok atlet <strong class="font-mono tabular-nums text-white">0</strong></span>
+    {/if}
     <span class="ml-auto text-[11px] text-zinc-500">
-      Klik sel kosong untuk mengisi • <span class="font-mono">Esc</span> batal • <span class="font-mono">Ctrl+S</span> simpan
+      <span class="font-mono">Esc</span> batal · <span class="font-mono">Ctrl+S</span> simpan
     </span>
     {/if}
   </div>
@@ -1763,24 +1842,24 @@
   <div class="flex-1 flex min-h-0 gap-3 overflow-hidden">
     <!-- 1. Left Category Pool Sidebar (Collapsible) -->
     {#if isSidebarOpen}
-      <aside class="w-80 bg-[#181a20] border border-white/[0.08] rounded-2xl flex flex-col shrink-0 p-3 overflow-hidden shadow-lg">
+      <aside class="w-72 bg-[#181a20] border border-white/[0.08] rounded-2xl flex flex-col shrink-0 p-3 overflow-hidden shadow-lg">
         <div class="flex items-center justify-between pb-2 border-b border-white/[0.06] shrink-0">
           <div>
-            <h4 class="text-xs font-black uppercase text-white tracking-wide">Pool Kategori ({categories.length})</h4>
+            <h4 class="text-sm font-bold text-white">Kategori <span class="text-zinc-500 font-normal tabular-nums">({categories.length})</span></h4>
             {#if isLoading}
-              <span class="text-[10px] font-mono text-zinc-500">Memuat…</span>
+              <span class="text-xs text-zinc-500">Memuat…</span>
             {:else}
-              <span class="text-[10px] font-mono {unscheduledTournamentCount === 0 ? 'text-emerald-400' : 'text-amber-400'}">
-                {unscheduledTournamentCount === 0 ? 'Semua Kategori Terjadwal' : `${unscheduledTournamentCount} Kategori Belum Terjadwal`}
+              <span class="text-xs {unscheduledTournamentCount === 0 ? 'text-emerald-400' : 'text-amber-300'}">
+                {unscheduledTournamentCount === 0 ? 'Semua terjadwal' : `${unscheduledTournamentCount} belum terjadwal`}
               </span>
             {/if}
           </div>
           <button
             onclick={() => (isSidebarOpen = false)}
             class="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-white/[0.06] transition flex items-center space-x-1"
-            title="Tutup Pool Kategori"
+            title="Sembunyikan daftar kategori"
+            aria-label="Sembunyikan daftar kategori"
           >
-            <span class="text-[10px] font-mono">Tutup</span>
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
             </svg>
@@ -1792,13 +1871,15 @@
           <input
             type="text"
             bind:value={poolSearch}
-            placeholder="Cari kategori..."
-            class="w-full bg-[#14161b] text-xs text-white px-2.5 py-1.5 rounded-lg border border-white/[0.08] focus:border-white/30 outline-none"
+            placeholder="Cari kategori"
+            aria-label="Cari kategori"
+            class="w-full h-8 bg-[#14161b] text-sm text-white px-2.5 rounded-lg border border-white/[0.08] focus:border-white/40 outline-none select-text"
           />
 
           <select
             bind:value={poolGroupFilter}
-            class="w-full bg-[#14161b] text-xs text-zinc-300 px-2 py-1.5 rounded-lg border border-white/[0.08] focus:border-white/30 outline-none"
+            aria-label="Filter kategori"
+            class="w-full h-8 bg-[#14161b] text-sm text-zinc-300 px-2 rounded-lg border border-white/[0.08] focus:border-white/40 outline-none"
           >
             <option value="ALL">Semua Kategori ({categories.length})</option>
             <option value="UNASSIGNED">Belum Terjadwal ({unscheduledTournamentCount})</option>
@@ -1815,50 +1896,62 @@
 
         <!-- Chips Pool List (Ultra-Compact) -->
         <div class="flex-1 overflow-y-auto space-y-1.5 pt-2 pr-1 scrollbar-thin">
-          {#each poolSortedCategories as cat}
+          {#each poolSortedCategories as cat (cat.id)}
             {@const isAssigned = assignedCategoryIds.has(cat.id)}
+            {@const missing = missingPartsByCat.get(cat.id)}
+            {@const isPicked = placeSource?.id === cat.id}
             <div
-              class="p-2 rounded-lg border transition {isAssigned && !missingPartsByCat.has(cat.id) ? 'bg-[#14161b]/40 border-white/[0.04] opacity-50' : 'bg-[#14161b] border-white/[0.08] hover:border-white/20'}"
+              class="rounded-xl border transition {isPicked
+                ? 'bg-sky-500/10 border-sky-400 ring-2 ring-sky-400/30'
+                : isAssigned && !missing
+                  ? 'bg-[#14161b]/40 border-white/[0.04]'
+                  : 'bg-[#14161b] border-white/[0.08] hover:border-white/25'}"
             >
-              <!-- Row 1: Discipline Badge, Title & Tatami Assign Buttons -->
-              <div class="flex items-center justify-between gap-1.5">
-                <div class="flex items-center space-x-1.5 min-w-0">
-                  <span class="px-1 py-0.2 rounded text-[8.5px] font-mono font-bold uppercase shrink-0 {cat.discipline === 'kata' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'}">
-                    {cat.discipline}
-                  </span>
-                  <span class="text-[11px] font-bold text-white leading-snug line-clamp-2" title={cat.nama}>
-                    {cat.nama}
-                  </span>
-                </div>
+              <button
+                type="button"
+                onclick={() => startPlace(cat)}
+                disabled={isAssigned && !missing}
+                aria-pressed={isPicked}
+                class="w-full text-left px-2.5 pt-2 pb-1.5 rounded-xl cursor-pointer disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                title={isAssigned && !missing ? "Sudah terjadwal" : "Pilih, lalu klik sel kosong di jadwal"}
+              >
+                <span class="block text-[13px] font-semibold leading-snug line-clamp-2 {isAssigned && !missing ? 'text-zinc-500' : 'text-white'}" title={cat.nama}>{cat.nama}</span>
+                <span class="mt-0.5 flex items-center gap-1.5 text-[11px] text-zinc-500">
+                  <span class={cat.discipline === "kata" ? "text-purple-300/90" : "text-sky-300/90"}>{cat.discipline === "kata" ? "Kata" : "Kumite"}</span>
+                  <span aria-hidden="true">·</span>
+                  <span class="truncate">{cat.age_group}</span>
+                  <span aria-hidden="true">·</span>
+                  <span class="shrink-0 tabular-nums">{cat.atlet_count} atlet</span>
+                </span>
+              </button>
 
-                {#if isAssigned && missingPartsByCat.has(cat.id)}
-                  <span class="text-[8.5px] font-mono font-bold text-amber-300 shrink-0">{(missingPartsByCat.get(cat.id) || []).map((p) => SPLIT_PART_LABEL[p]).join(", ")} belum</span>
+              <div class="px-2.5 pb-2 flex items-center gap-1 flex-wrap">
+                {#if isAssigned && missing}
+                  <span class="text-[11px] font-semibold text-amber-300">{missing.map((p) => SPLIT_PART_LABEL[p]).join(", ")} belum terjadwal</span>
                 {:else if isAssigned}
-                  <span class="text-[8.5px] font-mono font-bold text-emerald-400 shrink-0">✓ Terjadwal</span>
+                  <span class="inline-flex items-center gap-1 text-[11px] text-emerald-400/80">
+                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+                    Terjadwal
+                  </span>
                 {:else}
-                  <div class="flex items-center space-x-0.5 shrink-0">
-                    {#each tatamis as t}
-                      <button
-                        onclick={() => quickAssignFromPool(cat, t.id)}
-                        class="px-1.5 py-0.5 rounded bg-white/[0.06] hover:bg-white text-zinc-300 hover:text-black text-[8.5px] font-bold font-mono transition"
-                        title="Tempatkan di Tatami {t.tatami_number}"
-                      >
-                        +T{t.tatami_number}
-                      </button>
-                    {/each}
-                  </div>
+                  <span class="text-[11px] text-zinc-500 mr-0.5">Taruh cepat</span>
+                  {#each tatamis as t (t.id)}
+                    <button
+                      type="button"
+                      onclick={() => quickAssignFromPool(cat, t.id)}
+                      class="h-7 min-w-9 px-2 rounded-lg bg-white/[0.06] hover:bg-white hover:text-black text-zinc-200 text-[11px] font-bold font-mono transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                      title={`Taruh di sesi kosong pertama Tatami ${t.tatami_number}`}
+                      aria-label={`Taruh ${cat.nama} di Tatami ${t.tatami_number}`}
+                    >
+                      T{t.tatami_number}
+                    </button>
+                  {/each}
                 {/if}
-              </div>
-
-              <!-- Row 2: Age group & match counts -->
-              <div class="flex items-center justify-between mt-1 pt-1 border-t border-white/[0.03] text-[9.5px] font-mono text-zinc-400">
-                <span class="truncate">{cat.age_group}</span>
-                <span class="shrink-0">{cat.atlet_count} Atlet • {cat.matches} Match</span>
               </div>
             </div>
           {/each}
           {#if poolFilteredCategories.length === 0}
-            <div class="py-10 text-center text-zinc-500 text-xs">
+            <div class="py-10 text-center text-zinc-500 text-sm">
               Tidak ada kategori
             </div>
           {/if}
@@ -1869,14 +1962,15 @@
       <button
         onclick={() => (isSidebarOpen = true)}
         class="h-auto my-auto py-3 px-1.5 bg-[#181a20] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/[0.08] rounded-r-xl flex flex-col items-center justify-center space-y-2 shrink-0 shadow-lg group transition cursor-pointer"
-        title="Buka Pool Kategori"
+        title="Tampilkan daftar kategori"
+        aria-label="Tampilkan daftar kategori"
       >
         <svg class="w-3.5 h-3.5 text-zinc-400 group-hover:text-white transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
         </svg>
-        <span class="text-[10px] font-mono font-bold uppercase tracking-wider [writing-mode:vertical-rl] rotate-180">Pool Kategori</span>
+        <span class="text-[11px] font-semibold [writing-mode:vertical-rl] rotate-180">Kategori</span>
         {#if unscheduledTournamentCount > 0}
-          <span class="px-1 py-0.5 rounded text-[8.5px] font-mono font-bold bg-amber-500/20 text-amber-300">
+          <span class="px-1 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300">
             {unscheduledTournamentCount}
           </span>
         {/if}
@@ -1949,6 +2043,21 @@
         </div>
       </div>
 
+      {#if placeSource}
+        <div class="mb-2 px-3.5 py-2 rounded-xl border border-sky-500/30 bg-sky-500/10 flex items-center justify-between gap-3 shrink-0" role="status">
+          <span class="text-sm text-sky-200 truncate">
+            Menempatkan <strong class="text-white">{placeSource.nama}</strong>. Klik sel kosong di jadwal.
+          </span>
+          <button
+            type="button"
+            onclick={cancelPlace}
+            class="shrink-0 px-2.5 py-1 rounded-lg text-xs font-semibold text-sky-200 border border-sky-500/30 hover:bg-sky-500/20 transition"
+          >
+            Batal <span class="font-mono text-[11px] opacity-70">Esc</span>
+          </button>
+        </div>
+      {/if}
+
       {#if moveSource}
         <div class="mb-2 px-3.5 py-2 rounded-xl border border-sky-500/30 bg-sky-500/10 flex items-center justify-between gap-3 shrink-0" role="status">
           <span class="text-xs text-sky-200 truncate">
@@ -1973,22 +2082,22 @@
           </div>
         {:else if !activeDay || activeDay.rows.length === 0}
           <div class="flex-1 flex flex-col items-center justify-center py-20 text-zinc-500">
-            <span class="text-sm font-semibold text-zinc-400">Belum Ada Slot Pertandingan di Hari Ini</span>
+            <span class="text-sm font-semibold text-zinc-300">Belum ada sesi di hari ini</span>
             <div class="flex items-center space-x-2 mt-3">
               <button
                 onclick={openAutoScheduleModal}
-                class="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-black font-black text-xs rounded-xl shadow-md transition flex items-center space-x-1.5"
+                class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition flex items-center gap-1.5"
               >
-                <svg class="w-3.5 h-3.5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                <svg class="w-4 h-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
-                <span>Auto-Jadwal Cerdas</span>
+                <span>Auto-jadwal</span>
               </button>
               <button
                 onclick={addSlotRow}
-                class="px-3.5 py-2 bg-white text-black font-bold text-xs rounded-xl shadow-md transition hover:bg-zinc-200"
+                class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] hover:bg-white/[0.08] font-semibold text-xs rounded-xl transition"
               >
-                + Tambah Sesi Manual
+                Tambah sesi manual
               </button>
             </div>
           </div>
@@ -2004,46 +2113,54 @@
                       <div>
                         <span class="text-white font-bold">Tatami {tatami.tatami_number}</span>
                         {#if tMeta}
-                          <span class="block text-[10px] font-mono text-zinc-400 font-normal">
-                            {tMeta.totalMatches} Partai • ~{tMeta.finishTime}
+                          <span class="block text-[11px] font-mono text-zinc-400 font-normal normal-case tracking-normal">
+                            <span title="Perkiraan selesai">{tMeta.totalMatches} partai · ~{tMeta.finishTime}</span>
                           </span>
                         {/if}
                       </div>
 
-                      <!-- Per Tatami Actions (Buku Tatami, Delete Tatami) -->
-                      <div class="flex items-center space-x-1">
+                      <!-- Per-tatami menu (print booklet, remove) -->
+                      <div class="relative">
                         <button
-                          onclick={() => openTatamiBooklet(tatami)}
-                          disabled={tatamiBookletLoading && printSelectedTatami?.id === tatami.id}
-                          class="px-2 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[9px] font-bold border border-amber-500/20 flex items-center space-x-1 transition disabled:opacity-50"
-                          title="Cetak Buku Tatami LO (Sampul + Roster + Bagan Lengkap)"
+                          type="button"
+                          onclick={() => (openMenu = openMenu === `tatami-${tatami.id}` ? null : `tatami-${tatami.id}`)}
+                          aria-haspopup="menu"
+                          aria-expanded={openMenu === `tatami-${tatami.id}`}
+                          aria-label={`Menu Tatami ${tatami.tatami_number}`}
+                          class="w-7 h-7 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] flex items-center justify-center transition cursor-pointer {openMenu === `tatami-${tatami.id}` ? 'relative z-40 text-white bg-white/[0.08]' : ''}"
                         >
                           {#if tatamiBookletLoading && printSelectedTatami?.id === tatami.id}
-                            <span class="w-2.5 h-2.5 border border-amber-400 border-t-transparent rounded-full animate-spin"></span>
+                            <span class="w-3.5 h-3.5 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin"></span>
                           {:else}
-                            <svg class="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                            </svg>
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="12" cy="19" r="1.8" /></svg>
                           {/if}
-                          <span>Buku</span>
                         </button>
-
-                        {#if tatamis.length > 1}
-                          <button
-                            onclick={() => promptRemoveTatami(tatami.id)}
-                            class="text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition cursor-pointer"
-                            title="Hapus Tatami ini"
-                          >
-                            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
+                        {#if openMenu === `tatami-${tatami.id}`}
+                          <div class="absolute right-0 mt-1 w-52 bg-[#181a20] border border-white/10 rounded-xl shadow-2xl py-1.5 z-40 normal-case tracking-normal font-sans" role="menu">
+                            <button
+                              role="menuitem"
+                              class="w-full px-3.5 py-2 text-left text-sm font-semibold text-zinc-200 hover:text-white hover:bg-white/[0.06] transition disabled:opacity-40"
+                              disabled={tatamiBookletLoading}
+                              onclick={() => { openMenu = null; openTatamiBooklet(tatami); }}
+                            >
+                              Cetak buku tatami
+                            </button>
+                            {#if tatamis.length > 1}
+                              <button
+                                role="menuitem"
+                                class="w-full px-3.5 py-2 text-left text-sm font-semibold text-rose-300 hover:bg-rose-500/10 transition"
+                                onclick={() => { openMenu = null; promptRemoveTatami(tatami.id); }}
+                              >
+                                Hapus tatami…
+                              </button>
+                            {/if}
+                          </div>
                         {/if}
                       </div>
                     </div>
                   </th>
                 {/each}
-                <th class="py-3 px-2 w-16 text-center font-semibold border-l border-white/[0.06]">Aksi</th>
+                <th class="py-3 px-2 w-20 text-center font-semibold border-l border-white/[0.06]"><span class="sr-only">Aksi sesi</span></th>
               </tr>
             </thead>
             <tbody class="divide-y divide-white/[0.04] text-xs">
@@ -2062,7 +2179,7 @@
                     </td>
                     <td colspan={tatamis.length} class="py-3 px-4 align-middle border-l border-white/[0.06]">
                       <div class="flex items-center space-x-2">
-                        <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">BREAK</span>
+                        <span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-amber-500/20 text-amber-300">Jeda</span>
                         <input
                           type="text"
                           bind:value={row.label_text}
@@ -2073,14 +2190,14 @@
                       </div>
                     </td>
                     <td class="py-3 px-3 text-center align-middle border-l border-white/[0.06]">
-                      <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
-                        <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
+                      <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-70 group-hover:opacity-100 focus-within:opacity-100 transition">
+                        <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="w-7 h-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-20" title="Geser ke atas" aria-label="Geser sesi ke atas">
                           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
                         </button>
-                        <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Bawah">
+                        <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="w-7 h-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-20" title="Geser ke bawah" aria-label="Geser sesi ke bawah">
                           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                         </button>
-                        <button onclick={() => deleteRow(rIdx)} class="p-1 text-zinc-500 hover:text-rose-400" title="Hapus Baris">
+                        <button onclick={() => deleteRow(rIdx)} class="w-7 h-7 rounded-md flex items-center justify-center text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10" title="Hapus sesi" aria-label="Hapus sesi">
                           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                       </div>
@@ -2092,8 +2209,8 @@
                     <!-- Time Column -->
                     <td class="py-3 px-4 align-top w-40 min-w-36">
                       <div class="space-y-1">
-                        <span class="text-xs font-mono font-bold text-zinc-300 block px-0.5">
-                          Sesi <span class="tabular-nums">#{rIdx + 1}</span>
+                        <span class="text-sm font-bold text-zinc-200 block px-0.5">
+                          Sesi <span class="font-mono tabular-nums">{rIdx + 1}</span>
                         </span>
                         <input
                           type="text"
@@ -2101,7 +2218,7 @@
                           onchange={markDirty}
                           placeholder="Catatan (opsional)"
                           title="Label bebas untuk sesi ini. Jam mulai tiap kategori dihitung otomatis."
-                          class="w-full bg-[#14161b] text-zinc-200 font-mono text-[11px] px-2 py-1 rounded-lg border border-white/[0.08] focus:border-white/30 outline-none placeholder:text-zinc-600"
+                          class="w-full bg-[#14161b] text-zinc-200 text-xs px-2 py-1 rounded-lg border border-white/[0.08] focus:border-white/40 outline-none placeholder:text-zinc-600 select-text"
                         />
                         {#if row.conflicts.length > 0}
                           <button
@@ -2109,12 +2226,12 @@
                               activeConflictRow = row;
                               conflictModalOpen = true;
                             }}
-                            class="w-full mt-1 px-2 py-1 bg-rose-500/10 border border-rose-500/40 rounded-md text-[10px] font-bold text-rose-300 text-left flex items-center space-x-1 hover:bg-rose-500/20 transition cursor-pointer"
+                            class="w-full mt-1 px-2 py-1 bg-rose-500/10 border border-rose-500/40 rounded-md text-xs font-semibold text-rose-300 text-left flex items-center space-x-1 hover:bg-rose-500/20 transition cursor-pointer"
                           >
                             <svg class="w-3 h-3 text-rose-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                             </svg>
-                            <span class="truncate">{row.conflicts.length} Bentrok</span>
+                            <span class="truncate">{row.conflicts.length} bentrok</span>
                           </button>
                         {/if}
                       </div>
@@ -2126,6 +2243,18 @@
                       {@const time = cellTimes[`${rIdx}:${tatami.id}`]}
                       {@const isMoveSource = moveSource?.rowIdx === rIdx && moveSource?.tatamiId === tatami.id}
                       <td class="py-2.5 px-3 align-top border-l border-white/[0.06] relative">
+                        {#if placeSource && !cellHasContent(cell)}
+                          <button
+                            type="button"
+                            onclick={() => dropPlaceOn(rIdx, tatami.id)}
+                            class="group/target absolute inset-1.5 z-[5] rounded-xl border-2 border-dashed border-sky-400/40 bg-[#14161b]/60 hover:bg-sky-500/15 hover:border-sky-400 transition flex items-center justify-center"
+                            aria-label="Tempatkan {placeSource.nama} di Tatami {tatami.tatami_number} sesi {rIdx + 1}"
+                          >
+                            <span class="px-2 py-0.5 rounded-full bg-sky-500/20 group-hover/target:bg-sky-400 text-sky-200 group-hover/target:text-black text-[11px] font-bold transition">
+                              Taruh di sini
+                            </span>
+                          </button>
+                        {/if}
                         {#if moveSource && !isMoveSource}
                           <button
                             type="button"
@@ -2133,7 +2262,7 @@
                             class="group/target absolute inset-1.5 z-[5] rounded-xl border-2 border-dashed border-sky-400/40 bg-[#14161b]/60 hover:bg-sky-500/15 hover:border-sky-400 transition flex items-center justify-center"
                             aria-label="{cellHasContent(cell) ? 'Tukar dengan' : 'Pindahkan ke'} Tatami {tatami.tatami_number} sesi {rIdx + 1}"
                           >
-                            <span class="px-2 py-0.5 rounded-full bg-sky-500/20 group-hover/target:bg-sky-400 text-sky-200 group-hover/target:text-black text-[10px] font-bold transition">
+                            <span class="px-2 py-0.5 rounded-full bg-sky-500/20 group-hover/target:bg-sky-400 text-sky-200 group-hover/target:text-black text-[11px] font-bold transition">
                               {cellHasContent(cell) ? "Tukar" : "Pindah ke sini"}
                             </span>
                           </button>
@@ -2143,19 +2272,16 @@
                           <div class="bg-[#14161b] border rounded-xl p-2.5 relative group/cell transition shadow-sm {isMoveSource ? 'border-sky-400 ring-2 ring-sky-400/30' : 'border-white/[0.1] hover:border-white/20'}">
                             <div class="flex items-center justify-between gap-1.5 mb-1">
                               <div class="flex items-center gap-1.5 min-w-0">
-                                <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold uppercase shrink-0 {cell.discipline === 'kata' ? 'bg-purple-500/20 text-purple-300' : 'bg-sky-500/20 text-sky-300'}">
-                                  {cell.discipline}
+                                <span class="px-1.5 py-0.5 rounded text-[11px] font-semibold shrink-0 {cell.discipline === 'kata' ? 'bg-purple-500/15 text-purple-300' : 'bg-sky-500/15 text-sky-300'}">
+                                  {cell.discipline === "kata" ? "Kata" : "Kumite"}
                                 </span>
-                                {#if time}
-                                  <span class="text-[10px] font-mono tabular-nums text-zinc-300 truncate" title="Perkiraan {cell.est_duration_minutes} menit">{time.start}–{time.end}</span>
-                                {/if}
                               </div>
 
-                            <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
+                            <div class="flex items-center gap-0.5 opacity-40 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
                               {#if cell.part}
                                 <button
                                   onclick={() => mergeSplit(rIdx, tatami.id)}
-                                  class="text-[10px] text-zinc-500 hover:text-amber-300 p-0.5 rounded hover:bg-amber-500/10 transition"
+                                  class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-amber-300 rounded-md hover:bg-amber-500/10 transition"
                                   title="Gabung kembali jadi satu tatami"
                                   aria-label="Gabung kembali pool atas, pool bawah dan final ke tatami ini"
                                 >
@@ -2166,7 +2292,7 @@
                               {:else if !cell.is_festival && tatamis.length > 1 && cell.atlet_count >= MIN_SPLIT_ENTRIES}
                                 <button
                                   onclick={() => openSplit(rIdx, tatami.id)}
-                                  class="text-[10px] text-zinc-500 hover:text-amber-300 p-0.5 rounded hover:bg-amber-500/10 transition"
+                                  class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-amber-300 rounded-md hover:bg-amber-500/10 transition"
                                   title="Bagi ke 2 tatami (pool atas / pool bawah)"
                                   aria-label="Bagi kategori ini ke 2 tatami"
                                 >
@@ -2177,7 +2303,7 @@
                               {/if}
                               <button
                                 onclick={() => startMove(rIdx, tatami.id)}
-                                class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
+                                class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-sky-300 rounded-md hover:bg-sky-500/10 transition"
                                 title="Pindah / tukar ke sel lain"
                                 aria-label="Pindah atau tukar kategori ini"
                               >
@@ -2187,8 +2313,8 @@
                               </button>
                               <button
                                 onclick={() => clearCell(rIdx, tatami.id)}
-                                class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
-                                title="Hapus Dari Tatami"
+                                class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-rose-300 rounded-md hover:bg-rose-500/10 transition"
+                                title="Keluarkan dari jadwal"
                                 aria-label="Hapus kategori dari tatami"
                               >
                                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2202,23 +2328,26 @@
                               {cell.nomor_tanding_nama || `Kategori #${cell.nomor_tanding_id}`}
                             </div>
                             {#if cell.part}
-                              <span class="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300">{SPLIT_PART_LABEL[cell.part]}</span>
+                              <span class="inline-block mt-1 px-1.5 py-0.5 rounded text-[11px] font-semibold bg-amber-500/20 text-amber-300">{SPLIT_PART_LABEL[cell.part]}</span>
+                            {/if}
+                            {#if time}
+                              <div class="mt-1 text-[11px] font-mono tabular-nums text-zinc-300" title="Perkiraan {cell.est_duration_minutes} menit">{time.start}–{time.end}</div>
                             {/if}
 
-                            <div class="flex items-center justify-between mt-2 pt-1.5 border-t border-white/[0.04] text-[10px] font-mono text-zinc-400">
-                              <span class="truncate">{cell.atlet_count} Atlet • {cell.matches} Match</span>
-                              <span class="shrink-0 tabular-nums text-zinc-500">{cell.est_duration_minutes}m</span>
+                            <div class="flex items-center justify-between mt-2 pt-1.5 border-t border-white/[0.04] text-[11px] text-zinc-400">
+                              <span class="truncate">{cell.atlet_count} atlet · {cell.matches} partai</span>
+                              <span class="shrink-0 tabular-nums text-zinc-500 ml-2">{cell.est_duration_minutes}m</span>
                             </div>
 
                             {#if cell.progress_status === 'selesai'}
-                              <div class="mt-1 flex items-center space-x-1 text-[9px] font-mono text-emerald-400">
-                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                                <span>SELESAI</span>
+                              <div class="mt-1 flex items-center gap-1 text-[11px] font-semibold text-emerald-400">
+                                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+                                <span>Selesai</span>
                               </div>
                             {:else if cell.progress_status === 'running'}
-                              <div class="mt-1 flex items-center space-x-1 text-[9px] font-mono text-amber-400 animate-pulse">
-                                <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                                <span>SEDANG MAIN</span>
+                              <div class="mt-1 flex items-center gap-1 text-[11px] font-semibold text-amber-300">
+                                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+                                <span>Sedang main</span>
                               </div>
                             {/if}
                           </div>
@@ -2227,13 +2356,13 @@
                           <!-- Custom Text Card -->
                           <div class="rounded-xl p-2.5 relative group/cell transition {festCard ? 'bg-emerald-500/[0.12] border border-emerald-500/40 hover:border-emerald-400/70' : 'bg-[#14161b] border border-amber-500/20 hover:border-amber-500/40'}">
                             <div class="flex items-center justify-between mb-1">
-                              <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold {festCard ? 'bg-emerald-500/25 text-emerald-200' : 'bg-amber-500/20 text-amber-300'}">
-                                {cell.is_festival ? 'FESTIVAL' : isJedaText(cell.custom_text) ? 'JEDA' : cell.is_break ? 'ISTIRAHAT' : 'CATATAN'}
+                              <span class="px-1.5 py-0.5 rounded text-[11px] font-semibold {festCard ? 'bg-emerald-500/25 text-emerald-200' : 'bg-amber-500/20 text-amber-300'}">
+                                {cell.is_festival ? 'Festival' : isJedaText(cell.custom_text) ? 'Jeda' : cell.is_break ? 'Istirahat' : 'Catatan'}
                               </span>
-                              <div class="flex items-center space-x-1 opacity-0 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
+                              <div class="flex items-center gap-0.5 opacity-40 group-hover/cell:opacity-100 focus-within:opacity-100 transition">
                                 <button
                                   onclick={() => startMove(rIdx, tatami.id)}
-                                  class="text-[10px] text-zinc-500 hover:text-sky-300 p-0.5 rounded hover:bg-sky-500/10 transition"
+                                  class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-sky-300 rounded-md hover:bg-sky-500/10 transition"
                                   title="Pindah / tukar ke sel lain"
                                   aria-label="Pindah atau tukar isi sel ini"
                                 >
@@ -2243,8 +2372,8 @@
                                 </button>
                                 <button
                                   onclick={() => clearCell(rIdx, tatami.id)}
-                                  class="text-[10px] text-zinc-500 hover:text-rose-400 p-0.5 rounded hover:bg-rose-500/10 transition"
-                                  title="Hapus Dari Tatami"
+                                  class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-rose-300 rounded-md hover:bg-rose-500/10 transition"
+                                  title="Keluarkan dari jadwal"
                                   aria-label="Hapus isi sel"
                                 >
                                   <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2255,8 +2384,8 @@
                             </div>
                             {#if festCard}
                               <div class="font-black text-emerald-100 text-sm tracking-wide">FESTIVAL</div>
-                              <div class="mt-1 text-[10px] font-mono text-emerald-300/80">
-                                {customTextAthletes(cell.custom_text)} Atlet • {customTextMatches(cell.custom_text)} Partai • {customTextMinutes(cell.custom_text)}m
+                              <div class="mt-1 text-[11px] text-emerald-300/80">
+                                {customTextAthletes(cell.custom_text)} atlet · {customTextMatches(cell.custom_text)} partai · {customTextMinutes(cell.custom_text)}m
                               </div>
                             {:else}
                               <div class="font-bold text-amber-200 text-xs line-clamp-2">
@@ -2264,7 +2393,7 @@
                               </div>
                             {/if}
                             {#if time}
-                              <div class="mt-1.5 text-[10px] font-mono tabular-nums {festCard ? 'text-emerald-300/70' : 'text-amber-300/70'}">{time.start}–{time.end}</div>
+                              <div class="mt-1.5 text-[11px] font-mono tabular-nums {festCard ? 'text-emerald-300/70' : 'text-amber-300/70'}">{time.start}–{time.end}</div>
                             {/if}
                           </div>
                         {:else}
@@ -2272,7 +2401,8 @@
                           <button
                             type="button"
                             onclick={() => openPicker(rIdx, tatami.id)}
-                            class="w-full h-18 rounded-xl border border-dashed border-white/[0.1] hover:border-white/30 hover:bg-white/[0.03] text-zinc-500 hover:text-zinc-200 transition flex items-center justify-center text-[11px] font-semibold"
+                            class="w-full h-18 rounded-xl border border-dashed border-white/[0.1] hover:border-white/30 hover:bg-white/[0.03] text-zinc-500 hover:text-zinc-200 transition flex items-center justify-center text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                            aria-label="Pilih kategori untuk Tatami {tatami.tatami_number} sesi {rIdx + 1}"
                           >
                             + Pilih kategori
                           </button>
@@ -2282,17 +2412,17 @@
 
                     <!-- Row Actions (Only in Edit Mode) -->
                     <td class="py-3 px-2 text-center align-top border-l border-white/[0.06]">
-                      <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-60 group-hover:opacity-100 transition">
-                        <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Atas">
+                      <div class="grid grid-cols-2 gap-0.5 place-items-center opacity-70 group-hover:opacity-100 focus-within:opacity-100 transition">
+                        <button onclick={() => moveRow(rIdx, "up")} disabled={rIdx === 0} class="w-7 h-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-20" title="Geser ke atas" aria-label="Geser sesi ke atas">
                           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
                         </button>
-                        <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="p-1 text-zinc-400 hover:text-white disabled:opacity-20" title="Geser ke Bawah">
+                        <button onclick={() => moveRow(rIdx, "down")} disabled={rIdx === activeDay.rows.length - 1} class="w-7 h-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/[0.06] disabled:opacity-20" title="Geser ke bawah" aria-label="Geser sesi ke bawah">
                           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                         </button>
-                        <button onclick={() => insertSlotRowAfter(rIdx)} class="p-1 text-zinc-400 hover:text-emerald-300" title="Sisipkan sesi kosong di bawah" aria-label="Sisipkan sesi kosong di bawah">
+                        <button onclick={() => insertSlotRowAfter(rIdx)} class="w-7 h-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-emerald-300 hover:bg-emerald-500/10" title="Sisipkan sesi kosong di bawah" aria-label="Sisipkan sesi kosong di bawah">
                           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/></svg>
                         </button>
-                        <button onclick={() => deleteRow(rIdx)} class="p-1 text-zinc-500 hover:text-rose-400" title="Hapus Baris">
+                        <button onclick={() => deleteRow(rIdx)} class="w-7 h-7 rounded-md flex items-center justify-center text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10" title="Hapus sesi" aria-label="Hapus sesi">
                           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                         </button>
                       </div>
