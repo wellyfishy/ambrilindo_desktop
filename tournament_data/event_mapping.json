@@ -8,5 +8,15 @@
     "hosted_event_id": 26,
     "hosted_event_name": "KEJUARAAN KARATE BUSHIDO I (FESTIVAL CONTINUATION)",
     "target_mode": "production"
+  },
+  "local_16_production": {
+    "hosted_event_id": 28,
+    "hosted_event_name": "EVENT TESTING",
+    "target_mode": "production"
+  },
+  "local_18_production": {
+    "hosted_event_id": 29,
+    "hosted_event_name": "[DUMMY] TES REALTIME 1611 0558",
+    "target_mode": "production"
   }
 }
