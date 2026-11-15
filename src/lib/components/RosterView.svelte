@@ -9,9 +9,12 @@
     eventId: number;
     hostAddress: string;
     onShowToast?: (msg: string) => void;
+    /** Opens the roster already filtered to one contingent / perguruan. */
+    initialUtusanId?: number;
+    initialPerguruanId?: number;
   }
 
-  let { viewType = 'roster', eventId, hostAddress, onShowToast }: Props = $props();
+  let { viewType = 'roster', eventId, hostAddress, onShowToast, initialUtusanId, initialPerguruanId }: Props = $props();
 
   // Data State
   let athletes = $state<EnrichedAtletItem[]>([]);
@@ -34,6 +37,13 @@
   // Pagination State
   let currentPage = $state(1);
   let pageSize = $state(50);
+
+  // Apply a filter handed over by the channel (e.g. "N atlet ›" in Kontingen).
+  $effect.pre(() => {
+    selectedContingentFilter = initialUtusanId != null ? String(initialUtusanId) : "all";
+    selectedPerguruanFilter = initialPerguruanId != null ? String(initialPerguruanId) : "all";
+    currentPage = 1;
+  });
 
   // Modals State
   let athleteModalOpen = $state(false);
@@ -213,6 +223,9 @@
   let festivalCount = $derived(athletes.filter((a) => isFestival(a)).length);
   let seedCount = $derived(athletes.filter((a) => a.is_priority).length);
   let missingNikCount = $derived(athletes.filter((a) => !a.nik || a.nik.trim() === "").length);
+  // Events have no "uses NIK" setting, so infer it: if nobody has a NIK the event
+  // doesn't collect it, and a "Tanpa NIK" card equal to the total would only be noise.
+  let eventUsesNik = $derived(missingNikCount < athletes.length);
 
   // Stat cards double as the status filter (one control instead of cards + pills).
   type StatusKey = 'all' | 'tournament' | 'festival' | 'seed' | 'tanpa_nik';
@@ -221,8 +234,15 @@
     { key: 'tournament', label: 'Prestasi', count: tournamentCount },
     { key: 'festival', label: 'Festival', count: festivalCount },
     { key: 'seed', label: 'Seed', count: seedCount, star: true },
-    { key: 'tanpa_nik', label: 'Tanpa NIK', count: missingNikCount, warn: missingNikCount > 0 },
+    ...(eventUsesNik
+      ? [{ key: 'tanpa_nik' as const, label: 'Tanpa NIK', count: missingNikCount, warn: missingNikCount > 0 }]
+      : []),
   ]);
+
+  // Don't leave the list stuck on a filter whose card just disappeared.
+  $effect(() => {
+    if (!eventUsesNik && selectedStatusFilter === 'tanpa_nik') selectedStatusFilter = 'all';
+  });
 
   let hasActiveFilters = $derived(
     !!searchKeyword.trim() ||
@@ -470,7 +490,7 @@
   </div>
 
   <!-- Status: stat cards that are also the filter -->
-  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2 my-4 shrink-0" role="radiogroup" aria-label="Filter status atlet">
+  <div class="grid grid-cols-2 sm:grid-cols-3 {statusTabs.length === 5 ? 'md:grid-cols-5' : 'md:grid-cols-4'} gap-2 my-4 shrink-0" role="radiogroup" aria-label="Filter status atlet">
     {#each statusTabs as tab (tab.key)}
       {@const selected = selectedStatusFilter === tab.key}
       <button

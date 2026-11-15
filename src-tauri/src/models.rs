@@ -688,6 +688,44 @@ pub struct DrawingSummary {
     pub total_collisions: usize,
 }
 
+/// One athlete of a category, as shown in the manual drawing pool.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ManualDrawingAthlete {
+    pub id: i64,
+    pub nama_atlet: Option<String>,
+    pub is_priority: bool,
+    pub utusan_id: Option<i64>,
+    pub utusan_nama: Option<String>,
+    pub perguruan_id: Option<i64>,
+    pub perguruan_nama: Option<String>,
+}
+
+/// Manual drawing: where the operator put one athlete in round 1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualSlotInput {
+    pub atlet_id: i64,
+    /// Round-1 match, 1..=8.
+    pub match_num: u32,
+    /// 1 = atlet1 (top), 2 = atlet2 (bottom).
+    pub position: u8,
+}
+
+/// One bout of the manual drawing preview (nothing saved yet).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualPreviewMatch {
+    pub round: u32,
+    pub urutan: u32,
+    pub atlet1_id: Option<i64>,
+    pub atlet2_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualBracketPreview {
+    pub matches: Vec<ManualPreviewMatch>,
+    /// Round-1 bouts between athletes of the same kontingen or perguruan.
+    pub collisions: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveMatchInput {
     pub match_id: i64,

@@ -12,6 +12,8 @@ pub mod tatami_claim;
 pub mod test_support;
 #[cfg(test)]
 mod qa_tests;
+#[cfg(test)]
+mod web_e2e;
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -327,6 +329,41 @@ async fn execute_drawing_bagan(
 ) -> Result<DrawingSummary, String> {
     let db = state.db.lock().await;
     let res = db.execute_drawing_bagan(event_id, category_ids, &shuffle_type, vr_category_ids).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
+}
+
+#[tauri::command]
+async fn get_manual_drawing_athletes(
+    category_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<models::ManualDrawingAthlete>, String> {
+    let db = state.db.lock().await;
+    db.get_manual_drawing_athletes(category_id).await
+}
+
+#[tauri::command]
+async fn preview_manual_drawing_bagan(
+    category_id: i64,
+    slots: Vec<models::ManualSlotInput>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::ManualBracketPreview, String> {
+    let db = state.db.lock().await;
+    db.preview_manual_drawing_bagan(category_id, slots).await
+}
+
+#[tauri::command]
+async fn execute_manual_drawing_bagan(
+    event_id: i64,
+    category_id: i64,
+    slots: Vec<models::ManualSlotInput>,
+    has_vr: bool,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<DrawingSummary, String> {
+    let db = state.db.lock().await;
+    let res = db.execute_manual_drawing_bagan(event_id, category_id, slots, has_vr).await;
     if res.is_ok() {
         notify_bracket_changed(&state);
     }
@@ -2360,6 +2397,9 @@ pub fn run() {
             get_drawing_eligible_categories,
             get_drawing_eligible_festival_categories,
             execute_drawing_bagan,
+            get_manual_drawing_athletes,
+            preview_manual_drawing_bagan,
+            execute_manual_drawing_bagan,
             execute_drawing_festival_bagan,
             delete_all_bagans,
             delete_all_festival_bagans,

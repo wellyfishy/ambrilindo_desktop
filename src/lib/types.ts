@@ -5,6 +5,8 @@ export interface ActiveChannel {
   id: number | string;
   name: string;
   subtitle?: string;
+  /** Pre-applied filter when opening the Atlet channel from Kontingen/Perguruan. */
+  filter?: { utusanId?: number; perguruanId?: number };
 }
 
 export interface NetworkInterfaceInfo {
@@ -285,6 +287,37 @@ export interface DrawingCategoryInfo {
   athletes_not_in_bagan?: number;
   /** Finished bouts; such a category cannot be redrawn. */
   finished_matches?: number;
+}
+
+/** One athlete of a category in the manual drawing pool (`get_manual_drawing_athletes`). */
+export interface ManualDrawingAthlete {
+  id: number;
+  nama_atlet: string | null;
+  is_priority: boolean;
+  utusan_id: number | null;
+  utusan_nama: string | null;
+  perguruan_id: number | null;
+  perguruan_nama: string | null;
+}
+
+export interface ManualSlotInput {
+  atlet_id: number;
+  /** Round-1 bout, 1..8 */
+  match_num: number;
+  /** 1 = top (atlet1), 2 = bottom (atlet2) */
+  position: number;
+}
+
+export interface ManualPreviewMatch {
+  round: number;
+  urutan: number;
+  atlet1_id: number | null;
+  atlet2_id: number | null;
+}
+
+export interface ManualBracketPreview {
+  matches: ManualPreviewMatch[];
+  collisions: number;
 }
 
 export interface DrawingSummary {

@@ -8,15 +8,15 @@ use std::collections::{HashMap, HashSet};
 
 const PORPROV: i64 = 17;
 
-fn ids(v: &Value) -> Vec<i64> {
+pub(crate) fn ids(v: &Value) -> Vec<i64> {
     v.as_array().map(|a| a.iter().filter_map(|x| x["id"].as_i64()).collect()).unwrap_or_default()
 }
 
-async fn bagans(s: &TestServer, event: i64) -> Vec<Value> {
+pub(crate) async fn bagans(s: &TestServer, event: i64) -> Vec<Value> {
     s.ok("get_bagans", json!({ "eventId": event })).await.as_array().cloned().unwrap_or_default()
 }
 
-async fn details(s: &TestServer, bagan: i64) -> Vec<Value> {
+pub(crate) async fn details(s: &TestServer, bagan: i64) -> Vec<Value> {
     s.ok("get_detail_bagan", json!({ "baganId": bagan })).await.as_array().cloned().unwrap_or_default()
 }
 
@@ -36,12 +36,12 @@ async fn draw_remaining(s: &TestServer, event: i64) -> Vec<i64> {
     cats
 }
 
-fn playable(m: &Value) -> bool {
+pub(crate) fn playable(m: &Value) -> bool {
     m["selesai"].as_bool() == Some(false) && m["atlet1_id"].is_i64() && m["atlet2_id"].is_i64()
 }
 
 /// Play one bout: Aka wins 3–1 (kata: 5 judges, Aka higher).
-async fn play(s: &TestServer, bagan: &Value, m: &Value) -> (u16, Value) {
+pub(crate) async fn play(s: &TestServer, bagan: &Value, m: &Value) -> (u16, Value) {
     let kata = bagan["tipe_tanding"].as_str() == Some("1");
     let mut input = json!({
         "match_id": m["id"], "bagan_id": bagan["id"],
@@ -803,4 +803,88 @@ async fn qa_split_category_over_two_tatamis() {
     .await
     .unwrap();
     assert!(parts.iter().all(|p| p.is_none()), "{parts:?}");
+}
+
+/// Manual drawing: the operator's round-1 pairings are kept exactly, BYEs are advanced by
+/// the bracket engine, the old bagan of the category is replaced, and an incomplete
+/// placement is refused.
+#[tokio::test]
+async fn qa_manual_drawing_keeps_operator_placement() {
+    let Some(s) = server_on_real_copy().await else { return };
+
+    let eligible = s.ok("get_drawing_eligible_categories", json!({ "eventId": PORPROV })).await;
+    let Some(cat) = eligible.as_array().unwrap().iter().find(|c| {
+        let n = c["athlete_count"].as_i64().unwrap_or(0);
+        (3..=16).contains(&n) && c["finished_matches"].as_i64().unwrap_or(0) == 0
+    }) else {
+        eprintln!("no category with 3..=16 athletes and no results; skipping");
+        return;
+    };
+    let cat_id = cat["id"].as_i64().unwrap();
+
+    let athletes = ids(&s.ok("get_manual_drawing_athletes", json!({ "categoryId": cat_id })).await);
+    assert_eq!(athletes.len() as i64, cat["athlete_count"].as_i64().unwrap(), "pool = category athletes");
+
+    // Incomplete placement is refused.
+    let partial: Vec<Value> = athletes.iter().skip(1).enumerate()
+        .map(|(i, id)| json!({ "atlet_id": id, "match_num": i / 2 + 1, "position": i % 2 + 1 }))
+        .collect();
+    let (code, _) = s.cmd("execute_manual_drawing_bagan", json!({ "eventId": PORPROV, "categoryId": cat_id, "slots": partial, "hasVr": false })).await;
+    assert_ne!(code, 200, "a placement that leaves an athlete out must be refused");
+
+    // A placement that can never finish is refused: for <= 8 athletes, packing them into the
+    // top bouts leaves the bottom half empty, so the final would have no opponent.
+    let order: Vec<i64> = athletes.iter().rev().copied().collect();
+    if order.len() <= 8 {
+        let packed: Vec<Value> = order.iter().enumerate()
+            .map(|(i, id)| json!({ "atlet_id": id, "match_num": i / 2 + 1, "position": i % 2 + 1 }))
+            .collect();
+        let (code, body) = s.cmd("execute_manual_drawing_bagan", json!({ "eventId": PORPROV, "categoryId": cat_id, "slots": packed, "hasVr": false })).await;
+        assert_ne!(code, 200, "an unfinishable bracket must be refused: {body}");
+    }
+
+    // Spread the athletes over the bracket (bit-reversed slot order, like seeding), in
+    // reverse name order so it is clearly the operator's placement and not a random draw.
+    const SPREAD: [usize; 16] = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15];
+    let mut by_slot: Vec<Option<i64>> = vec![None; 16];
+    for (k, id) in order.iter().enumerate() {
+        by_slot[SPREAD[k]] = Some(*id);
+    }
+    let slots: Vec<Value> = by_slot.iter().enumerate()
+        .filter_map(|(i, id)| id.map(|id| json!({ "atlet_id": id, "match_num": i / 2 + 1, "position": i % 2 + 1 })))
+        .collect();
+    s.ok("execute_manual_drawing_bagan", json!({ "eventId": PORPROV, "categoryId": cat_id, "slots": slots, "hasVr": false })).await;
+
+    let cat_bagans: Vec<Value> = bagans(&s, PORPROV).await.into_iter()
+        .filter(|b| b["nomor_tanding_id"].as_i64() == Some(cat_id))
+        .collect();
+    assert_eq!(cat_bagans.len(), 1, "old bagans of the category are replaced by one");
+    let rows = details(&s, cat_bagans[0]["id"].as_i64().unwrap()).await;
+    assert_eq!(rows.len(), 16, "8 + 4 + 2 + final + bronze");
+
+    for j in 0..8 {
+        if let (Some(a), Some(b)) = (by_slot[2 * j], by_slot[2 * j + 1]) {
+            let r1 = rows.iter().find(|m| m["round"].as_i64() == Some(1) && m["urutan"].as_i64() == Some(j as i64 + 1)).unwrap();
+            assert_eq!((r1["atlet1_id"].as_i64(), r1["atlet2_id"].as_i64()), (Some(a), Some(b)), "partai {} as placed", j + 1);
+        }
+    }
+    for id in &order {
+        let n = rows.iter().filter(|m| m["atlet1_id"].as_i64() == Some(*id) || m["atlet2_id"].as_i64() == Some(*id)).count();
+        assert_eq!(n, 1, "athlete {id} appears once (BYE advanced, not duplicated)");
+    }
+
+    // The manual bagan can be played to the end and gets a champion.
+    let bagan_id = cat_bagans[0]["id"].as_i64().unwrap();
+    for _ in 0..6 {
+        let open: Vec<Value> = details(&s, bagan_id).await.into_iter().filter(playable).collect();
+        if open.is_empty() {
+            break;
+        }
+        for m in &open {
+            let (code, body) = play(&s, &cat_bagans[0], m).await;
+            assert_eq!(code, 200, "play bout {}: {body}", m["id"]);
+        }
+    }
+    let after = bagans(&s, PORPROV).await.into_iter().find(|b| b["id"].as_i64() == Some(bagan_id)).unwrap();
+    assert!(after["juara_1_id"].as_i64().is_some(), "manual bagan finished without a juara 1");
 }

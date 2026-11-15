@@ -27,6 +27,8 @@
     onSelectChannel: (channel: ActiveChannel) => void;
     onOpenQrModal: () => void;
     onOpenDrawingModal?: () => void;
+    /** Manual drawing: free (no license), separate from the licensed random drawing. */
+    onOpenManualDrawing?: () => void;
     onOpenDrawingFestivalModal?: () => void;
     /** Festival format switched (bagans may have been deleted): reload the event. */
     onFestivalFormatChanged?: (format: FestivalFormat) => void;
@@ -53,6 +55,7 @@
     onSelectChannel,
     onOpenQrModal,
     onOpenDrawingModal,
+    onOpenManualDrawing,
     onOpenDrawingFestivalModal,
     onFestivalFormatChanged,
     onNotify,
@@ -712,6 +715,19 @@
           <svg class="w-3.5 h-3.5 transition-transform {collapseBagan ? '-rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
         </button>
 
+        <div class="flex items-center gap-1">
+        <button
+          type="button"
+          onclick={(e) => {
+            e.stopPropagation();
+            onOpenManualDrawing?.();
+          }}
+          title="Buat bagan prestasi dengan menempatkan atlet sendiri"
+          class="h-7 px-2 rounded-lg text-[11px] font-semibold text-zinc-200 hover:text-white hover:bg-white/[0.06] border border-white/[0.14] transition flex items-center gap-1 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+        >
+          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h6v4H4zM4 14h6v4H4zM10 8h4v8h-4M14 12h6" /></svg>
+          <span>Manual</span>
+        </button>
         <button
           type="button"
           onclick={(e) => {
@@ -728,6 +744,7 @@
           {/if}
           <span>Drawing</span>
         </button>
+        </div>
       </div>
 
       {#if !collapseBagan}

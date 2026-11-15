@@ -436,6 +436,7 @@
                         id: "athletes",
                         name: "Atlet",
                         subtitle: `Daftar atlet perguruan ${item.nama_perguruan}`,
+                        filter: { perguruanId: item.id },
                       })}
                       class="inline-flex items-center gap-1 h-8 px-2 -ml-2 rounded-lg text-zinc-200 hover:text-white hover:bg-white/[0.06] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
                       title="Lihat atlet"

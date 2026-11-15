@@ -28,6 +28,7 @@ use crate::models::{
     MarshallingMatchItem, MarshallingOverview, TatamiQueue,
     ResultsBookletBeritaAcara, ResultsBookletData, ResultsBookletEventInfo, ResultsBookletSignatory,
     BobBaganResult, BobSourceCategory, CreateBobBaganInput,
+    ManualBracketPreview, ManualDrawingAthlete, ManualPreviewMatch, ManualSlotInput,
 };
 use crate::referee::evaluate_panel_conflicts;
 
@@ -147,7 +148,8 @@ impl DatabaseManager {
             "CREATE INDEX IF NOT EXISTS idx_atlet_utusan ON backend_atlet (utusan_id);",
             "CREATE INDEX IF NOT EXISTS idx_atlet_perguruan ON backend_atlet (perguruan_id);",
             "CREATE INDEX IF NOT EXISTS idx_wasittatami_tatami_wasit ON backend_wasittatami (tatami_id, wasit_id);",
-            "CREATE INDEX IF NOT EXISTS idx_syncqueue_synced ON backend_syncqueue (is_synced, created_at);",
+            // The sync worker picks the oldest pending/failed row every 12 s.
+            "CREATE INDEX IF NOT EXISTS idx_syncqueue_status_id ON backend_syncqueue (status, id);",
             "CREATE INDEX IF NOT EXISTS idx_timetablecell_day_tatami ON backend_timetablecell (day_id, tatami_id);",
         ];
 
@@ -423,7 +425,7 @@ impl DatabaseManager {
     /// Deletes a tatami by ID, safely cascading references to avoid foreign key errors
     pub async fn delete_tatami(&self, tatami_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Bersihkan sel jadwal yang terikat ke tatami ini
         sqlx::query("DELETE FROM backend_timetablecell WHERE tatami_id = ?")
@@ -606,7 +608,7 @@ impl DatabaseManager {
     pub async fn update_category(&self, input: CategoryMutationInput) -> Result<EnrichedNomorTanding, String> {
         let cat_id = input.id.ok_or_else(|| "ID kategori tidak boleh kosong untuk pembaruan".to_string())?;
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         sqlx::query(
             "UPDATE backend_nomortanding SET nama_nomor_tanding = ?, is_bob = ?, has_vr = ? WHERE id = ?"
@@ -671,7 +673,7 @@ impl DatabaseManager {
     /// Toggles Video Review (VR) status for a category and its associated brackets
     pub async fn toggle_category_vr(&self, category_id: i64, has_vr: bool) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         sqlx::query("UPDATE backend_nomortanding SET has_vr = ? WHERE id = ?")
             .bind(has_vr)
@@ -721,10 +723,164 @@ impl DatabaseManager {
         Ok(())
     }
 
+    // Every write transaction here starts with BEGIN IMMEDIATE: a deferred transaction that
+    // reads first fails at once with SQLITE_BUSY_SNAPSHOT (517, "database is locked") when
+    // another connection (the sync worker, a LAN save) writes in between; IMMEDIATE takes the
+    // write lock up front, so it waits up to busy_timeout instead of losing the save.
+
+    /// Queues one live-sync message for the web. Fills every NOT NULL column of the Django-made
+    /// `backend_syncqueue` (retry_count, created_at, updated_at) as well as the desktop's own
+    /// table, and stamps a `msg_id` so the web drops a resend of the same row. A failed insert
+    /// never fails the save that triggered it, but it is logged instead of swallowed.
+    async fn enqueue_live_sync(
+        conn: &mut sqlx::SqliteConnection,
+        event_id: Option<i64>,
+        endpoint: &str,
+        mut payload: serde_json::Value,
+    ) {
+        let tag = endpoint.trim_matches('/').replace('/', "-");
+        payload["msg_id"] = serde_json::Value::String(format!("{}-{:016x}", tag, rand::random::<u64>()));
+        let payload_str = payload.to_string();
+        let res = sqlx::query(
+            "INSERT INTO backend_syncqueue (event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at)
+             VALUES (?, ?, ?, 'pending', 0, NULL, strftime('%Y-%m-%d %H:%M:%f', 'now'), strftime('%Y-%m-%d %H:%M:%f', 'now'))"
+        )
+        .bind(event_id)
+        .bind(endpoint)
+        .bind(&payload_str)
+        .execute(&mut *conn)
+        .await;
+        if let Err(e) = res {
+            tracing::warn!("live sync: gagal memasukkan {} ke antrean: {}", endpoint, e);
+        }
+    }
+
+    /// Where the desktop just put this bout's winner, so the web can move it the same way:
+    /// (bagan id, match id, slot "atlet1"/"atlet2", vr flag of that slot). Mirrors the
+    /// advancement rules in `save_match_result` (standard, pool → final bagan, repechage).
+    #[allow(clippy::too_many_arguments)]
+    async fn live_next_target(
+        conn: &mut sqlx::SqliteConnection,
+        bagan_id: i64,
+        round: i64,
+        urutan: i64,
+        is_round_robin: bool,
+        is_repechage: bool,
+        is_pool_bracket: bool,
+        is_final_bagan: bool,
+        is_pool_a: bool,
+        nomor_tanding_id: Option<i64>,
+    ) -> Option<(i64, i64, &'static str, bool)> {
+        if is_round_robin {
+            return None;
+        }
+        let (next_bagan, next_round, next_urutan, slot) = if is_repechage {
+            (bagan_id, round + 1, urutan, "atlet1")
+        } else if is_pool_bracket && !is_final_bagan && round == 4 {
+            let nt = nomor_tanding_id?;
+            let final_bagan: i64 = sqlx::query_scalar(
+                "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ? AND (pool = 0 OR UPPER(nama_bagan) LIKE '%- FINAL' OR UPPER(nama_bagan) LIKE '%FINAL') LIMIT 1"
+            )
+            .bind(nt)
+            .fetch_optional(&mut *conn)
+            .await
+            .ok()??;
+            (final_bagan, 4, 1, if is_pool_a { "atlet1" } else { "atlet2" })
+        } else if round < 4 {
+            (bagan_id, round + 1, (urutan + 1) / 2, if urutan % 2 == 1 { "atlet1" } else { "atlet2" })
+        } else {
+            return None; // the final: no next bout (semifinal losers are juara 3, there is no bronze bout)
+        };
+        let row: (i64, bool, bool) = sqlx::query_as(
+            "SELECT id, vr1, vr2 FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND urutan = ?"
+        )
+        .bind(next_bagan)
+        .bind(next_round)
+        .bind(next_urutan)
+        .fetch_optional(&mut *conn)
+        .await
+        .ok()??;
+        let vr = if slot == "atlet1" { row.1 } else { row.2 };
+        Some((next_bagan, row.0, slot, vr))
+    }
+
+    /// Deletes every bracket of one category (and everything pointing at its bouts),
+    /// before the category is drawn again.
+    async fn clear_category_bagans(conn: &mut sqlx::SqliteConnection, cat_id: i64) -> Result<(), String> {
+        sqlx::query(
+            "UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id IN (
+                SELECT d.id FROM backend_detailbagan d
+                JOIN backend_bagan b ON d.bagan_id = b.id
+                WHERE b.nomor_tanding_id = ?
+            )"
+        )
+        .bind(cat_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("Gagal mereset tatami untuk kategori {}: {}", cat_id, e))?;
+
+        Self::purge_bout_dependents(&mut *conn, "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?", cat_id).await?;
+
+        sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
+            .bind(cat_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| format!("Gagal menghapus detail bagan lama: {}", e))?;
+
+        sqlx::query("DELETE FROM backend_bagan WHERE nomor_tanding_id = ?")
+            .bind(cat_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| format!("Gagal menghapus bagan lama: {}", e))?;
+        Ok(())
+    }
+
+    /// Writes the 16 bout rows of one bracket (rounds 1–4 plus the round-5 bronze bout).
+    /// Returns the number of rows written.
+    async fn insert_bracket_rows(conn: &mut sqlx::SqliteConnection, bagan_id: i64, data: &crate::bracket::BracketResult) -> Result<usize, String> {
+        let mut written = 0;
+        for r in 1..=4u32 {
+            let max_u = match r { 1 => 8, 2 => 4, 3 => 2, _ => 1 };
+            for u in 1..=max_u {
+                let m = data.matches.get(&r).and_then(|round| round.get(&u)).cloned().unwrap_or_default();
+                sqlx::query(
+                    "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)"
+                )
+                .bind(bagan_id)
+                .bind(r as i32)
+                .bind(u as i32)
+                .bind(m.atlet1_id)
+                .bind(m.atlet2_id)
+                .bind(m.vr1)
+                .bind(m.vr2)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| format!("Gagal menyimpan detail bagan: {}", e))?;
+                written += 1;
+            }
+        }
+
+        // Round 5 (Perebutan Juara 3)
+        let m5 = data.matches.get(&5).and_then(|round| round.get(&1)).cloned().unwrap_or_default();
+        sqlx::query(
+            "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 5, 1, ?, ?, ?, ?, 0, 0, 0)"
+        )
+        .bind(bagan_id)
+        .bind(m5.atlet1_id)
+        .bind(m5.atlet2_id)
+        .bind(m5.vr1)
+        .bind(m5.vr2)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("Gagal menyimpan partai perebutan juara 3: {}", e))?;
+        written += 1;
+        Ok(written)
+    }
+
     /// Deletes a competition category, safely unlinking athletes and cleaning up any related brackets
     pub async fn delete_category(&self, category_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Unassign tatamis
         sqlx::query(
@@ -1246,7 +1402,7 @@ impl DatabaseManager {
         let plan = crate::bracket::build_wkf_repechage_plan(&pool_a_losers, &pool_b_losers);
 
         // 5. Database transaction: create or update repechage bagan
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         let rep_name = format!("{} - REFERCHANGE", base_name);
 
@@ -1369,7 +1525,7 @@ impl DatabaseManager {
     /// Creates a round-robin tournament bracket for a small category (3-5 athletes)
     pub async fn create_round_robin_bagan(&self, event_id: i64, nomor_tanding_id: i64) -> Result<i64, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Fetch category info
         #[derive(sqlx::FromRow)]
@@ -2234,7 +2390,7 @@ impl DatabaseManager {
             return Ok(0);
         }
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         let mut deleted_count = 0u64;
         for id in ids {
@@ -2690,7 +2846,7 @@ impl DatabaseManager {
     /// Deletes all brackets and match records for an entire event
     pub async fn delete_all_bagans(&self, event_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Unassign tatamis
         sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE event_id = ?")
@@ -2723,7 +2879,7 @@ impl DatabaseManager {
     /// Deletes all festival brackets and match records for an entire event, leaving regular tournament brackets untouched
     pub async fn delete_all_festival_bagans(&self, event_id: i64) -> Result<u64, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Unassign tatamis assigned to matches belonging to festival bagans
         sqlx::query(
@@ -2821,7 +2977,7 @@ impl DatabaseManager {
     /// Deletes all athletes for an entire event, clearing bracket/match references
     pub async fn delete_all_athletes(&self, event_id: i64) -> Result<u64, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Clear athlete references in detailbagan for this event
         sqlx::query(
@@ -2858,7 +3014,7 @@ impl DatabaseManager {
     /// tatami, jadwal partai/timetable, wasit & juri, serta berkas festival roster.
     pub async fn reset_total_tournament(&self, event_id: i64) -> Result<crate::models::ResetTournamentSummary, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
         let summary = Self::purge_event_data(&mut tx, event_id).await?;
         tx.commit().await.map_err(|e| format!("Gagal menyelesaikan transaksi reset total: {}", e))?;
         self.remove_festival_roster_files(event_id);
@@ -2869,7 +3025,7 @@ impl DatabaseManager {
     /// The event row itself goes last, so a failure part-way leaves the event intact.
     pub async fn delete_event(&self, event_id: i64) -> Result<crate::models::ResetTournamentSummary, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
         let summary = Self::purge_event_data(&mut tx, event_id).await?;
         let res = sqlx::query("DELETE FROM backend_event WHERE id = ?")
             .bind(event_id)
@@ -3056,7 +3212,7 @@ impl DatabaseManager {
     /// Menghapus seluruh nomor tanding (kategori) untuk suatu event
     pub async fn delete_all_categories(&self, event_id: i64) -> Result<u64, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Unassign categories from athletes
         let _ = sqlx::query("UPDATE backend_atlet SET nomor_tanding_id = NULL WHERE event_id = ?")
@@ -3102,7 +3258,7 @@ impl DatabaseManager {
     /// Menghapus seluruh kontingen (utusan) untuk suatu event
     pub async fn delete_all_contingents(&self, event_id: i64) -> Result<u64, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Unassign contingents from athletes
         let _ = sqlx::query("UPDATE backend_atlet SET utusan_id = NULL WHERE event_id = ?")
@@ -3125,7 +3281,7 @@ impl DatabaseManager {
     /// Menghapus seluruh perguruan untuk suatu event
     pub async fn delete_all_perguruans(&self, event_id: i64) -> Result<u64, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Unassign perguruans from athletes and wasits
         let _ = sqlx::query("UPDATE backend_atlet SET perguruan_id = NULL WHERE event_id = ?")
@@ -3164,7 +3320,7 @@ impl DatabaseManager {
             }
         }
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Unassign tatami matches for this category
         sqlx::query(
@@ -3211,7 +3367,7 @@ impl DatabaseManager {
         crate::license::ensure(crate::license::Module::Drawing)?;
         self.ensure_no_results(&category_ids).await?;
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         let vr_set: HashSet<i64> = vr_category_ids.into_iter().collect();
         let mut categories_processed = 0;
@@ -3221,30 +3377,7 @@ impl DatabaseManager {
 
         // Clean up previous brackets for selected categories first
         for &cat_id in &category_ids {
-            sqlx::query(
-                "UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id IN (
-                    SELECT d.id FROM backend_detailbagan d 
-                    JOIN backend_bagan b ON d.bagan_id = b.id 
-                    WHERE b.nomor_tanding_id = ?
-                )"
-            )
-            .bind(cat_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Gagal mereset tatami untuk kategori {}: {}", cat_id, e))?;
-
-            Self::purge_bout_dependents(&mut *tx, "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?", cat_id).await?;
-            sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id IN (SELECT id FROM backend_bagan WHERE nomor_tanding_id = ?)")
-                .bind(cat_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Gagal menghapus detail bagan lama: {}", e))?;
-
-            sqlx::query("DELETE FROM backend_bagan WHERE nomor_tanding_id = ?")
-                .bind(cat_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Gagal menghapus bagan lama: {}", e))?;
+            Self::clear_category_bagans(&mut *tx, cat_id).await?;
         }
 
         // Determine starting code number (001, 002...) for this event
@@ -3405,42 +3538,7 @@ impl DatabaseManager {
 
                 let bracket_data = build_bracket_in_memory(&athletes, 1, should_have_vr);
                 total_collisions += bracket_data.collision_count;
-
-                for r in 1..=4 {
-                    let max_u = match r { 1 => 8, 2 => 4, 3 => 2, _ => 1 };
-                    for u in 1..=max_u {
-                        let m = bracket_data.matches.get(&r).and_then(|round| round.get(&u)).cloned().unwrap_or_default();
-                        sqlx::query(
-                            "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)"
-                        )
-                        .bind(bagan_id)
-                        .bind(r as i32)
-                        .bind(u as i32)
-                        .bind(m.atlet1_id)
-                        .bind(m.atlet2_id)
-                        .bind(m.vr1)
-                        .bind(m.vr2)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| format!("Gagal menyimpan detail bagan: {}", e))?;
-                        total_matches += 1;
-                    }
-                }
-
-                // Round 5 (Perebutan Juara 3)
-                let m5 = bracket_data.matches.get(&5).and_then(|round| round.get(&1)).cloned().unwrap_or_default();
-                sqlx::query(
-                    "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 5, 1, ?, ?, ?, ?, 0, 0, 0)"
-                )
-                .bind(bagan_id)
-                .bind(m5.atlet1_id)
-                .bind(m5.atlet2_id)
-                .bind(m5.vr1)
-                .bind(m5.vr2)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Gagal menyimpan partai perebutan juara 3: {}", e))?;
-                total_matches += 1;
+                total_matches += Self::insert_bracket_rows(&mut *tx, bagan_id, &bracket_data).await?;
             } else {
                 // Multi-pool
                 let pools_athletes = split_athletes_into_pools(&athletes, perulangan);
@@ -3578,6 +3676,195 @@ impl DatabaseManager {
         })
     }
 
+    /// Athletes of one category for manual drawing (same set the random drawing uses).
+    pub async fn get_manual_drawing_athletes(&self, category_id: i64) -> Result<Vec<ManualDrawingAthlete>, String> {
+        let pool = self.get_pool()?;
+        sqlx::query_as::<_, ManualDrawingAthlete>(
+            r#"
+            SELECT a.id, a.nama_atlet, a.is_priority,
+                   a.utusan_id, u.nama_utusan AS utusan_nama,
+                   a.perguruan_id, p.nama_perguruan AS perguruan_nama
+            FROM backend_atlet a
+            LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+            LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
+            WHERE a.nomor_tanding_id = ?
+              AND (a.additional_code IS NULL OR a.additional_code NOT LIKE 'MEMBER_%')
+            ORDER BY a.nama_atlet ASC
+            "#
+        )
+        .bind(category_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat atlet: {}", e))
+    }
+
+    /// Checks a (possibly partial) manual placement against the category's athletes and
+    /// builds the bracket from it. Returns (number of athletes in the category, bracket).
+    async fn build_manual_bracket(
+        &self,
+        category_id: i64,
+        slots: &[ManualSlotInput],
+        should_have_vr: bool,
+    ) -> Result<(usize, crate::bracket::BracketResult), String> {
+        // Validate the placement against the category's athletes.
+        let athletes = self.get_manual_drawing_athletes(category_id).await?;
+        if athletes.is_empty() {
+            return Err("Nomor tanding ini belum punya atlet.".into());
+        }
+        if athletes.len() > 16 {
+            return Err(format!("{} atlet: lebih dari 16, pakai drawing otomatis (pool).", athletes.len()));
+        }
+        let by_id: HashMap<i64, &ManualDrawingAthlete> = athletes.iter().map(|a| (a.id, a)).collect();
+        let mut assignment: HashMap<i64, crate::bracket::MatchSlot> = HashMap::new();
+        let mut used_slots: HashSet<(u32, u8)> = HashSet::new();
+        for s in slots {
+            if !(1..=8).contains(&s.match_num) || !(1..=2).contains(&s.position) {
+                return Err(format!("Slot tidak valid: partai {} posisi {}.", s.match_num, s.position));
+            }
+            if !by_id.contains_key(&s.atlet_id) {
+                return Err(format!("Atlet #{} bukan atlet nomor tanding ini.", s.atlet_id));
+            }
+            if !used_slots.insert((s.match_num, s.position)) {
+                return Err(format!("Slot partai {} dipakai dua kali.", s.match_num));
+            }
+            let slot = crate::bracket::MatchSlot {
+                match_num: s.match_num,
+                position: if s.position == 1 { crate::bracket::SlotPosition::Atlet1 } else { crate::bracket::SlotPosition::Atlet2 },
+            };
+            if assignment.insert(s.atlet_id, slot).is_some() {
+                return Err(format!("Atlet #{} ditempatkan dua kali.", s.atlet_id));
+            }
+        }
+
+        // Same anti-bentrok keys as the default ("both") random drawing, for the collision count.
+        let inputs: Vec<AthleteInput> = athletes.iter().map(|a| AthleteInput {
+            id: a.id,
+            name: a.nama_atlet.clone().unwrap_or_default(),
+            is_priority: a.is_priority,
+            group_key: a.utusan_id.map(|id| format!("U_{}", id)).unwrap_or_else(|| format!("A_{}", a.id)),
+            secondary_key: a.perguruan_id.map(|id| format!("P_{}", id)),
+        }).collect();
+        let bracket_data = crate::bracket::build_bracket_from_assignment(&inputs, &assignment, should_have_vr);
+        Ok((athletes.len(), bracket_data))
+    }
+
+    /// Live preview for manual drawing: the bracket as placed so far (BYEs already
+    /// advanced), without writing anything. Free, like manual drawing itself.
+    pub async fn preview_manual_drawing_bagan(&self, category_id: i64, slots: Vec<ManualSlotInput>) -> Result<ManualBracketPreview, String> {
+        let (_, data) = self.build_manual_bracket(category_id, &slots, false).await?;
+        let mut matches = Vec::new();
+        for (round, by_u) in &data.matches {
+            for (urutan, m) in by_u {
+                matches.push(ManualPreviewMatch { round: *round, urutan: *urutan, atlet1_id: m.atlet1_id, atlet2_id: m.atlet2_id });
+            }
+        }
+        matches.sort_by_key(|m| (m.round, m.urutan));
+        Ok(ManualBracketPreview { matches, collisions: data.collision_count })
+    }
+
+    /// Manual drawing: one bracket for one prestasi category, athletes placed by the
+    /// operator. BYEs and VR flags come from the same engine as the random drawing.
+    /// Replaces the category's existing brackets.
+    pub async fn execute_manual_drawing_bagan(
+        &self,
+        event_id: i64,
+        category_id: i64,
+        slots: Vec<ManualSlotInput>,
+        has_vr: bool,
+    ) -> Result<DrawingSummary, String> {
+        // Manual drawing is a free feature: no license module check (unlike the random drawing).
+        self.ensure_no_results(&[category_id]).await?;
+        let pool = self.get_pool()?;
+
+        #[derive(sqlx::FromRow)]
+        struct CatRow {
+            nama_nomor_tanding: Option<String>,
+            is_bob: bool,
+        }
+        let cat = sqlx::query_as::<_, CatRow>(
+            "SELECT nama_nomor_tanding, is_bob FROM backend_nomortanding WHERE id = ? AND event_id = ?"
+        )
+        .bind(category_id)
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat nomor tanding: {}", e))?
+        .ok_or_else(|| "Nomor tanding tidak ditemukan di event ini.".to_string())?;
+
+        let cat_name = cat.nama_nomor_tanding.unwrap_or_default();
+        if cat.is_bob || cat_name.to_lowercase().contains("festival") {
+            return Err("Drawing manual hanya untuk nomor tanding prestasi (bukan Festival atau BOB).".into());
+        }
+        let upper = cat_name.to_uppercase();
+        let is_kumite = upper.contains("KUMITE");
+        let tipe_tanding = if is_kumite { Some("2") } else if upper.contains("KATA") { Some("1") } else { None };
+        let should_have_vr = is_kumite && has_vr;
+
+        let (athlete_count, bracket_data) = self.build_manual_bracket(category_id, &slots, should_have_vr).await?;
+        let placed = slots.len();
+        if placed < athlete_count {
+            return Err(format!("{} atlet belum ditempatkan.", athlete_count - placed));
+        }
+        // Refuse a bracket that can never be finished (a winner who would wait forever).
+        let mut r1_counts = [0usize; 8];
+        for s in &slots {
+            r1_counts[(s.match_num - 1) as usize] += 1;
+        }
+        let dead = crate::bracket::unreachable_bouts(&r1_counts);
+        if !dead.is_empty() {
+            let list = dead.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
+            return Err(format!(
+                "Bagan tidak bisa selesai: partai {} tidak akan punya lawan. Pindahkan atlet supaya sisi yang kosong terisi.",
+                list
+            ));
+        }
+
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
+        sqlx::query("UPDATE backend_nomortanding SET has_vr = ? WHERE id = ?")
+            .bind(should_have_vr)
+            .bind(category_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal update status VR kategori: {}", e))?;
+
+        Self::clear_category_bagans(&mut *tx, category_id).await?;
+
+        let existing_codes: Vec<String> = sqlx::query_scalar(
+            "SELECT kode FROM backend_bagan WHERE event_id = ? AND kode IS NOT NULL AND kode != ''"
+        )
+        .bind(event_id)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_default();
+        let next_code_num: u32 = existing_codes.iter().filter_map(|c| c.parse::<u32>().ok()).max().unwrap_or(0) + 1;
+
+        let bagan_res = sqlx::query(
+            "INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (?, ?, ?, 1, ?, 0, 0, ?, ?)"
+        )
+        .bind(event_id)
+        .bind(category_id)
+        .bind(&cat_name)
+        .bind(tipe_tanding)
+        .bind(should_have_vr)
+        .bind(format!("{:03}", next_code_num))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal membuat bagan: {}", e))?;
+        let bagan_id = bagan_res.last_insert_rowid();
+
+        let total_matches = Self::insert_bracket_rows(&mut *tx, bagan_id, &bracket_data).await?;
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan drawing manual: {}", e))?;
+
+        Ok(DrawingSummary {
+            categories_processed: 1,
+            bagans_created: 1,
+            total_matches,
+            total_collisions: bracket_data.collision_count,
+        })
+    }
+
     /// Executes drawing for festival categories (4 athletes per group, up to 4 groups per bagan)
     pub async fn execute_drawing_festival_bagan(
         &self,
@@ -3588,7 +3875,7 @@ impl DatabaseManager {
         crate::license::ensure(crate::license::Module::Drawing)?;
         self.ensure_no_results(&category_ids).await?;
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         let mut categories_processed = 0;
         let mut bagans_created = 0;
@@ -3927,7 +4214,7 @@ impl DatabaseManager {
     /// Saves a match result in detail_bagan and advances the winner in tournament brackets
     pub async fn save_match_result(&self, input: SaveMatchInput) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Fetch the match being updated
         let current_match: (i64, i64, i64, i64, Option<i64>, Option<i64>, bool) = sqlx::query_as(
@@ -4714,7 +5001,10 @@ impl DatabaseManager {
             .unwrap_or(None);
 
             if let Some((kode_event, is_live_sync_enabled)) = ev_info {
-                if is_live_sync_enabled {
+                // Only a finished bout goes to the web: `/api/result/` always marks the bout
+                // finished there, so a running score would end it early. Bouts inside a team
+                // match are not on the web; their parent team bout is sent when it finishes.
+                if is_live_sync_enabled && input.selesai && !is_team_child_bout {
                     let ev_code = kode_event.unwrap_or_else(|| format!("EV{}", ev_id));
                     let kode_realtime = format!("{}-{}-{}", ev_code, bagan_id, input.match_id);
 
@@ -4764,18 +5054,24 @@ impl DatabaseManager {
                         result_payload["kata_ao"] = serde_json::Value::String(k2.clone());
                     }
 
-                    let payload_str = serde_json::to_string(&result_payload).unwrap_or_default();
+                    // Where the winner went, so the web bracket moves it too.
+                    if let Some((next_bagan, next_id, slot, next_vr)) = Self::live_next_target(
+                        &mut *tx, bagan_id, round_num, urutan_num, is_round_robin, is_repechage,
+                        is_pool_bracket, is_final_bagan, is_pool_a, nomor_tanding_id,
+                    ).await {
+                        result_payload["next_kode_realtime"] = serde_json::Value::String(format!("{}-{}-{}", ev_code, next_bagan, next_id));
+                        result_payload["target_slot"] = serde_json::Value::String(slot.to_string());
+                        result_payload["next_vr1"] = serde_json::Value::Bool(slot == "atlet1" && next_vr);
+                        result_payload["next_vr2"] = serde_json::Value::Bool(slot == "atlet2" && next_vr);
+                    }
 
-                    let _ = sqlx::query(
-                        "INSERT INTO backend_syncqueue (event_id, endpoint, payload, status) VALUES (?, 'api/result/', ?, 'pending')"
-                    )
-                    .bind(ev_id)
-                    .bind(&payload_str)
-                    .execute(&mut *tx)
-                    .await;
+                    Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/result/", result_payload).await;
 
-                    // If final match completed, also enqueue api/final-result/
-                    if input.selesai && round_num == 4 {
+                    // The final of a bracket that crowns the category: also send the podium.
+                    // (Round 4 of a pool bracket is the pool semifinal, and repechage / round
+                    // robin podiums are not decided by a round-4 bout.)
+                    let crowns_category = !is_round_robin && !is_repechage && (!is_pool_bracket || is_final_bagan);
+                    if round_num == 4 && crowns_category {
                         let podium_row: Option<(
                             Option<String>, Option<String>,
                             Option<String>, Option<String>,
@@ -4814,14 +5110,7 @@ impl DatabaseManager {
                                 "juara_3b": j3b_name,
                                 "juara_3b_kode": j3b_code,
                             });
-                            let final_str = serde_json::to_string(&final_payload).unwrap_or_default();
-                            let _ = sqlx::query(
-                                "INSERT INTO backend_syncqueue (event_id, endpoint, payload, status) VALUES (?, 'api/final-result/', ?, 'pending')"
-                            )
-                            .bind(ev_id)
-                            .bind(&final_str)
-                            .execute(&mut *tx)
-                            .await;
+                            Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/final-result/", final_payload).await;
                         }
                     }
                 }
@@ -4927,14 +5216,8 @@ impl DatabaseManager {
             "ring_number": tatami_number.to_string()
         });
 
-        let payload_str = serde_json::to_string(&status_payload).unwrap_or_default();
-        let _ = sqlx::query(
-            "INSERT INTO backend_syncqueue (event_id, endpoint, payload, status) VALUES (?, 'api/status/', ?, 'pending')"
-        )
-        .bind(event_id)
-        .bind(&payload_str)
-        .execute(pool)
-        .await;
+        let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+        Self::enqueue_live_sync(&mut conn, event_id, "api/status/", status_payload).await;
 
         Ok(())
     }
@@ -4992,7 +5275,7 @@ impl DatabaseManager {
         matchups: Vec<UpdateMatchAthletesInput>,
     ) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Update nama_bagan if provided
         if let Some(name) = nama_bagan {
@@ -6560,7 +6843,7 @@ impl DatabaseManager {
     /// Menyimpan perubahan baris dan cell pada timetable secara transaksional
     pub async fn save_timetable_data(&self, event_id: i64, payload: SaveTimetablePayload) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         for (day_idx, day_input) in payload.days.into_iter().enumerate() {
             // Validasi hari milik event
@@ -6671,7 +6954,7 @@ impl DatabaseManager {
     /// Menghapus hari beserta baris dan cell pada timetable, lalu me-reindex sisa hari agar urutannya selalu 0, 1, 2...
     pub async fn delete_timetable_day(&self, day_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Dapatkan event_id sebelum baris hari dihapus
         let event_row: Option<(i64,)> = sqlx::query_as("SELECT event_id FROM backend_timetableday WHERE id = ?")
@@ -6989,7 +7272,7 @@ impl DatabaseManager {
     /// Mereset seluruh jadwal pertandingan untuk suatu event (menghapus semua sel dan baris)
     pub async fn reset_timetable_data(&self, event_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Hapus semua cell jadwal event ini
         sqlx::query(
@@ -7772,7 +8055,7 @@ impl DatabaseManager {
             clean_new_name = format!("FESTIVAL {}", clean_new_name);
         }
 
-        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
 
         let final_target_id: i64 = if let Some(tid) = target_id {
             if tid > 0 {
@@ -8717,7 +9000,7 @@ impl DatabaseManager {
 
     pub async fn delete_wasit(&self, wasit_id: i64) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal membuka transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal membuka transaksi: {}", e))?;
         
         sqlx::query("DELETE FROM backend_wasittatami WHERE wasit_id = ?")
             .bind(wasit_id)
@@ -8892,7 +9175,7 @@ impl DatabaseManager {
     /// created. Empty cells never overwrite existing data. One transaction.
     pub async fn import_wasits(&self, event_id: i64, rows: Vec<WasitImportRow>) -> Result<WasitImportSummary, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
         let mut sum = WasitImportSummary { created: 0, updated: 0, unchanged: 0, perguruan_created: 0 };
         let mut seen = std::collections::HashSet::new();
         for r in rows {
@@ -9551,7 +9834,7 @@ impl DatabaseManager {
         .await
         .map_err(|e| format!("Gagal memuat partai: {}", e))?
         .ok_or_else(|| format!("Partai {} tidak ditemukan", match_id))?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
         let cur = Self::bout_rev(&mut *tx, match_id).await;
         check_bout_rev(cur, expected_rev)?;
         let rev = next_bout_rev(cur);
@@ -9913,7 +10196,7 @@ impl DatabaseManager {
 
     pub async fn assign_wasit_tatami(&self, input: AssignWasitTatamiInput) -> Result<i64, String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         if input.posisi != "pool" {
             sqlx::query("DELETE FROM backend_wasittatami WHERE tatami_id = ? AND posisi = ?")
@@ -9971,7 +10254,7 @@ impl DatabaseManager {
 
     pub async fn auto_assign_tatami_panel(&self, input: AutoAssignPanelInput) -> Result<(), String> {
         let pool = self.get_pool()?;
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         sqlx::query("DELETE FROM backend_wasittatami WHERE tatami_id = ?")
             .bind(input.tatami_id)
@@ -10592,7 +10875,7 @@ impl DatabaseManager {
             return Err("Tidak ada Juara 1 pada bagan-bagan yang dipilih. Pastikan pertandingan babak final telah selesai dipertandingkan.".to_string());
         }
 
-        let mut tx = pool.begin().await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
 
         // 1. Create or get backend_nomortanding with is_bob = 1
         let existing_cat: Option<(i64,)> = sqlx::query_as(

@@ -7,6 +7,8 @@
     ActiveChannel,
     AppMode,
     BaganItem,
+    DrawingCategoryInfo,
+    DrawingSummary,
     DatabaseSummary,
     EventItem,
     MonitorOption,
@@ -36,6 +38,7 @@
   import QrCodeModal from "$lib/components/QrCodeModal.svelte";
   import AddEventModal from "$lib/components/AddEventModal.svelte";
   import DrawingBaganModal from "$lib/components/DrawingBaganModal.svelte";
+  import ManualDrawingModal from "$lib/components/ManualDrawingModal.svelte";
   import DrawingFestivalModal from "$lib/components/DrawingFestivalModal.svelte";
   import VenueWebPortal from "$lib/components/VenueWebPortal.svelte";
   import LicensePanel from "$lib/components/LicensePanel.svelte";
@@ -143,6 +146,7 @@
   let addEventModal = $state(false);
   let isCreatingEvent = $state(false);
   let drawingModal = $state(false);
+  let manualDrawingModal = $state(false);
   let drawingFestivalModal = $state(false);
 
   async function handleDrawingFestivalComplete() {
@@ -180,6 +184,22 @@
     }
     if (kind === "bagan") drawingModal = true;
     else drawingFestivalModal = true;
+  }
+
+  /** Manual drawing saved: reload the event and open the new bagan. */
+  async function handleManualDrawingSaved(summary: DrawingSummary, category: DrawingCategoryInfo) {
+    manualDrawingModal = false;
+    if (selectedEventId) await selectEvent(selectedEventId);
+    const bagan = bagans.find((b) => b.nomor_tanding_id === category.id);
+    if (bagan) {
+      handleSelectChannel({
+        type: "bagan",
+        id: bagan.id,
+        name: bagan.nama_bagan || `bagan-${bagan.id}`,
+        subtitle: `Bagan [${bagan.kode || String(bagan.id).padStart(3, "0")}]: ${bagan.nama_bagan || ""}`,
+      });
+    }
+    showToast(`Bagan ${category.nama_nomor_tanding} disimpan (${summary.total_matches} partai).`);
   }
 
   async function handleDrawingComplete() {
@@ -680,6 +700,7 @@
       }}
       onOpenQrModal={() => (qrModal = true)}
       onOpenDrawingModal={() => openDrawing("bagan")}
+      onOpenManualDrawing={() => (manualDrawingModal = true)}
       onOpenDrawingFestivalModal={() => openDrawing("festival")}
       onFestivalFormatChanged={async (format) => {
         if (format === "bagan" && activeChannel.type === "festival") activeChannel = { ...DEFAULT_CHANNEL };
@@ -758,6 +779,8 @@
             eventId={selectedEventId || 1}
             hostAddress={hostUrl}
             onShowToast={showToast}
+            initialUtusanId={activeChannel.filter?.utusanId}
+            initialPerguruanId={activeChannel.filter?.perguruanId}
           />
         {:else if activeChannel.type === "master"}
           <!-- Tournament Data Master & Reset Control View -->
@@ -857,6 +880,14 @@
       isSubmitting={isCreatingEvent}
       onConfirm={handleCreateEvent}
       onClose={() => (addEventModal = false)}
+    />
+  {/if}
+
+  {#if manualDrawingModal && selectedEventId}
+    <ManualDrawingModal
+      eventId={selectedEventId}
+      onClose={() => (manualDrawingModal = false)}
+      onSuccess={handleManualDrawingSaved}
     />
   {/if}
 

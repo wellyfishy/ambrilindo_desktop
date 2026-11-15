@@ -1808,8 +1808,15 @@ async fn dispatch_command_api(
             if match_id <= 0 {
                 (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": null }))).into_response()
             } else {
-                match db.notify_match_running(match_id, tatami).await {
-                    Ok(_) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": null }))).into_response(),
+                let res = db.notify_match_running(match_id, tatami).await;
+                let (pool_opt, db_path_opt) = (db.get_pool_cloned(), db.get_active_db_path_cloned());
+                drop(db);
+                match res {
+                    Ok(_) => {
+                        // Send the "match running" status now, not on the next 12 s worker tick.
+                        perform_match_save_effects(&state, pool_opt, db_path_opt).await;
+                        (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": null }))).into_response()
+                    }
                     Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
                 }
             }
@@ -1923,6 +1930,54 @@ async fn dispatch_command_api(
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             match db.get_drawing_eligible_festival_categories(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_manual_drawing_athletes" => {
+            let Some(cat_id) = get_i64_val(&payload, &["categoryId", "category_id"]) else {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "categoryId wajib diisi" }))).into_response();
+            };
+            match db.get_manual_drawing_athletes(cat_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "preview_manual_drawing_bagan" => {
+            let Some(cat_id) = get_i64_val(&payload, &["categoryId", "category_id"]) else {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "categoryId wajib diisi" }))).into_response();
+            };
+            let slots = match serde_json::from_value::<Vec<crate::models::ManualSlotInput>>(
+                payload.get("slots").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+            ) {
+                Ok(s) => s,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Format slot tidak valid: {}", e) }))).into_response(),
+            };
+            match db.preview_manual_drawing_bagan(cat_id, slots).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "execute_manual_drawing_bagan" => {
+            let (Some(ev_id), Some(cat_id)) = (
+                get_i64_val(&payload, &["eventId", "event_id"]),
+                get_i64_val(&payload, &["categoryId", "category_id"]),
+            ) else {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "eventId dan categoryId wajib diisi" }))).into_response();
+            };
+            let slots = match serde_json::from_value::<Vec<crate::models::ManualSlotInput>>(
+                payload.get("slots").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+            ) {
+                Ok(s) => s,
+                Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Format slot tidak valid: {}", e) }))).into_response(),
+            };
+            let has_vr = get_bool_val(&payload, &["hasVr", "has_vr"]).unwrap_or(false);
+            match db.execute_manual_drawing_bagan(ev_id, cat_id, slots, has_vr).await {
+                Ok(v) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response()
+                },
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },

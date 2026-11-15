@@ -378,19 +378,14 @@ pub fn split_athletes_into_pools(
 /// - Priority athletes receive highest BYE levels and opposite half distribution
 /// - Subtree-aware automatic BYE advancement across Rounds 1 -> 2 -> 3 -> 4
 /// - Pre-seeds Video Review (VR) on Semifinals & Finals
-pub fn build_bracket_in_memory(
-    athletes: &[AthleteInput],
-    pool: i32,
-    has_vr: bool,
-) -> BracketResult {
+/// All 16 matches of the fixed 16-slot bracket (round 1: 8, 2: 4, 3: 2, 4: final, 5: bronze), empty.
+fn empty_matches() -> HashMap<u32, HashMap<u32, MatchData>> {
     let mut matches: HashMap<u32, HashMap<u32, MatchData>> = HashMap::new();
     for r in 1..=5 {
         let max_u = match r {
             1 => 8,
             2 => 4,
             3 => 2,
-            4 => 1,
-            5 => 1,
             _ => 1,
         };
         let mut r_map = HashMap::new();
@@ -399,6 +394,15 @@ pub fn build_bracket_in_memory(
         }
         matches.insert(r, r_map);
     }
+    matches
+}
+
+pub fn build_bracket_in_memory(
+    athletes: &[AthleteInput],
+    pool: i32,
+    has_vr: bool,
+) -> BracketResult {
+    let mut matches = empty_matches();
 
     if athletes.is_empty() {
         if has_vr {
@@ -585,11 +589,46 @@ pub fn build_bracket_in_memory(
 
     let best_assignment = best_candidates.choose(&mut rng).cloned().unwrap_or_default();
 
+    build_bracket_from_assignment(athletes_slice, &best_assignment, has_vr)
+}
+
+/// Bouts (numbered 1–15: round 1 = 1–8, quarterfinal = 9–12, semifinal = 13–14,
+/// final = 15) that can never be played: one side gets nobody while the other side
+/// still has a bout to win first. Its winner would wait forever for an opponent.
+/// A side with a single athlete is fine: that athlete is advanced by BYE at drawing time.
+/// `r1_counts[m]` = athletes placed in round-1 bout m+1 (0, 1 or 2).
+pub fn unreachable_bouts(r1_counts: &[usize; 8]) -> Vec<u32> {
+    let mut dead = Vec::new();
+    let mut level: Vec<usize> = r1_counts.to_vec();
+    let mut offset = 8u32;
+    while level.len() > 1 {
+        let next: Vec<usize> = level.chunks(2).map(|p| p[0] + p[1]).collect();
+        for (j, pair) in level.chunks(2).enumerate() {
+            let (a, b) = (pair[0], pair[1]);
+            if (a == 0 && b >= 2) || (b == 0 && a >= 2) {
+                dead.push(offset + j as u32 + 1);
+            }
+        }
+        offset += next.len() as u32;
+        level = next;
+    }
+    dead
+}
+
+/// Builds the full bracket (BYE advancement, VR flags, round-1 collision count)
+/// from a fixed slot assignment. Used by the random drawing and by manual drawing.
+pub fn build_bracket_from_assignment(
+    athletes: &[AthleteInput],
+    assignment: &HashMap<i64, MatchSlot>,
+    has_vr: bool,
+) -> BracketResult {
+    let mut matches = empty_matches();
+    let athletes_slice = athletes;
     // Populate Round 1 matches
     let mut initial_round_1: HashMap<(u32, SlotPosition), i64> = HashMap::new();
     let athlete_map: HashMap<i64, &AthleteInput> = athletes_slice.iter().map(|a| (a.id, a)).collect();
 
-    for (&a_id, slot) in &best_assignment {
+    for (&a_id, slot) in assignment {
         if let Some(r1_map) = matches.get_mut(&1) {
             if let Some(match_slot) = r1_map.get_mut(&slot.match_num) {
                 match slot.position {
@@ -1019,6 +1058,119 @@ mod tests {
             }
         }
         None
+    }
+
+    fn athlete(id: i64, group: &str) -> AthleteInput {
+        AthleteInput {
+            id,
+            name: format!("A{}", id),
+            is_priority: false,
+            group_key: group.to_string(),
+            secondary_key: None,
+        }
+    }
+
+    fn slot(match_num: u32, first: bool) -> MatchSlot {
+        MatchSlot {
+            match_num,
+            position: if first { SlotPosition::Atlet1 } else { SlotPosition::Atlet2 },
+        }
+    }
+
+    #[test]
+    fn test_manual_assignment_keeps_pairings_and_advances_byes() {
+        let athletes: Vec<AthleteInput> =
+            (1..=5).map(|i| athlete(i, &format!("K{}", i))).collect();
+        // 1 vs 2 in match 1; 3, 4, 5 alone in their matches (they get BYEs).
+        let assignment: HashMap<i64, MatchSlot> = [
+            (1, slot(1, true)),
+            (2, slot(1, false)),
+            (3, slot(3, true)),
+            (4, slot(5, true)),
+            (5, slot(8, false)),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = build_bracket_from_assignment(&athletes, &assignment, false);
+
+        assert_eq!(find_athlete(&res, 1), Some((1, 1, true)));
+        assert_eq!(find_athlete(&res, 2), Some((1, 1, false)));
+        for id in 1..=5 {
+            let count: usize = res.matches.values()
+                .flat_map(|m| m.values())
+                .filter(|m| m.atlet1_id == Some(id) || m.atlet2_id == Some(id))
+                .count();
+            assert_eq!(count, 1, "athlete {} must appear exactly once", id);
+        }
+        // A lone athlete never stays in round 1: it is advanced past its BYE.
+        for m in res.matches[&1].values() {
+            assert_eq!(m.atlet1_id.is_some(), m.atlet2_id.is_some(), "round 1 match is a fight or empty");
+        }
+        assert_eq!(res.collision_count, 0);
+    }
+
+    /// Round-1 counts behind a built bracket. An athlete moved up by BYEs is counted in the
+    /// first round-1 bout of the subtree it came from (it was alone there).
+    fn r1_counts_of(res: &BracketResult) -> [usize; 8] {
+        let mut counts = [0usize; 8];
+        for (&r, by_u) in &res.matches {
+            if r > 4 {
+                continue;
+            }
+            for (&u, m) in by_u {
+                for (p, id) in [(0u32, m.atlet1_id), (1u32, m.atlet2_id)] {
+                    if id.is_none() {
+                        continue;
+                    }
+                    let idx = if r == 1 { (u - 1) as usize } else { ((2 * (u - 1) + p) << (r - 2)) as usize };
+                    counts[idx] += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn test_random_drawing_never_has_unreachable_bouts() {
+        for n in 2..=16i64 {
+            for _ in 0..40 {
+                let athletes: Vec<AthleteInput> = (1..=n).map(|i| athlete(i, &format!("K{}", i % 4))).collect();
+                let res = build_bracket_in_memory(&athletes, 1, false);
+                let counts = r1_counts_of(&res);
+                assert!(unreachable_bouts(&counts).is_empty(), "n={n}: random drawing gave {:?}", counts);
+            }
+        }
+    }
+
+    #[test]
+    fn test_unreachable_bouts() {
+        // 6 athletes alone in bouts 1-6: quarterfinal 12 is empty, so semifinal 14 waits forever.
+        assert_eq!(unreachable_bouts(&[1, 1, 1, 1, 1, 1, 0, 0]), vec![14]);
+        // Everyone in the first quarter: semifinal 13 and the final have an empty side.
+        assert_eq!(unreachable_bouts(&[2, 2, 0, 0, 0, 0, 0, 0]), vec![13, 15]);
+        // A round-1 winner whose neighbouring bout is empty waits forever in the quarterfinal.
+        assert_eq!(unreachable_bouts(&[2, 0, 1, 1, 1, 1, 1, 1]), vec![9]);
+        // A lone athlete opposite an empty side is a plain BYE.
+        assert!(unreachable_bouts(&[1, 0, 1, 1, 1, 1, 1, 1]).is_empty());
+        assert!(unreachable_bouts(&[1, 1, 1, 1, 1, 1, 1, 1]).is_empty());
+        assert!(unreachable_bouts(&[2, 2, 2, 2, 2, 2, 2, 2]).is_empty());
+    }
+
+    #[test]
+    fn test_manual_assignment_counts_collision() {
+        let athletes = vec![athlete(1, "K1"), athlete(2, "K1"), athlete(3, "K2"), athlete(4, "K3")];
+        let assignment: HashMap<i64, MatchSlot> = [
+            (1, slot(1, true)),
+            (2, slot(1, false)),
+            (3, slot(5, true)),
+            (4, slot(5, false)),
+        ]
+        .into_iter()
+        .collect();
+        let res = build_bracket_from_assignment(&athletes, &assignment, true);
+        assert_eq!(res.collision_count, 1);
+        assert!(res.matches[&1][&1].vr1 && res.matches[&1][&1].vr2, "VR flags set on placed slots");
     }
 
     #[test]

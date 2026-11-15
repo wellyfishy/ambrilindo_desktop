@@ -5,8 +5,40 @@ use std::time::Instant;
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use std::sync::atomic::{AtomicI64, Ordering};
+
+/// One HTTP client for every call to the web (connection pool and TLS roots are set up once
+/// instead of per request; a client per queue item cost memory and a TLS setup every 12 s).
+fn shared_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(2)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+/// The shared client with a per-request timeout (same call shape as `reqwest::Client`).
+#[derive(Clone, Copy)]
+pub struct TimedClient {
+    timeout: std::time::Duration,
+}
+
+impl TimedClient {
+    pub fn new(timeout: std::time::Duration) -> Self {
+        Self { timeout }
+    }
+    pub fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        shared_http_client().get(url).timeout(self.timeout)
+    }
+    pub fn post(&self, url: &str) -> reqwest::RequestBuilder {
+        shared_http_client().post(url).timeout(self.timeout)
+    }
+}
 
 /// Authorization for one request to the web sync API.
 pub struct SyncAuth {
@@ -32,6 +64,50 @@ pub struct SyncAuthStatus {
     pub message: Option<String>,
     /// Set while the queue is paused because the web refused this computer (401/403).
     pub blocked_reason: Option<String>,
+}
+
+/// Tests pick the credentials the desktop sends (the real license is verified against the
+/// production public key, and debug builds always have a legacy fallback token).
+#[cfg(test)]
+pub mod test_auth {
+    use super::SyncAuth;
+    #[derive(Clone)]
+    pub enum Mode {
+        License { token: String, device_id: String },
+        Legacy(String),
+        None,
+    }
+    static MODE: std::sync::Mutex<Option<Mode>> = std::sync::Mutex::new(None);
+    pub fn set(mode: Option<Mode>) {
+        *MODE.lock().unwrap() = mode;
+        super::SyncService::clear_auth_block();
+    }
+    pub(super) fn get() -> Option<Result<SyncAuth, String>> {
+        let mode = MODE.lock().unwrap().clone()?;
+        Some(match mode {
+            Mode::License { token, device_id } => Ok(SyncAuth { authorization: format!("License {token}"), device_id: Some(device_id), mode: "license" }),
+            Mode::Legacy(t) => Ok(SyncAuth { authorization: format!("Bearer {t}"), device_id: None, mode: "legacy" }),
+            Mode::None => Err("Sinkron web butuh lisensi aktif.".to_string()),
+        })
+    }
+}
+
+/// One queue sender per database at a time (see `process_sync_queue`).
+struct QueueRun {
+    lock: tokio::sync::Mutex<()>,
+    rerun: std::sync::atomic::AtomicBool,
+}
+
+fn queue_run_for(db_path: Option<&PathBuf>) -> Arc<QueueRun> {
+    static RUNS: std::sync::Mutex<Vec<(String, Arc<QueueRun>)>> = std::sync::Mutex::new(Vec::new());
+    let key = db_path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let mut runs = RUNS.lock().unwrap();
+    if let Some((_, r)) = runs.iter().find(|(k, _)| *k == key) {
+        return r.clone();
+    }
+    let r = Arc::new(QueueRun { lock: tokio::sync::Mutex::new(()), rerun: std::sync::atomic::AtomicBool::new(false) });
+    runs.push((key, r.clone()));
+    r
 }
 
 /// After a 401/403 the queue pauses this long instead of hammering the server every tick.
@@ -172,6 +248,10 @@ impl SyncService {
     /// How this computer authenticates to the web sync API: the activated license (preferred; the web
     /// only lets it touch the events granted to that license), else the legacy shared token.
     pub fn auth_headers() -> Result<SyncAuth, String> {
+        #[cfg(test)]
+        if let Some(forced) = test_auth::get() {
+            return forced;
+        }
         if let Some((token, device_id)) = crate::license::sync_credentials() {
             return Ok(SyncAuth { authorization: format!("License {token}"), device_id: Some(device_id), mode: "license" });
         }
@@ -347,20 +427,7 @@ impl SyncService {
 
     /// Tests connectivity with target server URL
     pub async fn ping_server(url: &str) -> PingResult {
-        let client = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(3500))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return PingResult {
-                    success: false,
-                    status_code: None,
-                    latency_ms: 0,
-                    message: format!("Gagal inisialisasi HTTP client: {}", e),
-                }
-            }
-        };
+        let client = TimedClient::new(std::time::Duration::from_millis(3500));
 
         let target_url = format!("{}/api/sync/events/", url.trim_end_matches('/'));
         let auth = match Self::auth_headers() {
@@ -414,10 +481,7 @@ impl SyncService {
 
     /// Fetches all public events from hosted server
     pub async fn fetch_hosted_events(url: &str) -> Result<Vec<HostedEventOption>, String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(5000))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = TimedClient::new(std::time::Duration::from_millis(5000));
 
         let target_url = format!("{}/api/sync/events/", url.trim_end_matches('/'));
         let auth = Self::auth_headers()?;
@@ -631,10 +695,7 @@ impl SyncService {
             }
         };
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = TimedClient::new(std::time::Duration::from_secs(30));
 
         let target_url = format!(
             "{}/api/sync/export-atlet/{}/",
@@ -1027,10 +1088,7 @@ impl SyncService {
         let media_dir = Self::get_media_dir(db_path).join("logo_utusan");
         let _ = std::fs::create_dir_all(&media_dir);
 
-        let img_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap_or_default();
+        let img_client = TimedClient::new(std::time::Duration::from_secs(10));
 
         for (u_id, u_name, logo_url) in utusan_logo_tasks {
             let mut target_url = logo_url;
@@ -1325,10 +1383,7 @@ impl SyncService {
             "is_full_sync": is_full_sync,
         });
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = TimedClient::new(std::time::Duration::from_secs(30));
 
         let target_url = format!("{}/api/sync/push-bagan/", sync_cfg.url.trim_end_matches('/'));
         let auth = Self::auth_headers()?;
@@ -1432,18 +1487,24 @@ impl SyncService {
 
             let kode_realtime = format!("{}-{}-{}", event_code, b_id, d_id);
 
-            // Compute next match
+            // Compute next match. The final (round 4) has none: round 5 rows are not a bout the
+            // winner plays, and sending one made the web put the champion there instead of
+            // setting juara 1 / 2.
             let next_round = round + 1;
             let next_urutan = (urutan + 1) / 2;
-            let next_db_id: Option<i64> = sqlx::query_scalar(
-                "SELECT id FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND urutan = ?"
-            )
-            .bind(b_id)
-            .bind(next_round)
-            .bind(next_urutan)
-            .fetch_optional(pool)
-            .await
-            .unwrap_or(None);
+            let next_db_id: Option<i64> = if round >= 4 {
+                None
+            } else {
+                sqlx::query_scalar(
+                    "SELECT id FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND urutan = ?"
+                )
+                .bind(b_id)
+                .bind(next_round)
+                .bind(next_urutan)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None)
+            };
 
             let next_kr = next_db_id.map(|nid| format!("{}-{}-{}", event_code, b_id, nid));
             let target_slot = if urutan % 2 == 1 { "atlet1" } else { "atlet2" };
@@ -1518,10 +1579,7 @@ impl SyncService {
             "champions": champions_payload,
         });
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = TimedClient::new(std::time::Duration::from_secs(30));
 
         let target_url =
             format!("{}/api/sync/force-results/", sync_cfg.url.trim_end_matches('/'));
@@ -1739,7 +1797,10 @@ impl SyncService {
 
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) {
                 kode_realtime = v.get("kode_realtime").and_then(|s| s.as_str()).map(|s| s.to_string());
-                ring = v.get("ring").and_then(|s| s.as_i64()).map(|i| i as i32);
+                // Payloads carry the tatami as `ring_number` (a string); older rows used `ring`.
+                ring = v.get("ring_number").or_else(|| v.get("ring")).and_then(|s| {
+                    s.as_i64().or_else(|| s.as_str().and_then(|t| t.trim().parse::<i64>().ok()))
+                }).map(|i| i as i32);
                 round = v.get("round").and_then(|s| s.as_i64()).map(|i| i as i32);
                 urutan = v.get("urutan").and_then(|s| s.as_i64()).map(|i| i as i32);
                 
@@ -1808,17 +1869,26 @@ impl SyncService {
         Self::clear_auth_block();
         let auth = Self::auth_headers()?;
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
+        // Claim it, so the background worker does not send the same row at the same time.
+        let claimed = sqlx::query(
+            "UPDATE backend_syncqueue SET status = 'processing', updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? AND status IN ('pending', 'failed')"
+        )
+        .bind(item_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() == 1;
+        if !claimed {
+            return Err(format!("Item #{} sedang dikirim atau sudah terkirim", item_id));
+        }
 
-        let payload_json: serde_json::Value = serde_json::from_str(&payload_str)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let client = TimedClient::new(std::time::Duration::from_secs(5));
 
         match auth
             .apply(client.post(&url))
-            .json(&payload_json)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(payload_str)
             .send()
             .await
         {
@@ -1833,7 +1903,12 @@ impl SyncService {
                 Ok(true)
             }
             Ok(resp) => {
+                let refused = matches!(resp.status().as_u16(), 401 | 403);
                 let err_msg = Self::http_error(resp).await;
+                if refused {
+                    // Same rule as the worker: the web refused this computer, pause sending.
+                    Self::set_auth_block(&err_msg);
+                }
                 sqlx::query(
                     "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
                 )
@@ -1888,6 +1963,9 @@ impl SyncService {
         for id in items {
             if Self::retry_single_item(pool, db_path, id).await.is_ok() {
                 success_count += 1;
+            } else if AUTH_BLOCKED_UNTIL.load(Ordering::Relaxed) > now_secs() {
+                // Refused (401/403): the rest would be refused too, stop instead of hammering the web.
+                break;
             }
         }
 
@@ -1936,6 +2014,32 @@ impl SyncService {
         pool: &Pool<Sqlite>,
         db_path: Option<&PathBuf>,
     ) -> Result<(usize, usize), String> {
+        // One sender at a time: the 12 s worker and the task spawned after every save would
+        // otherwise pick the same row and send it twice, or send row 2 before row 1 is done.
+        // A caller that finds a run in progress asks it to look again before it stops.
+        let run = queue_run_for(db_path);
+        let Ok(_guard) = run.lock.try_lock() else {
+            run.rerun.store(true, Ordering::SeqCst);
+            return Ok((0, 0));
+        };
+        let mut total = (0usize, 0usize);
+        loop {
+            run.rerun.store(false, Ordering::SeqCst);
+            let (s, f) = Self::process_sync_queue_once(pool, db_path).await?;
+            total.0 += s;
+            total.1 += f;
+            // Stop when nobody asked for another look, or the queue just paused/halted
+            // (a rerun right away would only repeat the same refused/offline request).
+            if !run.rerun.load(Ordering::SeqCst) || f > 0 {
+                return Ok(total);
+            }
+        }
+    }
+
+    async fn process_sync_queue_once(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+    ) -> Result<(usize, usize), String> {
         let mut synced_count = 0;
         let mut failed_count = 0;
 
@@ -1955,6 +2059,8 @@ impl SyncService {
         let Ok(auth) = Self::auth_headers() else {
             return Ok((0, 0));
         };
+        let base_url = Self::get_sync_config(db_path).url.trim_end_matches('/').to_string();
+        let client = TimedClient::new(std::time::Duration::from_secs(6));
 
         loop {
             // Find oldest active pending or failed item whose event has is_live_sync_enabled = 1 (or no event)
@@ -1982,25 +2088,27 @@ impl SyncService {
             let payload_str: String = r.get("payload");
             let retry_count: i32 = r.get("retry_count");
 
-            // Mark as processing
-            let _ = sqlx::query("UPDATE backend_syncqueue SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(item_id)
-                .execute(pool)
-                .await;
+            // Claim the row (a manual "Coba lagi" may have taken it in the meantime).
+            let claimed = sqlx::query(
+                "UPDATE backend_syncqueue SET status = 'processing', updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND status IN ('pending', 'failed')"
+            )
+            .bind(item_id)
+            .execute(pool)
+            .await
+            .map(|r| r.rows_affected() == 1)
+            .unwrap_or(false);
+            if !claimed {
+                continue;
+            }
 
-            let sync_cfg = Self::get_sync_config(db_path);
-            let url = format!("{}/{}", sync_cfg.url.trim_end_matches('/'), endpoint.trim_start_matches('/'));
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(6))
-                .build()
-                .unwrap_or_default();
+            let url = format!("{}/{}", base_url, endpoint.trim_start_matches('/'));
 
-            let payload_json: serde_json::Value = serde_json::from_str(&payload_str)
-                .unwrap_or_else(|_| serde_json::json!({}));
-
+            // The payload is stored as JSON already: send it as is (no parse + re-serialize).
             match auth
                 .apply(client.post(&url))
-                .json(&payload_json)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(payload_str)
                 .send()
                 .await
             {
@@ -2088,51 +2196,38 @@ impl SyncService {
         Ok((synced_count, failed_count))
     }
 
-    /// Spawns a background worker daemon that retries pending/failed items every 12 seconds
+    /// Spawns the background worker that retries pending/failed items every 12 seconds.
+    /// It is a task on the app's async runtime: a dedicated OS thread with its own Tokio
+    /// runtime cost a thread stack and a second runtime just to sleep, and made the shared
+    /// HTTP client's connections live on two runtimes.
     pub fn spawn_sync_worker(
         db: Arc<Mutex<crate::db::DatabaseManager>>,
         app_handle: Option<tauri::AppHandle>,
-    ) -> std::thread::JoinHandle<()> {
-        std::thread::Builder::new()
-            .name("ambrilindo-sync-daemon".into())
-            .spawn(move || {
-                let rt = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        error!("Failed to create Tokio runtime for sync daemon: {}", e);
-                        return;
-                    }
+    ) {
+        tauri::async_runtime::spawn(async move {
+            info!("Ambrilindo Live Sync Background Daemon running (12s interval)");
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
+
+                let (pool_opt, db_path_opt) = {
+                    let db_guard = db.lock().await;
+                    (db_guard.get_pool_cloned(), db_guard.get_active_db_path_cloned())
                 };
 
-                rt.block_on(async move {
-                    info!("Ambrilindo Live Sync Background Daemon running (12s interval)");
-                    loop {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
-
-                        let (pool_opt, db_path_opt) = {
-                            let db_guard = db.lock().await;
-                            (db_guard.get_pool_cloned(), db_guard.get_active_db_path_cloned())
-                        };
-
-                        if let Some(pool) = pool_opt {
-                            if let Ok((synced, failed)) = Self::process_sync_queue(&pool, db_path_opt.as_ref()).await {
-                                if (synced > 0 || failed > 0) && app_handle.is_some() {
-                                    if let Some(app) = &app_handle {
-                                        let _ = app.emit("sync_queue_changed", serde_json::json!({
-                                            "synced": synced,
-                                            "failed": failed
-                                        }));
-                                    }
-                                }
+                if let Some(pool) = pool_opt {
+                    if let Ok((synced, failed)) = Self::process_sync_queue(&pool, db_path_opt.as_ref()).await {
+                        if (synced > 0 || failed > 0) && app_handle.is_some() {
+                            if let Some(app) = &app_handle {
+                                let _ = app.emit("sync_queue_changed", serde_json::json!({
+                                    "synced": synced,
+                                    "failed": failed
+                                }));
                             }
                         }
                     }
-                });
-            })
-            .expect("Failed to spawn sync daemon thread")
+                }
+            }
+        });
     }
 
     /// Clears all queue items
