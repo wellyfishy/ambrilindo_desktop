@@ -3,7 +3,7 @@
   import { invoke, withHostParam } from "$lib/api_client";
   import { listen } from "@tauri-apps/api/event";
   import type { ActiveChannel, AppMode, BaganItem, EventItem, FestivalFormat, FestivalFormatInfo, TatamiItem } from "$lib/types";
-  import { initLiveSync, getLiveTatamisForBagan, subscribeLiveSync } from "$lib/liveSync";
+  import { initLiveSync, getLiveTatamisForBagan, runningTatamis, subscribeLiveSync } from "$lib/liveSync";
   import { hasModule } from "$lib/license.svelte";
 
   interface MonitorOption {
@@ -161,7 +161,7 @@
     onSelectChannel({ type: item.type, id: item.id, name: item.name, subtitle: item.subtitle });
   }
 
-  let liveTatamiCount = $derived(tatamis.filter((t) => !!t.detail_bagan_id).length);
+  let liveTatamiCount = $derived(liveSyncVersion >= 0 ? runningTatamis(tatamis).length : 0);
 
   let collapsed = $state<Record<string, boolean>>({});
   function toggleGroup(key: string) {

@@ -1422,6 +1422,164 @@ impl SyncService {
         Ok(msg)
     }
 
+    /// Sends the Jadwal (days, rows, cells) and every tatami's live status to the web's
+    /// "Roster & live tatami" (`api/sync/push-roster/`, same payload as the old local app).
+    /// The web replaces its roster for the event and links cells to bagans by name.
+    pub async fn push_roster_to_hosted(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+        local_event_id: i64,
+    ) -> Result<String, String> {
+        let sync_cfg = Self::get_sync_config(db_path);
+        let mapping = Self::get_event_mapping(db_path, local_event_id, None, &sync_cfg.mode);
+        let Some(hosted_event_id) = mapping.hosted_event_id else {
+            return Err("Event lokal belum dihubungkan ke Event di Web Public. Silakan pilih event di tombol Hubungkan ke Event Web terlebih dahulu.".to_string());
+        };
+
+        let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+
+        // 1. Tatamis with their live status
+        let tatami_numbers: Vec<i64> = sqlx::query_scalar(
+            "SELECT tatami_number FROM backend_tatami WHERE event_id = ? AND tatami_number IS NOT NULL ORDER BY tatami_number",
+        )
+        .bind(local_event_id)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| format!("Gagal memuat tatami: {}", e))?;
+        let mut tatamis = Vec::new();
+        for n in &tatami_numbers {
+            let live = crate::db::DatabaseManager::tatami_live_payload(&mut conn, local_event_id, *n).await;
+            tatamis.push(serde_json::json!({
+                "tatami_number": n,
+                "is_active": live["is_active"],
+                "current_category": live["category_name"],
+                "current_match_label": live["match_label"],
+                "current_atlet_aka": live["atlet_aka"],
+                "current_atlet_ao": live["atlet_ao"],
+                "kode_realtime": live["kode_realtime"],
+            }));
+        }
+
+        // Entries per category (teams count once: their members carry a MEMBER_ code)
+        let counts: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT nomor_tanding_id, COUNT(*) FROM backend_atlet
+              WHERE event_id = ? AND nomor_tanding_id IS NOT NULL
+                AND (additional_code IS NULL OR additional_code NOT LIKE 'MEMBER_%')
+              GROUP BY nomor_tanding_id",
+        )
+        .bind(local_event_id)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap_or_default();
+        let count_of: std::collections::HashMap<i64, i64> = counts.into_iter().collect();
+
+        // 2. Days, rows, cells
+        let days: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+            "SELECT id, [order], tanggal FROM backend_timetableday WHERE event_id = ? ORDER BY [order], id",
+        )
+        .bind(local_event_id)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| format!("Gagal memuat jadwal: {}", e))?;
+        let mut days_payload = Vec::new();
+        let mut cell_total = 0usize;
+        for (day_id, order, tanggal) in days {
+            let rows: Vec<(i64, i64, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT id, [order], row_type, time_label, label_text FROM backend_timetablerow WHERE day_id = ? ORDER BY [order], id",
+            )
+            .bind(day_id)
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap_or_default();
+            let mut rows_payload = Vec::new();
+            for (row_id, row_order, row_type, time_label, label_text) in rows {
+                let row_type = row_type.unwrap_or_else(|| "slot".into());
+                let mut cells_payload = Vec::new();
+                if row_type == "slot" {
+                    let cells: Vec<(Option<i64>, Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
+                        "SELECT t.tatami_number, c.nomor_tanding_id, nt.nama_nomor_tanding, c.custom_text
+                           FROM backend_timetablecell c
+                           JOIN backend_tatami t ON c.tatami_id = t.id
+                           LEFT JOIN backend_nomortanding nt ON c.nomor_tanding_id = nt.id
+                          WHERE c.row_id = ?
+                          ORDER BY t.tatami_number",
+                    )
+                    .bind(row_id)
+                    .fetch_all(&mut *conn)
+                    .await
+                    .unwrap_or_default();
+                    for (t_num, nt_id, nt_name, custom_text) in cells {
+                        let Some(t_num) = t_num else { continue };
+                        let name = nt_name.clone().or_else(|| custom_text.clone()).unwrap_or_default();
+                        let atlet = nt_id.and_then(|id| count_of.get(&id).copied()).unwrap_or(0);
+                        let bouts = if atlet > 1 { atlet - 1 } else { atlet };
+                        cells_payload.push(serde_json::json!({
+                            "tatami_number": t_num,
+                            "nomor_tanding_name": name,
+                            "category_name": name,
+                            "total_matches": bouts,
+                            "total_atlets": atlet,
+                            "estimated_time": custom_text.clone().unwrap_or_default(),
+                            "custom_text": custom_text.unwrap_or_default(),
+                        }));
+                    }
+                    cell_total += cells_payload.len();
+                }
+                rows_payload.push(serde_json::json!({
+                    "order": row_order,
+                    "row_type": row_type,
+                    "time_label": time_label.unwrap_or_default(),
+                    "label_text": label_text.unwrap_or_default(),
+                    "cells": cells_payload,
+                }));
+            }
+            let label = match &tanggal {
+                Some(t) if !t.trim().is_empty() => format!("Hari {} ({})", order + 1, t),
+                _ => format!("Hari {}", order + 1),
+            };
+            days_payload.push(serde_json::json!({
+                "order": order,
+                "tanggal": tanggal.filter(|t| !t.trim().is_empty()),
+                "label": label,
+                "rows": rows_payload,
+            }));
+        }
+        drop(conn);
+
+        if days_payload.is_empty() {
+            return Err("Jadwal event ini masih kosong. Buat jadwal di channel Jadwal dulu.".to_string());
+        }
+
+        let payload = serde_json::json!({
+            "event_id": hosted_event_id,
+            "tatamis": tatamis,
+            "days": days_payload,
+        });
+        let client = TimedClient::new(std::time::Duration::from_secs(30));
+        let target_url = format!("{}/api/sync/push-roster/", sync_cfg.url.trim_end_matches('/'));
+        let auth = Self::auth_headers()?;
+        let resp = auth
+            .apply(client.post(&target_url))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("Gagal mengirim roster ke server web: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(Self::http_error(resp).await);
+        }
+        let body: serde_json::Value = resp.json().await.map_err(|e| format!("Respon server tidak valid: {}", e))?;
+        if body.get("status").and_then(|s| s.as_str()) != Some("success") {
+            return Err(body.get("error").and_then(|e| e.as_str()).unwrap_or("Server web gagal menyimpan roster").to_string());
+        }
+        let msg = body
+            .get("message")
+            .and_then(|m| m.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Roster terkirim ({} sel jadwal).", cell_total));
+        info!("{}", msg);
+        Ok(msg)
+    }
+
     /// Force synchronizes finished matches and champions snapshot to web server
     pub async fn force_sync_results_to_hosted(
         pool: &Pool<Sqlite>,
@@ -2103,6 +2261,23 @@ impl SyncService {
             }
 
             let url = format!("{}/{}", base_url, endpoint.trim_start_matches('/'));
+
+            // Tatami status rows are queued with the local event: the web needs its own event id.
+            let payload_str = if endpoint.contains("tatami-status") {
+                let local_event: Option<i64> = r.get("event_id");
+                match (serde_json::from_str::<serde_json::Value>(&payload_str), local_event) {
+                    (Ok(mut v), Some(local)) if v.get("event_id").is_none() => {
+                        let mode = Self::get_sync_config(db_path).mode;
+                        if let Some(hosted) = Self::get_event_mapping(db_path, local, None, &mode).hosted_event_id {
+                            v["event_id"] = serde_json::json!(hosted);
+                        }
+                        v.to_string()
+                    }
+                    _ => payload_str,
+                }
+            } else {
+                payload_str
+            };
 
             // The payload is stored as JSON already: send it as is (no parse + re-serialize).
             match auth

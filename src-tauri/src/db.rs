@@ -386,10 +386,21 @@ impl DatabaseManager {
                 t.tatami_number, 
                 CASE WHEN db.selesai = 0 THEN t.detail_bagan_id ELSE NULL END as detail_bagan_id,
                 CASE WHEN db.selesai = 0 THEN db.bagan_id ELSE NULL END as bagan_id,
-                CASE WHEN db.selesai = 0 THEN b.nama_bagan ELSE NULL END as nama_bagan
+                CASE WHEN db.selesai = 0 THEN b.nama_bagan ELSE NULL END as nama_bagan,
+                db.urutan as urutan,
+                a1.nama_atlet as atlet1_nama,
+                COALESCE(u1.nama_utusan, p1.nama_perguruan) as atlet1_kontingen,
+                a2.nama_atlet as atlet2_nama,
+                COALESCE(u2.nama_utusan, p2.nama_perguruan) as atlet2_kontingen
             FROM backend_tatami t
             LEFT JOIN backend_detailbagan db ON t.detail_bagan_id = db.id AND db.selesai = 0
             LEFT JOIN backend_bagan b ON db.bagan_id = b.id
+            LEFT JOIN backend_atlet a1 ON db.atlet1_id = a1.id
+            LEFT JOIN backend_utusan u1 ON a1.utusan_id = u1.id
+            LEFT JOIN backend_perguruan p1 ON a1.perguruan_id = p1.id
+            LEFT JOIN backend_atlet a2 ON db.atlet2_id = a2.id
+            LEFT JOIN backend_utusan u2 ON a2.utusan_id = u2.id
+            LEFT JOIN backend_perguruan p2 ON a2.perguruan_id = p2.id
             WHERE t.event_id = ? 
             ORDER BY t.tatami_number ASC"#
         )
@@ -419,6 +430,7 @@ impl DatabaseManager {
             detail_bagan_id: None,
             bagan_id: None,
             nama_bagan: None,
+            ..Default::default()
         })
     }
 
@@ -753,6 +765,75 @@ impl DatabaseManager {
         if let Err(e) = res {
             tracing::warn!("live sync: gagal memasukkan {} ke antrean: {}", endpoint, e);
         }
+    }
+
+    /// Live status of one tatami for the web's "Live tatami" (`api/sync/tatami-status/`), in
+    /// the shape the old local app sent. `event_id` (the web's id) is filled in by the queue
+    /// worker from the event mapping.
+    pub(crate) async fn tatami_live_payload(
+        conn: &mut sqlx::SqliteConnection,
+        event_id: i64,
+        tatami_number: i64,
+    ) -> serde_json::Value {
+        type Row = (i64, i64, i64, i64, bool, Option<String>, Option<String>, Option<String>, Option<String>);
+        let row: Option<Row> = sqlx::query_as(
+            r#"
+            SELECT d.id, d.bagan_id, d.round, d.urutan, d.selesai,
+                   COALESCE(nt.nama_nomor_tanding, b.nama_bagan), a1.nama_atlet, a2.nama_atlet, e.kode_event
+            FROM backend_tatami t
+            JOIN backend_detailbagan d ON t.detail_bagan_id = d.id
+            JOIN backend_bagan b ON d.bagan_id = b.id
+            JOIN backend_event e ON e.id = t.event_id
+            LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id
+            LEFT JOIN backend_atlet a1 ON d.atlet1_id = a1.id
+            LEFT JOIN backend_atlet a2 ON d.atlet2_id = a2.id
+            WHERE t.event_id = ? AND t.tatami_number = ?
+            LIMIT 1
+            "#,
+        )
+        .bind(event_id)
+        .bind(tatami_number)
+        .fetch_optional(&mut *conn)
+        .await
+        .unwrap_or(None);
+        match row {
+            Some((match_id, bagan_id, round, urutan, false, category, aka, ao, kode_event)) => {
+                let ev_code = kode_event.unwrap_or_else(|| format!("EV{}", event_id));
+                serde_json::json!({
+                    "tatami_number": tatami_number,
+                    "is_active": true,
+                    "category_name": category.unwrap_or_default(),
+                    "match_label": format!("Babak {} - Partai #{}", round, urutan),
+                    "atlet_aka": aka.unwrap_or_else(|| "-".into()),
+                    "atlet_ao": ao.unwrap_or_else(|| "-".into()),
+                    "kode_realtime": format!("{}-{}-{}", ev_code, bagan_id, match_id),
+                })
+            }
+            _ => serde_json::json!({
+                "tatami_number": tatami_number,
+                "is_active": false,
+                "category_name": "",
+                "match_label": "",
+                "atlet_aka": "",
+                "atlet_ao": "",
+                "kode_realtime": "",
+            }),
+        }
+    }
+
+    /// Queues the tatami's current live status for the web, if live sync is on for the event.
+    pub(crate) async fn enqueue_tatami_status(conn: &mut sqlx::SqliteConnection, event_id: i64, tatami_number: i64) {
+        let live: bool = sqlx::query_scalar("SELECT COALESCE(is_live_sync_enabled, 0) FROM backend_event WHERE id = ?")
+            .bind(event_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(false);
+        if !live {
+            return;
+        }
+        let payload = Self::tatami_live_payload(&mut *conn, event_id, tatami_number).await;
+        Self::enqueue_live_sync(&mut *conn, Some(event_id), "api/sync/tatami-status/", payload).await;
     }
 
     /// Where the desktop just put this bout's winner, so the web can move it the same way:
@@ -1293,7 +1374,7 @@ impl DatabaseManager {
                      WHERE b.nomor_tanding_id = ?
                        AND NOT (UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REPECHAGE%')
                        AND d.team = 0 AND d.selesai = 1 AND (d.atlet1_id = ? OR d.atlet2_id = ?)
-                     ORDER BY d.round ASC, b.pool DESC, d.urutan ASC"
+                     ORDER BY (COALESCE(b.pool, 1) = 0) ASC, d.round ASC, b.pool DESC, d.urutan ASC"
                 )
                 .bind(nt_id)
                 .bind(fid)
@@ -1507,6 +1588,12 @@ impl DatabaseManager {
                 .map_err(|e| format!("Gagal menyinkronkan juara 3B ke bagan utama: {}", e))?;
         }
 
+        // From now on the category's bronze comes from the referchange only (empty until
+        // decided), not from the semifinal losers.
+        if let Some(nt) = nomor_tanding_id {
+            Self::bronze_from_repechage(&mut tx, nt).await;
+        }
+
         tx.commit().await.map_err(|e| format!("Gagal komit transaksi: {}", e))?;
 
         Ok(RepechageResult {
@@ -1515,10 +1602,14 @@ impl DatabaseManager {
             matches_created,
             pool_a_count: pool_a_losers.len(),
             pool_b_count: pool_b_losers.len(),
-            message: format!(
-                "Bagan Referchange berhasil dibuat dengan {} partai (Pool A: {} atlet, Pool B: {} atlet).",
-                matches_created, pool_a_losers.len(), pool_b_losers.len()
-            ),
+            message: if matches_created == 0 {
+                "Tidak ada partai referchange: setiap finalis hanya mengalahkan satu lawan, jadi Juara 3A dan 3B langsung ditetapkan.".to_string()
+            } else {
+                format!(
+                    "Bagan Referchange berhasil dibuat dengan {} partai (Pool A: {} atlet, Pool B: {} atlet).",
+                    matches_created, pool_a_losers.len(), pool_b_losers.len()
+                )
+            },
         })
     }
 
@@ -4212,6 +4303,30 @@ impl DatabaseManager {
     }
 
     /// Saves a match result in detail_bagan and advances the winner in tournament brackets
+    /// Copies the referchange bagan's Juara 3A/3B to every other bagan of the category, if the
+    /// category has a referchange (no referchange: the semifinal losers stay as bronze).
+    async fn bronze_from_repechage(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, nomor_tanding_id: i64) {
+        let rep: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT juara_3a_id, juara_3b_id FROM backend_bagan WHERE nomor_tanding_id = ?
+               AND (UPPER(COALESCE(nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(nama_bagan, '')) LIKE '%REPECHAGE%')
+             ORDER BY id LIMIT 1",
+        )
+        .bind(nomor_tanding_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .unwrap_or(None);
+        let Some((j3a, j3b)) = rep else { return };
+        let _ = sqlx::query(
+            "UPDATE backend_bagan SET juara_3a_id = ?, juara_3b_id = ? WHERE nomor_tanding_id = ?
+               AND NOT (UPPER(COALESCE(nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(nama_bagan, '')) LIKE '%REPECHAGE%')",
+        )
+        .bind(j3a)
+        .bind(j3b)
+        .bind(nomor_tanding_id)
+        .execute(&mut **tx)
+        .await;
+    }
+
     pub async fn save_match_result(&self, input: SaveMatchInput) -> Result<(), String> {
         let pool = self.get_pool()?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
@@ -4982,12 +5097,31 @@ impl DatabaseManager {
             }
         }
 
+        // A category with a referchange gets its bronze medals from the referchange only: the
+        // semifinal losers written above are replaced by what the referchange decided (still
+        // empty until its bronze bouts are played or a pool has a direct bronze).
+        if !is_repechage {
+            if let Some(nt) = nomor_tanding_id {
+                Self::bronze_from_repechage(&mut tx, nt).await;
+            }
+        }
+
         // Clear tatami active match if match completed
         if input.selesai {
+            let idle: Vec<(i64, i64)> = sqlx::query_as(
+                "SELECT event_id, tatami_number FROM backend_tatami WHERE detail_bagan_id = ? AND event_id IS NOT NULL AND tatami_number IS NOT NULL",
+            )
+            .bind(input.match_id)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap_or_default();
             let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id = ?")
                 .bind(input.match_id)
                 .execute(&mut *tx)
                 .await;
+            for (ev, num) in idle {
+                Self::enqueue_tatami_status(&mut tx, ev, num).await;
+            }
         }
 
         // 4. Enqueue into backend_syncqueue if live sync is enabled for this event
@@ -5122,6 +5256,63 @@ impl DatabaseManager {
     }
 
     /// Enqueues api/status/ (running) to backend_syncqueue and links the match to the tatami.
+    /// Ends a tatami's running-match link. With `only_match` it is cleared only while that match
+    /// is the linked one (a closing control panel must not clear a match opened since).
+    /// Returns the match that was running, if any.
+    pub async fn clear_tatami_running(
+        &self,
+        event_id: Option<i64>,
+        tatami_number: i32,
+        only_match: Option<i64>,
+    ) -> Result<Option<i64>, String> {
+        let pool = self.get_pool()?;
+        let event_id = match (event_id.filter(|e| *e > 0), only_match) {
+            (Some(e), _) => e,
+            (None, Some(mid)) => sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT b.event_id FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id WHERE d.id = ?",
+            )
+            .bind(mid)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Gagal memuat partai: {}", e))?
+            .flatten()
+            .ok_or_else(|| format!("Partai {} tidak ditemukan", mid))?,
+            (None, None) => return Err("Event tatami wajib diisi".into()),
+        };
+        let row: Option<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT id, detail_bagan_id FROM backend_tatami WHERE event_id = ? AND tatami_number = ? LIMIT 1",
+        )
+        .bind(event_id)
+        .bind(tatami_number)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat tatami: {}", e))?;
+        let Some((tatami_id, Some(running))) = row else {
+            return Ok(None);
+        };
+        if only_match.is_some_and(|m| m != running) {
+            return Ok(None);
+        }
+        let mut tx = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE id = ? AND detail_bagan_id = ?")
+            .bind(tatami_id)
+            .bind(running)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghentikan tatami: {}", e))?;
+        sqlx::query("UPDATE backend_detailbagan SET assigned_tatami_id = NULL WHERE id = ? AND selesai = 0")
+            .bind(running)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal melepas partai dari tatami: {}", e))?;
+        Self::enqueue_tatami_status(&mut tx, event_id, tatami_number as i64).await;
+        tx.commit().await.map_err(|e| format!("Gagal komit transaksi: {}", e))?;
+        Ok(Some(running))
+    }
+
     pub async fn notify_match_running(&self, match_id: i64, tatami_number: i32) -> Result<(), String> {
         let pool = self.get_pool()?;
 
@@ -5218,6 +5409,9 @@ impl DatabaseManager {
 
         let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
         Self::enqueue_live_sync(&mut conn, event_id, "api/status/", status_payload).await;
+        if let Some(ev) = event_id {
+            Self::enqueue_tatami_status(&mut conn, ev, tatami_number as i64).await;
+        }
 
         Ok(())
     }
@@ -5570,6 +5764,13 @@ impl DatabaseManager {
             let nt_bob = b.nt_is_bob.unwrap_or(false);
 
             if is_bob(b_name, nt_name, b_bob, nt_bob) || is_festival(b_name, nt_name) {
+                continue;
+            }
+            // Referchange: its bronze medals are written to the category's main bracket, and
+            // counting it would make a single-bracket category look split into pools (the
+            // main bracket, and every medal of the category, would then drop out).
+            let upper = b_name.to_uppercase();
+            if upper.contains("REFERCHANGE") || upper.contains("REPECHAGE") {
                 continue;
             }
 
@@ -7434,6 +7635,7 @@ impl DatabaseManager {
                 bagan_id: None,
                 event_id: Some(event_id),
                 nama_bagan: None,
+                ..Default::default()
             }]
         } else {
             tatamis
@@ -7842,6 +8044,7 @@ impl DatabaseManager {
                 bagan_id: None,
                 event_id: Some(event_id),
                 nama_bagan: None,
+                ..Default::default()
             }]
         } else {
             tatamis
@@ -10750,8 +10953,11 @@ impl DatabaseManager {
 
         let grand_total = summary_juara.total_gold + summary_juara.total_silver + summary_juara.total_bronze;
 
+        // Bracket pages: each category's bracket, then its referchange right after it (the
+        // medal summary leaves referchange out or sorts it last, since it has no kode).
+        let ordered = self.booklet_bracket_order(event_id, &summary_bagan.bagans).await;
         let mut category_brackets: Vec<TatamiBookletCategory> = Vec::new();
-        for (idx, b) in summary_bagan.bagans.iter().enumerate() {
+        for (idx, b) in ordered.iter().enumerate() {
             let matches = self.get_detail_bagan(b.id).await.unwrap_or_default();
             let matches_count = matches.len() as i64;
             let mut athlete_ids = std::collections::HashSet::new();
@@ -10795,6 +11001,182 @@ impl DatabaseManager {
             total_bronze: summary_juara.total_bronze,
             grand_total,
         })
+    }
+
+    /// Brackets grouped the way the Jadwal roster runs them: Day 1 Tatami 1 (in row order),
+    /// Day 1 Tatami 2, ..., then Day 2. A split category puts each part's bagans in the group
+    /// that plays it; a referchange follows its category's main bracket.
+    pub async fn get_bracket_groups(&self, event_id: i64) -> Result<Vec<crate::models::BracketGroup>, String> {
+        let pool = self.get_pool()?;
+        let cells: Vec<(i64, i32, Option<String>, i64, i64, i64, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT d.id, d.[order], d.tanggal, t.id, COALESCE(t.tatami_number, 0), c.nomor_tanding_id, c.part
+            FROM backend_timetablecell c
+            JOIN backend_timetablerow r ON c.row_id = r.id
+            JOIN backend_timetableday d ON r.day_id = d.id
+            JOIN backend_tatami t ON c.tatami_id = t.id
+            WHERE d.event_id = ? AND r.row_type = 'slot' AND c.nomor_tanding_id IS NOT NULL
+            ORDER BY d.[order] ASC, d.id ASC, t.tatami_number ASC, r.[order] ASC
+            "#,
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat jadwal bagan: {}", e))?;
+
+        let is_rep = |n: &str| {
+            let u = n.to_uppercase();
+            u.contains("REFERCHANGE") || u.contains("REPECHAGE")
+        };
+        let mut bagans_of: HashMap<i64, Vec<(i64, String, i64)>> = HashMap::new();
+        let mut groups: Vec<crate::models::BracketGroup> = Vec::new();
+        for (day_id, day_order, tanggal, tatami_id, tatami_number, nt_id, part) in cells {
+            if !bagans_of.contains_key(&nt_id) {
+                let rows: Vec<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
+                    "SELECT id, nama_bagan, pool FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ?
+                     ORDER BY CAST(COALESCE(kode, '9999') AS INTEGER) ASC, id ASC",
+                )
+                .bind(event_id)
+                .bind(nt_id)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+                bagans_of.insert(nt_id, rows.into_iter().map(|(id, n, p)| (id, n.unwrap_or_default(), p.unwrap_or(1))).collect());
+            }
+            let list = &bagans_of[&nt_id];
+            let picked = pick_part_bagans(list, normalize_split_part(part.as_deref()));
+            // main bracket(s) first, the referchange right after
+            let rep_ids: HashSet<i64> = list.iter().filter(|b| is_rep(&b.1)).map(|b| b.0).collect();
+            let mut ordered: Vec<i64> = picked.iter().copied().filter(|id| !rep_ids.contains(id)).collect();
+            ordered.extend(picked.iter().copied().filter(|id| rep_ids.contains(id)));
+
+            let same = groups.last().is_some_and(|g| g.day_id == day_id && g.tatami_id == tatami_id);
+            if !same {
+                groups.push(crate::models::BracketGroup {
+                    day_id,
+                    day_order,
+                    day_label: helper_format_day_label(day_order, &None),
+                    day_date: tanggal.filter(|t| !t.trim().is_empty()),
+                    tatami_id,
+                    tatami_number,
+                    bagan_ids: Vec::new(),
+                });
+            }
+            let g = groups.last_mut().unwrap();
+            for id in ordered {
+                if !g.bagan_ids.contains(&id) {
+                    g.bagan_ids.push(id);
+                }
+            }
+        }
+        Ok(groups)
+    }
+
+    /// Jadwal days of every bagan of the event, for the day filter of printed brackets.
+    /// A split category's pool bagans follow the day of their half, the final (and the
+    /// referchange) the day of the final.
+    pub async fn get_bagan_days(&self, event_id: i64) -> Result<crate::models::BaganDaysResult, String> {
+        let pool = self.get_pool()?;
+        let day_rows: Vec<(i64, i32, Option<String>)> = sqlx::query_as(
+            "SELECT id, [order], tanggal FROM backend_timetableday WHERE event_id = ? ORDER BY [order] ASC, id ASC",
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat hari jadwal: {}", e))?;
+        let days = day_rows
+            .iter()
+            .map(|(id, order, tanggal)| crate::models::TimetableDayOption {
+                id: *id,
+                order: *order,
+                label: helper_format_day_label(*order, tanggal),
+            })
+            .collect();
+
+        let cells: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT r.day_id, c.nomor_tanding_id, c.part
+            FROM backend_timetablecell c
+            JOIN backend_timetablerow r ON c.row_id = r.id
+            JOIN backend_timetableday d ON r.day_id = d.id
+            WHERE d.event_id = ? AND r.row_type = 'slot' AND c.nomor_tanding_id IS NOT NULL
+            "#,
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat sel jadwal: {}", e))?;
+
+        let mut bagans_of: HashMap<i64, Vec<(i64, String, i64)>> = HashMap::new();
+        let mut bagan_days: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (day_id, nt_id, part) in cells {
+            if !bagans_of.contains_key(&nt_id) {
+                let rows: Vec<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
+                    "SELECT id, nama_bagan, pool FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ?
+                     ORDER BY CAST(COALESCE(kode, '9999') AS INTEGER) ASC, id ASC",
+                )
+                .bind(event_id)
+                .bind(nt_id)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+                bagans_of.insert(nt_id, rows.into_iter().map(|(id, n, p)| (id, n.unwrap_or_default(), p.unwrap_or(1))).collect());
+            }
+            let picked = pick_part_bagans(&bagans_of[&nt_id], normalize_split_part(part.as_deref()));
+            for bagan_id in picked {
+                let list = bagan_days.entry(bagan_id).or_default();
+                if !list.contains(&day_id) {
+                    list.push(day_id);
+                }
+            }
+        }
+        Ok(crate::models::BaganDaysResult { days, bagan_days })
+    }
+
+    /// Results-booklet bracket order: the medal summary's bagans with every REFERCHANGE bagan
+    /// moved right after the bracket of its own category (also for pool-split categories,
+    /// whose referchange the summary leaves out). A referchange bracket carries no winners.
+    pub(crate) async fn booklet_bracket_order(&self, event_id: i64, bagans: &[SummaryBaganItem]) -> Vec<SummaryBaganItem> {
+        let is_rep = |name: &str| {
+            let u = name.to_uppercase();
+            u.contains("REFERCHANGE") || u.contains("REPECHAGE")
+        };
+        let rows: Vec<(i64, Option<i64>, Option<String>)> = match self.get_pool() {
+            Ok(pool) => sqlx::query_as("SELECT id, nomor_tanding_id, nama_bagan FROM backend_bagan WHERE event_id = ? ORDER BY id")
+                .bind(event_id)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let nt_of: HashMap<i64, i64> = rows.iter().filter_map(|(id, nt, _)| nt.map(|n| (*id, n))).collect();
+        let mut rep_of_nt: HashMap<i64, (i64, String)> = HashMap::new();
+        for (id, nt, name) in &rows {
+            let name = name.clone().unwrap_or_default();
+            if let (Some(nt), true) = (nt, is_rep(&name)) {
+                rep_of_nt.entry(*nt).or_insert((*id, name));
+            }
+        }
+        let mut out: Vec<SummaryBaganItem> = Vec::new();
+        let mut placed: HashSet<i64> = HashSet::new();
+        for b in bagans.iter().filter(|b| !is_rep(&b.nama_bagan)) {
+            out.push(b.clone());
+            placed.insert(b.id);
+            let Some(nt) = nt_of.get(&b.id) else { continue };
+            if let Some((rep_id, rep_name)) = rep_of_nt.get(nt) {
+                if placed.insert(*rep_id) {
+                    out.push(SummaryBaganItem {
+                        id: *rep_id,
+                        kode: b.kode.clone(),
+                        nama_bagan: rep_name.clone(),
+                        tipe_tanding: b.tipe_tanding.clone(),
+                        is_selesai: false,
+                        winners: Vec::new(),
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// Fetches all candidate categories available for creating a Best of the Best (BOB) bracket

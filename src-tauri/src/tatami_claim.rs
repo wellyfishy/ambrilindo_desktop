@@ -112,6 +112,14 @@ pub fn release(tatami: i64, owner_id: &str) -> bool {
     false
 }
 
+/// Drops whoever holds `tatami` (the match there was stopped from the Tatami channel).
+pub fn clear(tatami: i64) {
+    let mut guard = CLAIMS.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(claims) = guard.as_mut() {
+        claims.remove(&tatami);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

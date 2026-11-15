@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { page } from "$app/state";
-  import { invoke, setConnectionConfig, getHostBaseUrl } from "$lib/api_client";
+  import { invoke, setConnectionConfig, getHostBaseUrl, isClientMode, isHostReachable } from "$lib/api_client";
   import { emit } from "@tauri-apps/api/event";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, AssignBoutAthletesInput } from "$lib/types";
@@ -401,6 +401,13 @@
         await handleCloseWindow();
       }
     } catch (err: any) {
+      // Operator tambahan whose LAN host is gone: the result cannot be saved, close the
+      // window so the main window can leave the host.
+      if (isClientMode() && !(await isHostReachable())) {
+        alert("Host LAN offline: hasil partai TIDAK tersimpan. Control Panel ditutup.");
+        await handleCloseWindow();
+        return;
+      }
       alert("Gagal menyimpan hasil partai: " + (err?.message || err));
     }
   }

@@ -1,6 +1,14 @@
 <script lang="ts">
   import { apiCall, getConnectionConfig } from "$lib/api_client";
-  import type { ResultsBookletData, ResultsBookletSignatory, TatamiBookletCategory, DetailBaganItem } from "$lib/types";
+  import type {
+    BracketGroup,
+    ResultsBookletData,
+    ResultsBookletSignatory,
+    TatamiBookletCategory,
+    DetailBaganItem,
+    TimetableEditorData,
+  } from "$lib/types";
+  import RosterSheet from "$lib/components/RosterSheet.svelte";
   import { printWithOrientation } from "$lib/print_helper";
   import { resolveMediaLogos } from "$lib/media_helper";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
@@ -9,7 +17,7 @@
   import ResultCoverSheet from "$lib/components/ResultCoverSheet.svelte";
   import BracketPaperPage from "$lib/components/BracketPaperPage.svelte";
   import { computePodium, deriveBracketMeta, isFestivalName, winnersToPodium } from "$lib/bracket_layout";
-  import { loadCoverSettings, resolveCoverText, type CoverSettings } from "$lib/cover_settings";
+  import { formatTanggalIndonesia, loadCoverSettings, resolveCoverText, type CoverSettings } from "$lib/cover_settings";
 
   interface Props {
     eventId: number;
@@ -19,9 +27,95 @@
     coverSettings?: CoverSettings | null;
     /** Reports the event data the cover falls back to (for form placeholders). */
     onCoverDefaults?: (d: { namaEvent: string; tempat: string; tanggalRaw: string; hasEventLogo: boolean }) => void;
+    /**
+     * "hasil" = results booklet; "roster_bagan" = cover, the event roster and the brackets of
+     * one Jadwal day + tatami (`rosterSelection`).
+     */
+    mode?: "hasil" | "roster_bagan";
+    rosterSelection?: { dayId: number; tatamiId: number } | null;
   }
 
-  let { eventId, eventName = "", hostAddress = "", coverSettings = null, onCoverDefaults }: Props = $props();
+  let {
+    eventId,
+    eventName = "",
+    hostAddress = "",
+    coverSettings = null,
+    onCoverDefaults,
+    mode = "hasil",
+    rosterSelection = null,
+  }: Props = $props();
+
+  // Jadwal: the roster page and the Day -> Tatami order of the bracket attachment
+  let timetable = $state<TimetableEditorData | null>(null);
+  let bracketGroups = $state<BracketGroup[]>([]);
+  let rosterCategories = $derived(
+    timetable ? (timetable.festival_session ? timetable.categories.filter((c) => !c.is_festival) : timetable.categories) : []
+  );
+  let rosterHasDays = $derived(!!timetable && timetable.days.some((d) => d.rows.length > 0));
+  let rosterKopLogo = $derived.by(() => {
+    const path = timetable?.kop_surat?.logo;
+    if (!path) return null;
+    return logoMap[path] || (path.startsWith("data:") || path.startsWith("http") ? path : null);
+  });
+  let selectedGroup = $derived(
+    rosterSelection
+      ? bracketGroups.find((g) => g.day_id === rosterSelection.dayId && g.tatami_id === rosterSelection.tatamiId) ?? null
+      : null
+  );
+
+  /** The category of this bracket has a referchange bracket (it decides the bronze). */
+  function hasRepechage(baganName: string): boolean {
+    const isRep = (n: string) => /REFERCHANGE|REPECHAGE/i.test(n);
+    if (isRep(baganName)) return false;
+    const base = baganName.replace(/\s*-\s*FINAL\s*$/i, "").replace(/\s*-\s*POOL\s+\w+\s*$/i, "").trim().toUpperCase();
+    return (bookletData?.category_brackets ?? []).some((b) => {
+      const n = (b.bagan_nama || b.category_name || "").toUpperCase();
+      return isRep(n) && n.replace(/\s*-\s*(REFERCHANGE|REPECHAGE)\s*$/, "").trim() === base;
+    });
+  }
+
+  function groupTitle(g: { day_label: string; tatami_number: number }): string {
+    return `${g.day_label.toUpperCase()} - TATAMI ${g.tatami_number}`;
+  }
+
+  type LampiranItem =
+    | { kind: "cover"; key: string; group: BracketGroup }
+    | { kind: "bracket"; key: string; b: TatamiBookletCategory };
+
+  /**
+   * Bracket pages in roster order: Day 1 Tatami 1 (Jadwal row order), Day 1 Tatami 2, ...,
+   * each group behind its own cover. Results booklet: a bracket prints once (first group
+   * that plays it); brackets on no Jadwal day come last. Roster Bagan: the chosen group only.
+   */
+  let lampiranItems = $derived.by((): LampiranItem[] => {
+    if (!bookletData?.category_brackets) return [];
+    const withMatches = bookletData.category_brackets.filter((b) => b.matches && b.matches.length > 0);
+    const byId = new Map(withMatches.filter((b) => b.bagan_id != null).map((b) => [b.bagan_id as number, b]));
+    const items: LampiranItem[] = [];
+    if (mode === "roster_bagan") {
+      for (const id of selectedGroup?.bagan_ids ?? []) {
+        const b = byId.get(id);
+        if (b) items.push({ kind: "bracket", key: `b-${id}`, b });
+      }
+      return items;
+    }
+    const days = coverSettings?.lampiranDays ?? null;
+    const used = new Set<number>();
+    for (const g of bracketGroups) {
+      const ids = g.bagan_ids.filter((id) => byId.has(id) && !used.has(id));
+      ids.forEach((id) => used.add(id));
+      if (ids.length === 0 || (days && !days.includes(String(g.day_id)))) continue;
+      items.push({ kind: "cover", key: `g-${g.day_id}-${g.tatami_id}`, group: g });
+      for (const id of ids) items.push({ kind: "bracket", key: `b-${id}`, b: byId.get(id)! });
+    }
+    if (!days || days.includes("none")) {
+      for (const b of withMatches) {
+        if (b.bagan_id != null && used.has(b.bagan_id)) continue;
+        items.push({ kind: "bracket", key: `b-${b.bagan_id ?? b.category_id}`, b });
+      }
+    }
+    return items;
+  });
 
 
   let bookletData = $state<ResultsBookletData | null>(null);
@@ -52,13 +146,21 @@
   // ones saved for this event (or the defaults) are used.
   let savedCoverSettings = $derived(loadCoverSettings(eventId));
   let cover = $derived<CoverSettings>(coverSettings ?? savedCoverSettings);
-  let coverText = $derived(
-    resolveCoverText(cover, {
+  let coverText = $derived.by(() => {
+    const base = resolveCoverText(cover, {
       namaEvent: editableEventName || bookletData?.event_info?.nama_event || eventName,
       tempat: editableTempat,
-      tanggalRaw: editableTanggal,
-    })
-  );
+      tanggalRaw: mode === "roster_bagan" && selectedGroup?.day_date ? selectedGroup.day_date : editableTanggal,
+    });
+    if (mode !== "roster_bagan") return base;
+    // Roster Bagan: "BAGAN: DAY 1 - TATAMI 1" unless the operator typed another title
+    const g = selectedGroup;
+    return {
+      ...base,
+      badge: cover.badge ?? "BAGAN PERTANDINGAN",
+      judul: cover.judul ?? (g ? `BAGAN: ${groupTitle(g)}` : "BAGAN PERTANDINGAN"),
+    };
+  });
   $effect(() => {
     if (!bookletData || !onCoverDefaults) return;
     onCoverDefaults({
@@ -140,6 +242,15 @@ $effect(() => {
           }
         }
       }
+
+      // Jadwal roster + Day -> Tatami bracket order (a booklet still prints without them)
+      const [tt, groups] = await Promise.all([
+        apiCall<TimetableEditorData>("get_timetable_editor_data", { eventId }).catch(() => null),
+        apiCall<BracketGroup[]>("get_bracket_groups", { eventId }).catch(() => []),
+      ]);
+      timetable = tt;
+      bracketGroups = groups || [];
+      if (tt?.kop_surat?.logo) allLogos.push(tt.kop_surat.logo);
 
       if (allLogos.length > 0) {
         const cleanHost = hostAddress || getConnectionConfig().hostUrl;
@@ -399,10 +510,13 @@ ${inlinedCss}
     exportSuccessMessage = null;
 
     try {
-      const mode = viewFilter === "portrait" ? "portrait" : viewFilter === "landscape" ? "landscape" : "combined";
-      const htmlContent = await preparePrintHtml(mode);
+      const printPart = viewFilter === "portrait" ? "portrait" : viewFilter === "landscape" ? "landscape" : "combined";
+      const htmlContent = await preparePrintHtml(printPart);
       const cleanEventName = (editableEventName || "Turnamen").replace(/[^a-zA-Z0-9]/g, "_");
-      const suggestedFilename = `Buku_Hasil_${cleanEventName}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      const suggestedFilename =
+        mode === "roster_bagan" && selectedGroup
+          ? `BAGAN_${groupTitle(selectedGroup).replace(/[^A-Z0-9]+/gi, "_")}_${cleanEventName}.pdf`.replace(/_+/g, "_")
+          : `Buku_Hasil_${cleanEventName}_${new Date().toISOString().slice(0, 10)}.pdf`;
 
       let isTauri = false;
       try {
@@ -461,10 +575,9 @@ ${inlinedCss}
   }
 
   // Filtered brackets that actually have matches
-  let activeBrackets = $derived.by(() => {
-    if (!bookletData?.category_brackets) return [];
-    return bookletData.category_brackets.filter((b) => b.matches && b.matches.length > 0);
-  });
+  let activeBrackets = $derived(
+    lampiranItems.filter((i) => i.kind === "bracket").map((i) => (i as { b: TatamiBookletCategory }).b)
+  );
 </script>
 
 
@@ -515,7 +628,7 @@ ${inlinedCss}
       <div class="min-w-0">
         <div class="flex items-center space-x-2">
           <span class="text-xs font-black text-white tracking-tight uppercase truncate">
-            Buku Hasil & Berita Acara Resmi
+            {mode === "roster_bagan" ? `Roster Bagan${selectedGroup ? ` • ${groupTitle(selectedGroup)}` : ""}` : "Buku Hasil & Berita Acara Resmi"}
           </span>
           <span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
             OFFICIAL
@@ -750,6 +863,7 @@ ${inlinedCss}
                     federasi={coverText.federasi}
                     badge={coverText.badge}
                     judul={coverText.judul}
+                    judulOneLine={mode === "roster_bagan"}
                     namaEvent={coverText.namaEvent}
                     tempat={coverText.tempat}
                     tanggal={coverText.tanggal}
@@ -762,6 +876,7 @@ ${inlinedCss}
             {/if}
 
 <!-- ================= HALAMAN 2: KLASEMEN MEDALI (KONTINGEN & PERGURUAN) ================= -->
+            {#if mode === "hasil"}
             <section id="page-klasemen" class="booklet-page booklet-page-portrait">
               <div class="no-print max-w-[210mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
                 <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
@@ -804,10 +919,11 @@ ${inlinedCss}
                 />
               </div>
             </section>
+            {/if}
 
             
 <!-- ================= HALAMAN 4: SAMPUL PENUTUP (replaces the old closing sheet; same design as the front cover) ================= -->
-            {#if cover.penutupEnabled}
+            {#if cover.penutupEnabled && mode === "hasil"}
               <section id="page-back-cover" class="booklet-page booklet-page-cover">
                 <div class="no-print max-w-[297mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
                   <span class="inline-flex items-center px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-bold">
@@ -862,12 +978,61 @@ ${inlinedCss}
               </button>
             </div>
 
+            <!-- Roster 1 halaman (the same sheet as Jadwal's print) -->
+            {#if timetable && rosterHasDays}
+              <section id="page-roster" class="booklet-page booklet-page-landscape">
+                <div class="no-print max-w-[297mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                  <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 font-bold">
+                    <span>A4 LANDSCAPE (297 × 210 mm)</span>
+                  </span>
+                  <span class="text-zinc-500">Roster pertandingan (dari Jadwal)</span>
+                </div>
+                <div class="paper-sheet paper-sheet-landscape">
+                  <div class="roster-paper-box">
+                    <RosterSheet
+                      days={timetable.days}
+                      tatamis={timetable.tatamis}
+                      categories={rosterCategories}
+                      eventName={editableEventName || eventName}
+                      kopNama={timetable.kop_surat?.nama_organisasi || ""}
+                      kopAlamat={timetable.kop_surat?.alamat || ""}
+                      kopKontak={timetable.kop_surat?.kontak || ""}
+                      kopLogo={rosterKopLogo}
+                      autoFit
+                    />
+                  </div>
+                </div>
+              </section>
+            {/if}
+
             {#if activeBrackets.length === 0}
               <div class="paper-sheet paper-sheet-landscape text-center p-12 text-slate-400 italic">
-                Belum ada bagan pertandingan yang dibuat untuk turnamen ini.
+                {mode === "roster_bagan" ? "Belum ada bagan yang dijadwalkan di hari dan tatami ini." : "Belum ada bagan pertandingan yang dibuat untuk turnamen ini."}
               </div>
             {:else}
-              {#each activeBrackets as bCat, bIdx}
+              {#each lampiranItems as item (item.key)}
+                {#if item.kind === "cover"}
+                  <section id="page-{item.key}" class="booklet-page booklet-page-landscape">
+                    <div class="no-print max-w-[297mm] mx-auto mb-2 flex items-center justify-between px-1 text-[11px] font-mono text-zinc-400">
+                      <span class="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 font-bold">
+                        <span>A4 LANDSCAPE (297 × 210 mm)</span>
+                      </span>
+                      <span class="text-zinc-500">Sampul grup • {groupTitle(item.group)}</span>
+                    </div>
+                    <div class="paper-sheet paper-sheet-landscape">
+                      <div class="group-cover">
+                        <div class="group-cover-label">BAGAN:</div>
+                        <div class="group-cover-title">{groupTitle(item.group)}</div>
+                        <div class="group-cover-event">{editableEventName || eventName}</div>
+                        {#if item.group.day_date}
+                          <div class="group-cover-date">{formatTanggalIndonesia(item.group.day_date)}</div>
+                        {/if}
+                      </div>
+                    </div>
+                  </section>
+                {:else}
+                {@const bCat = item.b}
+                {@const bIdx = activeBrackets.indexOf(bCat)}
                 {@const bName = bCat.bagan_nama || bCat.category_name}
                 {@const bMeta = deriveBracketMeta(bName, bCat.bagan_pool)}
                 <section id="page-bagan-{bCat.category_id}" class="booklet-page booklet-page-landscape">
@@ -889,7 +1054,7 @@ ${inlinedCss}
                       eventDate={editableTanggal}
                       {logoMap}
                       meta={bMeta}
-                      podium={computePodium(bCat.matches, bMeta, winnersToPodium(bCat.winners))}
+                      podium={computePodium(bCat.matches, bMeta, winnersToPodium(bCat.winners), hasRepechage(bName))}
                       festivalGroupCount={bCat.bagan_pool ?? 0}
                       festivalLayout={bCat.bagan_layout_type}
                       widthMm={281}
@@ -897,6 +1062,7 @@ ${inlinedCss}
                     />
                   </div>
                 </section>
+                {/if}
               {/each}
             {/if}
           </div>
@@ -910,6 +1076,54 @@ ${inlinedCss}
 
 
 <style>
+  /* Roster page: the content box of an A4 landscape bracket page */
+  .roster-paper-box {
+    width: 281mm;
+    height: 194mm;
+    margin: 0 auto;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: #ffffff;
+  }
+  /* Simple cover in front of each Day / Tatami group of brackets */
+  .group-cover {
+    width: 281mm;
+    height: 194mm;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4mm;
+    text-align: center;
+    background: #ffffff;
+    color: #0f172a;
+    font-family: "Oswald", "Inter", sans-serif;
+  }
+  .group-cover-label {
+    font-size: 22pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #475569;
+  }
+  .group-cover-title {
+    font-size: 44pt;
+    font-weight: 800;
+    line-height: 1.05;
+  }
+  .group-cover-event {
+    font-size: 18pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-top: 4mm;
+  }
+  .group-cover-date {
+    font-size: 14pt;
+    font-weight: 600;
+    color: #334155;
+  }
+
   /* ==========================================================================
      In-App Screen Paper Simulation Styles
      ========================================================================== */

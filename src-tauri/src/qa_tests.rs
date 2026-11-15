@@ -36,6 +36,12 @@ async fn draw_remaining(s: &TestServer, event: i64) -> Vec<i64> {
     cats
 }
 
+/// Referchange brackets hold only athletes beaten by the finalists and crown no juara 1.
+pub(crate) fn is_referchange(b: &Value) -> bool {
+    let n = b["nama_bagan"].as_str().unwrap_or("").to_uppercase();
+    n.contains("REFERCHANGE") || n.contains("REPECHAGE")
+}
+
 pub(crate) fn playable(m: &Value) -> bool {
     m["selesai"].as_bool() == Some(false) && m["atlet1_id"].is_i64() && m["atlet2_id"].is_i64()
 }
@@ -115,7 +121,7 @@ async fn qa_porprov_draw_and_play_everything() {
 
     // every bagan finished, with sane podium from its own category
     let (mut golds, mut bronzes) = (0, 0);
-    for b in bagans(&s, PORPROV).await {
+    for b in bagans(&s, PORPROV).await.into_iter().filter(|b| !is_referchange(b)) {
         let name = b["nama_bagan"].clone();
         let left: Vec<_> = details(&s, b["id"].as_i64().unwrap()).await.into_iter().filter(playable).collect();
         assert!(left.is_empty(), "{name}: {} matches still open", left.len());
@@ -165,7 +171,7 @@ async fn qa_porprov_every_entry_drawn_and_contingents_separated() {
     let Some(s) = server_on_real_copy().await else { return };
     draw_remaining(&s, PORPROV).await;
     let pool = s.pool().await;
-    for b in bagans(&s, PORPROV).await {
+    for b in bagans(&s, PORPROV).await.into_iter().filter(|b| !is_referchange(b)) {
         let name = b["nama_bagan"].as_str().unwrap_or("").to_string();
         let entries: Vec<(i64, Option<i64>)> = sqlx::query_as(
             "SELECT id, utusan_id FROM backend_atlet WHERE nomor_tanding_id = ? AND (additional_code IS NULL OR additional_code NOT LIKE 'MEMBER_%')",
@@ -535,7 +541,7 @@ async fn qa_porprov_reports_after_full_tournament() {
         }
     }
     let text = text.to_uppercase();
-    for b in &all {
+    for b in all.iter().filter(|b| !is_referchange(b)) {
         let gold = name_of(b["juara_1_id"].as_i64().unwrap()).await.to_uppercase();
         assert!(text.contains(&gold), "Excel misses gold medallist {gold} of {}", b["nama_bagan"]);
     }
@@ -887,4 +893,203 @@ async fn qa_manual_drawing_keeps_operator_placement() {
     }
     let after = bagans(&s, PORPROV).await.into_iter().find(|b| b["id"].as_i64() == Some(bagan_id)).unwrap();
     assert!(after["juara_1_id"].as_i64().is_some(), "manual bagan finished without a juara 1");
+}
+
+/// Buku hasil: a referchange bracket is printed right after its own category's bracket,
+/// not at the end (it has no kode, so the medal summary sorts it last or leaves it out).
+#[tokio::test]
+async fn qa_booklet_puts_referchange_after_its_category() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let summary = s.ok("get_summary_bagan", json!({ "eventId": PORPROV })).await;
+    let main_ids: Vec<i64> = summary["bagans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| !b["nama_bagan"].as_str().unwrap_or("").to_uppercase().contains("REFERCHANGE"))
+        .filter_map(|b| b["id"].as_i64())
+        .collect();
+    assert!(main_ids.len() >= 2, "the real event needs at least two brackets");
+    let first = main_ids[0];
+    let (nt, name): (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT nomor_tanding_id, nama_bagan FROM backend_bagan WHERE id = ?")
+            .bind(first)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let Some(nt) = nt else { return };
+    // the category may already have one: the order must hold either way
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM backend_bagan WHERE nomor_tanding_id = ? AND UPPER(nama_bagan) LIKE '%REFERCHANGE%' ORDER BY id LIMIT 1",
+    )
+    .bind(nt)
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    let rep_id = match existing {
+        Some(id) => id,
+        None => sqlx::query_scalar(
+            "INSERT INTO backend_bagan (event_id, nama_bagan, nomor_tanding_id, round_robin, pool, is_bob, has_vr)
+             VALUES (?, ?, ?, 0, 3, 0, 0) RETURNING id",
+        )
+        .bind(PORPROV)
+        .bind(format!("{} - REFERCHANGE", name.unwrap_or_default()))
+        .bind(nt)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+    };
+
+    let items: Vec<crate::models::SummaryBaganItem> = serde_json::from_value(summary["bagans"].clone()).unwrap();
+    let ordered = {
+        let db = s.state.db.lock().await;
+        db.booklet_bracket_order(PORPROV, &items).await
+    };
+    let pos = |id: i64| ordered.iter().position(|b| b.id == id);
+    let main_pos = pos(first).expect("main bracket in the booklet");
+    assert_eq!(pos(rep_id), Some(main_pos + 1), "referchange must follow its own category");
+    assert_eq!(ordered.iter().filter(|b| b.id == rep_id).count(), 1, "referchange printed once");
+}
+
+/// Stopping a tatami (Tatami channel) clears its running match; a closing control panel
+/// only clears the match it was running, not one another window opened since.
+#[tokio::test]
+async fn qa_clear_tatami_running_match() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let tatami = free_tatami_number(&s, PORPROV).await;
+    s.ok("create_tatami", json!({ "eventId": PORPROV, "tatamiNumber": tatami })).await;
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT d.id FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id
+         WHERE b.event_id = ? AND d.selesai = 0 ORDER BY d.id LIMIT 2",
+    )
+    .bind(PORPROV)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    if ids.len() < 2 {
+        return;
+    }
+    let running = || async {
+        let v: Option<i64> = sqlx::query_scalar("SELECT detail_bagan_id FROM backend_tatami WHERE event_id = ? AND tatami_number = ?")
+            .bind(PORPROV)
+            .bind(tatami)
+            .fetch_one(&s.pool().await)
+            .await
+            .unwrap();
+        v
+    };
+
+    s.ok("notify_match_running", json!({ "matchId": ids[0], "tatami": tatami })).await;
+    assert_eq!(running().await, Some(ids[0]));
+    // a panel that ran another match leaves this one alone
+    s.ok("clear_tatami_running", json!({ "tatami": tatami, "matchId": ids[1] })).await;
+    assert_eq!(running().await, Some(ids[0]));
+    // the panel of the running match clears it
+    s.ok("clear_tatami_running", json!({ "tatami": tatami, "matchId": ids[0] })).await;
+    assert_eq!(running().await, None);
+    // stop from the Tatami channel clears whatever runs
+    s.ok("notify_match_running", json!({ "matchId": ids[1], "tatami": tatami })).await;
+    s.ok("clear_tatami_running", json!({ "tatami": tatami, "eventId": PORPROV })).await;
+    assert_eq!(running().await, None);
+    let tatamis = s.ok("get_tatamis", json!({ "eventId": PORPROV })).await;
+    let row = tatamis.as_array().unwrap().iter().find(|t| t["tatami_number"].as_i64() == Some(tatami)).unwrap().clone();
+    assert!(row["detail_bagan_id"].is_null());
+}
+
+/// Buku hasil / Roster Bagan: brackets come in roster order (Day 1 Tatami 1, Day 1 Tatami 2,
+/// ..., Day 2), and a referchange never comes before its category's main bracket.
+#[tokio::test]
+async fn qa_bracket_groups_follow_the_roster() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let groups = s.ok("get_bracket_groups", json!({ "eventId": PORPROV })).await;
+    let groups = groups.as_array().cloned().unwrap_or_default();
+    let keys: Vec<(i64, i64)> = groups
+        .iter()
+        .map(|g| (g["day_order"].as_i64().unwrap(), g["tatami_number"].as_i64().unwrap()))
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "groups must run day by day, tatami by tatami");
+    sorted.dedup();
+    assert_eq!(keys.len(), sorted.len(), "one group per day and tatami");
+
+    let pool = s.pool().await;
+    for g in &groups {
+        let ids: Vec<i64> = g["bagan_ids"].as_array().unwrap().iter().filter_map(|v| v.as_i64()).collect();
+        for (pos, id) in ids.iter().enumerate() {
+            let (name, nt): (Option<String>, Option<i64>) =
+                sqlx::query_as("SELECT nama_bagan, nomor_tanding_id FROM backend_bagan WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            if !name.unwrap_or_default().to_uppercase().contains("REFERCHANGE") {
+                continue;
+            }
+            for later in &ids[pos + 1..] {
+                let (later_name, later_nt): (Option<String>, Option<i64>) =
+                    sqlx::query_as("SELECT nama_bagan, nomor_tanding_id FROM backend_bagan WHERE id = ?")
+                        .bind(later)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                assert!(
+                    later_nt != nt || later_name.unwrap_or_default().to_uppercase().contains("REFERCHANGE"),
+                    "referchange {id} printed before its own main bracket {later}"
+                );
+            }
+        }
+    }
+}
+
+/// With a referchange, the main bracket's Juara 3A/3B come from the referchange only (empty
+/// until it is decided), never from the semifinal losers.
+#[tokio::test]
+async fn qa_referchange_decides_bronze_of_main_bracket() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let rep: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT r.nomor_tanding_id, m.id FROM backend_bagan r JOIN backend_bagan m
+           ON m.nomor_tanding_id = r.nomor_tanding_id AND m.id != r.id
+          WHERE r.event_id = ? AND UPPER(r.nama_bagan) LIKE '%REFERCHANGE%'
+            AND UPPER(m.nama_bagan) NOT LIKE '%REFERCHANGE%'
+            AND NOT EXISTS (SELECT 1 FROM backend_detailbagan d WHERE d.bagan_id = r.id AND d.selesai = 1)
+          LIMIT 1",
+    )
+    .bind(PORPROV)
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    let Some((nt, main_id)) = rep else { return };
+    // pretend the semifinal losers were written as bronze
+    let some_athlete: i64 = sqlx::query_scalar("SELECT id FROM backend_atlet WHERE nomor_tanding_id = ? LIMIT 1")
+        .bind(nt)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE backend_bagan SET juara_3a_id = ?, juara_3b_id = ? WHERE id = ?")
+        .bind(some_athlete)
+        .bind(some_athlete)
+        .bind(main_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    s.ok("generate_repechage_bracket", json!({ "mainBaganId": main_id })).await;
+
+    let (rep_a, rep_b): (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT juara_3a_id, juara_3b_id FROM backend_bagan WHERE nomor_tanding_id = ? AND UPPER(nama_bagan) LIKE '%REFERCHANGE%'",
+    )
+    .bind(nt)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (main_a, main_b): (Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT juara_3a_id, juara_3b_id FROM backend_bagan WHERE id = ?")
+            .bind(main_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((main_a, main_b), (rep_a, rep_b), "main bracket bronze must mirror the referchange");
 }

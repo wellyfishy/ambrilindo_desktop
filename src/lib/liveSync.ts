@@ -17,6 +17,22 @@ export interface TatamiLiveMatchPayload {
 // Key: tatamiNumber -> TatamiLiveMatchPayload
 let activeLiveTatamis: Record<number, TatamiLiveMatchPayload> = {};
 
+// Tatamis whose match was closed or stopped since the last bracket load: tatami -> the
+// match that was closed (0 = stopped, whatever ran). The `tatamis` list the views hold
+// comes from the database and can be older than that, so its running match must not
+// bring the LIVE badge back. Cleared when a new live state arrives for the tatami.
+const closedOnTatami: Record<number, number> = {};
+
+/** The `tatamis` rows whose running match is still believable (not closed since). */
+export function runningTatamis(tatamis?: TatamiItem[]): TatamiItem[] {
+  if (!tatamis || tatamis.length === 0) return [];
+  return tatamis.filter((t) => {
+    if (!t.detail_bagan_id || !t.tatami_number) return false;
+    const closed = closedOnTatami[t.tatami_number];
+    return closed === undefined || (closed !== 0 && closed !== t.detail_bagan_id);
+  });
+}
+
 let liveBroadcastChannel: BroadcastChannel | null = null;
 let wsClient: WebSocket | null = null;
 let wsReconnectTimer: any = null;
@@ -89,11 +105,17 @@ export function applyLiveMatchPayload(data: any) {
   const isFinished = !!(data.isFinished || data.isClosed);
 
   if (isFinished) {
+    const hadMarker = closedOnTatami[tNum] === (mId ?? 0);
+    closedOnTatami[tNum] = mId ?? 0;
     if (activeLiveTatamis[tNum]) {
       delete activeLiveTatamis[tNum];
       notifyListeners();
+    } else if (!hadMarker) {
+      // nothing was live here in memory, but a stale database row may still show it
+      notifyListeners();
     }
   } else if (mId && mId > 0) {
+    delete closedOnTatami[tNum];
     const next: TatamiLiveMatchPayload = {
       tatami: tNum,
       matchId: mId,
@@ -297,12 +319,8 @@ export function isMatchLive(matchId: number | null | undefined, tatamis?: Tatami
     }
   }
 
-  // 2. Check tatamis prop (only if detail_bagan_id matches and not finished)
-  if (tatamis && tatamis.length > 0) {
-    return tatamis.some((t) => t.detail_bagan_id === matchId);
-  }
-
-  return false;
+  // 2. Running match recorded in the database (not closed since)
+  return runningTatamis(tatamis).some((t) => t.detail_bagan_id === matchId);
 }
 
 /**
@@ -317,12 +335,8 @@ export function getRunningTatamiForMatch(matchId: number | null | undefined, tat
     }
   }
 
-  if (tatamis && tatamis.length > 0) {
-    const t = tatamis.find((x) => x.detail_bagan_id === matchId);
-    if (t && t.tatami_number) return t.tatami_number;
-  }
-
-  return null;
+  const t = runningTatamis(tatamis).find((x) => x.detail_bagan_id === matchId);
+  return t?.tatami_number ?? null;
 }
 
 /**
@@ -339,13 +353,9 @@ export function getLiveTatamisForBagan(baganId: number | null | undefined, tatam
     }
   }
 
-  // 2. Tatamis prop from DB (if bagan_id and detail_bagan_id are set)
-  if (tatamis && tatamis.length > 0) {
-    for (const t of tatamis) {
-      if (t.bagan_id === baganId && t.detail_bagan_id && t.tatami_number) {
-        set.add(t.tatami_number);
-      }
-    }
+  // 2. Running match recorded in the database (not closed since)
+  for (const t of runningTatamis(tatamis)) {
+    if (t.bagan_id === baganId) set.add(t.tatami_number!);
   }
 
   return Array.from(set).sort((a, b) => a - b);

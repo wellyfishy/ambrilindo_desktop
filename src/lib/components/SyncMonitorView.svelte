@@ -370,6 +370,24 @@
     }
   }
 
+  // Roster (Jadwal) + live tatami status -> the web's "Roster & live tatami"
+  let isPushingRoster = $state(false);
+  async function handlePushRoster() {
+    if (!eventMapping.hosted_event_id) {
+      toast("Hubungkan ke event web terlebih dahulu");
+      openLinkEventModal();
+      return;
+    }
+    isPushingRoster = true;
+    try {
+      toast(await invoke<string>("push_roster_to_hosted", { localEventId: eventId }));
+    } catch (err: any) {
+      toast(`Gagal mengirim roster: ${err}`);
+    } finally {
+      isPushingRoster = false;
+    }
+  }
+
   // Force Sync Results
   async function handleConfirmForceSync() {
     if (!eventMapping.hosted_event_id) {
@@ -728,6 +746,16 @@
       >
         <svg class="w-3.5 h-3.5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
         <span>Kirim bagan</span>
+      </button>
+      <button
+        type="button"
+        onclick={handlePushRoster}
+        disabled={isPushingRoster}
+        title="Jadwal (roster) dan status live tatami ke halaman detail event di web"
+        class="h-9 px-3.5 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 font-semibold text-xs rounded-xl border border-white/[0.1] transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+      >
+        <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3M4 11h16M5 5h14a1 1 0 011 1v13a1 1 0 01-1 1H5a1 1 0 01-1-1V6a1 1 0 011-1z" /></svg>
+        <span>{isPushingRoster ? "Mengirim…" : "Kirim roster"}</span>
       </button>
       <button
         type="button"

@@ -270,6 +270,26 @@
     showToast(`URL ${label} Tatami ${tNum} disalin!`);
   }
 
+  // Stop the match running on a tatami (operator left, laptop crashed, LIVE badge stuck)
+  let stopTarget = $state<TatamiItem | null>(null);
+  let isStopping = $state(false);
+
+  async function confirmStopTatami() {
+    const t = stopTarget;
+    if (!t || isStopping) return;
+    isStopping = true;
+    try {
+      await invoke("clear_tatami_running", { tatami: t.tatami_number ?? 1, eventId });
+      showToast(`Tatami ${t.tatami_number ?? 1} dihentikan`);
+      stopTarget = null;
+      onRefreshTatamis();
+    } catch (err: any) {
+      showToast(`Gagal menghentikan tatami: ${err?.message || err}`);
+    } finally {
+      isStopping = false;
+    }
+  }
+
   let unlistenLiveState: any = null;
   let liveBroadcastChannel: BroadcastChannel | null = null;
 
@@ -412,7 +432,19 @@
                   <p class="mt-1.5 text-sm text-white font-semibold truncate" title={tatami.nama_bagan || ""}>
                     {tatami.nama_bagan || "Partai berjalan"}
                   </p>
-                  <p class="text-xs text-zinc-400 font-mono tabular-nums">Partai #{tatami.detail_bagan_id}</p>
+                  <p class="text-xs text-zinc-400 font-mono tabular-nums">Partai #{tatami.urutan ?? tatami.detail_bagan_id}</p>
+                  <div class="mt-2 space-y-1 text-xs">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <span class="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0"></span>
+                      <span class="text-zinc-100 font-semibold truncate">{tatami.atlet1_nama || "BYE"}</span>
+                      {#if tatami.atlet1_kontingen}<span class="text-zinc-400 truncate">{tatami.atlet1_kontingen}</span>{/if}
+                    </div>
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <span class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+                      <span class="text-zinc-100 font-semibold truncate">{tatami.atlet2_nama || "BYE"}</span>
+                      {#if tatami.atlet2_kontingen}<span class="text-zinc-400 truncate">{tatami.atlet2_kontingen}</span>{/if}
+                    </div>
+                  </div>
                 {:else}
                   <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/25">
                     <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
@@ -464,6 +496,17 @@
               </div>
             </div>
 
+            {#if live}
+              <button
+                type="button"
+                onclick={() => (stopTarget = tatami)}
+                class="h-9 px-3 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/50"
+              >
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+                Hentikan
+              </button>
+            {/if}
+
             <!-- Venue access -->
             <div class="flex flex-wrap items-center gap-2 pt-3 border-t border-white/[0.06]">
               <a
@@ -505,6 +548,31 @@
       </div>
     {/if}
   </div>
+
+  {#if stopTarget}
+    {@const st = stopTarget}
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="stop-tatami-title"
+      tabindex="-1"
+      onkeydown={(e) => { if (e.key === "Escape" && !isStopping) stopTarget = null; }}
+    >
+      <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl w-full max-w-sm">
+        <h3 id="stop-tatami-title" class="text-base font-black text-white">Hentikan Tatami {st.tatami_number ?? 1}?</h3>
+        <p class="text-xs text-zinc-400 mt-2">
+          {st.nama_bagan || "Partai berjalan"} · Partai #{st.urutan ?? st.detail_bagan_id}. Control Panel yang membuka partai ini ditutup dan skor yang belum disimpan tidak tercatat.
+        </p>
+        <div class="flex justify-end gap-2 mt-5">
+          <button type="button" onclick={() => (stopTarget = null)} class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl cursor-pointer">Batal</button>
+          <button type="button" onclick={confirmStopTatami} disabled={isStopping} class="h-9 px-4 bg-rose-500 hover:bg-rose-400 text-white font-bold text-xs rounded-xl shadow-md cursor-pointer disabled:opacity-50">
+            {isStopping ? "Menghentikan..." : "Hentikan"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <!-- Modal: Tambah Tatami Baru -->
   {#if isAddingModal}

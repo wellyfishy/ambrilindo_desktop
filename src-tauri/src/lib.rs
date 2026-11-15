@@ -126,6 +126,31 @@ fn claim_tatami(tatami: i64, owner_id: String, owner_label: Option<String>, forc
     Ok(tatami_claim::claim(tatami, &owner_id, owner_label.as_deref().unwrap_or(""), force.unwrap_or(false)))
 }
 
+/// Stop from the Tatami channel (no match_id), or a control panel closing without a finished
+/// save (match_id: cleared only while that match is still the running one).
+#[tauri::command]
+async fn clear_tatami_running(
+    tatami: i32,
+    event_id: Option<i64>,
+    match_id: Option<i64>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Option<i64>, String> {
+    if tatami <= 0 {
+        return Err("tatami wajib diisi".into());
+    }
+    let only_match = match_id.filter(|m| *m > 0);
+    let cleared = {
+        let db = state.db.lock().await;
+        db.clear_tatami_running(event_id, tatami, only_match).await?
+    };
+    let stopped = only_match.is_none();
+    if stopped || cleared.is_some() {
+        server::announce_tatami_cleared(Some(&app), &state.server_broadcast, &state.live_tatami_cache, tatami as i64, cleared, stopped).await;
+    }
+    Ok(cleared)
+}
+
 #[tauri::command]
 fn release_tatami(tatami: i64, owner_id: String) -> bool {
     tatami_claim::release(tatami, &owner_id)
@@ -534,6 +559,29 @@ async fn get_bagan_podium(
 ) -> Result<BaganPodium, String> {
     let db = state.db.lock().await;
     db.get_bagan_podium(bagan_id).await
+}
+
+#[tauri::command]
+async fn get_repechage_info(
+    bagan_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::RepechageInfo, String> {
+    let db = state.db.lock().await;
+    db.get_repechage_info(bagan_id).await
+}
+
+#[tauri::command]
+async fn generate_repechage_bracket(
+    main_bagan_id: i64,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<models::RepechageResult, String> {
+    let res = {
+        let db = state.db.lock().await;
+        db.generate_repechage_bracket(main_bagan_id).await?
+    };
+    let _ = app.emit("bracket_updated", ());
+    Ok(res)
 }
 
 #[tauri::command]
@@ -1461,6 +1509,13 @@ async fn pull_athletes_from_hosted(
 }
 
 #[tauri::command]
+async fn push_roster_to_hosted(local_event_id: i64, state: tauri::State<'_, DesktopState>) -> Result<String, String> {
+    let db = state.db.lock().await;
+    let pool = db.get_pool()?;
+    sync::SyncService::push_roster_to_hosted(pool, db.get_db_path(), local_event_id).await
+}
+
+#[tauri::command]
 async fn push_bagan_to_hosted(
     local_event_id: i64,
     bagan_ids: Option<Vec<i64>>,
@@ -1786,6 +1841,18 @@ async fn save_kop_surat(
 ) -> Result<models::KopSurat, String> {
     let db = state.db.lock().await;
     db.save_kop_surat(event_id, nama_organisasi, alamat, kontak, logo).await
+}
+
+#[tauri::command]
+async fn get_bracket_groups(event_id: i64, state: tauri::State<'_, DesktopState>) -> Result<Vec<models::BracketGroup>, String> {
+    let db = state.db.lock().await;
+    db.get_bracket_groups(event_id).await
+}
+
+#[tauri::command]
+async fn get_bagan_days(event_id: i64, state: tauri::State<'_, DesktopState>) -> Result<models::BaganDaysResult, String> {
+    let db = state.db.lock().await;
+    db.get_bagan_days(event_id).await
 }
 
 #[tauri::command]
@@ -2414,6 +2481,9 @@ pub fn run() {
             get_bagan_by_id,
             update_bagan_layout_type,
             get_bagan_podium,
+            get_repechage_info,
+            clear_tatami_running,
+            generate_repechage_bracket,
             get_athletes_for_bagan,
             update_bagan_details,
             get_detail_bagan,
@@ -2461,6 +2531,7 @@ pub fn run() {
             set_event_mapping,
             pull_athletes_from_hosted,
             push_bagan_to_hosted,
+            push_roster_to_hosted,
             force_sync_results_to_hosted,
             toggle_live_sync,
             get_sync_queue_stats,
@@ -2493,6 +2564,8 @@ pub fn run() {
             delete_timetable_day,
             reset_timetable,
             get_tatami_booklet_data,
+            get_bagan_days,
+            get_bracket_groups,
             get_kop_surat,
             save_kop_surat,
             get_wasits,

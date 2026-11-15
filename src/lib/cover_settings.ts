@@ -23,6 +23,11 @@ export interface CoverSettings {
   penutupEnabled: boolean;
   penutupJudul: string | null;
   penutupPesan: string | null;
+  /**
+   * Days whose brackets go into "Lampiran resmi": Jadwal day ids as strings, plus "none"
+   * for brackets not scheduled on any day. null = every bracket.
+   */
+  lampiranDays: string[] | null;
 }
 
 export const DEFAULT_COVER_BACKGROUND = "/img/cover/cover_clean_template.png";
@@ -48,33 +53,37 @@ export function defaultCoverSettings(): CoverSettings {
     penutupEnabled: true,
     penutupJudul: null,
     penutupPesan: null,
+    lampiranDays: null,
   };
 }
 
-const storageKey = (eventId: number) => `ambrilindo_cover_settings_${eventId}`;
+/** Each Cetak document keeps its own cover ("hasil" = results booklet). */
+export type CoverDocument = "hasil" | "roster_bagan";
+const storageKey = (eventId: number, doc: CoverDocument = "hasil") =>
+  doc === "hasil" ? `ambrilindo_cover_settings_${eventId}` : `ambrilindo_cover_settings_${eventId}_${doc}`;
 
-export function loadCoverSettings(eventId: number): CoverSettings {
+export function loadCoverSettings(eventId: number, doc: CoverDocument = "hasil"): CoverSettings {
   const base = defaultCoverSettings();
   try {
-    const raw = localStorage.getItem(storageKey(eventId));
+    const raw = localStorage.getItem(storageKey(eventId, doc));
     if (raw) return { ...base, ...JSON.parse(raw) };
   } catch (_) {}
   return base;
 }
 
 /** Returns false when the browser refused to store it (e.g. a very large image). */
-export function saveCoverSettings(eventId: number, settings: CoverSettings): boolean {
+export function saveCoverSettings(eventId: number, settings: CoverSettings, doc: CoverDocument = "hasil"): boolean {
   try {
-    localStorage.setItem(storageKey(eventId), JSON.stringify(settings));
+    localStorage.setItem(storageKey(eventId, doc), JSON.stringify(settings));
     return true;
   } catch (_) {
     return false;
   }
 }
 
-export function clearCoverSettings(eventId: number) {
+export function clearCoverSettings(eventId: number, doc: CoverDocument = "hasil") {
   try {
-    localStorage.removeItem(storageKey(eventId));
+    localStorage.removeItem(storageKey(eventId, doc));
   } catch (_) {}
 }
 

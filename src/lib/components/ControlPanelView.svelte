@@ -289,6 +289,7 @@
     });
     tatamiSocket = socket;
     const releaseOnUnload = () => {
+      clearRunningOnLeave();
       invoke("release_tatami", { tatami, ownerId: claimOwnerId }).catch(() => {});
     };
     window.addEventListener("beforeunload", releaseOnUnload);
@@ -1906,7 +1907,29 @@
   // receive device input over Tauri IPC, so they ignore the socket copy.
   function handleSocketMessage(msg: any) {
     if (!msg || isHostUi()) return;
+    if (msg.type === "tatami_stopped") {
+      handleStoppedByAdmin(Number(msg.tatami));
+      return;
+    }
     handleRemoteInput(msg, msg.tatami);
+  }
+
+  // The match on this tatami was stopped from the Tatami channel: stop scoring and close.
+  let stoppedByAdmin = false;
+  function handleStoppedByAdmin(tatami: number) {
+    if (stoppedByAdmin || tatami !== activeTatami) return;
+    stoppedByAdmin = true;
+    if (isTimerRunning) pauseTimer();
+    claimStatus = "blocked";
+    claimHolderLabel = "channel Tatami (dihentikan)";
+    alert(`Pertandingan di Tatami ${tatami} dihentikan dari channel Tatami. Hasil yang belum disimpan tidak tercatat.`);
+    onBack();
+  }
+
+  /** Closing without a finished save: the tatami no longer runs this match. */
+  function clearRunningOnLeave() {
+    if (stoppedByAdmin || isMatchFinished || !match?.id || match.id <= 0 || claimStatus !== "owned") return;
+    invoke("clear_tatami_running", { tatami: activeTatami, matchId: match.id }).catch(() => {});
   }
 
   // Initialize values from match prop
@@ -1981,6 +2004,14 @@
       unlistenRemote = unsub;
     }).catch(() => {});
 
+    // Stopped from the Tatami channel (on the host this arrives over Tauri IPC)
+    let unlistenStopped: (() => void) | undefined;
+    listen("tatami_stopped", (event: any) => {
+      handleStoppedByAdmin(Number(event.payload?.tatami));
+    }).then((unsub) => {
+      unlistenStopped = unsub;
+    }).catch(() => {});
+
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ignore OS key-repeat to prevent rapid bouncing
       if (e.repeat) return;
@@ -2040,6 +2071,7 @@
       stopTimerTicker();
       if (unlistenRequest) unlistenRequest();
       if (unlistenRemote) unlistenRemote();
+      if (unlistenStopped) unlistenStopped();
       if (claimStatus === "owned") broadcastLiveMatch({
         tatami: activeTatami,
         matchId: match.id,

@@ -1794,6 +1794,28 @@ async fn dispatch_command_api(
                 (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": res }))).into_response()
             }
         },
+        // Stop from the Tatami channel (no matchId), or a control panel closing without a
+        // finished save (matchId: cleared only while that match is still the running one).
+        "clear_tatami_running" => {
+            let tatami = get_i32_val(&payload, &["tatami", "tatamiNumber", "tatami_number"]).unwrap_or(0);
+            let event_id = get_i64_val(&payload, &["eventId", "event_id"]);
+            let only_match = get_i64_val(&payload, &["matchId", "match_id"]).filter(|m| *m > 0);
+            if tatami <= 0 {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "tatami wajib diisi" }))).into_response();
+            }
+            let res = db.clear_tatami_running(event_id, tatami, only_match).await;
+            drop(db);
+            match res {
+                Ok(cleared) => {
+                    let stopped = only_match.is_none();
+                    if stopped || cleared.is_some() {
+                        announce_tatami_cleared(state.app_handle.as_ref(), &state.broadcast_tx, &state.live_tatami_cache, tatami as i64, cleared, stopped).await;
+                    }
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": cleared }))).into_response()
+                }
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "release_tatami" => {
             let tatami = get_i64_val(&payload, &["tatami", "tatamiNumber", "tatami_number"]).unwrap_or(0);
             let owner_id = get_str_val(&payload, &["ownerId", "owner_id"]).unwrap_or_default();
@@ -2550,6 +2572,20 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "get_bracket_groups" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            match db.get_bracket_groups(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "get_bagan_days" => {
+            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(0);
+            match db.get_bagan_days(ev_id).await {
+                Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "get_tatami_booklet_data" => {
             let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
             let d_id = get_i64_val(&payload, &["dayId", "day_id"]).unwrap_or(1);
@@ -3300,6 +3336,55 @@ pub fn is_kata_name(name: Option<&str>) -> bool {
         .to_uppercase()
         .split(|c: char| !c.is_alphanumeric())
         .any(|w| w == "KATA")
+}
+
+/// A tatami no longer runs a match: every window and LAN device drops its LIVE badge, the
+/// cached live state is replaced, and (when stopped from the Tatami channel) the control
+/// panel still holding that tatami is told to close.
+pub async fn announce_tatami_cleared(
+    app: Option<&tauri::AppHandle>,
+    bcast: &broadcast::Sender<ArenaMessage>,
+    cache: &Arc<tokio::sync::Mutex<std::collections::HashMap<i64, serde_json::Value>>>,
+    tatami: i64,
+    match_id: Option<i64>,
+    stopped: bool,
+) {
+    let close_payload = serde_json::json!({
+        "tatami": tatami,
+        "matchId": match_id.unwrap_or(0),
+        "isFinished": true,
+        "isClosed": true,
+        "isTimerRunning": false
+    });
+    cache.lock().await.insert(tatami, close_payload.clone());
+    if stopped {
+        crate::tatami_claim::clear(tatami);
+    }
+    if let Some(app) = app {
+        let _ = app.emit("tatami_live_state", &close_payload);
+        let _ = app.emit("bracket_updated", serde_json::json!({ "type": "bracket_updated" }));
+        if stopped {
+            let _ = app.emit("tatami_stopped", serde_json::json!({ "tatami": tatami }));
+        }
+    } else {
+        let _ = bcast.send(ArenaMessage {
+            tatami_pk: 0,
+            channel: "bracket".into(),
+            payload: serde_json::json!({ "type": "tatami_live_state", "payload": close_payload }),
+        });
+    }
+    let _ = bcast.send(ArenaMessage {
+        tatami_pk: 0,
+        channel: "bracket".into(),
+        payload: serde_json::json!({ "type": "bracket_updated" }),
+    });
+    if stopped {
+        let _ = bcast.send(ArenaMessage {
+            tatami_pk: tatami,
+            channel: "admin-control".into(),
+            payload: serde_json::json!({ "type": "tatami_stopped", "tatami": tatami }),
+        });
+    }
 }
 
 pub fn build_live_state_from_match(tatami_num: i64, m: &crate::models::EnrichedDetailBagan) -> serde_json::Value {

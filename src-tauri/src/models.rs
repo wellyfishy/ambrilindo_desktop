@@ -228,7 +228,7 @@ pub struct EnrichedDetailBagan {
     pub nama_bagan: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, Default)]
 pub struct Tatami {
     pub id: i64,
     pub event_id: Option<i64>,
@@ -238,6 +238,17 @@ pub struct Tatami {
     pub bagan_id: Option<i64>,
     #[sqlx(default)]
     pub nama_bagan: Option<String>,
+    // Running match details for the Tatami channel (only while a match runs)
+    #[sqlx(default)]
+    pub urutan: Option<i64>,
+    #[sqlx(default)]
+    pub atlet1_nama: Option<String>,
+    #[sqlx(default)]
+    pub atlet1_kontingen: Option<String>,
+    #[sqlx(default)]
+    pub atlet2_nama: Option<String>,
+    #[sqlx(default)]
+    pub atlet2_kontingen: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -829,6 +840,35 @@ pub struct SummaryBaganItem {
     pub tipe_tanding: String, // "1" = Kata, "2" = Kumite
     pub is_selesai: bool,
     pub winners: Vec<SummaryBaganWinner>,
+}
+
+/// A Jadwal day, for print filters (Day 1, Day 2, ...).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimetableDayOption {
+    pub id: i64,
+    pub order: i32,
+    pub label: String,
+}
+
+/// The brackets played on one tatami on one Jadwal day, in roster order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BracketGroup {
+    pub day_id: i64,
+    pub day_order: i32,
+    pub day_label: String,
+    /// raw date of the day (e.g. "2026-11-19"), if set
+    pub day_date: Option<String>,
+    pub tatami_id: i64,
+    pub tatami_number: i64,
+    pub bagan_ids: Vec<i64>,
+}
+
+/// Which Jadwal days each bagan is played on (split categories: the day of each part).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BaganDaysResult {
+    pub days: Vec<TimetableDayOption>,
+    /// bagan id -> day ids
+    pub bagan_days: std::collections::HashMap<i64, Vec<i64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

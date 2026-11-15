@@ -66,6 +66,29 @@ export interface DatabaseSummary {
   events: EventItem[];
 }
 
+export interface TimetableDayOption {
+  id: number;
+  order: number;
+  label: string;
+}
+
+/** Brackets played on one tatami on one Jadwal day, in roster order. */
+export interface BracketGroup {
+  day_id: number;
+  day_order: number;
+  day_label: string;
+  day_date: string | null;
+  tatami_id: number;
+  tatami_number: number;
+  bagan_ids: number[];
+}
+
+/** Jadwal days of every bagan (keys: bagan id). */
+export interface BaganDaysResult {
+  days: TimetableDayOption[];
+  bagan_days: Record<string, number[]>;
+}
+
 export interface TatamiItem {
   id: number;
   event_id: number | null;
@@ -73,6 +96,12 @@ export interface TatamiItem {
   detail_bagan_id: number | null;
   bagan_id?: number | null;
   nama_bagan?: string | null;
+  /** running match details (only while a match runs) */
+  urutan?: number | null;
+  atlet1_nama?: string | null;
+  atlet1_kontingen?: string | null;
+  atlet2_nama?: string | null;
+  atlet2_kontingen?: string | null;
 }
 
 export interface BaganItem {

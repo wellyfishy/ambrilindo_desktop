@@ -180,5 +180,19 @@ async function remoteCall<T = any>(command: string, args: Record<string, any> = 
   return json.data as T;
 }
 
+/** Whether the host's API answers (operator tambahan: is the LAN host still there?). */
+export async function isHostReachable(timeoutMs = 3000): Promise<boolean> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${getHostBaseUrl()}/api/health`, { signal: ctrl.signal, cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Export as both apiCall and invoke drop-in replacement
 export { apiCall as invoke };

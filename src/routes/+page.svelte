@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke, setConnectionConfig, withHostParam } from "$lib/api_client";
-  import { initLiveSync, subscribeBracketUpdates } from "$lib/liveSync";
+  import { invoke, isHostReachable, setConnectionConfig, withHostParam } from "$lib/api_client";
+  import { venueFromAlamat } from "$lib/venue";
+  import { initLiveSync, subscribeBracketUpdates, subscribeLiveSync } from "$lib/liveSync";
 
   import type {
     ActiveChannel,
@@ -614,6 +615,99 @@
     isSessionLoaded = true;
   });
 
+  // Operator tambahan: when the LAN host goes away, leave it. A laptop running a match
+  // (a Control Panel window is open) keeps going until that window closes; if the host
+  // comes back before then, nothing happens and the result saves as usual.
+  const HOST_CHECK_MS = 4000;
+  const HOST_FAILS_BEFORE_KICK = 3;
+  let hostFailCount = 0;
+  let hostCheckBusy = false;
+  let hostOfflineWaiting = $state(false);
+
+  async function openControlPanelCount(): Promise<number> {
+    try {
+      const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow");
+      const wins = await getAllWebviewWindows();
+      return wins.filter((w) => w.label.startsWith("control-panel-")).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  function leaveOfflineHost() {
+    hostFailCount = 0;
+    hostOfflineWaiting = false;
+    appMode = "landing";
+    setConnectionConfig("solo");
+    alert("Host LAN offline. Laptop ini keluar dari host. Sambungkan lagi setelah host aktif.");
+  }
+
+  async function checkHost() {
+    if (hostCheckBusy) return;
+    hostCheckBusy = true;
+    try {
+      if (await isHostReachable()) {
+        if (hostOfflineWaiting) showToast("Host LAN tersambung kembali");
+        hostFailCount = 0;
+        hostOfflineWaiting = false;
+        return;
+      }
+      hostFailCount += 1;
+      if (hostFailCount < HOST_FAILS_BEFORE_KICK) return;
+      if ((await openControlPanelCount()) > 0) {
+        hostOfflineWaiting = true;
+        return;
+      }
+      if (appMode === "client") leaveOfflineHost();
+    } finally {
+      hostCheckBusy = false;
+    }
+  }
+
+  $effect(() => {
+    if (appMode !== "client" || isBrowserClient) return;
+    hostFailCount = 0;
+    hostOfflineWaiting = false;
+    const timer = setInterval(checkHost, HOST_CHECK_MS);
+    return () => clearInterval(timer);
+  });
+
+  // A match started, closed or was stopped on some tatami: reload the tatami rows, so the
+  // running match the views fall back on matches the database again.
+  $effect(() => {
+    if (!isSessionLoaded) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = subscribeLiveSync(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(async () => {
+        timer = null;
+        const eventId = selectedEventId;
+        if (!eventId) return;
+        try {
+          const list = await invoke<TatamiItem[]>("get_tatamis", { eventId });
+          if (eventId === selectedEventId) tatamis = list;
+        } catch (_) {}
+      }, 800);
+    });
+    return () => {
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
+  });
+
+  // Venue printed on brackets: the Kop Surat "Alamat venue" (set in the Cetak channel).
+  // Reloaded whenever a bagan is opened, so an edit in Cetak shows up right away.
+  let eventVenue = $state("");
+  $effect(() => {
+    const eventId = selectedEventId;
+    if (!eventId || activeChannel.type !== "bagan") return;
+    invoke<{ alamat: string } | null>("get_kop_surat", { eventId })
+      .then((kop) => {
+        if (eventId === selectedEventId) eventVenue = venueFromAlamat(kop?.alamat);
+      })
+      .catch(() => {});
+  });
+
   // Brackets drawn, deleted or edited on another laptop: refresh this event's bracket list.
   $effect(() => {
     if (!isSessionLoaded) return;
@@ -742,6 +836,7 @@
             baganName={activeChannel.name}
             baganInfo={bagans.find((b) => b.id === (typeof activeChannel.id === "number" ? activeChannel.id : (bagans[0]?.id || 1)))}
             eventName={activeEvent?.nama_event || ""}
+            {eventVenue}
             hostUrl={hostUrl}
             {tatamis}
             {activeRole}
@@ -953,6 +1048,13 @@
           </button>
         </div>
       </div>
+    </div>
+  {/if}
+
+  {#if hostOfflineWaiting}
+    <div class="fixed top-3 left-1/2 -translate-x-1/2 z-50 bg-[#181a20] border border-amber-500/50 text-amber-200 text-xs font-semibold px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2">
+      <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+      <span>Host LAN offline. Pertandingan yang berjalan boleh diselesaikan; setelah Control Panel ditutup, laptop ini keluar dari host.</span>
     </div>
   {/if}
 

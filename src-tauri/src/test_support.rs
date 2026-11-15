@@ -342,7 +342,8 @@ impl WebServer {
                 buf.push_str(&String::from_utf8_lossy(&chunk));
                 while let Some(end) = buf.find("\n\n") {
                     let frame: String = buf.drain(..end + 2).collect();
-                    if frame.starts_with(": connected") {
+                    // A frame may carry other fields with the comment (the web sends `retry:` first).
+                    if frame.lines().any(|l| l == ": connected") {
                         if let Some(r) = ready.take() {
                             let _ = r.send(200);
                         }

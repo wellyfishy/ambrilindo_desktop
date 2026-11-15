@@ -208,6 +208,124 @@ export function computeConnectorLines(
   return list;
 }
 
+/**
+ * Repechage (referchange) layout: one band per pool that has bouts (Pool A = urutan 1,
+ * Pool B = urutan 2), each a cascade where the winner of a bout moves right and down into
+ * the AKA side of the next bout. A pool with fewer bouts than the longest one gets one BYE
+ * card in front (its first athlete vs BYE), so every bronze bout sits in the last column.
+ * Pools without bouts are left out and the remaining pool takes the whole height.
+ */
+export interface RepechageCard {
+  key: string;
+  pool: "A" | "B";
+  /** real bout, or the BYE stand-in card (match = the bout it leads into) */
+  match: DetailBaganItem;
+  isBye: boolean;
+  col: number;
+  x: number;
+  /** vertical centre of the card */
+  cy: number;
+  width: number;
+  zoom: number;
+}
+
+export interface RepechageBand {
+  pool: "A" | "B";
+  labelY: number;
+}
+
+export interface RepechageLayout {
+  columns: { x: number; width: number; title: string; badge: string }[];
+  bands: RepechageBand[];
+  cards: RepechageCard[];
+  lines: ConnectorLine[];
+}
+
+export const REPECHAGE_HEADER_H = 40;
+const REP_LABEL_H = 18;
+const REP_STEP = 0.75;
+
+export function layoutRepechage(
+  matches: DetailBaganItem[],
+  meta: BracketMeta,
+  width: number = TREE_WIDTH,
+  height: number = TREE_HEIGHT,
+  maxZoom = 1.7
+): RepechageLayout {
+  const pools: { pool: "A" | "B"; bouts: DetailBaganItem[] }[] = [];
+  for (const [pool, urutan] of [["A", 1], ["B", 2]] as const) {
+    const bouts = matches
+      .filter((m) => (m.urutan || 1) === urutan && (m.round || 1) <= 8)
+      .sort((a, b) => (a.round || 1) - (b.round || 1));
+    if (bouts.length) pools.push({ pool, bouts });
+  }
+  const empty: RepechageLayout = { columns: [], bands: [], cards: [], lines: [] };
+  if (!pools.length) return empty;
+
+  const longest = Math.max(...pools.map((p) => p.bouts.length));
+  const n = Math.max(2, longest);
+
+  // Columns: card width capped so short cascades do not stretch, centred horizontally.
+  const minGap = 48;
+  const cardW = Math.min(340, (width - (n - 1) * minGap) / n);
+  const gap = Math.min(140, (width - n * cardW) / (n - 1));
+  const offsetX = (width - (n * cardW + (n - 1) * gap)) / 2;
+  const colX = (c: number) => offsetX + c * (cardW + gap);
+  const columns = Array.from({ length: n }, (_, c) => ({
+    x: colX(c),
+    width: cardW,
+    title: getRoundTitle(meta, c + 1, n),
+    badge: getRoundBadge(meta, c + 1, n),
+  }));
+
+  const bandH = (height - REPECHAGE_HEADER_H) / pools.length;
+  const bands: RepechageBand[] = [];
+  const cards: RepechageCard[] = [];
+  const lines: ConnectorLine[] = [];
+
+  pools.forEach(({ pool, bouts }, bi) => {
+    const bandTop = REPECHAGE_HEADER_H + bi * bandH;
+    bands.push({ pool, labelY: bandTop + 4 });
+    const lead = n - bouts.length;
+    const chain: { match: DetailBaganItem; isBye: boolean; col: number }[] = [];
+    if (lead > 0) chain.push({ match: bouts[0], isBye: true, col: lead - 1 });
+    bouts.forEach((m, i) => chain.push({ match: m, isBye: false, col: lead + i }));
+
+    const avail = bandH - REP_LABEL_H - 12;
+    const zoom = Math.max(1, Math.min(maxZoom, avail / (MATCH_CARD_HEIGHT * (1 + REP_STEP * (chain.length - 1)))));
+    const cardH = MATCH_CARD_HEIGHT * zoom;
+    const step = cardH * REP_STEP;
+    const total = cardH + step * (chain.length - 1);
+    const top = bandTop + REP_LABEL_H + (avail - total) / 2 + 6;
+
+    chain.forEach((c, i) => {
+      const cy = Math.round(top + cardH / 2 + i * step);
+      cards.push({
+        key: `${pool}-${c.isBye ? "bye" : c.match.id}`,
+        pool,
+        match: c.match,
+        isBye: c.isBye,
+        col: c.col,
+        x: Math.round(colX(c.col)),
+        cy,
+        width: Math.round(cardW),
+        zoom,
+      });
+      if (i > 0) {
+        const prev = cards[cards.length - 2];
+        const x1 = prev.x + prev.width;
+        const x2 = Math.round(colX(c.col));
+        const xm = Math.round((x1 + x2) / 2);
+        lines.push({ x1, y1: prev.cy, x2: xm, y2: prev.cy });
+        lines.push({ x1: xm, y1: prev.cy, x2: xm, y2: cy });
+        lines.push({ x1: xm, y1: cy, x2, y2: cy });
+      }
+    });
+  });
+
+  return { columns, bands, cards, lines };
+}
+
 export interface PodiumEntry {
   name: string;
   contingent: string;
@@ -248,8 +366,15 @@ function side(m: DetailBaganItem, s: 1 | 2): PodiumEntry {
  * Hasil Juara: podium saved in the DB first, then filled in from finished matches
  * (final -> juara 1/2, semifinal losers -> 3A/3B; in a 2-pool preliminary the pool's
  * semifinal loser is 3A for pool A and 3B for pool B).
+ * `bronzeFromRepechage`: the category has a referchange, which alone decides 3A/3B (the
+ * saved podium); the semifinal losers are not filled in.
  */
-export function computePodium(matches: DetailBaganItem[], meta: BracketMeta, dbPodium?: BaganPodium | null): PodiumResult {
+export function computePodium(
+  matches: DetailBaganItem[],
+  meta: BracketMeta,
+  dbPodium?: BaganPodium | null,
+  bronzeFromRepechage = false
+): PodiumResult {
   const fromDb = (p: BaganPodium["j1"]): PodiumEntry =>
     p ? { name: p.name, contingent: p.contingent, logo: p.logo, is_priority: p.is_priority } : emptyEntry();
   let j1 = fromDb(dbPodium?.j1 ?? null);
@@ -258,7 +383,9 @@ export function computePodium(matches: DetailBaganItem[], meta: BracketMeta, dbP
   let j3b = fromDb(dbPodium?.j3b ?? null);
   const empty = (e: PodiumEntry) => e.name === PODIUM_EMPTY;
 
-  if (meta.poolCount === 2 && !meta.isFinalBagan) {
+  if (bronzeFromRepechage) {
+    // 3A/3B only from the saved podium (written by the referchange)
+  } else if (meta.poolCount === 2 && !meta.isFinalBagan) {
     const semi = matches.find((m) => m.round === 4);
     if (semi && semi.selesai && semi.pemenang) {
       const loser = side(semi, semi.pemenang === "2" ? 1 : 2);
@@ -283,7 +410,7 @@ export function computePodium(matches: DetailBaganItem[], meta: BracketMeta, dbP
         if (empty(j2)) j2 = side(finalMatch, 1);
       }
     }
-    const [semi1, semi2] = semis;
+    const [semi1, semi2] = bronzeFromRepechage ? [] : semis;
     if (semi1 && semi1.selesai && (semi1.pemenang === "1" || semi1.pemenang === "2") && empty(j3a)) {
       j3a = side(semi1, semi1.pemenang === "1" ? 2 : 1);
     }

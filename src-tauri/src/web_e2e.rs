@@ -191,8 +191,9 @@ score1=x.score1, score2=x.score2, pemenang=x.pemenang, atlet1=x.atlet1_id, atlet
     }
 }
 
+/// Bout rows of the queue (live tatami status rows are their own stream, tested in D).
 fn statuses(q: &[QRow]) -> Vec<(String, String)> {
-    q.iter().map(|r| (r.endpoint.clone(), r.status.clone())).collect()
+    q.iter().filter(|r| !r.endpoint.contains("tatami-status")).map(|r| (r.endpoint.clone(), r.status.clone())).collect()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -261,12 +262,13 @@ async fn web_e2e_a_refusals_pause_queue() {
         test_auth::set(Some(license(&r.web, which)));
         r.notify_running(&m).await;
         let q = r.drain().await;
-        let last = q.last().unwrap();
+        // the bout's status row (the tatami status row queued behind it waits too)
+        let last = q.iter().filter(|x| !x.endpoint.contains("tatami-status")).last().unwrap();
         assert_eq!(last.status, "failed", "A4 {which}: {q:?}");
         assert!(last.error.as_deref().unwrap_or("").contains("403"), "A4 {which} -> 403: {:?}", last.error);
         assert!(SyncService::auth_status().blocked_reason.is_some(), "A4 {which}: queue paused");
         assert_eq!(SyncService::process_sync_queue(&r.pool, Some(&r.db_path)).await.unwrap(), (0, 0), "A4 {which}: paused queue sends nothing");
-        sqlx::query("DELETE FROM backend_syncqueue WHERE id = ?").bind(last.id).execute(&r.pool).await.unwrap();
+        sqlx::query("DELETE FROM backend_syncqueue WHERE id >= ?").bind(last.id).execute(&r.pool).await.unwrap();
     }
 
     // A3 event not granted: first row refused, the next one stays queued (no hammering).
@@ -439,14 +441,15 @@ async fn live_flow(mode: fn(&WebServer) -> test_auth::Mode) {
 
     // C3 a running score is not sent (the web would end the bout early).
     r.save_running(&bagan, &m).await;
-    assert_eq!(r.queue().await.len(), 1, "C3 running score queues nothing");
+    assert_eq!(statuses(&r.queue().await).len(), 1, "C3 running score queues nothing");
     assert!(b_sse.drain(800).await.is_empty(), "C3 no SSE for a running score");
 
     // C4 + C13 the bout finishes: score, winner moved to the next bout with its VR flag, tatami free.
     r.finish(&bagan, &m).await;
     let q = r.drain().await;
     assert!(q.iter().all(|x| x.status == "synced"), "C4 sent: {q:?}");
-    let payload: Value = serde_json::from_str(&q.last().unwrap().payload).unwrap();
+    let result_row = q.iter().filter(|x| x.endpoint == "api/result/").last().unwrap();
+    let payload: Value = serde_json::from_str(&result_row.payload).unwrap();
     assert!(payload["msg_id"].is_string() && payload["next_kode_realtime"].is_string(), "C4 payload carries msg_id and next bout: {payload}");
     let finished = b_sse.expect("finished", 15).await;
     assert!(finished["next_db_pk"].is_number(), "C4 SSE carries the next bout: {finished}");
@@ -646,4 +649,47 @@ async fn web_e2e_c_team_child_bouts_not_sent() {
     let (code, body) = r.desk.cmd("save_match_result", json!({ "input": input })).await;
     assert_eq!(code, 200, "{body}");
     assert!(r.queue().await.is_empty(), "C12 team child bout not queued");
+}
+
+
+/// D: the Jadwal reaches the web's "Roster & live tatami", and the tatami card there follows
+/// the desktop (bout opened -> active with the athletes, stopped -> idle).
+#[tokio::test]
+#[ignore]
+async fn web_e2e_d_roster_and_live_tatami() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    let ea = r.event_a;
+
+    let msg = SyncService::push_roster_to_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("D1 roster push");
+    let w = r.web_py(&format!(
+        "from backend.models import TimetableDay, TimetableCell
+print('J=' + json.dumps([TimetableDay.objects.filter(event_id={ea}).count(), TimetableCell.objects.filter(row__day__event_id={ea}).count()]))"
+    ));
+    assert!(w[0].as_i64().unwrap() > 0 && w[1].as_i64().unwrap() > 0, "D1 roster on the web: {w} ({msg})");
+
+    let bagan = r.fresh_bagan(9, 16).await;
+    r.push(&bagan).await;
+    let m = r.next_playable(&bagan).await.expect("a playable bout");
+    r.notify_running(&m).await;
+    let q = r.drain().await;
+    assert!(
+        q.iter().any(|x| x.endpoint == "api/sync/tatami-status/" && x.status == "synced"),
+        "D2 tatami status sent: {:?}",
+        q.iter().map(|x| (&x.endpoint, &x.status, &x.error)).collect::<Vec<_>>()
+    );
+    let tatami = |r: &Rig| {
+        r.web_py(&format!(
+            "t = Tatami.objects.filter(event_id={ea}, tatami_number=1).first()
+print('J=' + json.dumps([t.is_active, t.current_atlet_aka, t.current_match_label] if t else None))"
+        ))
+    };
+    let t = tatami(&r);
+    assert_eq!(t[0], json!(true), "D2 web tatami active: {t}");
+    assert_eq!(t[1].as_str(), m["atlet1_nama"].as_str(), "D2 web shows AKA: {t}");
+
+    r.desk.ok("clear_tatami_running", json!({ "tatami": 1, "eventId": EVENT })).await;
+    r.drain().await;
+    let t = tatami(&r);
+    assert_eq!(t[0], json!(false), "D3 stopped tatami idle on the web: {t}");
 }

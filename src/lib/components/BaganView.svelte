@@ -20,7 +20,6 @@
   } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
   import { initLiveSync, isMatchLive, getRunningTatamiForMatch, subscribeLiveSync, subscribeBracketUpdates } from "$lib/liveSync";
-  import BobDrawingModal from "$lib/components/BobDrawingModal.svelte";
   import { isLicenseError, errorText, openLicensePanel } from "$lib/license.svelte";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
   import FestivalBracketSheet from "./FestivalBracketSheet.svelte";
@@ -48,7 +47,7 @@
     baganName,
     baganInfo = null,
     eventName = "",
-    eventVenue = "Venue Pertandingan",
+    eventVenue = "",
     eventDate = "",
     hostUrl = "",
     tatamis = [],
@@ -221,7 +220,6 @@
   );
 
   // Best of the Best (BOB) state
-  let showBobModal = $state(false);
   let isBobBagan = $derived(
     !!currentBaganInfo?.is_bob ||
     displayBaganName.toUpperCase().includes("BEST OF THE BEST") ||
@@ -829,7 +827,8 @@
     isRepechageBagan,
     baganName: baganName || "",
   });
-  let podium = $derived(computePodium(matches, bracketMeta, dbPodium));
+  // A category with a referchange takes its bronze from the referchange only
+  let podium = $derived(computePodium(matches, bracketMeta, dbPodium, !isRepechageBagan && !!repechageInfo?.repechage_bagan_id));
 
 
   $effect(() => {
@@ -1096,16 +1095,6 @@
         </div>
       {/if}
 
-      <!-- Drawing BOB Modal Button -->
-      <button
-        type="button"
-        onclick={() => (showBobModal = true)}
-        class="px-3 py-1.5 bg-gradient-to-r from-amber-500/15 to-yellow-500/15 hover:from-amber-500/25 hover:to-yellow-500/25 text-amber-300 border border-amber-500/40 text-xs font-semibold rounded-lg transition flex items-center space-x-1.5 shadow-xs active:scale-95"
-        title="Buka dialog drawing Best of the Best (BOB)"
-      >
-        <span>🏆</span>
-        <span>Drawing BOB</span>
-      </button>
 
       {#if !isEditMode}
         <!-- Edit Mode Button -->
@@ -1227,8 +1216,10 @@
       {:else}
         <p class="text-[11px] font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'} mt-0.5 flex items-center justify-center gap-1.5 flex-wrap">
           <span>{eventName || "AMBRILINDO KARATE CHAMPIONSHIP"}</span>
-          <span>•</span>
-          <span>{eventVenue}</span>
+          {#if eventVenue}
+            <span>•</span>
+            <span>{eventVenue}</span>
+          {/if}
           {#if eventDate}
             <span>•</span>
             <span>{eventDate}</span>
@@ -1780,6 +1771,24 @@
           onMatchClick={handleOpenMatchControl}
         />
       </div>
+    {:else if elimRounds.length === 0 && isRepechageBagan}
+      <!-- Referchange without bouts: each finalist beat only one opponent, so the bronze is direct -->
+      <div class="h-64 flex flex-col items-center justify-center text-center gap-3">
+        <p class="text-sm font-bold {isDarkMode ? 'text-zinc-200' : 'text-slate-800'}">Tidak ada partai referchange</p>
+        <p class="text-xs {isDarkMode ? 'text-zinc-400' : 'text-slate-500'} max-w-md">
+          Setiap finalis hanya mengalahkan satu lawan, jadi Juara 3A dan 3B langsung ditetapkan.
+        </p>
+        <div class="grid grid-cols-2 gap-3 mt-1">
+          {#each [["3A", podium.j3a], ["3B", podium.j3b]] as [label, entry]}
+            {@const e = entry as typeof podium.j3a}
+            <div class="rounded-xl border px-4 py-3 text-left min-w-[200px] {isDarkMode ? 'bg-[#181a20] border-white/[0.1]' : 'bg-white border-slate-200'}">
+              <div class="text-[11px] font-bold {isDarkMode ? 'text-amber-300' : 'text-amber-700'}">Juara {label}</div>
+              <div class="text-sm font-bold {isDarkMode ? 'text-white' : 'text-slate-900'}">{e.name}</div>
+              <div class="text-xs {isDarkMode ? 'text-zinc-400' : 'text-slate-500'}">{e.contingent}</div>
+            </div>
+          {/each}
+        </div>
+      </div>
     {:else if elimRounds.length === 0}
       <div class="h-64 flex flex-col items-center justify-center text-center">
         <p class="text-sm font-bold {isDarkMode ? 'text-zinc-300' : 'text-slate-700'}">Belum ada partai untuk bagan ini</p>
@@ -1949,20 +1958,6 @@
     </div>
   </div>
 {/if}
-
-<!-- Best of the Best (BOB) Drawing Modal -->
-<BobDrawingModal
-  eventId={currentBaganInfo?.event_id || 1}
-  isOpen={showBobModal}
-  onClose={() => (showBobModal = false)}
-  onSuccess={(result) => {
-    showBobModal = false;
-    baganId = result.bagan_id;
-    baganName = result.nama_bob;
-    if (onBaganUpdated) onBaganUpdated();
-    loadBracketData();
-  }}
-/>
 
 {#if lateModalOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs no-print" role="dialog" aria-modal="true">

@@ -21,6 +21,8 @@
     /** Resolved image URL for the logo card, or null for no card. */
     logoUrl: string | null;
     backgroundUrl?: string | null;
+    /** keep the title on one line (shrinks the text to fit), e.g. "BAGAN: DAY 1 - TATAMI 1" */
+    judulOneLine?: boolean;
   }
 
   let {
@@ -33,7 +35,11 @@
     showSupportedBy,
     logoUrl,
     backgroundUrl = null,
+    judulOneLine = false,
   }: Props = $props();
+
+  // One-line title: the text column is 405 units wide; Roboto 900 caps run ~0.64 em per character
+  let judulSize = $derived(Math.min(34, 405 / (Math.max(1, judul.length) * 0.64)));
 </script>
 
 <div class="cover-sheet">
@@ -55,7 +61,11 @@
         <div class="cover-badge">{badge}</div>
       {/if}
       {#if judul}
-        <div class="cover-judul">{judul}</div>
+        <div
+          class="cover-judul"
+          class:one-line={judulOneLine}
+          style={judulOneLine ? `font-size: calc(${judulSize} * var(--u)); line-height: calc(${judulSize * 1.1} * var(--u));` : undefined}
+        >{judul}</div>
       {/if}
       {#if namaEvent}
         <div class="cover-event">{namaEvent}</div>
@@ -215,5 +225,10 @@
     color: #ffffff;
     white-space: nowrap;
     text-shadow: 0 calc(1 * var(--u)) calc(2 * var(--u)) rgba(0, 0, 0, 0.7);
+  }
+  .cover-judul.one-line {
+    display: block;
+    white-space: nowrap;
+    overflow: visible;
   }
 </style>

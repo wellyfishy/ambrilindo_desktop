@@ -6,6 +6,7 @@
   import { invoke } from "$lib/api_client";
   import { printWithOrientation } from "$lib/print_helper";
   import BracketPaperPage from "$lib/components/BracketPaperPage.svelte";
+  import RosterSheet from "$lib/components/RosterSheet.svelte";
   import { computePodium, deriveBracketMeta, isFestivalName, winnersToPodium } from "$lib/bracket_layout";
   import {
     AUTO_SORT_MODES,
@@ -287,8 +288,6 @@
   let ntAthletesMap = $state<Record<number, string[]>>({});
 
   // --- Kop Surat Modal State ---
-  let kopModalOpen = $state(false);
-  let isSavingKop = $state(false);
   let kopNama = $state("");
   let kopAlamat = $state("");
   let kopKontak = $state("");
@@ -1006,27 +1005,6 @@
     }
   }
 
-  // --- Kop Surat Modal Save ---
-  async function handleSaveKop() {
-    if (!eventId) return;
-    isSavingKop = true;
-    try {
-      const saved = await invoke<KopSurat>("save_kop_surat", {
-        eventId,
-        namaOrganisasi: kopNama,
-        alamat: kopAlamat,
-        kontak: kopKontak,
-        logo: kopLogo,
-      });
-      kopSurat = saved;
-      kopModalOpen = false;
-      notify("Kop surat berhasil disimpan!");
-    } catch (err: any) {
-      notify(`Gagal menyimpan kop surat: ${err}`);
-    } finally {
-      isSavingKop = false;
-    }
-  }
 
   // --- Day & Row Management ---
   async function handleAddDay() {
@@ -1688,20 +1666,6 @@
             <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" onclick={() => { openMenu = null; printMode = "simple_roster"; }}>
               Roster 1 halaman
             </button>
-            {#each tatamis as t}
-              <button
-                role="menuitem"
-                class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none"
-                disabled={!activeDay || tatamiBookletLoading}
-                onclick={() => { openMenu = null; openTatamiBooklet(t); }}
-              >
-                Buku Tatami {t.tatami_number}
-              </button>
-            {/each}
-            <div class="my-1 border-t border-white/[0.08]"></div>
-            <button role="menuitem" class="w-full px-3.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none" onclick={() => { openMenu = null; kopModalOpen = true; }}>
-              Kop Surat…
-            </button>
           </div>
         {/if}
       </div>
@@ -2103,7 +2067,7 @@
           </div>
         {:else}
           <table class="w-full text-left border-collapse">
-            <thead class="bg-[#111215] text-zinc-400 font-mono text-[11px] uppercase tracking-wider sticky top-0 z-10 border-b border-white/[0.08]">
+            <thead class="bg-[#111215] text-zinc-400 font-mono text-[11px] uppercase tracking-wider sticky top-0 {openMenu?.startsWith('tatami-') ? 'z-40' : 'z-10'} border-b border-white/[0.08]">
               <tr>
                 <th class="py-3 px-4 w-40 min-w-36 font-semibold">Sesi</th>
                 {#each tatamis as tatami}
@@ -2119,7 +2083,8 @@
                         {/if}
                       </div>
 
-                      <!-- Per-tatami menu (print booklet, remove) -->
+                      <!-- Per-tatami menu (remove) -->
+                      {#if tatamis.length > 1}
                       <div class="relative">
                         <button
                           type="button"
@@ -2137,14 +2102,6 @@
                         </button>
                         {#if openMenu === `tatami-${tatami.id}`}
                           <div class="absolute right-0 mt-1 w-52 bg-[#181a20] border border-white/10 rounded-xl shadow-2xl py-1.5 z-40 normal-case tracking-normal font-sans" role="menu">
-                            <button
-                              role="menuitem"
-                              class="w-full px-3.5 py-2 text-left text-sm font-semibold text-zinc-200 hover:text-white hover:bg-white/[0.06] transition disabled:opacity-40"
-                              disabled={tatamiBookletLoading}
-                              onclick={() => { openMenu = null; openTatamiBooklet(tatami); }}
-                            >
-                              Cetak buku tatami
-                            </button>
                             {#if tatamis.length > 1}
                               <button
                                 role="menuitem"
@@ -2157,6 +2114,7 @@
                           </div>
                         {/if}
                       </div>
+                      {/if}
                     </div>
                   </th>
                 {/each}
@@ -2851,56 +2809,6 @@
   </div>
 {/if}
 
-<!-- Kop Surat Settings Modal -->
-{#if kopModalOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-100">
-    <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl max-w-md w-full">
-      <div class="flex items-center justify-between pb-3 border-b border-white/[0.08]">
-        <h3 class="text-base font-bold text-white uppercase">Pengaturan Kop Surat Panitia</h3>
-        <button onclick={() => (kopModalOpen = false)} class="text-zinc-400 hover:text-white p-1" title="Tutup dialog">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-        </button>
-      </div>
-
-      <div class="my-4 space-y-3">
-        <div>
-          <label for="kop-nama-input" class="block text-[10px] font-mono text-zinc-400 uppercase mb-1">Nama Organisasi / Event:</label>
-          <input
-            id="kop-nama-input"
-            type="text"
-            bind:value={kopNama}
-            class="w-full bg-[#14161b] text-white text-xs px-3 py-2 rounded-xl border border-white/10 outline-none"
-          />
-        </div>
-        <div>
-          <label for="kop-alamat-input" class="block text-[10px] font-mono text-zinc-400 uppercase mb-1">Alamat Venue:</label>
-          <input
-            id="kop-alamat-input"
-            type="text"
-            bind:value={kopAlamat}
-            class="w-full bg-[#14161b] text-white text-xs px-3 py-2 rounded-xl border border-white/10 outline-none"
-          />
-        </div>
-        <div>
-          <label for="kop-kontak-input" class="block text-[10px] font-mono text-zinc-400 uppercase mb-1">Kontak / Tanggal Pelaksanaan:</label>
-          <input
-            id="kop-kontak-input"
-            type="text"
-            bind:value={kopKontak}
-            class="w-full bg-[#14161b] text-white text-xs px-3 py-2 rounded-xl border border-white/10 outline-none"
-          />
-        </div>
-      </div>
-
-      <div class="flex items-center justify-end space-x-2 pt-2 border-t border-white/[0.08]">
-        <button onclick={() => (kopModalOpen = false)} class="h-9 px-3.5 bg-white/[0.04] text-zinc-300 text-xs font-semibold rounded-xl border border-white/10">Batal</button>
-        <button onclick={handleSaveKop} disabled={isSavingKop} class="h-9 px-4 bg-white text-black font-bold text-xs rounded-xl shadow-md">
-          {isSavingKop ? 'Menyimpan...' : 'Simpan Kop'}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
 {:else}
 <!-- Printable Document Views (Simple Roster, Call Sheet, Booklet) -->
   <div class="print-overlay-wrapper fixed inset-0 z-50 bg-[#111215] flex flex-col overflow-y-auto p-6 select-text text-black">
@@ -2958,149 +2866,21 @@
     <!-- Print Paper Page Container (White Paper A4 Landscape) -->
     <div class="print-page-box {printMode === 'simple_roster' ? `roster-a4-sheet${rosterLandscape ? ' is-landscape' : ''}` : printMode === 'booklet' ? 'max-w-5xl mx-auto w-full booklet-preview-container' : 'max-w-5xl mx-auto w-full bg-white p-6 shadow-2xl rounded-lg text-black font-sans'}">
       {#if printMode === "simple_roster" && rosterDays.length > 0}
-        <!-- Simple 1-Page Synchronized Roster Table (1:1 Ambrilindo Local Spec) -->
-        <div
-          class="simple-roster-page {simpleRosterDensityClass}"
-          bind:this={rosterPageEl}
-          style="zoom: {rosterFitZoom}; height: {100 / rosterFitZoom}%;"
-        >
-          <!-- Kop Surat -->
-          <div class="simple-roster-header">
-            <div class="simple-roster-kop-left">
-              {#if kopLogo && !kopLogoFailed}
-                <img src={kopLogo} class="simple-roster-logo" alt="" onerror={() => (kopLogoFailed = true)} />
-              {:else}
-                <div class="simple-roster-brand-logos">
-                  <img src={FORKI_LOGO_DATA_URL} alt="FORKI" class="brand-logo-forki" />
-                  <span class="brand-logo-divider"></span>
-                  <img src={AMBRILINDO_LOGO_DATA_URL} alt="Ambrilindo" class="brand-logo-ambrilindo" />
-                </div>
-              {/if}
-              <div class="simple-roster-org-info">
-                <h3 class="simple-roster-org-name">{kopNama || eventName}</h3>
-                {#if kopAlamat || kopKontak}
-                  <p class="simple-roster-org-meta">
-                    {[kopAlamat, kopKontak].filter(Boolean).join(" • ")}
-                  </p>
-                {/if}
-                <div class="simple-roster-doc-title">ROSTER PERTANDINGAN / RUN SHEET</div>
-              </div>
-            </div>
-            {#if rosterDays.length === 1}
-              <div class="simple-roster-day-badge-box">
-                <div class="simple-roster-day-label">{rosterDays[0].label}</div>
-                {#if rosterDays[0].tanggal}
-                  <div class="simple-roster-day-date">{rosterDays[0].tanggal}</div>
-                {/if}
-              </div>
-            {/if}
-          </div>
-
-          {#each rosterDays as day (day.id)}
-          {@const dayTotals = dayTatamiTotals(day)}
-          <!-- Day Section -->
-          <div class="simple-roster-day-section">
-            {#if rosterDays.length > 1}
-              <div class="simple-roster-day-bar">
-                <span class="day-bar-title">{day.label}</span>
-                {#if day.tanggal}<span class="day-bar-date">{day.tanggal}</span>{/if}
-              </div>
-            {/if}
-            <!-- Synchronized Run Sheet Table -->
-            <table class="simple-roster-table">
-              <thead>
-                <tr>
-                  {#each tatamis as t}
-                    {@const tMeta = dayTotals[t.id]}
-                    <th style="width: {100 / tatamis.length}%;">
-                      TATAMI {t.tatami_number}
-                      {#if tMeta}
-                        <span class="th-sub">({tMeta.matches} Partai • {tMeta.athletes} Atlet)</span>
-                      {/if}
-                    </th>
-                  {/each}
-                </tr>
-              </thead>
-              <tbody>
-                {#if day.rows.length === 0}
-                  <tr>
-                    <td colspan={tatamis.length} style="text-align:center; padding:8px; color:#94a3b8; font-style:italic;">
-                      Belum ada nomor tanding yang dijadwalkan pada hari ini.
-                    </td>
-                  </tr>
-                {:else}
-                  {#each day.rows as row, rIdx}
-                    {#if row.row_type === "label"}
-                      <tr class="roster-ishoma-row">
-                        <td colspan={tatamis.length} class="roster-ishoma-cell">
-                          <div class="roster-ishoma-bar">
-                            <span class="roster-ishoma-label">{row.label_text || 'ISHOMA / ISTIRAHAT SIANG'}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    {:else}
-                      <tr>
-                        {#each tatamis as t}
-                          {@const cell = row.cells.find((c) => c.tatami_id === t.id)}
-                          {#if cell && cell.nomor_tanding_id}
-                            {@const seq = getTatamiCellSeq(t.id, rIdx, day.rows)}
-                            <td class="roster-match-cell">
-                              <div class="roster-item-line">
-                                <span class="roster-num-badge">#{seq}</span>
-                                <span class="roster-item-title">{cellDisplayName(cell)}</span>
-                                <span class="roster-atlet-count">({cell.atlet_count})</span>
-                              </div>
-                            </td>
-                          {:else if cell && cell.custom_text}
-                            {@const isFest = cell.is_festival || cell.custom_text.toUpperCase().includes('FESTIVAL')}
-                            {@const seq = getTatamiCellSeq(t.id, rIdx, day.rows)}
-                            <td class="roster-match-cell {isFest ? 'is-festival' : ''}">
-                              <div class="roster-item-line">
-                                <span class="roster-num-badge">#{seq}</span>
-                                <span class="roster-item-title">{textCellTitle(cell)}</span>
-                                {#if textCellAthletes(cell) > 0}
-                                  <span class="roster-atlet-count">({textCellAthletes(cell)})</span>
-                                {/if}
-                              </div>
-                            </td>
-                          {:else}
-                            <td class="roster-match-cell is-empty">
-                              <span>-</span>
-                            </td>
-                          {/if}
-                        {/each}
-                      </tr>
-                    {/if}
-                  {/each}
-                {/if}
-              </tbody>
-            </table>
-          </div>
-          {/each}
-
-          <!-- Bottom Section (Ambrilindo Local Spec - Pure - NO SIGNATURES) -->
-          <div class="simple-roster-bottom-section">
-            <div class="simple-roster-bottom-left">
-              <div class="simple-roster-reminder-box">
-                <span class="reminder-badge">PENTING</span>
-                <span class="reminder-text">Jadwal bersifat estimasi. Atlet &amp; official wajib berada di area pemanasan 30 menit sebelum partai dimulai.</span>
-              </div>
-
-              {#if unassignedLabelsForPrint.length > 0}
-                <div class="simple-roster-unassigned">
-                  <span class="unassigned-title">Kelas tidak ditandingkan:</span>
-                  <span class="unassigned-items">
-                    {unassignedLabelsForPrint.join(', ')}
-                  </span>
-                </div>
-              {/if}
-            </div>
-
-            <div class="simple-roster-bottom-right">
-              <div class="simple-roster-ts">Dicetak: {printedTimeStr} • Ambrilindo Timetable Engine</div>
-            </div>
-          </div>
-        </div>
+        <!-- Roster 1 halaman: shared with the results booklet and Roster Bagan (Cetak) -->
+        <RosterSheet
+          {days}
+          {tatamis}
+          {categories}
+          {eventName}
+          {kopNama}
+          {kopAlamat}
+          {kopKontak}
+          {kopLogo}
+          fallbackDay={activeDay}
+          startTime={startTimeStr}
+          zoom={rosterFitZoom}
+          bind:pageEl={rosterPageEl}
+        />
       {:else if printMode === "detailed_timeline" && activeDay}
         <!-- Detailed Timeline Print (1:1 Ambrilindo Local Spec) -->
         <div class="detailed-print-page">
@@ -3617,69 +3397,6 @@
   .roster-a4-sheet.is-landscape {
     width: 297mm;
     height: 210mm;
-  }
-  .roster-a4-sheet .simple-roster-page {
-    display: flex;
-    flex-direction: column;
-    padding: 0;
-    overflow: hidden;
-  }
-  /* Compact roster: rows as tall as their text plus a little breathing room; large bold text. */
-  .roster-a4-sheet .simple-roster-day-section {
-    margin-bottom: 0;
-  }
-  .roster-a4-sheet .simple-roster-bottom-section {
-    margin-top: 4px;
-  }
-  .roster-a4-sheet .simple-roster-table th {
-    padding: 3px 4px;
-    font-size: 11px;
-    font-weight: 900;
-    line-height: 1.15;
-  }
-  .roster-a4-sheet .simple-roster-table th .th-sub {
-    font-size: 8.5px;
-    font-weight: 700;
-  }
-  .roster-a4-sheet .simple-roster-page td.roster-match-cell {
-    padding: 3px 4px;
-    font-size: 10.5px;
-    line-height: 1.2;
-    vertical-align: middle;
-  }
-  .roster-a4-sheet .roster-item-line {
-    gap: 4px;
-    align-items: center;
-    line-height: 1.2;
-  }
-  .roster-a4-sheet .roster-item-title {
-    font-weight: 800;
-    margin-top: 0;
-    line-height: 1.2;
-  }
-  .roster-a4-sheet .roster-atlet-count {
-    font-weight: 800;
-    margin-top: 0;
-    line-height: 1.2;
-    align-self: center;
-  }
-  .roster-a4-sheet .roster-num-badge {
-    min-width: 18px;
-    margin-top: 0;
-    padding: 1px 3px;
-    font-size: 9px;
-    font-weight: 900;
-    border-radius: 2px;
-    line-height: 1.15;
-  }
-  .roster-a4-sheet .roster-match-cell.is-empty {
-    font-size: 9px;
-  }
-  .roster-a4-sheet .roster-ishoma-cell {
-    padding: 2px 4px !important;
-  }
-  .roster-a4-sheet .roster-ishoma-bar {
-    font-size: 10px;
   }
   .simple-roster-brand-logos {
     display: flex;
@@ -5636,11 +5353,11 @@
       height: 198mm !important;
     }
     /* Compact roster: never stretch the table to fill the page (the booklet roster does). */
-    .roster-a4-sheet .simple-roster-day-section {
+    .roster-a4-sheet :global(.simple-roster-day-section) {
       flex: 0 0 auto !important;
       display: block !important;
     }
-    .roster-a4-sheet .simple-roster-table {
+    .roster-a4-sheet :global(.simple-roster-table) {
       height: auto !important;
       flex: none !important;
     }
