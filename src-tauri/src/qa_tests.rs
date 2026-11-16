@@ -1428,3 +1428,121 @@ async fn pool_round4_losers(s: &TestServer, bs: &[Value]) -> Vec<i64> {
     }
     out
 }
+
+/// Manual drawing slots for athletes split into pools (pool 1..), spread so no bout is left
+/// without an opponent.
+fn manual_pool_slots(pools: &[&[i64]]) -> Vec<Value> {
+    const SPREAD: [usize; 16] = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15];
+    pools
+        .iter()
+        .enumerate()
+        .flat_map(|(p, ids)| {
+            ids.iter().enumerate().map(move |(k, id)| {
+                let i = SPREAD[k];
+                json!({ "atlet_id": id, "match_num": i / 2 + 1, "position": i % 2 + 1, "pool": p + 1 })
+            })
+        })
+        .collect()
+}
+
+/// Manual drawing with 2 pools creates Pool A, Pool B and a Final, exactly like the random
+/// drawing: the pool winners meet in the Final, the pools' round-4 losers are the bronzes.
+#[tokio::test]
+async fn qa_manual_drawing_two_pools_creates_final() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let cat = make_category(&s, PORPROV, "QA MANUAL DUA POOL", 10).await;
+    let ids = ids(&s.ok("get_manual_drawing_athletes", json!({ "categoryId": cat })).await);
+    let slots = manual_pool_slots(&[&ids[..5], &ids[5..]]);
+
+    let preview = s.ok("preview_manual_drawing_bagan", json!({ "categoryId": cat, "slots": slots, "poolCount": 2 })).await;
+    let preview_pools: HashSet<i64> = preview["matches"].as_array().unwrap().iter().map(|m| m["pool"].as_i64().unwrap()).collect();
+    assert_eq!(preview_pools, HashSet::from([1, 2]), "preview per pool");
+
+    s.ok("execute_manual_drawing_bagan", json!({ "eventId": PORPROV, "categoryId": cat, "slots": slots, "hasVr": false, "poolCount": 2 })).await;
+    let bs = category_bagans(&s, PORPROV, cat).await;
+    assert_eq!(bs.len(), 3, "final + 2 pools: {bs:?}");
+    let final_b = bs.iter().find(|b| b["pool"].as_i64() == Some(0)).expect("final bagan").clone();
+    assert!(final_b["nama_bagan"].as_str().unwrap().ends_with("- Final"));
+    for suffix in ["Pool A", "Pool B"] {
+        assert_eq!(pool_named(&bs, suffix)["pool"].as_i64(), Some(2), "{suffix} pool column = pool count");
+    }
+    // Each pool holds exactly the athletes placed there.
+    for (suffix, expected) in [("Pool A", &ids[..5]), ("Pool B", &ids[5..])] {
+        let p = pool_named(&bs, suffix);
+        // Lone athletes are already advanced on BYEs, so look at every round.
+        let got: HashSet<i64> = details(&s, p["id"].as_i64().unwrap()).await.iter()
+            .flat_map(|m| [m["atlet1_id"].as_i64(), m["atlet2_id"].as_i64()])
+            .flatten()
+            .collect();
+        let mut got: Vec<i64> = got.into_iter().collect();
+        got.sort();
+        let mut want = expected.to_vec();
+        want.sort();
+        assert_eq!(got, want, "{suffix} athletes as placed");
+    }
+
+    play_category(&s, PORPROV, cat).await;
+    let losers = pool_round4_losers(&s, &bs).await;
+    let fin = bout(&details(&s, final_b["id"].as_i64().unwrap()).await, 4, 1);
+    let winners: Vec<i64> = {
+        let mut w = Vec::new();
+        for suffix in ["Pool A", "Pool B"] {
+            let p = pool_named(&bs, suffix);
+            w.push(winner_loser(&bout(&details(&s, p["id"].as_i64().unwrap()).await, 4, 1)).0);
+        }
+        w
+    };
+    assert_eq!((fin["atlet1_id"].as_i64(), fin["atlet2_id"].as_i64()), (Some(winners[0]), Some(winners[1])), "final = pool winners");
+    let bronze: (Option<i64>, Option<i64>) = sqlx::query_as("SELECT juara_3a_id, juara_3b_id FROM backend_bagan WHERE id = ?")
+        .bind(final_b["id"].as_i64().unwrap()).fetch_one(&pool).await.unwrap();
+    assert_eq!(bronze, (Some(losers[0]), Some(losers[1])), "bronze = pools' round-4 losers");
+}
+
+/// Manual drawing with 4 pools: Final semifinals are A vs B and C vs D.
+#[tokio::test]
+async fn qa_manual_drawing_four_pools_semifinals_in_final() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let cat = make_category(&s, PORPROV, "QA MANUAL EMPAT POOL", 12).await;
+    let ids = ids(&s.ok("get_manual_drawing_athletes", json!({ "categoryId": cat })).await);
+    let slots = manual_pool_slots(&[&ids[..3], &ids[3..6], &ids[6..9], &ids[9..]]);
+    s.ok("execute_manual_drawing_bagan", json!({ "eventId": PORPROV, "categoryId": cat, "slots": slots, "hasVr": false, "poolCount": 4 })).await;
+    let bs = category_bagans(&s, PORPROV, cat).await;
+    assert_eq!(bs.len(), 5, "final + 4 pools");
+    let final_id = bs.iter().find(|b| b["pool"].as_i64() == Some(0)).unwrap()["id"].as_i64().unwrap();
+    play_category(&s, PORPROV, cat).await;
+    let mut winners = Vec::new();
+    for suffix in ["Pool A", "Pool B", "Pool C", "Pool D"] {
+        let p = pool_named(&bs, suffix);
+        let ms = details(&s, p["id"].as_i64().unwrap()).await;
+        // The pool's champion: winner of its last played bout.
+        let last = ms.iter().filter(|m| m["selesai"].as_bool() == Some(true)).max_by_key(|m| m["round"].as_i64()).unwrap();
+        winners.push(winner_loser(last).0);
+    }
+    let fm = details(&s, final_id).await;
+    let (semi1, semi2) = (bout(&fm, 3, 1), bout(&fm, 3, 2));
+    assert_eq!((semi1["atlet1_id"].as_i64(), semi1["atlet2_id"].as_i64()), (Some(winners[0]), Some(winners[1])), "semi 1 = A vs B");
+    assert_eq!((semi2["atlet1_id"].as_i64(), semi2["atlet2_id"].as_i64()), (Some(winners[2]), Some(winners[3])), "semi 2 = C vs D");
+}
+
+/// Manual pool placements the save must refuse.
+#[tokio::test]
+async fn qa_manual_drawing_pool_refusals() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let cat = make_category(&s, PORPROV, "QA MANUAL POOL TOLAK", 5).await;
+    let ids = ids(&s.ok("get_manual_drawing_athletes", json!({ "categoryId": cat })).await);
+    let run = |slots: Vec<Value>, pools: i64| {
+        let s = &s;
+        async move { s.cmd("execute_manual_drawing_bagan", json!({ "eventId": PORPROV, "categoryId": cat, "slots": slots, "hasVr": false, "poolCount": pools })).await }
+    };
+    let (c, body) = run(manual_pool_slots(&[&ids[..4], &ids[4..]]), 2).await;
+    assert_ne!(c, 200, "a pool with one athlete never reaches the Final");
+    assert!(body.to_string().contains("minimal 2 atlet"), "{body}");
+    let (c, _) = run(manual_pool_slots(&[&ids[..3], &ids[2..]]), 2).await;
+    assert_ne!(c, 200, "an athlete in two pools");
+    let (c, _) = run(manual_pool_slots(&[&ids[..2], &ids[2..4], &ids[4..]]), 3).await;
+    assert_ne!(c, 200, "3 pools is not supported");
+    let (c, _) = run(manual_pool_slots(&[&ids[..3], &ids[3..4]]), 2).await;
+    assert_ne!(c, 200, "an athlete not placed");
+    assert!(category_bagans(&s, PORPROV, cat).await.is_empty(), "nothing written");
+}

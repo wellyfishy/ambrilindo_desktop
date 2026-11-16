@@ -1998,7 +1998,8 @@ async fn dispatch_command_api(
                 Ok(s) => s,
                 Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Format slot tidak valid: {}", e) }))).into_response(),
             };
-            match db.preview_manual_drawing_bagan(cat_id, slots).await {
+            let pool_count = get_i64_val(&payload, &["poolCount", "pool_count"]).unwrap_or(1).clamp(0, 255) as u8;
+            match db.preview_manual_drawing_bagan(cat_id, slots, pool_count).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
@@ -2017,7 +2018,8 @@ async fn dispatch_command_api(
                 Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": format!("Format slot tidak valid: {}", e) }))).into_response(),
             };
             let has_vr = get_bool_val(&payload, &["hasVr", "has_vr"]).unwrap_or(false);
-            match db.execute_manual_drawing_bagan(ev_id, cat_id, slots, has_vr).await {
+            let pool_count = get_i64_val(&payload, &["poolCount", "pool_count"]).unwrap_or(1).clamp(0, 255) as u8;
+            match db.execute_manual_drawing_bagan(ev_id, cat_id, slots, has_vr, pool_count).await {
                 Ok(v) => {
                     if let Some(app) = &state.app_handle {
                         let _ = app.emit("bracket_updated", ());

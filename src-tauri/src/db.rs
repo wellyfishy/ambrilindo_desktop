@@ -945,6 +945,62 @@ impl DatabaseManager {
 
     /// Writes the 16 bout rows of one bracket (rounds 1–4 plus the round-5 bronze bout).
     /// Returns the number of rows written.
+    /// Writes a category drawn in pools: "<cat> - Final" (pool = 0, empty: the pool winners are
+    /// moved in as results come) and "<cat> - Pool A..D" (pool = number of pools), each with the
+    /// same 16-bout rows. Shared by the automatic and the manual drawing, so advancement, podium,
+    /// referchange and live sync see the same bagans. Returns (bagans, bouts) written.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_pool_set(
+        conn: &mut sqlx::SqliteConnection,
+        event_id: i64,
+        category_id: i64,
+        cat_name: &str,
+        tipe_tanding: Option<&str>,
+        has_vr: bool,
+        next_code_num: &mut u32,
+        pools: &[crate::bracket::BracketResult],
+    ) -> Result<(usize, usize), String> {
+        let pool_count = pools.len();
+        if !(pool_count == 2 || pool_count == 4) {
+            return Err(format!("Jumlah pool {} tidak didukung (2 atau 4).", pool_count));
+        }
+        let insert = "INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)";
+        let mut bouts = 0;
+
+        let final_id = sqlx::query(insert)
+            .bind(event_id)
+            .bind(category_id)
+            .bind(format!("{} - Final", cat_name))
+            .bind(0)
+            .bind(tipe_tanding)
+            .bind(has_vr)
+            .bind(format!("{:03}", *next_code_num))
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| format!("Gagal membuat bagan final: {}", e))?
+            .last_insert_rowid();
+        *next_code_num += 1;
+        bouts += Self::insert_bracket_rows(&mut *conn, final_id, &build_bracket_in_memory(&[], 0, has_vr)).await?;
+
+        for (i, data) in pools.iter().enumerate() {
+            let pool_id = sqlx::query(insert)
+                .bind(event_id)
+                .bind(category_id)
+                .bind(format!("{} - Pool {}", cat_name, ['A', 'B', 'C', 'D'][i]))
+                .bind(pool_count as i32)
+                .bind(tipe_tanding)
+                .bind(has_vr)
+                .bind(format!("{:03}", *next_code_num))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| format!("Gagal membuat bagan pool: {}", e))?
+                .last_insert_rowid();
+            *next_code_num += 1;
+            bouts += Self::insert_bracket_rows(&mut *conn, pool_id, data).await?;
+        }
+        Ok((pool_count + 1, bouts))
+    }
+
     async fn insert_bracket_rows(conn: &mut sqlx::SqliteConnection, bagan_id: i64, data: &crate::bracket::BracketResult) -> Result<usize, String> {
         let mut written = 0;
         for r in 1..=4u32 {
@@ -3836,129 +3892,19 @@ impl DatabaseManager {
                 total_collisions += bracket_data.collision_count;
                 total_matches += Self::insert_bracket_rows(&mut *tx, bagan_id, &bracket_data).await?;
             } else {
-                // Multi-pool
+                // Multi-pool: random, balanced pools; Final + Pool A..D written by insert_pool_set.
                 let pools_athletes = split_athletes_into_pools(&athletes, perulangan);
-
-                // 1. Final bracket (pool 0)
-                let final_name = format!("{} - Final", cat_name);
-                let final_code = format!("{:03}", next_code_num);
-                next_code_num += 1;
-
-                let final_bagan_res = sqlx::query(
-                    "INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (?, ?, ?, 0, ?, 0, 0, ?, ?)"
+                let pools: Vec<crate::bracket::BracketResult> = pools_athletes
+                    .iter()
+                    .map(|p| build_bracket_in_memory(p, perulangan as i32, should_have_vr))
+                    .collect();
+                total_collisions += pools.iter().map(|p| p.collision_count).sum::<usize>();
+                let (b, m) = Self::insert_pool_set(
+                    &mut *tx, event_id, cat_id, &cat_name, tipe_tanding, should_have_vr, &mut next_code_num, &pools,
                 )
-                .bind(event_id)
-                .bind(cat_id)
-                .bind(&final_name)
-                .bind(tipe_tanding)
-                .bind(should_have_vr)
-                .bind(&final_code)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Gagal membuat bagan final: {}", e))?;
-
-                let final_bagan_id = final_bagan_res.last_insert_rowid();
-                bagans_created += 1;
-
-                let empty_bracket = build_bracket_in_memory(&[], 0, should_have_vr);
-                for r in 1..=4 {
-                    let max_u = match r { 1 => 8, 2 => 4, 3 => 2, _ => 1 };
-                    for u in 1..=max_u {
-                        let m = empty_bracket.matches.get(&r).and_then(|round| round.get(&u)).cloned().unwrap_or_default();
-                        sqlx::query(
-                            "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)"
-                        )
-                        .bind(final_bagan_id)
-                        .bind(r as i32)
-                        .bind(u as i32)
-                        .bind(m.atlet1_id)
-                        .bind(m.atlet2_id)
-                        .bind(m.vr1)
-                        .bind(m.vr2)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|e| format!("Gagal menyimpan detail bagan final: {}", e))?;
-                        total_matches += 1;
-                    }
-                }
-                let m5 = empty_bracket.matches.get(&5).and_then(|round| round.get(&1)).cloned().unwrap_or_default();
-                sqlx::query(
-                    "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 5, 1, ?, ?, ?, ?, 0, 0, 0)"
-                )
-                .bind(final_bagan_id)
-                .bind(m5.atlet1_id)
-                .bind(m5.atlet2_id)
-                .bind(m5.vr1)
-                .bind(m5.vr2)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| format!("Gagal menyimpan partai perebutan juara 3 final: {}", e))?;
-                total_matches += 1;
-
-                // 2. Pool brackets (Pool A, B, C, D)
-                let pool_letters = ['A', 'B', 'C', 'D'];
-                for i in 1..=perulangan {
-                    let letter = pool_letters[i - 1];
-                    let pool_name = format!("{} - Pool {}", cat_name, letter);
-                    let pool_code = format!("{:03}", next_code_num);
-                    next_code_num += 1;
-                    let pool_athletes = &pools_athletes[i - 1];
-
-                    let pool_bagan_res = sqlx::query(
-                        "INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)"
-                    )
-                    .bind(event_id)
-                    .bind(cat_id)
-                    .bind(&pool_name)
-                    .bind(perulangan as i32)
-                    .bind(tipe_tanding)
-                    .bind(should_have_vr)
-                    .bind(&pool_code)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Gagal membuat bagan pool: {}", e))?;
-
-                    let pool_bagan_id = pool_bagan_res.last_insert_rowid();
-                    bagans_created += 1;
-
-                    let bracket_data = build_bracket_in_memory(pool_athletes, perulangan as i32, should_have_vr);
-                    total_collisions += bracket_data.collision_count;
-
-                    for r in 1..=4 {
-                        let max_u = match r { 1 => 8, 2 => 4, 3 => 2, _ => 1 };
-                        for u in 1..=max_u {
-                            let m = bracket_data.matches.get(&r).and_then(|round| round.get(&u)).cloned().unwrap_or_default();
-                            sqlx::query(
-                                "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0)"
-                            )
-                            .bind(pool_bagan_id)
-                            .bind(r as i32)
-                            .bind(u as i32)
-                            .bind(m.atlet1_id)
-                            .bind(m.atlet2_id)
-                            .bind(m.vr1)
-                            .bind(m.vr2)
-                            .execute(&mut *tx)
-                            .await
-                            .map_err(|e| format!("Gagal menyimpan detail bagan pool: {}", e))?;
-                            total_matches += 1;
-                        }
-                    }
-
-                    let m5 = bracket_data.matches.get(&5).and_then(|round| round.get(&1)).cloned().unwrap_or_default();
-                    sqlx::query(
-                        "INSERT INTO backend_detailbagan (bagan_id, round, urutan, atlet1_id, atlet2_id, vr1, vr2, hantei, selesai, team) VALUES (?, 5, 1, ?, ?, ?, ?, 0, 0, 0)"
-                    )
-                    .bind(pool_bagan_id)
-                    .bind(m5.atlet1_id)
-                    .bind(m5.atlet2_id)
-                    .bind(m5.vr1)
-                    .bind(m5.vr2)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| format!("Gagal menyimpan perebutan juara 3 pool: {}", e))?;
-                    total_matches += 1;
-                }
+                .await?;
+                bagans_created += b;
+                total_matches += m;
             }
         }
 
@@ -3996,40 +3942,56 @@ impl DatabaseManager {
 
     /// Checks a (possibly partial) manual placement against the category's athletes and
     /// builds the bracket from it. Returns (number of athletes in the category, bracket).
+    /// Validates a manual placement and builds one bracket per pool (`pool_count` 1, 2 or 4).
+    /// Partial placements are fine here (the live preview uses this); `execute_manual_drawing_bagan`
+    /// adds the checks that only apply to a save.
     async fn build_manual_bracket(
         &self,
         category_id: i64,
         slots: &[ManualSlotInput],
         should_have_vr: bool,
-    ) -> Result<(usize, crate::bracket::BracketResult), String> {
-        // Validate the placement against the category's athletes.
+        pool_count: u8,
+    ) -> Result<(usize, Vec<crate::bracket::BracketResult>), String> {
+        if !matches!(pool_count, 1 | 2 | 4) {
+            return Err(format!("Jumlah pool {} tidak didukung: pilih 1, 2 atau 4.", pool_count));
+        }
         let athletes = self.get_manual_drawing_athletes(category_id).await?;
         if athletes.is_empty() {
             return Err("Nomor tanding ini belum punya atlet.".into());
         }
-        if athletes.len() > 16 {
-            return Err(format!("{} atlet: lebih dari 16, pakai drawing otomatis (pool).", athletes.len()));
+        let capacity = 16 * pool_count as usize;
+        if athletes.len() > capacity {
+            return Err(if pool_count == 4 {
+                format!("{} atlet: lebih dari {} (4 pool x 16).", athletes.len(), MAX_DRAW_ENTRIES)
+            } else {
+                format!("{} atlet: lebih dari {} untuk {} pool, pilih lebih banyak pool.", athletes.len(), capacity, pool_count)
+            });
         }
         let by_id: HashMap<i64, &ManualDrawingAthlete> = athletes.iter().map(|a| (a.id, a)).collect();
-        let mut assignment: HashMap<i64, crate::bracket::MatchSlot> = HashMap::new();
-        let mut used_slots: HashSet<(u32, u8)> = HashSet::new();
+        let mut assignments: Vec<HashMap<i64, crate::bracket::MatchSlot>> = vec![HashMap::new(); pool_count as usize];
+        let mut used_slots: HashSet<(u8, u32, u8)> = HashSet::new();
+        let mut placed: HashSet<i64> = HashSet::new();
         for s in slots {
+            if !(1..=pool_count).contains(&s.pool) {
+                return Err(format!("Pool {} tidak ada (jumlah pool {}).", s.pool, pool_count));
+            }
             if !(1..=8).contains(&s.match_num) || !(1..=2).contains(&s.position) {
                 return Err(format!("Slot tidak valid: partai {} posisi {}.", s.match_num, s.position));
             }
             if !by_id.contains_key(&s.atlet_id) {
                 return Err(format!("Atlet #{} bukan atlet nomor tanding ini.", s.atlet_id));
             }
-            if !used_slots.insert((s.match_num, s.position)) {
+            if !used_slots.insert((s.pool, s.match_num, s.position)) {
                 return Err(format!("Slot partai {} dipakai dua kali.", s.match_num));
+            }
+            if !placed.insert(s.atlet_id) {
+                return Err(format!("Atlet #{} ditempatkan dua kali.", s.atlet_id));
             }
             let slot = crate::bracket::MatchSlot {
                 match_num: s.match_num,
                 position: if s.position == 1 { crate::bracket::SlotPosition::Atlet1 } else { crate::bracket::SlotPosition::Atlet2 },
             };
-            if assignment.insert(s.atlet_id, slot).is_some() {
-                return Err(format!("Atlet #{} ditempatkan dua kali.", s.atlet_id));
-            }
+            assignments[(s.pool - 1) as usize].insert(s.atlet_id, slot);
         }
 
         // Same anti-bentrok keys as the default ("both") random drawing, for the collision count.
@@ -4040,33 +4002,51 @@ impl DatabaseManager {
             group_key: a.utusan_id.map(|id| format!("U_{}", id)).unwrap_or_else(|| format!("A_{}", a.id)),
             secondary_key: a.perguruan_id.map(|id| format!("P_{}", id)),
         }).collect();
-        let bracket_data = crate::bracket::build_bracket_from_assignment(&inputs, &assignment, should_have_vr);
-        Ok((athletes.len(), bracket_data))
+        let pools = assignments
+            .iter()
+            .map(|assignment| crate::bracket::build_bracket_from_assignment(&inputs, assignment, should_have_vr))
+            .collect();
+        Ok((athletes.len(), pools))
     }
 
-    /// Live preview for manual drawing: the bracket as placed so far (BYEs already
+    /// Live preview for manual drawing: each pool's bracket as placed so far (BYEs already
     /// advanced), without writing anything. Free, like manual drawing itself.
-    pub async fn preview_manual_drawing_bagan(&self, category_id: i64, slots: Vec<ManualSlotInput>) -> Result<ManualBracketPreview, String> {
-        let (_, data) = self.build_manual_bracket(category_id, &slots, false).await?;
+    pub async fn preview_manual_drawing_bagan(
+        &self,
+        category_id: i64,
+        slots: Vec<ManualSlotInput>,
+        pool_count: u8,
+    ) -> Result<ManualBracketPreview, String> {
+        let (_, pools) = self.build_manual_bracket(category_id, &slots, false, pool_count).await?;
         let mut matches = Vec::new();
-        for (round, by_u) in &data.matches {
-            for (urutan, m) in by_u {
-                matches.push(ManualPreviewMatch { round: *round, urutan: *urutan, atlet1_id: m.atlet1_id, atlet2_id: m.atlet2_id });
+        for (i, data) in pools.iter().enumerate() {
+            for (round, by_u) in &data.matches {
+                for (urutan, m) in by_u {
+                    matches.push(ManualPreviewMatch {
+                        pool: i as u8 + 1,
+                        round: *round,
+                        urutan: *urutan,
+                        atlet1_id: m.atlet1_id,
+                        atlet2_id: m.atlet2_id,
+                    });
+                }
             }
         }
-        matches.sort_by_key(|m| (m.round, m.urutan));
-        Ok(ManualBracketPreview { matches, collisions: data.collision_count })
+        matches.sort_by_key(|m| (m.pool, m.round, m.urutan));
+        Ok(ManualBracketPreview { matches, collisions: pools.iter().map(|p| p.collision_count).sum() })
     }
 
-    /// Manual drawing: one bracket for one prestasi category, athletes placed by the
-    /// operator. BYEs and VR flags come from the same engine as the random drawing.
-    /// Replaces the category's existing brackets.
+    /// Manual drawing for one prestasi category, athletes placed by the operator. With
+    /// `pool_count` 2 or 4 the category gets Pool A..D plus a Final bagan, exactly like the random
+    /// drawing (`insert_pool_set`). BYEs and VR flags come from the same engine as the random
+    /// drawing. Replaces the category's existing brackets.
     pub async fn execute_manual_drawing_bagan(
         &self,
         event_id: i64,
         category_id: i64,
         slots: Vec<ManualSlotInput>,
         has_vr: bool,
+        pool_count: u8,
     ) -> Result<DrawingSummary, String> {
         // Manual drawing is a free feature: no license module check (unlike the random drawing).
         self.ensure_no_results(&[category_id]).await?;
@@ -4096,23 +4076,31 @@ impl DatabaseManager {
         let tipe_tanding = if is_kumite { Some("2") } else if upper.contains("KATA") { Some("1") } else { None };
         let should_have_vr = is_kumite && has_vr;
 
-        let (athlete_count, bracket_data) = self.build_manual_bracket(category_id, &slots, should_have_vr).await?;
+        let (athlete_count, pools) = self.build_manual_bracket(category_id, &slots, should_have_vr, pool_count).await?;
         let placed = slots.len();
         if placed < athlete_count {
             return Err(format!("{} atlet belum ditempatkan.", athlete_count - placed));
         }
-        // Refuse a bracket that can never be finished (a winner who would wait forever).
-        let mut r1_counts = [0usize; 8];
-        for s in &slots {
-            r1_counts[(s.match_num - 1) as usize] += 1;
-        }
-        let dead = crate::bracket::unreachable_bouts(&r1_counts);
-        if !dead.is_empty() {
-            let list = dead.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
-            return Err(format!(
-                "Bagan tidak bisa selesai: partai {} tidak akan punya lawan. Pindahkan atlet supaya sisi yang kosong terisi.",
-                list
-            ));
+        for p in 1..=pool_count {
+            let pool_label = if pool_count > 1 { format!("Pool {}: ", ['A', 'B', 'C', 'D'][(p - 1) as usize]) } else { String::new() };
+            let mut r1_counts = [0usize; 8];
+            for s in slots.iter().filter(|s| s.pool == p) {
+                r1_counts[(s.match_num - 1) as usize] += 1;
+            }
+            // A pool winner only reaches the Final by winning a played round-4 bout.
+            let in_pool: usize = r1_counts.iter().sum();
+            if pool_count > 1 && in_pool < 2 {
+                return Err(format!("{}minimal 2 atlet per pool (sekarang {}).", pool_label, in_pool));
+            }
+            // Refuse a bracket that can never be finished (a winner who would wait forever).
+            let dead = crate::bracket::unreachable_bouts(&r1_counts);
+            if !dead.is_empty() {
+                let list = dead.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
+                return Err(format!(
+                    "{}Bagan tidak bisa selesai: partai {} tidak akan punya lawan. Pindahkan atlet supaya sisi yang kosong terisi.",
+                    pool_label, list
+                ));
+            }
         }
 
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
@@ -4133,31 +4121,34 @@ impl DatabaseManager {
         .fetch_all(&mut *tx)
         .await
         .unwrap_or_default();
-        let next_code_num: u32 = existing_codes.iter().filter_map(|c| c.parse::<u32>().ok()).max().unwrap_or(0) + 1;
+        let mut next_code_num: u32 = existing_codes.iter().filter_map(|c| c.parse::<u32>().ok()).max().unwrap_or(0) + 1;
 
-        let bagan_res = sqlx::query(
-            "INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (?, ?, ?, 1, ?, 0, 0, ?, ?)"
-        )
-        .bind(event_id)
-        .bind(category_id)
-        .bind(&cat_name)
-        .bind(tipe_tanding)
-        .bind(should_have_vr)
-        .bind(format!("{:03}", next_code_num))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Gagal membuat bagan: {}", e))?;
-        let bagan_id = bagan_res.last_insert_rowid();
-
-        let total_matches = Self::insert_bracket_rows(&mut *tx, bagan_id, &bracket_data).await?;
+        let (bagans_created, total_matches) = if pool_count == 1 {
+            let bagan_id = sqlx::query(
+                "INSERT INTO backend_bagan (event_id, nomor_tanding_id, nama_bagan, pool, tipe_tanding, round_robin, is_bob, has_vr, kode) VALUES (?, ?, ?, 1, ?, 0, 0, ?, ?)"
+            )
+            .bind(event_id)
+            .bind(category_id)
+            .bind(&cat_name)
+            .bind(tipe_tanding)
+            .bind(should_have_vr)
+            .bind(format!("{:03}", next_code_num))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal membuat bagan: {}", e))?
+            .last_insert_rowid();
+            (1, Self::insert_bracket_rows(&mut *tx, bagan_id, &pools[0]).await?)
+        } else {
+            Self::insert_pool_set(&mut *tx, event_id, category_id, &cat_name, tipe_tanding, should_have_vr, &mut next_code_num, &pools).await?
+        };
 
         tx.commit().await.map_err(|e| format!("Gagal menyimpan drawing manual: {}", e))?;
 
         Ok(DrawingSummary {
             categories_processed: 1,
-            bagans_created: 1,
+            bagans_created,
             total_matches,
-            total_collisions: bracket_data.collision_count,
+            total_collisions: pools.iter().map(|p| p.collision_count).sum(),
         })
     }
 

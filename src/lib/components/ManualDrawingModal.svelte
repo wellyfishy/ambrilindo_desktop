@@ -19,8 +19,16 @@
 
   let { eventId, onClose, onSuccess }: Props = $props();
 
+  /** Per pool (one 16-slot bracket). */
   const MAX_ATHLETES = 16;
   const R1_MATCHES = MAX_ATHLETES / 2;
+  /** 4 pools x 16, like the random drawing. */
+  const MAX_TOTAL = 64;
+  const POOL_LETTERS = ["A", "B", "C", "D"];
+  const POOL_CHOICES = [1, 2, 4];
+  const emptySlots = (): (number | null)[] => Array(MAX_ATHLETES).fill(null);
+  /** What the random drawing would pick for this many athletes. */
+  const defaultPools = (n: number) => (n <= 16 ? 1 : n <= 32 ? 2 : 4);
 
   /** Moves keyboard focus into a newly shown step / dialog (the modal opens over other UI). */
   function focusOnMount(node: HTMLElement) {
@@ -35,9 +43,14 @@
   let category = $state<DrawingCategoryInfo | null>(null);
   let hasVr = $state(false);
 
-  // Step 2: placement. slots[i] = athlete id; partai = floor(i / 2) + 1, posisi = i % 2 + 1.
+  // Step 2: placement, per pool. allSlots[p][i] = athlete id; partai = floor(i / 2) + 1, posisi = i % 2 + 1.
+  // With 2+ pools the backend also creates the Final bagan where the pool winners meet.
   let athletes = $state<ManualDrawingAthlete[]>([]);
-  let slots = $state<(number | null)[]>(Array(MAX_ATHLETES).fill(null));
+  let poolCount = $state(1);
+  let activePool = $state(0);
+  let allSlots = $state<(number | null)[][]>([emptySlots()]);
+  /** The pool on screen. */
+  let slots = $derived(allSlots[activePool] ?? emptySlots());
   let selectedAthleteId = $state<number | null>(null);
   let poolSearch = $state("");
   let isLoadingAthletes = $state(false);
@@ -53,11 +66,11 @@
   );
 
   let byId = $derived(new Map(athletes.map((a) => [a.id, a])));
-  let placedIds = $derived(new Set(slots.filter((s): s is number => s !== null)));
+  let placedIds = $derived(new Set(allSlots.flat().filter((s): s is number => s !== null)));
   let placedCount = $derived(placedIds.size);
   let allPlaced = $derived(athletes.length > 0 && placedCount === athletes.length);
 
-  let pool = $derived(
+  let unplaced = $derived(
     athletes
       .filter((a) => !placedIds.has(a.id))
       .filter((a) => {
@@ -68,9 +81,9 @@
   );
 
   /** Round-1 bouts where two athletes of the same kontingen or perguruan meet. */
-  function collisionOf(matchIndex: number): string | null {
-    const a = slots[matchIndex * 2] != null ? byId.get(slots[matchIndex * 2]!) : undefined;
-    const b = slots[matchIndex * 2 + 1] != null ? byId.get(slots[matchIndex * 2 + 1]!) : undefined;
+  function collisionOf(matchIndex: number, ps: (number | null)[] = slots): string | null {
+    const a = ps[matchIndex * 2] != null ? byId.get(ps[matchIndex * 2]!) : undefined;
+    const b = ps[matchIndex * 2 + 1] != null ? byId.get(ps[matchIndex * 2 + 1]!) : undefined;
     if (!a || !b) return null;
     if (a.utusan_id != null && a.utusan_id === b.utusan_id) return `Satu kontingen: ${a.utusan_nama || "-"}`;
     if (a.perguruan_id != null && a.perguruan_id === b.perguruan_id) return `Satu perguruan: ${a.perguruan_nama || "-"}`;
@@ -78,7 +91,7 @@
   }
 
   let collisionCount = $derived(
-    Array.from({ length: R1_MATCHES }, (_, m) => collisionOf(m)).filter(Boolean).length
+    allSlots.flatMap((ps) => Array.from({ length: R1_MATCHES }, (_, m) => collisionOf(m, ps))).filter(Boolean).length
   );
 
   // ---- Bracket geometry (fixed 16-slot tree: 8 → 4 → 2 → final) ----
@@ -113,8 +126,10 @@
 
   // ---- Live preview of later rounds (BYEs advanced by the same engine that saves) ----
   function slotPayload(): ManualSlotInput[] {
-    return slots.flatMap((atletId, i) =>
-      atletId === null ? [] : [{ atlet_id: atletId, match_num: Math.floor(i / 2) + 1, position: (i % 2) + 1 }]
+    return allSlots.flatMap((ps, p) =>
+      ps.flatMap((atletId, i) =>
+        atletId === null ? [] : [{ atlet_id: atletId, match_num: Math.floor(i / 2) + 1, position: (i % 2) + 1, pool: p + 1 }]
+      )
     );
   }
 
@@ -123,6 +138,7 @@
   $effect(() => {
     const cat = category;
     const payload = slotPayload();
+    const pools = poolCount;
     const seq = ++previewSeq;
     if (!cat || payload.length === 0) {
       preview = new Map();
@@ -130,8 +146,8 @@
     }
     const timer = setTimeout(async () => {
       try {
-        const res = await invoke<ManualBracketPreview>("preview_manual_drawing_bagan", { categoryId: cat.id, slots: payload });
-        if (seq === previewSeq) preview = new Map(res.matches.map((m) => [`${m.round}-${m.urutan}`, m]));
+        const res = await invoke<ManualBracketPreview>("preview_manual_drawing_bagan", { categoryId: cat.id, slots: payload, poolCount: pools });
+        if (seq === previewSeq) preview = new Map(res.matches.map((m) => [`${m.pool ?? 1}-${m.round}-${m.urutan}`, m]));
       } catch {
         if (seq === previewSeq) preview = new Map();
       }
@@ -143,28 +159,58 @@
    * Bouts that could never be played: one side empty while the other side still has a
    * bout to win first. Same rule as `unreachable_bouts` in bracket.rs (the save refuses these).
    */
-  let deadBouts = $derived.by(() => {
+  function deadBoutsOf(ps: (number | null)[]): Set<number> {
     const dead = new Set<number>();
     for (let r = 1; r <= 3; r++) {
       for (let j = 0; j < R1_MATCHES >> r; j++) {
-        const a = subtreeCount(r - 1, 2 * j);
-        const b = subtreeCount(r - 1, 2 * j + 1);
+        const a = subtreeCount(r - 1, 2 * j, ps);
+        const b = subtreeCount(r - 1, 2 * j + 1, ps);
         if ((a === 0 && b >= 2) || (b === 0 && a >= 2)) dead.add(matchNumber(r, j));
       }
     }
     return dead;
-  });
-  let deadList = $derived([...deadBouts].sort((x, y) => x - y).join(", "));
+  }
+  let deadByPool = $derived(allSlots.map(deadBoutsOf));
+  let deadBouts = $derived(deadByPool[activePool] ?? new Set<number>());
+  let anyDead = $derived(deadByPool.some((d) => d.size > 0));
+  /** Problems per pool, for the footer: dead bouts, and (with pools) fewer than 2 athletes. */
+  let poolSizes = $derived(allSlots.map((ps) => ps.filter((x) => x !== null).length));
+  let poolProblems = $derived(
+    allSlots.flatMap((_, p) => {
+      const label = poolCount > 1 ? `Pool ${POOL_LETTERS[p]}: ` : "";
+      const out: string[] = [];
+      const dead = [...deadByPool[p]].sort((x, y) => x - y);
+      if (dead.length) out.push(`${label}partai ${dead.join(", ")} tanpa lawan`);
+      if (poolCount > 1 && placedCount === athletes.length && poolSizes[p] < 2) out.push(`${label}minimal 2 atlet`);
+      return out;
+    })
+  );
 
   /** How many athletes sit in round 1 under this bout. */
-  function subtreeCount(r: number, j: number): number {
-    if (r === 0) return (slots[2 * j] != null ? 1 : 0) + (slots[2 * j + 1] != null ? 1 : 0);
-    return subtreeCount(r - 1, 2 * j) + subtreeCount(r - 1, 2 * j + 1);
+  function subtreeCount(r: number, j: number, ps: (number | null)[] = slots): number {
+    if (r === 0) return (ps[2 * j] != null ? 1 : 0) + (ps[2 * j + 1] != null ? 1 : 0);
+    return subtreeCount(r - 1, 2 * j, ps) + subtreeCount(r - 1, 2 * j + 1, ps);
+  }
+
+  /** Why a pool count cannot hold this category, or null. */
+  function poolChoiceBlocked(n: number): string | null {
+    if (athletes.length > n * MAX_ATHLETES) return `Lebih dari ${n * MAX_ATHLETES} atlet`;
+    if (n > 1 && athletes.length < n * 2) return `Minimal ${n * 2} atlet`;
+    return null;
+  }
+
+  /** Change the number of pools; athletes of pools that disappear go back to the list. */
+  function setPoolCount(n: number) {
+    if (n === poolCount || poolChoiceBlocked(n)) return;
+    allSlots = Array.from({ length: n }, (_, p) => allSlots[p] ?? emptySlots());
+    poolCount = n;
+    activePool = Math.min(activePool, n - 1);
+    selectedAthleteId = null;
   }
 
   /** One side of a later-round bout: an athlete already through on a BYE, or what will fill it. */
   function previewSlot(r: number, j: number, p: number): { athlete?: ManualDrawingAthlete; label: string } {
-    const m = preview.get(`${r + 1}-${j + 1}`);
+    const m = preview.get(`${activePool + 1}-${r + 1}-${j + 1}`);
     const id = p === 0 ? m?.atlet1_id : m?.atlet2_id;
     const athlete = id != null ? byId.get(id) : undefined;
     if (athlete) return { athlete, label: "" };
@@ -176,7 +222,7 @@
 
   function categoryBlockedReason(c: DrawingCategoryInfo): string | null {
     if (c.athlete_count === 0) return "Belum ada atlet";
-    if (c.athlete_count > MAX_ATHLETES) return "Lebih dari 16 atlet — pakai drawing otomatis";
+    if (c.athlete_count > MAX_TOTAL) return `Lebih dari ${MAX_TOTAL} atlet`;
     if ((c.finished_matches || 0) > 0) return "Sudah ada hasil pertandingan";
     return null;
   }
@@ -197,7 +243,9 @@
     if (categoryBlockedReason(c)) return;
     category = c;
     hasVr = c.is_kumite && c.has_vr;
-    slots = Array(MAX_ATHLETES).fill(null);
+    poolCount = defaultPools(c.athlete_count);
+    activePool = 0;
+    allSlots = Array.from({ length: poolCount }, emptySlots);
     selectedAthleteId = null;
     poolSearch = "";
     saveError = null;
@@ -222,16 +270,20 @@
     if (selectedAthleteId !== null) {
       // Put the picked athlete here; whoever was here goes back to the pool.
       next[i] = selectedAthleteId;
-      slots = next;
+      setActiveSlots(next);
       selectedAthleteId = null;
     } else if (current !== null) {
       next[i] = null;
-      slots = next;
+      setActiveSlots(next);
     }
   }
 
+  function setActiveSlots(next: (number | null)[]) {
+    allSlots = allSlots.map((ps, p) => (p === activePool ? next : ps));
+  }
+
   function clearAll() {
-    slots = Array(MAX_ATHLETES).fill(null);
+    allSlots = Array.from({ length: poolCount }, emptySlots);
     selectedAthleteId = null;
   }
 
@@ -271,6 +323,7 @@
         categoryId: category.id,
         slots: payload,
         hasVr: category.is_kumite && hasVr,
+        poolCount,
       });
       onSuccess(summary, category);
     } catch (err: any) {
@@ -400,10 +453,10 @@
           <div class="flex-1 overflow-y-auto min-h-0 px-2 pb-3">
             {#if isLoadingAthletes}
               <p class="px-2 text-sm text-zinc-400">Memuat atlet…</p>
-            {:else if pool.length === 0}
+            {:else if unplaced.length === 0}
               <p class="px-2 py-2 text-xs text-zinc-400">{placedCount === athletes.length ? "Semua atlet sudah ditempatkan." : "Tidak ada yang cocok."}</p>
             {:else}
-              {#each pool as a (a.id)}
+              {#each unplaced as a (a.id)}
                 <button
                   type="button"
                   onclick={() => pickAthlete(a.id)}
@@ -432,6 +485,24 @@
               {selectedAthleteId !== null ? "Klik slot di babak 16 besar untuk menempatkan atlet." : "Pilih atlet di kiri, lalu klik slot. Slot kosong = BYE."}
             </span>
             <div class="flex items-center gap-2 shrink-0">
+              <!-- 2 or 4 pools: the save also creates the Final bagan (pool winners meet there) -->
+              <div class="inline-flex items-center h-8 rounded-lg border border-white/[0.1] overflow-hidden text-xs" role="radiogroup" aria-label="Jumlah pool">
+                <span class="px-2 text-zinc-400">Pool</span>
+                {#each POOL_CHOICES as n (n)}
+                  {@const blocked = poolChoiceBlocked(n)}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={poolCount === n}
+                    disabled={!!blocked}
+                    title={blocked ?? undefined}
+                    onclick={() => setPoolCount(n)}
+                    class="h-full px-2.5 font-semibold tabular-nums transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/40 {poolCount === n ? 'bg-white text-black' : 'text-zinc-300 hover:bg-white/[0.06]'}"
+                  >
+                    {n}
+                  </button>
+                {/each}
+              </div>
               {#if category.is_kumite}
                 <label class="inline-flex items-center gap-1.5 h-8 px-2 rounded-lg text-xs text-zinc-300 cursor-pointer hover:bg-white/[0.05] focus-within:ring-2 focus-within:ring-white/40">
                   <input type="checkbox" bind:checked={hasVr} class="accent-white" />
@@ -448,6 +519,28 @@
               </button>
             </div>
           </div>
+
+          {#if poolCount > 1}
+            <div class="flex items-center gap-2 px-5 pb-3 shrink-0" role="tablist" aria-label="Pool">
+              {#each allSlots as _, p (p)}
+                {@const issue = deadByPool[p].size > 0}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activePool === p}
+                  onclick={() => (activePool = p)}
+                  class="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 {activePool === p ? 'bg-white text-black border-white' : 'bg-white/[0.04] text-zinc-200 border-white/[0.1] hover:bg-white/[0.08]'}"
+                >
+                  Pool {POOL_LETTERS[p]}
+                  <span class="tabular-nums {activePool === p ? 'text-zinc-600' : 'text-zinc-400'}">{poolSizes[p]}</span>
+                  {#if issue}
+                    <span class="w-1.5 h-1.5 rounded-full bg-red-400" role="img" aria-label="Ada partai tanpa lawan"></span>
+                  {/if}
+                </button>
+              {/each}
+              <span class="text-xs text-zinc-400 ml-1">+ bagan Final</span>
+            </div>
+          {/if}
 
           <div class="flex-1 min-h-0 overflow-auto px-5 pb-5">
             <!-- Round titles -->
@@ -565,8 +658,8 @@
               {#if collisionCount > 0}
                 <span class="text-amber-300"> · {collisionCount} partai satu kontingen/perguruan</span>
               {/if}
-              {#if deadBouts.size > 0}
-                <span class="text-red-300"> · Partai {deadList} tanpa lawan: pindahkan atlet ke sisi yang kosong</span>
+              {#if poolProblems.length > 0}
+                <span class="text-red-300"> · {poolProblems.join(" · ")}</span>
               {/if}
             </span>
           {/if}
@@ -574,7 +667,7 @@
         <button
           type="button"
           onclick={save}
-          disabled={!allPlaced || deadBouts.size > 0 || isSaving}
+          disabled={!allPlaced || poolProblems.length > 0 || isSaving}
           class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition disabled:opacity-40 disabled:cursor-not-allowed shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
         >
           {isSaving ? "Menyimpan…" : category.bagan_count > 0 ? "Ganti bagan" : "Simpan bagan"}

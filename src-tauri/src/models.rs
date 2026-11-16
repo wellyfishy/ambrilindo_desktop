@@ -719,11 +719,20 @@ pub struct ManualSlotInput {
     pub match_num: u32,
     /// 1 = atlet1 (top), 2 = atlet2 (bottom).
     pub position: u8,
+    /// Pool 1..=4 (A..D) when the category is drawn in pools; 1 for a single bracket.
+    #[serde(default = "first_pool")]
+    pub pool: u8,
+}
+
+fn first_pool() -> u8 {
+    1
 }
 
 /// One bout of the manual drawing preview (nothing saved yet).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualPreviewMatch {
+    /// Pool 1..=4 (A..D); 1 for a single bracket.
+    pub pool: u8,
     pub round: u32,
     pub urutan: u32,
     pub atlet1_id: Option<i64>,

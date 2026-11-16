@@ -335,9 +335,13 @@ export interface ManualSlotInput {
   match_num: number;
   /** 1 = top (atlet1), 2 = bottom (atlet2) */
   position: number;
+  /** Pool 1..4 (A..D); omitted = 1 */
+  pool?: number;
 }
 
 export interface ManualPreviewMatch {
+  /** Pool 1..4 (A..D) */
+  pool: number;
   round: number;
   urutan: number;
   atlet1_id: number | null;

@@ -191,7 +191,9 @@
   async function handleManualDrawingSaved(summary: DrawingSummary, category: DrawingCategoryInfo) {
     manualDrawingModal = false;
     if (selectedEventId) await selectEvent(selectedEventId);
-    const bagan = bagans.find((b) => b.nomor_tanding_id === category.id);
+    // Drawn in pools: open the Final (pool 0), else the category's only bagan.
+    const ofCategory = bagans.filter((b) => b.nomor_tanding_id === category.id);
+    const bagan = ofCategory.find((b) => b.pool === 0) ?? ofCategory[0];
     if (bagan) {
       handleSelectChannel({
         type: "bagan",

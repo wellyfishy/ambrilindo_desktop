@@ -373,10 +373,11 @@ async fn get_manual_drawing_athletes(
 async fn preview_manual_drawing_bagan(
     category_id: i64,
     slots: Vec<models::ManualSlotInput>,
+    pool_count: Option<u8>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<models::ManualBracketPreview, String> {
     let db = state.db.lock().await;
-    db.preview_manual_drawing_bagan(category_id, slots).await
+    db.preview_manual_drawing_bagan(category_id, slots, pool_count.unwrap_or(1)).await
 }
 
 #[tauri::command]
@@ -385,10 +386,11 @@ async fn execute_manual_drawing_bagan(
     category_id: i64,
     slots: Vec<models::ManualSlotInput>,
     has_vr: bool,
+    pool_count: Option<u8>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<DrawingSummary, String> {
     let db = state.db.lock().await;
-    let res = db.execute_manual_drawing_bagan(event_id, category_id, slots, has_vr).await;
+    let res = db.execute_manual_drawing_bagan(event_id, category_id, slots, has_vr, pool_count.unwrap_or(1)).await;
     if res.is_ok() {
         notify_bracket_changed(&state);
     }
