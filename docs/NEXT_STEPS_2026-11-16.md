@@ -14,6 +14,22 @@ Lanjutan dari audit (`docs/AUDIT_DESKTOP_WEB_2026-11-16.md`, satu folder dengan 
 
 ---
 
+## Selesai (17 Nov): hapus referchange, cetak, drawing manual dengan pool, data TEST REALTIME
+
+| | Perbaikan | Tes |
+|---|---|---|
+| **Hapus referchange** | "Hapus Bagan" pada bagan referchange sekarang hanya menghapus referchange itu (`delete_repechage_bagan`, juga lewat LAN). Bagan utama, pool dan final tetap. Juara 3A/3B kembali ke yang kalah di semifinal (2 pool: yang kalah di babak 4 tiap pool), dan podium dikirim ulang ke web kalau live sync aktif. | `qa_delete_referchange_keeps_main_bracket`, `qa_delete_referchange_two_pools_restores_pool_bronze` |
+| **Cetak referchange** | Judul kartu menjadi "BABAK n" / "PEREBUTAN JUARA 3" (tulisan gelap, titik warna pool). Kartu BYE kosong: atlet yang melawan BYE hanya tampil di partai yang benar-benar ia mainkan. | dicek dengan screenshot A4 |
+| **Cetak bagan biasa** | Logo Ambrilindo di atas "Hasil Juara" dihapus (logo sudah ada di header halaman), podium dinaikkan supaya tidak terpotong tepi halaman. | dicek dengan screenshot A4 |
+| **Drawing manual + pool** | Pilihan 1 / 2 / 4 pool (default sama dengan drawing otomatis: ≤16 → 1, ≤32 → 2, sisanya 4; maks. 64 atlet, tiap pool 2–16). Dengan 2+ pool, bagan "- Final" dibuat otomatis lewat `insert_pool_set`, fungsi yang sama dengan drawing otomatis, jadi pemenang pool, podium, referchange dan live sync berjalan sama. | `qa_manual_drawing_two_pools_creates_final`, `qa_manual_drawing_four_pools_semifinals_in_final`, `qa_manual_drawing_pool_refusals` |
+| **TEST REALTIME (event 18)** | Dua nomor dummy: "TOURNAMENT TES POOL - KUMITE -60 KG PUTRA" (24 atlet, Pool A/B + Final) dan "TOURNAMENT TES POOL - KATA PERORANGAN PUTRA" (40 atlet, Pool A–D + Final), diundi oleh aplikasi sendiri. Data lain tidak berubah. | integrity check |
+
+**Catatan:** web tetap menyimpan bagan referchange yang dihapus sampai "Kirim bagan" berikutnya untuk nomor itu (aturan `known_kodes`); juara 3-nya langsung dikoreksi lewat pesan podium.
+
+**Cek manual di laptop:** hapus referchange, cetak referchange dan bagan biasa (A4), drawing manual 2 dan 4 pool, buka dua nomor baru di TEST REALTIME.
+
+---
+
 ## Selesai (sesi lanjutan 16 Nov, bagian 2): #10, A5/A6, B10, B11, `__pycache__`
 
 | | Perbaikan | Tes |
@@ -79,7 +95,7 @@ Data turnamen (`tournament_data/db.sqlite3`) ikut di repo desktop. File `.env` t
 **Cek bahwa semuanya hijau sebelum mulai mengubah apa pun:**
 ```bash
 cd ambrilindo_desktop/src-tauri
-cargo test --lib                                          # 81 lulus
+cargo test --lib                                          # 86 lulus
 cargo test --lib web_e2e -- --ignored --test-threads=1    # 20 lulus (butuh repo web + venv)
 cd ..
 npx vitest run                                            # 22 lulus
