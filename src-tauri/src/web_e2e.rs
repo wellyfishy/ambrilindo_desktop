@@ -291,7 +291,7 @@ async fn web_e2e_a_refusals_pause_queue() {
             ("event_pk", r.event_a.to_string()),
         ])
         .await;
-    assert!(SyncService::retry_single_item(&r.pool, Some(&r.db_path), q[0].id).await.expect("A3 retry after grant"));
+    SyncService::send_now(&r.pool, Some(&r.db_path)).await.expect("A3 Kirim sekarang after grant");
     let q = r.drain().await;
     assert!(q.iter().all(|x| x.status == "synced"), "A3 everything sent after the grant: {q:?}");
     let web = r.web_py(&format!("print('J=' + json.dumps(d('{}')))", r.kode(bagan["id"].as_i64().unwrap(), m["id"].as_i64().unwrap())));
@@ -566,24 +566,69 @@ async fn web_e2e_c_offline_keeps_fifo() {
     assert_eq!(w, json!([true, true, true]), "C8 web has every result");
 }
 
-/// C9: a bout the web does not know (bagan never pushed) is abandoned and does not block the
-/// rows after it.
+/// C9: strict FIFO. A bout the web does not know yet (bagan not pushed, 404) holds the queue:
+/// the row behind it is not sent first. After "Kirim bagan" both go, in order. "Lewati" is the
+/// way past a row the web will never accept.
 #[tokio::test]
 #[ignore]
-async fn web_e2e_c_unknown_bout_is_skipped() {
+async fn web_e2e_c_unknown_bout_holds_the_queue() {
     let _g = E2E.lock().await;
     let Some(r) = rig().await else { return };
-    let bagan = r.fresh_bagan(9, 16).await;
-    let m = r.next_playable(&bagan).await.unwrap();
-    r.finish(&bagan, &m).await; // bagan not on the web yet
+    let pushed = r.fresh_bagan(5, 8).await;
+    r.push(&pushed).await;
+    let unpushed = r.fresh_bagan(9, 16).await;
+    let m = r.next_playable(&unpushed).await.unwrap();
+    r.finish(&unpushed, &m).await; // bagan not on the web yet
+    let behind = r.next_playable(&pushed).await.unwrap();
+    r.finish(&pushed, &behind).await;
     let q = r.drain().await;
-    assert_eq!(statuses(&q), vec![("api/result/".into(), "abandoned".into())], "C9 404 -> abandoned: {q:?}");
+    assert_eq!(
+        statuses(&q),
+        vec![("api/result/".into(), "failed".into()), ("api/result/".into(), "pending".into())],
+        "C9 404 holds the queue, the next row waits: {q:?}"
+    );
     assert!(q[0].error.as_deref().unwrap_or("").contains("404"), "C9 {:?}", q[0].error);
-    r.push(&bagan).await;
-    let m2 = r.next_playable(&bagan).await.unwrap();
-    r.finish(&bagan, &m2).await;
+    assert_eq!(r.web_py(&format!("print('J=' + json.dumps(d('{}')))", r.kode(pushed["id"].as_i64().unwrap(), behind["id"].as_i64().unwrap())))["selesai"], false, "C9 nothing jumped the queue");
+
+    r.push(&unpushed).await;
     let q = r.drain().await;
-    assert_eq!(q.last().unwrap().status, "synced", "C9 the queue went on: {q:?}");
+    assert!(q.iter().all(|x| x.status == "synced"), "C9 after Kirim bagan both are sent: {q:?}");
+
+    // Lewati: a refused head is marked done without sending, the queue goes on.
+    let never = r.fresh_bagan(9, 16).await;
+    let m3 = r.next_playable(&never).await.unwrap();
+    r.finish(&never, &m3).await;
+    let behind2 = r.next_playable(&pushed).await.unwrap();
+    r.finish(&pushed, &behind2).await;
+    let q = r.drain().await;
+    let head = q.iter().find(|x| x.status == "failed").expect("C9 refused head").clone();
+    SyncService::mark_item_synced(&r.pool, head.id).await.unwrap();
+    let q = r.drain().await;
+    assert!(q.iter().all(|x| x.status == "synced"), "C9 after Lewati the queue went on: {q:?}");
+}
+
+/// C11: "Kirim otomatis" off -> the sender sends nothing (rows wait in order); "Kirim sekarang"
+/// sends them. The switch survives a change of server.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_c_auto_send_off_waits_for_kirim_sekarang() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    let bagan = r.fresh_bagan(5, 8).await;
+    r.push(&bagan).await;
+    SyncService::set_auto_send(Some(&r.db_path), false).unwrap();
+    SyncService::set_sync_config(Some(&r.db_path), "custom", Some(r.web.base.clone())).unwrap();
+    assert!(!SyncService::get_auto_send(Some(&r.db_path)), "C11 switch kept when the server is set again");
+
+    let m = r.next_playable(&bagan).await.unwrap();
+    r.finish(&bagan, &m).await;
+    assert_eq!(SyncService::process_sync_queue(&r.pool, Some(&r.db_path)).await.unwrap(), (0, 0), "C11 nothing sent while off");
+    assert!(statuses(&r.queue().await).iter().all(|(_, st)| st == "pending"), "C11 rows wait");
+
+    let (sent, failed) = SyncService::send_now(&r.pool, Some(&r.db_path)).await.unwrap();
+    assert!(sent >= 1 && failed == 0, "C11 Kirim sekarang sends ({sent}, {failed})");
+    assert!(r.queue().await.iter().all(|x| x.status == "synced"), "C11 all sent");
+    SyncService::set_auto_send(Some(&r.db_path), true).unwrap();
 }
 
 /// C10: live sync off for the event -> nothing is queued.
@@ -848,8 +893,8 @@ async fn bad_gateway() -> String {
 }
 
 /// F1 5xx answers never make a result give up: it waits (FIFO) and is sent once the web is
-/// back. F2 a result the web refused (404, bout not pushed yet) counts as "Gagal" and
-/// "Kirim ulang semua" sends it again.
+/// back. F2 a result the web refused (404, bout not pushed yet) counts as "Gagal", waits at the
+/// head, and is sent once the bagan is pushed.
 #[tokio::test]
 #[ignore]
 async fn web_e2e_f_web_errors_never_lose_results() {
@@ -889,12 +934,11 @@ async fn web_e2e_f_web_errors_never_lose_results() {
     let kode2 = r.kode(unpushed["id"].as_i64().unwrap(), m2["id"].as_i64().unwrap());
     r.drain().await;
     let row2 = r.queue().await.into_iter().filter(|x| x.endpoint == "api/result/" && x.payload.contains(&kode2)).last().unwrap();
-    assert_eq!(row2.status, "abandoned", "F2 404 skipped: {row2:?}");
+    assert_eq!(row2.status, "failed", "F2 404 waits at the head (strict FIFO): {row2:?}");
     let stats = SyncService::get_queue_stats(&r.pool, Some(EVENT)).await.unwrap();
     assert!(stats.failed_count >= 1, "F2 refused row counted under Gagal: {stats:?}");
     r.push(&unpushed).await;
-    let sent = SyncService::retry_all_failed(&r.pool, Some(&r.db_path), Some(EVENT)).await.unwrap();
-    assert!(sent >= 1, "F2 Kirim ulang semua sends the refused row");
+    r.drain().await;
     let row2 = r.queue().await.into_iter().find(|x| x.id == row2.id).unwrap();
     assert_eq!(row2.status, "synced", "F2 refused row sent after the bagan was pushed: {row2:?}");
 }

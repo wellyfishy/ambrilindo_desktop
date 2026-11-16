@@ -110,6 +110,9 @@ fn queue_run_for(db_path: Option<&PathBuf>) -> Arc<QueueRun> {
     r
 }
 
+/// Set by "Kirim sekarang" / switching "Kirim otomatis" on: the worker drops its back-off.
+static WORKER_KICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// After a 401/403 the queue pauses this long instead of hammering the server every tick.
 const AUTH_BLOCK_SECS: i64 = 300;
 static AUTH_BLOCKED_UNTIL: AtomicI64 = AtomicI64::new(0);
@@ -413,6 +416,8 @@ impl SyncService {
         let json_val = serde_json::json!({
             "mode": cfg.mode,
             "url": cfg.url,
+            // Changing the server keeps the "Kirim otomatis" switch.
+            "auto_send": Self::get_auto_send(db_path),
         });
 
         std::fs::write(
@@ -1956,136 +1961,6 @@ impl SyncService {
         Ok(list)
     }
 
-    /// Retries a single queue item
-    pub async fn retry_single_item(
-        pool: &Pool<Sqlite>,
-        db_path: Option<&PathBuf>,
-        item_id: i64,
-    ) -> Result<bool, String> {
-        let row = sqlx::query(
-            "SELECT id, endpoint, payload, retry_count FROM backend_syncqueue WHERE id = ?"
-        )
-        .bind(item_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let Some(r) = row else {
-            return Err(format!("Item #{} tidak ditemukan", item_id));
-        };
-
-        let endpoint: String = r.get("endpoint");
-        let payload_str: String = r.get("payload");
-        let retry_count: i32 = r.get("retry_count");
-
-        let sync_cfg = Self::get_sync_config(db_path);
-        let url = format!("{}/{}", sync_cfg.url.trim_end_matches('/'), endpoint.trim_start_matches('/'));
-        Self::clear_auth_block();
-        let auth = Self::auth_headers()?;
-
-        // Claim it, so the background worker does not send the same row at the same time.
-        let claimed = sqlx::query(
-            "UPDATE backend_syncqueue SET status = 'processing', updated_at = CURRENT_TIMESTAMP
-             WHERE id = ? AND status IN ('pending', 'failed', 'abandoned')"
-        )
-        .bind(item_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?
-        .rows_affected() == 1;
-        if !claimed {
-            return Err(format!("Item #{} sedang dikirim atau sudah terkirim", item_id));
-        }
-
-        let client = TimedClient::new(std::time::Duration::from_secs(5));
-
-        match auth
-            .apply(client.post(&url))
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(payload_str)
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                sqlx::query(
-                    "UPDATE backend_syncqueue SET status = 'synced', last_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-                )
-                .bind(item_id)
-                .execute(pool)
-                .await
-                .map_err(|e| e.to_string())?;
-                Ok(true)
-            }
-            Ok(resp) => {
-                let refused = matches!(resp.status().as_u16(), 401 | 403);
-                let err_msg = Self::http_error(resp).await;
-                if refused {
-                    // Same rule as the worker: the web refused this computer, pause sending.
-                    Self::set_auth_block(&err_msg);
-                }
-                sqlx::query(
-                    "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-                )
-                .bind(retry_count + 1)
-                .bind(&err_msg)
-                .bind(item_id)
-                .execute(pool)
-                .await
-                .map_err(|e| e.to_string())?;
-                Err(err_msg)
-            }
-            Err(e) => {
-                let err_msg = e.to_string();
-                sqlx::query(
-                    "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-                )
-                .bind(retry_count + 1)
-                .bind(&err_msg)
-                .bind(item_id)
-                .execute(pool)
-                .await
-                .map_err(|e| e.to_string())?;
-                Err(err_msg)
-            }
-        }
-    }
-
-    /// Retries all failed/pending items
-    pub async fn retry_all_failed(
-        pool: &Pool<Sqlite>,
-        db_path: Option<&PathBuf>,
-        event_id: Option<i64>,
-    ) -> Result<usize, String> {
-        let items: Vec<i64> = if let Some(eid) = event_id {
-            sqlx::query_scalar(
-                "SELECT id FROM backend_syncqueue WHERE event_id = ? AND status IN ('failed', 'abandoned') ORDER BY id ASC"
-            )
-            .bind(eid)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default()
-        } else {
-            sqlx::query_scalar(
-                "SELECT id FROM backend_syncqueue WHERE status IN ('failed', 'abandoned') ORDER BY id ASC"
-            )
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default()
-        };
-
-        let mut success_count = 0;
-        for id in items {
-            if Self::retry_single_item(pool, db_path, id).await.is_ok() {
-                success_count += 1;
-            } else if AUTH_BLOCKED_UNTIL.load(Ordering::Relaxed) > now_secs() {
-                // Refused (401/403): the rest would be refused too, stop instead of hammering the web.
-                break;
-            }
-        }
-
-        Ok(success_count)
-    }
-
     /// Marks a queue item as synced (skip)
     pub async fn mark_item_synced(pool: &Pool<Sqlite>, item_id: i64) -> Result<(), String> {
         sqlx::query("UPDATE backend_syncqueue SET status = 'synced', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -2093,16 +1968,6 @@ impl SyncService {
             .execute(pool)
             .await
             .map_err(|e| format!("Gagal memperbarui status: {}", e))?;
-        Ok(())
-    }
-
-    /// Deletes a queue item
-    pub async fn delete_queue_item(pool: &Pool<Sqlite>, item_id: i64) -> Result<(), String> {
-        sqlx::query("DELETE FROM backend_syncqueue WHERE id = ?")
-            .bind(item_id)
-            .execute(pool)
-            .await
-            .map_err(|e| format!("Gagal menghapus item: {}", e))?;
         Ok(())
     }
 
@@ -2124,7 +1989,27 @@ impl SyncService {
 
     /// Processes the sync queue in strict FIFO order for active events where live sync is enabled.
     /// Returns (synced_count, failed_count).
+    /// Sends the queue (strict FIFO) unless "Kirim otomatis" is off. Called by the background
+    /// worker and right after saves.
     pub async fn process_sync_queue(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+    ) -> Result<(usize, usize), String> {
+        if !Self::get_auto_send(db_path) {
+            return Ok((0, 0));
+        }
+        Self::run_queue(pool, db_path).await
+    }
+
+    /// "Kirim sekarang": send the queue right away, in FIFO order, also when "Kirim otomatis" is
+    /// off, without waiting out the 401/403 pause or the worker's back-off.
+    pub async fn send_now(pool: &Pool<Sqlite>, db_path: Option<&PathBuf>) -> Result<(usize, usize), String> {
+        Self::clear_auth_block();
+        WORKER_KICK.store(true, Ordering::SeqCst);
+        Self::run_queue(pool, db_path).await
+    }
+
+    async fn run_queue(
         pool: &Pool<Sqlite>,
         db_path: Option<&PathBuf>,
     ) -> Result<(usize, usize), String> {
@@ -2277,49 +2162,22 @@ impl SyncService {
                         break;
                     }
 
-                    // The web is there but cannot answer right now (5xx while it restarts or is
-                    // deployed, 408/429 under load): like no connection, never a reason to give
-                    // up. Keep the row and stop here (strict FIFO) until the next tick.
-                    let code = status.as_u16();
-                    if status.is_server_error() || code == 408 || code == 429 {
-                        let _ = sqlx::query(
-                            "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-                        )
-                        .bind(new_retry)
-                        .bind(&err_msg)
-                        .bind(item_id)
-                        .execute(pool)
-                        .await;
-                        failed_count += 1;
-                        warn!("SyncQueue #{} to {} returned {}, retried later: {}", item_id, endpoint, status, err_msg);
-                        break;
-                    }
-
-                    // The web refused the message itself (400 bad payload, 404 bout not on the
-                    // web, other 4xx after 5 tries): skip it so later matches are not blocked.
-                    // It stays visible under "Gagal" and is sent again by "Kirim ulang".
-                    let is_unrecoverable = code == 400 || code == 404 || new_retry >= 5;
-
-                    let final_status = if is_unrecoverable { "abandoned" } else { "failed" };
+                    // Anything else the web answered (5xx while it restarts, 408/429 under load,
+                    // 400/404 "Ditolak web" e.g. a result sent before "Kirim bagan"): strict FIFO.
+                    // The row stays at the head as 'failed' and is retried (the worker backs off);
+                    // nothing behind it is sent first. "Lewati" is the operator's way past a row the
+                    // web will never accept.
                     let _ = sqlx::query(
-                        "UPDATE backend_syncqueue SET status = ?, retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                        "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
                     )
-                    .bind(final_status)
                     .bind(new_retry)
                     .bind(&err_msg)
                     .bind(item_id)
                     .execute(pool)
                     .await;
-
                     failed_count += 1;
-                    warn!("SyncQueue #{} to {} returned {}: {}", item_id, endpoint, status, err_msg);
-                    if is_unrecoverable {
-                        // Unrecoverable: skip to unblock other matches
-                        continue;
-                    } else {
-                        // Temporary error: halt queue to preserve FIFO
-                        break;
-                    }
+                    warn!("SyncQueue #{} to {} returned {}, queue held: {}", item_id, endpoint, status, err_msg);
+                    break;
                 }
                 Err(e) => {
                     // No connection (venue internet down, web server unreachable) is never a
@@ -2349,55 +2207,107 @@ impl SyncService {
         Ok((synced_count, failed_count))
     }
 
-    /// Spawns the background worker that retries pending/failed items every 12 seconds.
-    /// It is a task on the app's async runtime: a dedicated OS thread with its own Tokio
-    /// runtime cost a thread stack and a second runtime just to sleep, and made the shared
-    /// HTTP client's connections live on two runtimes.
+    /// Spawns the background worker. Every 2 s it:
+    /// - tells the UI when anything about the queue changed (`sync_queue_changed`), whoever wrote
+    ///   it (a save here or on a LAN laptop, Lewati, clean-up, a pause), so the Sinkronisasi page
+    ///   is live without polling;
+    /// - with "Kirim otomatis" on, sends the queue in strict FIFO order. After a failed head it
+    ///   waits 2, 4, 8 … up to 60 s before the next try (a save or "Kirim sekarang" still tries at once).
+    ///
+    /// It is a task on the app's async runtime (no own thread or runtime).
     pub fn spawn_sync_worker(
         db: Arc<Mutex<crate::db::DatabaseManager>>,
         app_handle: Option<tauri::AppHandle>,
     ) {
         tauri::async_runtime::spawn(async move {
-            info!("Ambrilindo Live Sync Background Daemon running (12s interval)");
+            info!("Ambrilindo live sync worker running (2 s tick, FIFO with back-off)");
+            let mut last_seen = String::new();
+            let mut fails: u32 = 0;
+            let mut next_try = 0i64;
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(12)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
                 let (pool_opt, db_path_opt) = {
                     let db_guard = db.lock().await;
                     (db_guard.get_pool_cloned(), db_guard.get_active_db_path_cloned())
                 };
+                let Some(pool) = pool_opt else { continue };
+                let path = db_path_opt.as_ref();
 
-                if let Some(pool) = pool_opt {
-                    if let Ok((synced, failed)) = Self::process_sync_queue(&pool, db_path_opt.as_ref()).await {
-                        if (synced > 0 || failed > 0) && app_handle.is_some() {
-                            if let Some(app) = &app_handle {
-                                let _ = app.emit("sync_queue_changed", serde_json::json!({
-                                    "synced": synced,
-                                    "failed": failed
-                                }));
-                            }
+                if WORKER_KICK.swap(false, Ordering::SeqCst) {
+                    fails = 0;
+                    next_try = 0;
+                }
+                if Self::get_auto_send(path) && now_secs() >= next_try {
+                    if let Ok((synced, failed)) = Self::process_sync_queue(&pool, path).await {
+                        if failed > 0 {
+                            fails = (fails + 1).min(6);
+                            next_try = now_secs() + Self::retry_delay_secs(fails);
+                        } else if synced > 0 {
+                            fails = 0;
+                            next_try = 0;
                         }
+                    }
+                }
+
+                let seen = Self::queue_fingerprint(&pool, path).await;
+                if seen != last_seen {
+                    last_seen = seen;
+                    if let Some(app) = &app_handle {
+                        let _ = app.emit("sync_queue_changed", serde_json::json!({ "retry_at": next_try }));
                     }
                 }
             }
         });
     }
 
-    /// Clears all queue items
-    pub async fn clear_all_queue(pool: &Pool<Sqlite>, event_id: Option<i64>) -> Result<u64, String> {
-        let res = if let Some(eid) = event_id {
-            sqlx::query("DELETE FROM backend_syncqueue WHERE event_id = ?")
-                .bind(eid)
-                .execute(pool)
-                .await
-        } else {
-            sqlx::query("DELETE FROM backend_syncqueue")
-                .execute(pool)
-                .await
-        }.map_err(|e| format!("Gagal mengosongkan antrean: {}", e))?;
-
-        Ok(res.rows_affected())
+    /// Back-off after the n-th failed try of the queue head: 2, 4, 8, 16, 32, 60 s.
+    fn retry_delay_secs(fails: u32) -> i64 {
+        (1i64 << fails.min(6)).min(60)
     }
+
+    /// Everything the Sinkronisasi page shows about the queue, cheaply: per-status counts, the
+    /// newest row and change time, the 401/403 pause and the "Kirim otomatis" switch. When it
+    /// changes, the page reloads.
+    pub async fn queue_fingerprint(pool: &Pool<Sqlite>, db_path: Option<&PathBuf>) -> String {
+        let rows: Vec<(Option<String>, i64, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT status, COUNT(*), MAX(id), MAX(updated_at) FROM backend_syncqueue GROUP BY status ORDER BY status",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        let paused = AUTH_BLOCKED_UNTIL.load(Ordering::Relaxed) > now_secs();
+        format!("{rows:?}|{paused}|{}", Self::get_auto_send(db_path))
+    }
+
+    /// "Kirim otomatis" (stored in sync_target.json as `auto_send`, default on).
+    pub fn get_auto_send(db_path: Option<&PathBuf>) -> bool {
+        let file = Self::get_config_dir(db_path).join("sync_target.json");
+        std::fs::read_to_string(file)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .and_then(|v| v.get("auto_send").and_then(|b| b.as_bool()))
+            .unwrap_or(true)
+    }
+
+    pub fn set_auto_send(db_path: Option<&PathBuf>, on: bool) -> Result<bool, String> {
+        let dir = Self::get_config_dir(db_path);
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("sync_target.json");
+        let mut val = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        val["auto_send"] = serde_json::Value::Bool(on);
+        std::fs::write(&file, serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Gagal menyimpan pengaturan kirim otomatis: {}", e))?;
+        if on {
+            WORKER_KICK.store(true, Ordering::SeqCst);
+        }
+        Ok(on)
+    }
+
 }
 
 
@@ -2444,6 +2354,28 @@ mod scope_tests {
         assert_eq!(SyncService::logo_file_ext("https://s3.example.com/logo/a.PNG?X-Amz-Signature=1.jpg"), "png");
         assert_eq!(SyncService::logo_file_ext("/media/logo/b.jpeg#x"), "jpg");
         assert_eq!(SyncService::logo_file_ext("https://cdn.example.com/logo"), "webp");
+    }
+
+    /// The page reloads only when the queue fingerprint changes.
+    #[tokio::test]
+    async fn queue_fingerprint_changes_only_with_the_queue() {
+        let Some(t) = crate::test_support::real_db_copy().await else { return };
+        let pool = t.db.get_pool_cloned().unwrap();
+        let path = Some(&t.path);
+        let a = SyncService::queue_fingerprint(&pool, path).await;
+        assert_eq!(a, SyncService::queue_fingerprint(&pool, path).await, "no change, same fingerprint");
+        sqlx::query("INSERT INTO backend_syncqueue (endpoint, payload, status, retry_count, created_at, updated_at) VALUES ('api/result/', '{}', 'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+            .execute(&pool).await.unwrap();
+        let b = SyncService::queue_fingerprint(&pool, path).await;
+        assert_ne!(a, b, "a new row changes it");
+        SyncService::set_auto_send(path, false).unwrap();
+        assert_ne!(b, SyncService::queue_fingerprint(&pool, path).await, "the switch changes it");
+    }
+
+    #[test]
+    fn retry_backs_off_up_to_a_minute() {
+        let delays: Vec<i64> = (1..=8).map(SyncService::retry_delay_secs).collect();
+        assert_eq!(delays, vec![2, 4, 8, 16, 32, 60, 60, 60]);
     }
 
     #[test]

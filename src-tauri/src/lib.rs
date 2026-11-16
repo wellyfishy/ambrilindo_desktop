@@ -1574,24 +1574,38 @@ async fn get_sync_queue_items(
     sync::SyncService::get_queue_items(pool, event_id, status_filter, limit.unwrap_or(200)).await
 }
 
+/// "Kirim sekarang": sends the queue in FIFO order right away (also with "Kirim otomatis" off).
+/// The DB lock is released before the network calls, so saves are never held up by the web.
 #[tauri::command]
-async fn retry_sync_item(
-    item_id: i64,
+async fn send_sync_queue_now(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
-) -> Result<bool, String> {
-    let db = state.db.lock().await;
-    let pool = db.get_pool()?;
-    sync::SyncService::retry_single_item(pool, db.get_db_path(), item_id).await
+) -> Result<(usize, usize), String> {
+    let (pool, path) = {
+        let db = state.db.lock().await;
+        (db.get_pool_cloned().ok_or("Database belum dibuka.")?, db.get_active_db_path_cloned())
+    };
+    let res = sync::SyncService::send_now(&pool, path.as_ref()).await;
+    let _ = app.emit("sync_queue_changed", ());
+    res
 }
 
 #[tauri::command]
-async fn retry_all_failed_sync(
-    event_id: Option<i64>,
-    state: tauri::State<'_, DesktopState>,
-) -> Result<usize, String> {
+async fn get_sync_auto_send(state: tauri::State<'_, DesktopState>) -> Result<bool, String> {
     let db = state.db.lock().await;
-    let pool = db.get_pool()?;
-    sync::SyncService::retry_all_failed(pool, db.get_db_path(), event_id).await
+    Ok(sync::SyncService::get_auto_send(db.get_db_path()))
+}
+
+#[tauri::command]
+async fn set_sync_auto_send(
+    enabled: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<bool, String> {
+    let db = state.db.lock().await;
+    let res = sync::SyncService::set_auto_send(db.get_db_path(), enabled);
+    let _ = app.emit("sync_queue_changed", ());
+    res
 }
 
 #[tauri::command]
@@ -1605,16 +1619,6 @@ async fn mark_sync_item_synced(
 }
 
 #[tauri::command]
-async fn delete_sync_item(
-    item_id: i64,
-    state: tauri::State<'_, DesktopState>,
-) -> Result<(), String> {
-    let db = state.db.lock().await;
-    let pool = db.get_pool()?;
-    sync::SyncService::delete_queue_item(pool, item_id).await
-}
-
-#[tauri::command]
 async fn clear_synced_items(
     event_id: Option<i64>,
     state: tauri::State<'_, DesktopState>,
@@ -1622,16 +1626,6 @@ async fn clear_synced_items(
     let db = state.db.lock().await;
     let pool = db.get_pool()?;
     sync::SyncService::clear_synced_items(pool, event_id).await
-}
-
-#[tauri::command]
-async fn clear_all_sync_queue(
-    event_id: Option<i64>,
-    state: tauri::State<'_, DesktopState>,
-) -> Result<u64, String> {
-    let db = state.db.lock().await;
-    let pool = db.get_pool()?;
-    sync::SyncService::clear_all_queue(pool, event_id).await
 }
 
 #[tauri::command]
@@ -2542,12 +2536,11 @@ pub fn run() {
             toggle_live_sync,
             get_sync_queue_stats,
             get_sync_queue_items,
-            retry_sync_item,
-            retry_all_failed_sync,
             mark_sync_item_synced,
-            delete_sync_item,
+            send_sync_queue_now,
+            get_sync_auto_send,
+            set_sync_auto_send,
             clear_synced_items,
-            clear_all_sync_queue,
             open_festival_control_panel,
             get_festival_roster_data,
             get_festival_booklet_data,
