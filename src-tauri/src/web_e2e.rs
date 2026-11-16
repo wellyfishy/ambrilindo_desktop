@@ -134,7 +134,11 @@ score1=x.score1, score2=x.score2, pemenang=x.pemenang, atlet1=x.atlet1_id, atlet
             .or_else(|| cats.iter().find(|c| fits(c, lo, hi)))
             .or_else(|| cats.iter().find(|c| fits(c, 2, 16)))
             .expect("a category with 2..=16 athletes and no results");
-        let cat_id = cat["id"].as_i64().unwrap();
+        self.draw(cat["id"].as_i64().unwrap()).await
+    }
+
+    /// Manual-draws (or re-draws) one category with spread placement and returns its bagan.
+    async fn draw(&self, cat_id: i64) -> Value {
         let athletes = ids(&self.desk.ok("get_manual_drawing_athletes", json!({ "categoryId": cat_id })).await);
         let slots: Vec<Value> = athletes
             .iter()
@@ -1068,4 +1072,78 @@ print('J=' + json.dumps(dict(r10=DetailBagan.objects.filter(bagan=fb, round=10).
     ));
     assert_eq!(web["r10"], 0, "G5 no team child bouts on the web: {web}");
     assert_eq!(web["all"].as_i64(), Some(main_rows), "G5 every bracket bout pushed: {web}");
+}
+
+
+// ---------------------------------------------------------------------------------------
+// H. Sync scope (audit B7 / B8)
+// ---------------------------------------------------------------------------------------
+
+/// B8: a live result reaches the bout of the mapped web event, even when another web event has a
+/// bout with the same `kode_realtime` (made first, so an unscoped lookup would find it).
+#[tokio::test]
+#[ignore]
+async fn web_e2e_h_live_result_stays_in_its_event() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    // The legacy token may change every event: only the event_id keeps the bouts apart.
+    test_auth::set(Some(legacy()));
+    let bagan = r.fresh_bagan(5, 8).await;
+    let bid = bagan["id"].as_i64().unwrap();
+    let m = r.next_playable(&bagan).await.unwrap();
+    let k = r.kode(bid, m["id"].as_i64().unwrap());
+    let event_b = r.web.seed["event_b"].as_i64().unwrap();
+    r.web_py(&format!(
+        "b = Bagan.objects.create(event_id={event_b}, nama_bagan='DECOY', kode='DECOY')\n\
+x = DetailBagan.objects.create(bagan=b, round=1, urutan=1, kode_realtime='{k}')\n\
+print('J=' + json.dumps(x.pk))"
+    ));
+    r.push(&bagan).await;
+    r.finish(&bagan, &m).await;
+    let q = r.drain().await;
+    assert!(q.iter().filter(|x| x.endpoint == "api/result/").all(|x| x.status == "synced"), "H1 result sent: {q:?}");
+    let got = r.web_py(&format!(
+        "rows = DetailBagan.objects.filter(kode_realtime='{k}').values_list('bagan__event_id', 'selesai')\n\
+print('J=' + json.dumps({{str(e): s for e, s in rows}}))"
+    ));
+    assert_eq!(got[r.event_a.to_string()], true, "H1 the mapped event's bout is finished: {got}");
+    assert_eq!(got[event_b.to_string()], false, "H1 the other event's bout is untouched: {got}");
+}
+
+/// B7: a full push keeps brackets made on the web; a partial push after a re-draw replaces the
+/// category's old bracket on the web.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_h_push_prunes_only_desktop_brackets() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    let web_made: i64 = r
+        .web_py(&format!(
+            "b = Bagan.objects.create(event_id={}, nama_bagan='DIBUAT DI WEB')\nprint('J=' + json.dumps(b.pk))",
+            r.event_a
+        ))
+        .as_i64()
+        .unwrap();
+    let exists = |r: &Rig, filter: String| r.web_py(&format!("print('J=' + json.dumps(Bagan.objects.filter({filter}).exists()))"));
+
+    SyncService::push_bagan_to_hosted(&r.pool, Some(&r.db_path), EVENT, None).await.expect("H2 full push");
+    assert_eq!(exists(&r, format!("pk={web_made}")), true, "H2 web-made bracket kept by a full push");
+
+    let bagan = r.fresh_bagan(5, 8).await;
+    r.push(&bagan).await;
+    let old_kode = bagan["kode"].as_str().unwrap().to_string();
+    // Another category drawn since: the re-draw cannot take its old code back (codes are max + 1).
+    sqlx::query("INSERT INTO backend_bagan (event_id, nama_bagan, kode, round_robin, pool, is_bob, has_vr) VALUES (?, 'H LAIN', '999', 0, 1, 0, 0)")
+        .bind(EVENT)
+        .execute(&r.pool)
+        .await
+        .unwrap();
+    let redrawn = r.draw(bagan["nomor_tanding_id"].as_i64().unwrap()).await;
+    let new_kode = redrawn["kode"].as_str().unwrap().to_string();
+    assert_ne!(old_kode, new_kode, "a re-draw gives the bracket a new kode");
+    r.push(&redrawn).await;
+    let ev = r.event_a;
+    assert_eq!(exists(&r, format!("event_id={ev}, kode='{new_kode}'")), true, "H3 re-drawn bracket on the web");
+    assert_eq!(exists(&r, format!("event_id={ev}, kode='{old_kode}'")), false, "H3 old bracket removed from the web");
+    assert_eq!(exists(&r, format!("pk={web_made}")), true, "H3 web-made bracket kept by a partial push");
 }

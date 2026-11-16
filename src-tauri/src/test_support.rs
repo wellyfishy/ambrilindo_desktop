@@ -183,7 +183,9 @@ fn web_paths() -> Option<(PathBuf, PathBuf)> {
         eprintln!("skip: web project or venv not found at {}", web_dir.display());
         return None;
     }
-    Some((web_dir.canonicalize().ok()?, python.canonicalize().ok()?))
+    // Not canonicalize() for python: on Linux/macOS venv/bin/python is a symlink to the system
+    // interpreter, and following it drops the venv (its site-packages).
+    Some((web_dir.canonicalize().ok()?, std::path::absolute(&python).ok()?))
 }
 
 /// A Django web portal on 127.0.0.1:<free port> with a throw-away SQLite DB (migrated once per

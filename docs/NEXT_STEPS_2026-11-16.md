@@ -12,6 +12,26 @@ Lanjutan dari audit (`docs/AUDIT_DESKTOP_WEB_2026-11-16.md`, satu folder dengan 
 
 ---
 
+## Selesai (sesi lanjutan 16 Nov): B6, B7, B8, B9
+
+Semua dengan tes yang **gagal di kode lama dan lulus setelah perbaikan** (sudah dibuktikan dua arah: desktop baru vs web lama, dan desktop lama vs web baru).
+
+| | Perbaikan | Tes |
+|---|---|---|
+| **B6** | Web: satu fungsi `resolve_detail_atlet()` (`views/sync.py`) dipakai push-bagan, force-results, dan final-result. Tidak pernah lagi mengubah `nomor_tanding` DetailAtlet yang sudah ada: atlet dari kategori lain mendapat DetailAtlet tambahan. Nama kembar dibedakan dengan kontingen (utusan, lalu perguruan). Desktop: juara dikirim lengkap dengan `_utusan`, `_perguruan`, `_public_detail_id` (`DatabaseManager::podium_fields`). | web `tests_sync_b6_b8.py` (B6…) |
+| **B7** | Web: full push hanya menghapus bagan yang punya `kode` (kiriman desktop), bagan buatan web aman. Push sebagian menghapus bagan kategori yang dikirim yang `kode`-nya tidak ada lagi di `known_kodes` (daftar kode bagan desktop saat ini). Desktop: kirim `known_kodes`; fallback `../ambrilindo/.../event_mapping.json` dan kunci lama `local_<id>` dihapus. | web `B7…`, e2e `web_e2e_h_push_prunes_only_desktop_brackets`, unit `mapping_ignores_legacy_keys` |
+| **B8** | Desktop: semua pesan live (`status`, `result`, `reopen`, `final-result`, `tatami-status`) diberi `event_id` web saat dikirim (baris lama di antrean juga). Web: `_scoped()` di `views/api.py` memfilter partai per event bila `event_id` ada; `event_id` bukan angka → 400; event tanpa izin → 403. | web `B8…`, e2e `web_e2e_h_live_result_stays_in_its_event`, unit `live_messages_get_the_web_event_id` |
+| **B9** | Desktop membaca `tanggal_event`/`tempat_event` (nama lama tetap dibaca), dan pilihan event web di Sinkronisasi sekarang menampilkan tempat · tanggal. | unit `hosted_events_read_web_field_names` |
+
+**Kompatibilitas:** web baru tetap menerima exe lama (tanpa `event_id` / `known_kodes` = perilaku lama, kecuali bagan buatan web kini tidak ikut terhapus). Urutan deploy tetap: **web dulu**, baru bagikan exe.
+
+**Catatan:**
+- Bagan dengan nama + kategori sama memang ada di data asli (event 8: dua bagan "KUMITE PEMULA PUTRI -42 KG" yang sama-sama sudah dimainkan). Karena itu pembersihan push sebagian memakai `known_kodes`, bukan nama.
+- Drawing ulang manual memakai kode yang sama bila kategori itu memegang kode tertinggi; web lalu cukup memperbarui bagan yang sama.
+- `test_support.rs`: tes e2e sekarang juga jalan di Linux/macOS (python venv tidak lagi di-`canonicalize`, yang membuang venv).
+
+---
+
 ## 0. Siapkan laptop
 
 ```bash
@@ -41,8 +61,8 @@ Data turnamen (`tournament_data/db.sqlite3`) ikut di repo desktop. File `.env` t
 **Cek bahwa semuanya hijau sebelum mulai mengubah apa pun:**
 ```bash
 cd ambrilindo_desktop/src-tauri
-cargo test --lib                                          # 75 lulus
-cargo test --lib web_e2e -- --ignored --test-threads=1    # 16 lulus (butuh repo web + venv)
+cargo test --lib                                          # 78 lulus
+cargo test --lib web_e2e -- --ignored --test-threads=1    # 18 lulus (butuh repo web + venv)
 cd ..
 npx vitest run                                            # 22 lulus
 npx svelte-check                                          # 0 error
@@ -50,7 +70,7 @@ npx svelte-check                                          # 0 error
 ```bash
 cd ambrilindo_web/ambrilindo_web_pub
 # JANGAN pakai db.sqlite3 asli untuk tes:
-SQLITE_PATH=/tmp/web_test.sqlite3 DEBUG=true ../venv/Scripts/python manage.py test backend   # 65 lulus
+SQLITE_PATH=/tmp/web_test.sqlite3 DEBUG=true ../venv/Scripts/python manage.py test backend   # 81 lulus
 ../venv/Scripts/python manage.py check
 ```
 
@@ -116,7 +136,7 @@ Centang satu per satu:
 Detail tiap temuan ada di laporan audit. Semua butuh tes yang **gagal di kode lama dan lulus setelah perbaikan**, mengikuti pola tes `web_e2e` E/F/G dan `qa_tests.rs`.
 
 ### Prioritas TINGGI
-1. **B6: "Kirim bagan" mengubah data pendaftaran di web.**
+1. **✅ SELESAI: B6: "Kirim bagan" mengubah data pendaftaran di web.**
    - **Di mana:** web `backend/views/sync.py` → `resolve_or_create_detail_atlet()` di dalam `receive_bagan_sync`.
    - **Masalah:**
      - Kalau atlet di bagan desktop berada di kategori lain, `DetailAtlet.nomor_tanding` dipindah sehingga pendaftaran aslinya berubah.
@@ -126,13 +146,13 @@ Detail tiap temuan ada di laporan audit. Semua butuh tes yang **gagal di kode la
      - Cocokkan dengan urutan `public_detail_id` → kode atlet → nama + kontingen.
      - Juara di `force_sync_results_api` dan `receive_final_result` juga di-resolve dengan kontingen (desktop perlu mengirim `*_public_detail_id` dan kontingen juara).
    - **Tes:** e2e dengan atlet terdaftar Kata yang muncul di bagan Kumite → pendaftaran Kata tetap utuh.
-2. **B7: full push menghapus semua bagan web yang tidak ada di kiriman.**
+2. **✅ SELESAI: B7: full push menghapus semua bagan web yang tidak ada di kiriman.**
    - **Di mana:** web `sync.py` (`is_full_sync` → `stale_bagans.delete()`), dan desktop `sync.rs` `get_event_mapping()`, yang masih membaca fallback `../ambrilindo/ambrilindo/database/event_mapping.json` dan kunci lama `local_<id>`.
    - **Arah perbaikan:**
      - Hapus fallback mapping lama di desktop.
      - Di web, hapus hanya bagan yang pernah dikirim desktop (`kode` tidak kosong / punya `kode_realtime`), bukan bagan buatan web.
      - Push sebagian setelah drawing ulang: hapus bagan web dengan kategori yang sama tapi `kode` lama.
-3. **B8: `kode_realtime` bisa bentrok antar event.**
+3. **✅ SELESAI: B8: `kode_realtime` bisa bentrok antar event.**
    - **Di mana:** web `views/api.py` (`receive_status`, `receive_result`, `receive_reopen`, `receive_final_result`) mencari partai hanya dengan `kode_realtime`, dibatasi event lisensi.
    - **Arah perbaikan:**
      - Desktop mengirim `event_id` web di setiap payload live (isi dari mapping, seperti yang sudah dilakukan untuk `tatami-status` di worker).
@@ -146,7 +166,7 @@ Detail tiap temuan ada di laporan audit. Semua butuh tes yang **gagal di kode la
    - `lib.rs` `open_control_panel_window` menganggap `tatami >= 20` sebagai ID database.
    - Dispatcher di `server.rs` memakai `unwrap_or(1)` untuk `eventId` yang hilang.
    - **Arah perbaikan:** tolak payload yang tidak lengkap (400), jangan diam-diam memakai event 1.
-7. **B9: daftar event web tanpa tanggal/tempat di desktop.** Web `list_events_api` mengirim `tempat_event`/`tanggal_event`, sedangkan desktop `fetch_hosted_events()` membaca `tanggal_mulai`/`tempat`. Samakan nama field-nya (cukup ubah sisi desktop).
+7. **✅ SELESAI: B9: daftar event web tanpa tanggal/tempat di desktop.** Web `list_events_api` mengirim `tempat_event`/`tanggal_event`, sedangkan desktop `fetch_hosted_events()` membaca `tanggal_mulai`/`tempat`. Samakan nama field-nya (cukup ubah sisi desktop).
 8. **B10 (sisa): tarik atlet.**
    - Nomor tanding dicocokkan case-sensitive.
    - Logo kontingen tidak diperbarui kalau file sudah ada, dan ekstensinya salah untuk URL S3 yang memakai `?query`.

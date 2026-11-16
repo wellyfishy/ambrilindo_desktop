@@ -509,45 +509,32 @@ impl SyncService {
             return Err(err.to_string());
         }
 
-        let mut events = Vec::new();
-        if let Some(arr) = body.get("events").and_then(|e| e.as_array()) {
-            for item in arr {
-                if let Some(id) = item.get("id").and_then(|i| i.as_i64()) {
-                    let nama = item
-                        .get("nama_event")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("Event Tanpa Nama")
-                        .to_string();
-                    let tgl_m = item
-                        .get("tanggal_mulai")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string());
-                    let tgl_s = item
-                        .get("tanggal_selesai")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string());
-                    let tempat = item
-                        .get("tempat")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string());
-                    let status = item
-                        .get("status")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string());
+        Ok(Self::parse_hosted_events(&body))
+    }
 
-                    events.push(HostedEventOption {
-                        id,
-                        nama_event: nama,
-                        tanggal_mulai: tgl_m,
-                        tanggal_selesai: tgl_s,
-                        tempat,
-                        status,
-                    });
-                }
-            }
-        }
-
-        Ok(events)
+    /// The `events` of `api/sync/events/`. The web sends `tanggal_event` / `tempat_event`; the
+    /// older names `tanggal_mulai` / `tempat` are still read. Empty values count as missing.
+    fn parse_hosted_events(body: &serde_json::Value) -> Vec<HostedEventOption> {
+        let text = |item: &serde_json::Value, keys: &[&str]| {
+            keys.iter()
+                .filter_map(|k| item.get(*k).and_then(|v| v.as_str()))
+                .map(str::trim)
+                .find(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        body.get("events")
+            .and_then(|e| e.as_array())
+            .map(|arr| arr.iter().filter_map(|item| {
+                Some(HostedEventOption {
+                    id: item.get("id")?.as_i64()?,
+                    nama_event: text(item, &["nama_event"]).unwrap_or_else(|| "Event Tanpa Nama".to_string()),
+                    tanggal_mulai: text(item, &["tanggal_event", "tanggal_mulai"]),
+                    tanggal_selesai: text(item, &["tanggal_selesai"]),
+                    tempat: text(item, &["tempat_event", "tempat"]),
+                    status: text(item, &["status"]),
+                })
+            }).collect())
+            .unwrap_or_default()
     }
 
     /// Reads event mapping configuration from event_mapping.json
@@ -557,17 +544,11 @@ impl SyncService {
         local_event_name: Option<&str>,
         target_mode: &str,
     ) -> EventMapping {
+        // Only this app's own mapping file, and only the key of this target mode: the old local
+        // app's file and its mode-less `local_<id>` keys may point at another web event, and a
+        // full push to the wrong event replaces its brackets.
         let mapping_file = Self::get_config_dir(db_path).join("event_mapping.json");
-        let fallback_mapping_file =
-            Path::new("../ambrilindo/ambrilindo/database/event_mapping.json");
-
-        let path_to_read = if mapping_file.exists() {
-            Some(mapping_file)
-        } else if fallback_mapping_file.exists() {
-            Some(fallback_mapping_file.to_path_buf())
-        } else {
-            None
-        };
+        let path_to_read = mapping_file.exists().then_some(mapping_file);
 
         let mut hosted_id = None;
         let mut hosted_name = None;
@@ -576,9 +557,7 @@ impl SyncService {
             if let Ok(content) = std::fs::read_to_string(&p) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                     let key = format!("local_{}_{}", local_event_id, target_mode);
-                    let fallback_key = format!("local_{}", local_event_id);
-
-                    let entry = val.get(&key).or_else(|| val.get(&fallback_key));
+                    let entry = val.get(&key);
                     if let Some(e) = entry {
                         hosted_id = e.get("hosted_event_id").and_then(|v| v.as_i64());
                         hosted_name = e
@@ -1161,6 +1140,22 @@ impl SyncService {
     }
 
     /// Pushes brackets & matches to web server
+    /// `DatabaseManager::podium_fields` on a pooled connection.
+    async fn podium_of(
+        pool: &Pool<Sqlite>,
+        bagan_id: i64,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+        let mut conn = pool.acquire().await.map_err(|e| format!("Gagal membuka database: {}", e))?;
+        Ok(crate::db::DatabaseManager::podium_fields(&mut conn, bagan_id).await)
+    }
+
+    /// Queue endpoints whose payload gets the web `event_id` when it is sent.
+    fn needs_web_event_id(endpoint: &str) -> bool {
+        ["tatami-status", "api/status/", "api/result/", "api/reopen/", "api/final-result/"]
+            .iter()
+            .any(|e| endpoint.contains(e))
+    }
+
     pub async fn push_bagan_to_hosted(
         pool: &Pool<Sqlite>,
         db_path: Option<&PathBuf>,
@@ -1196,33 +1191,17 @@ impl SyncService {
             let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             format!(
                 "SELECT b.id, b.nama_bagan, b.tipe_tanding, b.pool, b.kode, b.is_bob, \
-                 nt.nama_nomor_tanding, \
-                 j1.nama_atlet as j1_nama, j1.kode_atlet as j1_kode, j1.additional_code as j1_add, \
-                 j2.nama_atlet as j2_nama, j2.kode_atlet as j2_kode, j2.additional_code as j2_add, \
-                 j3a.nama_atlet as j3a_nama, j3a.kode_atlet as j3a_kode, j3a.additional_code as j3a_add, \
-                 j3b.nama_atlet as j3b_nama, j3b.kode_atlet as j3b_kode, j3b.additional_code as j3b_add \
+                 nt.nama_nomor_tanding \
                  FROM backend_bagan b \
                  LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id \
-                 LEFT JOIN backend_atlet j1 ON b.juara_1_id = j1.id \
-                 LEFT JOIN backend_atlet j2 ON b.juara_2_id = j2.id \
-                 LEFT JOIN backend_atlet j3a ON b.juara_3a_id = j3a.id \
-                 LEFT JOIN backend_atlet j3b ON b.juara_3b_id = j3b.id \
                  WHERE b.event_id = ? AND b.id IN ({}) ORDER BY b.id ASC",
                 placeholders
             )
         } else {
             "SELECT b.id, b.nama_bagan, b.tipe_tanding, b.pool, b.kode, b.is_bob, \
-             nt.nama_nomor_tanding, \
-             j1.nama_atlet as j1_nama, j1.kode_atlet as j1_kode, j1.additional_code as j1_add, \
-             j2.nama_atlet as j2_nama, j2.kode_atlet as j2_kode, j2.additional_code as j2_add, \
-             j3a.nama_atlet as j3a_nama, j3a.kode_atlet as j3a_kode, j3a.additional_code as j3a_add, \
-             j3b.nama_atlet as j3b_nama, j3b.kode_atlet as j3b_kode, j3b.additional_code as j3b_add \
+             nt.nama_nomor_tanding \
              FROM backend_bagan b \
              LEFT JOIN backend_nomortanding nt ON b.nomor_tanding_id = nt.id \
-             LEFT JOIN backend_atlet j1 ON b.juara_1_id = j1.id \
-             LEFT JOIN backend_atlet j2 ON b.juara_2_id = j2.id \
-             LEFT JOIN backend_atlet j3a ON b.juara_3a_id = j3a.id \
-             LEFT JOIN backend_atlet j3b ON b.juara_3b_id = j3b.id \
              WHERE b.event_id = ? ORDER BY b.id ASC".to_string()
         };
 
@@ -1252,22 +1231,6 @@ impl SyncService {
             let b_kode: Option<String> = b_row.get("kode");
             let b_is_bob: bool = b_row.get("is_bob");
             let nt_name: Option<String> = b_row.get("nama_nomor_tanding");
-
-            let j1_nama: Option<String> = b_row.get("j1_nama");
-            let j1_kode: Option<String> = b_row.get("j1_kode");
-            let j1_add: Option<String> = b_row.get("j1_add");
-
-            let j2_nama: Option<String> = b_row.get("j2_nama");
-            let j2_kode: Option<String> = b_row.get("j2_kode");
-            let j2_add: Option<String> = b_row.get("j2_add");
-
-            let j3a_nama: Option<String> = b_row.get("j3a_nama");
-            let j3a_kode: Option<String> = b_row.get("j3a_kode");
-            let j3a_add: Option<String> = b_row.get("j3a_add");
-
-            let j3b_nama: Option<String> = b_row.get("j3b_nama");
-            let j3b_kode: Option<String> = b_row.get("j3b_kode");
-            let j3b_add: Option<String> = b_row.get("j3b_add");
 
             // Fetch details for this bagan
             let detail_rows = sqlx::query(
@@ -1352,34 +1315,37 @@ impl SyncService {
                 }));
             }
 
-            bagans_payload.push(serde_json::json!({
+            let mut bagan_payload = serde_json::json!({
                 "kode": b_kode.unwrap_or_default(),
                 "nama_bagan": b_nama,
                 "nomor_tanding": nt_name.unwrap_or_default(),
                 "is_bob": b_is_bob,
                 "tipe_tanding": b_tipe,
                 "pool": b_pool,
-                "juara_1": j1_nama.unwrap_or_default(),
-                "juara_1_kode": j1_kode.unwrap_or_default(),
-                "juara_1_public_detail_id": j1_add.unwrap_or_default(),
-                "juara_2": j2_nama.unwrap_or_default(),
-                "juara_2_kode": j2_kode.unwrap_or_default(),
-                "juara_2_public_detail_id": j2_add.unwrap_or_default(),
-                "juara_3a": j3a_nama.unwrap_or_default(),
-                "juara_3a_kode": j3a_kode.unwrap_or_default(),
-                "juara_3a_public_detail_id": j3a_add.unwrap_or_default(),
-                "juara_3b": j3b_nama.unwrap_or_default(),
-                "juara_3b_kode": j3b_kode.unwrap_or_default(),
-                "juara_3b_public_detail_id": j3b_add.unwrap_or_default(),
                 "detail_bagans": dbs_payload,
-            }));
+            });
+            if let Some(podium) = Self::podium_of(pool, b_id).await? {
+                bagan_payload.as_object_mut().expect("object").extend(podium);
+            }
+            bagans_payload.push(bagan_payload);
         }
+
+        // Every kode this event still has: on a partial push the web removes the pushed categories'
+        // brackets that are no longer here (re-drawn), and nothing else.
+        let known_kodes: Vec<String> = sqlx::query_scalar(
+            "SELECT kode FROM backend_bagan WHERE event_id = ? AND kode IS NOT NULL AND kode <> ''"
+        )
+        .bind(local_event_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat kode bagan: {}", e))?;
 
         let is_full_sync = bagan_ids.is_none();
         let payload = serde_json::json!({
             "event_pk": hosted_event_id,
             "bagans": bagans_payload,
             "is_full_sync": is_full_sync,
+            "known_kodes": known_kodes,
         });
 
         let client = TimedClient::new(std::time::Duration::from_secs(30));
@@ -1688,17 +1654,8 @@ impl SyncService {
 
         // 2. Champions snapshot
         let champion_rows = sqlx::query(
-            "SELECT b.kode, b.nama_bagan, \
-             j1.nama_atlet as j1_nama, j1.kode_atlet as j1_kode, \
-             j2.nama_atlet as j2_nama, j2.kode_atlet as j2_kode, \
-             j3a.nama_atlet as j3a_nama, j3a.kode_atlet as j3a_kode, \
-             j3b.nama_atlet as j3b_nama, j3b.kode_atlet as j3b_kode \
-             FROM backend_bagan b \
-             LEFT JOIN backend_atlet j1 ON b.juara_1_id = j1.id \
-             LEFT JOIN backend_atlet j2 ON b.juara_2_id = j2.id \
-             LEFT JOIN backend_atlet j3a ON b.juara_3a_id = j3a.id \
-             LEFT JOIN backend_atlet j3b ON b.juara_3b_id = j3b.id \
-             WHERE b.event_id = ? AND (b.juara_1_id IS NOT NULL OR b.juara_2_id IS NOT NULL OR b.juara_3a_id IS NOT NULL OR b.juara_3b_id IS NOT NULL)"
+            "SELECT id, kode, nama_bagan FROM backend_bagan \
+             WHERE event_id = ? AND (juara_1_id IS NOT NULL OR juara_2_id IS NOT NULL OR juara_3a_id IS NOT NULL OR juara_3b_id IS NOT NULL)"
         )
         .bind(local_event_id)
         .fetch_all(pool)
@@ -1709,27 +1666,14 @@ impl SyncService {
         for cr in champion_rows {
             let b_kode: Option<String> = cr.get("kode");
             let b_nama: Option<String> = cr.get("nama_bagan");
-            let j1_nama: Option<String> = cr.get("j1_nama");
-            let j1_kode: Option<String> = cr.get("j1_kode");
-            let j2_nama: Option<String> = cr.get("j2_nama");
-            let j2_kode: Option<String> = cr.get("j2_kode");
-            let j3a_nama: Option<String> = cr.get("j3a_nama");
-            let j3a_kode: Option<String> = cr.get("j3a_kode");
-            let j3b_nama: Option<String> = cr.get("j3b_nama");
-            let j3b_kode: Option<String> = cr.get("j3b_kode");
-
-            champions_payload.push(serde_json::json!({
+            let mut champ = serde_json::json!({
                 "kode": b_kode.unwrap_or_default(),
                 "nama_bagan": b_nama,
-                "juara_1": j1_nama.unwrap_or_default(),
-                "juara_1_kode": j1_kode.unwrap_or_default(),
-                "juara_2": j2_nama.unwrap_or_default(),
-                "juara_2_kode": j2_kode.unwrap_or_default(),
-                "juara_3a": j3a_nama.unwrap_or_default(),
-                "juara_3a_kode": j3a_kode.unwrap_or_default(),
-                "juara_3b": j3b_nama.unwrap_or_default(),
-                "juara_3b_kode": j3b_kode.unwrap_or_default(),
-            }));
+            });
+            if let Some(podium) = Self::podium_of(pool, cr.get("id")).await? {
+                champ.as_object_mut().expect("object").extend(podium);
+            }
+            champions_payload.push(champ);
         }
 
         let total_results = results_payload.len();
@@ -2264,8 +2208,9 @@ impl SyncService {
 
             let url = format!("{}/{}", base_url, endpoint.trim_start_matches('/'));
 
-            // Tatami status rows are queued with the local event: the web needs its own event id.
-            let payload_str = if endpoint.contains("tatami-status") {
+            // Rows are queued with the local event: the web needs its own event id. Live bout
+            // messages carry it too, because `kode_realtime` is only unique within one web event.
+            let payload_str = if Self::needs_web_event_id(&endpoint) {
                 let local_event: Option<i64> = r.get("event_id");
                 match (serde_json::from_str::<serde_json::Value>(&payload_str), local_event) {
                     (Ok(mut v), Some(local)) if v.get("event_id").is_none() => {
@@ -2446,3 +2391,49 @@ impl SyncService {
 }
 
 
+
+#[cfg(test)]
+mod scope_tests {
+    use super::SyncService;
+    use serde_json::json;
+
+    #[test]
+    fn mapping_ignores_legacy_keys() {
+        let dir = std::env::temp_dir().join(format!("ambr_map_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("db.sqlite3");
+        std::fs::write(
+            dir.join("event_mapping.json"),
+            json!({ "local_5": { "hosted_event_id": 99, "hosted_event_name": "Lama" },
+                    "local_6_custom": { "hosted_event_id": 7, "hosted_event_name": "Baru" } }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(SyncService::get_event_mapping(Some(&db), 5, None, "custom").hosted_event_id, None);
+        assert_eq!(SyncService::get_event_mapping(Some(&db), 6, None, "custom").hosted_event_id, Some(7));
+        assert_eq!(SyncService::get_event_mapping(Some(&db), 6, None, "production").hosted_event_id, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hosted_events_read_web_field_names() {
+        let body = json!({ "status": "success", "events": [
+            { "id": 3, "nama_event": "Kejurda", "tempat_event": "GOR Pontianak", "tanggal_event": "2026-12-01" },
+            { "id": 4, "nama_event": "Lama", "tempat": "Aula", "tanggal_mulai": "2026-01-02" },
+            { "id": 5, "nama_event": "", "tempat_event": "", "tanggal_event": "" },
+            { "nama_event": "tanpa id" },
+        ]});
+        let ev = SyncService::parse_hosted_events(&body);
+        assert_eq!(ev.len(), 3);
+        assert_eq!((ev[0].tempat.as_deref(), ev[0].tanggal_mulai.as_deref()), (Some("GOR Pontianak"), Some("2026-12-01")));
+        assert_eq!((ev[1].tempat.as_deref(), ev[1].tanggal_mulai.as_deref()), (Some("Aula"), Some("2026-01-02")));
+        assert_eq!((ev[2].nama_event.as_str(), ev[2].tempat.as_deref()), ("Event Tanpa Nama", None));
+    }
+
+    #[test]
+    fn live_messages_get_the_web_event_id() {
+        for e in ["api/status/", "api/result/", "api/reopen/", "api/final-result/", "api/sync/tatami-status/"] {
+            assert!(SyncService::needs_web_event_id(e), "{e}");
+        }
+        assert!(!SyncService::needs_web_event_id("api/sync/push-bagan/"));
+    }
+}

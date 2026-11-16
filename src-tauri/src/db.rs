@@ -5189,45 +5189,10 @@ impl DatabaseManager {
                     // robin podiums are not decided by a round-4 bout.)
                     let crowns_category = !is_round_robin && !is_repechage && (!is_pool_bracket || is_final_bagan);
                     if round_num == 4 && crowns_category {
-                        let podium_row: Option<(
-                            Option<String>, Option<String>,
-                            Option<String>, Option<String>,
-                            Option<String>, Option<String>,
-                            Option<String>, Option<String>,
-                        )> = sqlx::query_as(
-                            r#"
-                            SELECT 
-                                j1.nama_atlet, j1.kode_atlet,
-                                j2.nama_atlet, j2.kode_atlet,
-                                j3a.nama_atlet, j3a.kode_atlet,
-                                j3b.nama_atlet, j3b.kode_atlet
-                            FROM backend_bagan b
-                            LEFT JOIN backend_atlet j1 ON b.juara_1_id = j1.id
-                            LEFT JOIN backend_atlet j2 ON b.juara_2_id = j2.id
-                            LEFT JOIN backend_atlet j3a ON b.juara_3a_id = j3a.id
-                            LEFT JOIN backend_atlet j3b ON b.juara_3b_id = j3b.id
-                            WHERE b.id = ?
-                            "#
-                        )
-                        .bind(bagan_id)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .unwrap_or(None);
-
-                        if let Some((j1_name, j1_code, j2_name, j2_code, j3a_name, j3a_code, j3b_name, j3b_code)) = podium_row {
-                            let final_payload = serde_json::json!({
-                                "status": "finished",
-                                "kode_realtime": &kode_realtime,
-                                "juara_1": j1_name,
-                                "juara_1_kode": j1_code,
-                                "juara_2": j2_name,
-                                "juara_2_kode": j2_code,
-                                "juara_3a": j3a_name,
-                                "juara_3a_kode": j3a_code,
-                                "juara_3b": j3b_name,
-                                "juara_3b_kode": j3b_code,
-                            });
-                            Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/final-result/", final_payload).await;
+                        if let Some(mut final_payload) = Self::podium_fields(&mut *tx, bagan_id).await {
+                            final_payload.insert("status".into(), serde_json::json!("finished"));
+                            final_payload.insert("kode_realtime".into(), serde_json::json!(&kode_realtime));
+                            Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/final-result/", serde_json::Value::Object(final_payload)).await;
                         }
                     }
                 } else if is_live_sync_enabled && !input.selesai && was_finished && !is_team_child_bout {
@@ -5281,6 +5246,37 @@ impl DatabaseManager {
         .ok()?
     }
 
+    /// A bagan's saved podium as payload fields: for each place `juara_N`, `_kode`,
+    /// `_public_detail_id` (the web's own entry id), `_utusan` and `_perguruan`. The web tells
+    /// athletes with the same name apart by kontingen. An empty place is "" (it clears on the web).
+    pub(crate) async fn podium_fields(
+        conn: &mut sqlx::SqliteConnection,
+        bagan_id: i64,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        use sqlx::Row;
+        const PLACES: [(&str, &str); 4] = [("juara_1", "juara_1_id"), ("juara_2", "juara_2_id"), ("juara_3a", "juara_3a_id"), ("juara_3b", "juara_3b_id")];
+        let mut cols = Vec::new();
+        let mut joins = String::new();
+        for (i, (_, fk)) in PLACES.iter().enumerate() {
+            cols.push(format!("a{i}.nama_atlet, a{i}.kode_atlet, a{i}.additional_code, u{i}.nama_utusan, p{i}.nama_perguruan"));
+            joins.push_str(&format!(
+                " LEFT JOIN backend_atlet a{i} ON b.{fk} = a{i}.id \
+                  LEFT JOIN backend_utusan u{i} ON a{i}.utusan_id = u{i}.id \
+                  LEFT JOIN backend_perguruan p{i} ON a{i}.perguruan_id = p{i}.id"
+            ));
+        }
+        let sql = format!("SELECT {} FROM backend_bagan b{} WHERE b.id = ?", cols.join(", "), joins);
+        let row = sqlx::query(&sql).bind(bagan_id).fetch_optional(&mut *conn).await.ok()??;
+        let mut out = serde_json::Map::new();
+        for (i, (key, _)) in PLACES.iter().enumerate() {
+            for (j, suffix) in ["", "_kode", "_public_detail_id", "_utusan", "_perguruan"].iter().enumerate() {
+                let v: Option<String> = row.try_get(i * 5 + j).ok().flatten();
+                out.insert(format!("{key}{suffix}"), serde_json::Value::String(v.unwrap_or_default()));
+            }
+        }
+        Some(out)
+    }
+
     /// `api/final-result/` payload with a bagan's saved podium (an empty place clears it on the
     /// web), addressed by one of the bagan's bouts.
     async fn podium_payload(conn: &mut sqlx::SqliteConnection, ev_code: &str, bagan_id: i64) -> Option<serde_json::Value> {
@@ -5291,29 +5287,10 @@ impl DatabaseManager {
         .fetch_optional(&mut *conn)
         .await
         .ok()??;
-        type Row = (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
-        let (j1, j1k, j2, j2k, j3a, j3ak, j3b, j3bk): Row = sqlx::query_as(
-            "SELECT j1.nama_atlet, j1.kode_atlet, j2.nama_atlet, j2.kode_atlet,
-                    j3a.nama_atlet, j3a.kode_atlet, j3b.nama_atlet, j3b.kode_atlet
-               FROM backend_bagan b
-               LEFT JOIN backend_atlet j1 ON b.juara_1_id = j1.id
-               LEFT JOIN backend_atlet j2 ON b.juara_2_id = j2.id
-               LEFT JOIN backend_atlet j3a ON b.juara_3a_id = j3a.id
-               LEFT JOIN backend_atlet j3b ON b.juara_3b_id = j3b.id
-              WHERE b.id = ?"
-        )
-        .bind(bagan_id)
-        .fetch_optional(&mut *conn)
-        .await
-        .ok()??;
-        Some(serde_json::json!({
-            "status": "finished",
-            "kode_realtime": format!("{}-{}-{}", ev_code, bagan_id, bout),
-            "juara_1": j1, "juara_1_kode": j1k,
-            "juara_2": j2, "juara_2_kode": j2k,
-            "juara_3a": j3a, "juara_3a_kode": j3ak,
-            "juara_3b": j3b, "juara_3b_kode": j3bk,
-        }))
+        let mut payload = Self::podium_fields(&mut *conn, bagan_id).await?;
+        payload.insert("status".into(), serde_json::json!("finished"));
+        payload.insert("kode_realtime".into(), serde_json::json!(format!("{}-{}-{}", ev_code, bagan_id, bout)));
+        Some(serde_json::Value::Object(payload))
     }
 
     /// Enqueues api/status/ (running) to backend_syncqueue and links the match to the tatami.

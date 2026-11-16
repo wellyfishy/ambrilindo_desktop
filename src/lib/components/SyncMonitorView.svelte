@@ -124,6 +124,8 @@
     hostedEvents.map((ev) => ({
       value: ev.id,
       label: `[#${ev.id}] ${ev.nama_event}`,
+      // Place and date help tell apart events with similar names.
+      subLabel: [ev.tempat, ev.tanggal_mulai].filter(Boolean).join(" · ") || null,
     }))
   );
 
