@@ -1196,3 +1196,40 @@ async fn web_e2e_h_referchange_bronze_reaches_the_web() {
     let podium = web_podium(&r, web_bagan);
     assert_eq!((podium[2].as_str(), podium[3].as_str()), (names[0].as_deref(), names[1].as_deref()), "H4 web bronze = referchange: {podium}");
 }
+
+/// B10: a web category spelled with another case / spacing is the desktop's existing category:
+/// its athletes are pulled into it, and no second category is created.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_e_pull_matches_category_case_insensitively() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    sqlx::query("INSERT INTO backend_nomortanding (event_id, nama_nomor_tanding, is_bob, has_vr) VALUES (?, 'E2E KATA HURUF', 0, 0)")
+        .bind(EVENT)
+        .execute(&r.pool)
+        .await
+        .unwrap();
+    r.web.shell(&format!(
+        r#"from backend.models import *
+ev = Event.objects.get(pk={})
+nt = NomorTanding.objects.create(event=ev, nama_nomor_tanding="e2e Kata Huruf ", is_bob=False)
+u = Utusan.objects.create(event=ev, nama_utusan="E2E KONTINGEN H")
+a = Atlet.objects.create(event=ev, nama_atlet="FAJAR HURUF", utusan=u)
+DetailAtlet.objects.create(event=ev, atlet=a, nomor_tanding=nt, utusan=u)
+"#,
+        r.event_a
+    ));
+
+    SyncService::pull_athletes_from_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("pull");
+
+    let cats: Vec<String> = sqlx::query_scalar(
+        "SELECT nama_nomor_tanding FROM backend_nomortanding WHERE event_id = ? AND UPPER(TRIM(nama_nomor_tanding)) = 'E2E KATA HURUF'",
+    )
+    .bind(EVENT)
+    .fetch_all(&r.pool)
+    .await
+    .unwrap();
+    assert_eq!(cats, vec!["E2E KATA HURUF".to_string()], "B10 one category, the desktop's spelling");
+    let rows = pulled_rows(&r, "E2E KATA HURUF").await;
+    assert_eq!(rows.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["FAJAR HURUF"], "B10 athlete pulled into it: {rows:?}");
+}

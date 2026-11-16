@@ -833,7 +833,9 @@ impl SyncService {
 
                 if !name.is_empty() {
                     let existing: Option<(i64, bool)> = sqlx::query_as(
-                        "SELECT id, is_bob FROM backend_nomortanding WHERE event_id = ? AND nama_nomor_tanding = ?"
+                        // Same category whatever its case / spacing on the web; an exact name wins.
+                        "SELECT id, is_bob FROM backend_nomortanding WHERE event_id = ?1 AND UPPER(TRIM(nama_nomor_tanding)) = UPPER(TRIM(?2))
+                         ORDER BY (nama_nomor_tanding = ?2) DESC, id LIMIT 1"
                     )
                     .bind(local_event_id)
                     .bind(name)
@@ -949,7 +951,8 @@ impl SyncService {
 
                 // Resolve Nomor Tanding ID
                 let nt_id: Option<i64> = sqlx::query_scalar(
-                    "SELECT id FROM backend_nomortanding WHERE event_id = ? AND nama_nomor_tanding = ?"
+                    "SELECT id FROM backend_nomortanding WHERE event_id = ?1 AND UPPER(TRIM(nama_nomor_tanding)) = UPPER(TRIM(?2))
+                     ORDER BY (nama_nomor_tanding = ?2) DESC, id LIMIT 1"
                 )
                 .bind(local_event_id)
                 .bind(&nt_name)
@@ -1079,35 +1082,30 @@ impl SyncService {
                 .map(|c| if c.is_alphanumeric() { c } else { '_' })
                 .collect::<String>()
                 .to_lowercase();
-            let ext = if target_url.ends_with(".png") {
-                "png"
-            } else if target_url.ends_with(".jpg") || target_url.ends_with(".jpeg") {
-                "jpg"
-            } else {
-                "webp"
-            };
-
-            let file_name = format!("{}_{}.{}", clean_slug, u_id, ext);
+            let file_name = format!("{}_{}.{}", clean_slug, u_id, Self::logo_file_ext(&target_url));
             let local_dest = media_dir.join(&file_name);
+            let rel_path = format!("logo_utusan/{}", file_name);
 
-            if !local_dest.exists() {
-                if let Ok(resp) = img_client.get(&target_url).send().await {
-                    if resp.status().is_success() {
-                        if let Ok(bytes) = resp.bytes().await {
-                            if std::fs::write(&local_dest, &bytes).is_ok() {
-                                let rel_path = format!("logo_utusan/{}", file_name);
-                                let _ = sqlx::query(
-                                    "UPDATE backend_utusan SET logo = ? WHERE id = ?"
-                                )
-                                .bind(&rel_path)
-                                .bind(u_id)
-                                .execute(pool)
-                                .await;
-                                logo_count += 1;
-                            }
+            // Downloaded on every pull: a kontingen that changed its logo on the web gets the new
+            // one. The file is rewritten only when it changed; a failed download keeps the old one.
+            let mut saved = false;
+            if let Ok(resp) = img_client.get(&target_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        let same = std::fs::read(&local_dest).map(|old| old == bytes.as_ref()).unwrap_or(false);
+                        saved = same || std::fs::write(&local_dest, &bytes).is_ok();
+                        if saved && !same {
+                            logo_count += 1;
                         }
                     }
                 }
+            }
+            if saved || local_dest.exists() {
+                let _ = sqlx::query("UPDATE backend_utusan SET logo = ? WHERE id = ?")
+                    .bind(&rel_path)
+                    .bind(u_id)
+                    .execute(pool)
+                    .await;
             }
         }
 
@@ -1140,6 +1138,18 @@ impl SyncService {
     }
 
     /// Pushes brackets & matches to web server
+    /// File extension for a downloaded logo, from the URL path (S3 URLs carry a `?query`).
+    fn logo_file_ext(url: &str) -> &'static str {
+        let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+        match path.rsplit('.').next().unwrap_or("") {
+            "png" => "png",
+            "jpg" | "jpeg" => "jpg",
+            "gif" => "gif",
+            "svg" => "svg",
+            _ => "webp",
+        }
+    }
+
     /// `DatabaseManager::podium_fields` on a pooled connection.
     async fn podium_of(
         pool: &Pool<Sqlite>,
@@ -2427,6 +2437,13 @@ mod scope_tests {
         assert_eq!((ev[0].tempat.as_deref(), ev[0].tanggal_mulai.as_deref()), (Some("GOR Pontianak"), Some("2026-12-01")));
         assert_eq!((ev[1].tempat.as_deref(), ev[1].tanggal_mulai.as_deref()), (Some("Aula"), Some("2026-01-02")));
         assert_eq!((ev[2].nama_event.as_str(), ev[2].tempat.as_deref()), ("Event Tanpa Nama", None));
+    }
+
+    #[test]
+    fn logo_extension_ignores_query() {
+        assert_eq!(SyncService::logo_file_ext("https://s3.example.com/logo/a.PNG?X-Amz-Signature=1.jpg"), "png");
+        assert_eq!(SyncService::logo_file_ext("/media/logo/b.jpeg#x"), "jpg");
+        assert_eq!(SyncService::logo_file_ext("https://cdn.example.com/logo"), "webp");
     }
 
     #[test]
