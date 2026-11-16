@@ -10,7 +10,23 @@ Lanjutan dari audit (`docs/AUDIT_DESKTOP_WEB_2026-11-16.md`, satu folder dengan 
 | `ambrilindo_desktop` | `acf1312` | Pool 4, batas 64 atlet, tarik atlet, antrean sinkron, buka ulang ke web, kirim ulang hasil, draft skor, dispatcher LAN, jam lisensi |
 | `ambrilindo_desktop` | (commit ini) | Dokumen ini + salinan laporan audit |
 
-**Belum di `main` (branch `claude/stoic-keller-xehhxw` di kedua repo):** perbaikan B6/B7/B8/B9, web `8c2f612b` dan desktop `7b6963b`. **Merge kedua branch ke `main` dulu** sebelum langkah 1.1/1.2. Kalau tidak, `git pull` di laptop dan `fly deploy` akan memakai kode lama tanpa perbaikan ini.
+**Belum di `main` (branch `claude/stoic-keller-xehhxw` di kedua repo):** semua perbaikan di bagian "Selesai" di bawah. Web: `8c2f612b`, `fa2fabba`, `bc02c8d7`, `792c23a6`. Desktop: `7b6963b` sampai commit terakhir branch. **Merge kedua branch ke `main` dulu** sebelum langkah 1.1/1.2. Kalau tidak, `git pull` di laptop dan `fly deploy` akan memakai kode lama tanpa perbaikan ini.
+
+---
+
+## Selesai (sesi lanjutan 16 Nov, bagian 2): #10, A5/A6, B10, B11, `__pycache__`
+
+| | Perbaikan | Tes |
+|---|---|---|
+| **#10 podium** | Desktop: `save_match_result` membandingkan podium kategori sebelum dan sesudah simpan; setiap partai selesai yang mengubahnya (perunggu dari semifinal, babak 4 pool, referchange, round robin, atau koreksi hasil) mengirim `api/final-result/`. Web: notifikasi "Bagan Selesai - Juara" hanya muncul kalau sudah ada Juara 1; tabel podium tetap diperbarui. | `qa_podium_sent_when_it_changes`, e2e `web_e2e_h_referchange_bronze_reaches_the_web` |
+| **A5/A6** | Server LAN: 45 perintah yang dulu memakai event 1 kalau `eventId` kosong sekarang menjawab 400 (`required_event_id`), juga `dayId`/`tatamiId` di dua perintah. Semua 73 pemanggil di frontend sudah mengirim `eventId`. `open_control_panel_window` tidak lagi menebak "tatami ≥ 20 = ID database"; `BaganView` mencari tatami hanya lewat ID. | `qa_lan_commands_need_an_event_id` |
+| **B10** | Tarik atlet: kategori dicocokkan tanpa peduli huruf besar/kecil dan spasi (dulu membuat kategori kembar). Logo kontingen diunduh ulang setiap tarik (file ditulis hanya kalau berubah), ekstensi diambil dari path URL tanpa `?query`. | e2e `web_e2e_e_pull_matches_category_case_insensitively`, unit `logo_extension_ignores_query` |
+| **B11** | Web: status tatami untuk partai yang tidak dikenal menghapus tautan partai lama. | web `B11TatamiStatusUnknownBout` |
+| **1.4** | `__pycache__` tidak lagi dilacak git di repo web. Saat `git pull`, file `.pyc` lama terhapus dari folder; Python membuatnya lagi sendiri. | |
+
+**Celah yang diketahui (belum diubah):** "Generate Referchange" mengosongkan 3A/3B di desktop, tapi web tetap menampilkan yang kalah di semifinal sampai final referchange selesai (sama seperti sebelumnya).
+
+**Deploy:** tetap web dulu. Exe baru mengirim podium lebih sering; di web lama notifikasi "Bagan Selesai" akan muncul setelah semifinal (hanya kosmetik).
 
 ---
 
@@ -63,8 +79,8 @@ Data turnamen (`tournament_data/db.sqlite3`) ikut di repo desktop. File `.env` t
 **Cek bahwa semuanya hijau sebelum mulai mengubah apa pun:**
 ```bash
 cd ambrilindo_desktop/src-tauri
-cargo test --lib                                          # 78 lulus
-cargo test --lib web_e2e -- --ignored --test-threads=1    # 18 lulus (butuh repo web + venv)
+cargo test --lib                                          # 81 lulus
+cargo test --lib web_e2e -- --ignored --test-threads=1    # 20 lulus (butuh repo web + venv)
 cd ..
 npx vitest run                                            # 22 lulus
 npx svelte-check                                          # 0 error
@@ -72,7 +88,7 @@ npx svelte-check                                          # 0 error
 ```bash
 cd ambrilindo_web/ambrilindo_web_pub
 # JANGAN pakai db.sqlite3 asli untuk tes:
-SQLITE_PATH=/tmp/web_test.sqlite3 DEBUG=true ../venv/Scripts/python manage.py test backend   # 81 lulus
+SQLITE_PATH=/tmp/web_test.sqlite3 DEBUG=true ../venv/Scripts/python manage.py test backend   # 84 lulus
 ../venv/Scripts/python manage.py check
 ```
 
@@ -123,7 +139,7 @@ Centang satu per satu:
 ### 1.4 Bersihkan data lama
 - **Event 2 "SATRIA WADOKAI CUP I (Testing 2)":** 18 bagan Final memakai format lama (hanya 3 baris, tanpa babak 3/4), jadi pemenang pool tidak bisa masuk. Drawing ulang kategori pool-nya sebelum dipakai, atau abaikan kalau event ini memang hanya untuk uji.
 - **Event 8 (SELEKPROV INKANAS) dan 9:** total 16 baris lama "Ditolak web" (error 404 lama) sekarang tampil di "Gagal". Kalau event sudah lewat, klik **Lewati**.
-- **Repo web:** `__pycache__/*.pyc` ikut tercatat di git. Sebaiknya keluarkan dari git (`git rm -r --cached '**/__pycache__'`, lalu tambahkan ke `.gitignore`) supaya tidak terus muncul sebagai perubahan.
+- ✅ SELESAI: **Repo web:** `__pycache__/*.pyc` ikut tercatat di git. Sebaiknya keluarkan dari git (`git rm -r --cached '**/__pycache__'`, lalu tambahkan ke `.gitignore`) supaya tidak terus muncul sebagai perubahan.
 
 ---
 
@@ -169,16 +185,16 @@ Detail tiap temuan ada di laporan audit. Semua butuh tes yang **gagal di kode la
 ### Prioritas SEDANG
 4. **A3: jenis bagan masih ditebak dari nama** ("POOL A", "FINAL", "FESTIVAL", "REFERCHANGE"), baik di desktop (`db.rs` `pool_slot_of`, `save_match_result`, `bracket_layout.ts`) maupun di web. Bagan yang di-rename bisa salah dibaca. Saran untuk rebuild: kolom `kind` + `pool_index` pada bagan.
 5. **A4: baris babak 5 ("Perebutan Juara 3")** selalu ditulis tapi tidak pernah dipakai, dan bagan 16 slot selalu dibuat 16 baris walau atletnya 3. Bisa dibersihkan saat rebuild.
-6. **A5/A6: input LAN yang ambigu.**
+6. **✅ SELESAI: A5/A6: input LAN yang ambigu.**
    - `lib.rs` `open_control_panel_window` menganggap `tatami >= 20` sebagai ID database.
    - Dispatcher di `server.rs` memakai `unwrap_or(1)` untuk `eventId` yang hilang.
    - **Arah perbaikan:** tolak payload yang tidak lengkap (400), jangan diam-diam memakai event 1.
 7. **✅ SELESAI: B9: daftar event web tanpa tanggal/tempat di desktop.** Web `list_events_api` mengirim `tempat_event`/`tanggal_event`, sedangkan desktop `fetch_hosted_events()` membaca `tanggal_mulai`/`tempat`. Samakan nama field-nya (cukup ubah sisi desktop).
-8. **B10 (sisa): tarik atlet.**
+8. **✅ SELESAI: B10 (sisa): tarik atlet.**
    - Nomor tanding dicocokkan case-sensitive.
    - Logo kontingen tidak diperbarui kalau file sudah ada, dan ekstensinya salah untuk URL S3 yang memakai `?query`.
-9. **B11: status tatami web.** `update_tatami_status_api` membiarkan `detail_bagan` lama kalau `kode_realtime` tidak ditemukan.
-10. **Koreksi semifinal (tanpa buka ulang).** Mengganti pemenang semifinal mengubah 3A/3B di desktop, tapi podium tidak dikirim ulang ke web (hanya final yang mengirim `final-result`). Kirim podium juga untuk koreksi di babak 3 dan babak 4 pool.
+9. **✅ SELESAI: B11: status tatami web.** `update_tatami_status_api` membiarkan `detail_bagan` lama kalau `kode_realtime` tidak ditemukan.
+10. **✅ SELESAI: Koreksi semifinal (tanpa buka ulang).** Mengganti pemenang semifinal mengubah 3A/3B di desktop, tapi podium tidak dikirim ulang ke web (hanya final yang mengirim `final-result`). Kirim podium juga untuk koreksi di babak 3 dan babak 4 pool.
 
 ### Prioritas RENDAH / rebuild
 11. **C2: kunci DB global di server LAN** (`server.rs`, setiap handler memakai `state.db.lock()`). Dampak terukur 0,1–0,25 detik per request berat. Untuk rebuild: pakai pool koneksi sqlx langsung, tanpa mutex `DatabaseManager`.
