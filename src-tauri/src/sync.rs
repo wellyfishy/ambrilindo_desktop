@@ -731,6 +731,9 @@ impl SyncService {
         let mut updated_count = 0;
         let mut utusan_logo_tasks = Vec::new();
 
+        // Steps 1-4 are one transaction: a failure part-way leaves nothing half pulled.
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+
         // 1. Sync Perguruan
         if let Some(perguruans) = body.get("perguruans").and_then(|p| p.as_array()) {
             for p_val in perguruans {
@@ -742,7 +745,7 @@ impl SyncService {
                         )
                         .bind(local_event_id)
                         .bind(&clean)
-                        .fetch_optional(pool)
+                        .fetch_optional(&mut *tx)
                         .await
                         .map_err(|e| e.to_string())?;
 
@@ -752,7 +755,7 @@ impl SyncService {
                             )
                             .bind(local_event_id)
                             .bind(&clean)
-                            .execute(pool)
+                            .execute(&mut *tx)
                             .await
                             .map_err(|e| e.to_string())?;
                         }
@@ -781,7 +784,7 @@ impl SyncService {
                     )
                     .bind(local_event_id)
                     .bind(&name)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -793,7 +796,7 @@ impl SyncService {
                             )
                             .bind(local_event_id)
                             .bind(&name)
-                            .execute(pool)
+                            .execute(&mut *tx)
                             .await
                             .map_err(|e| e.to_string())?;
                             res.last_insert_rowid()
@@ -817,7 +820,7 @@ impl SyncService {
                         )
                         .bind(local_event_id)
                         .bind(&clean)
-                        .fetch_optional(pool)
+                        .fetch_optional(&mut *tx)
                         .await
                         .map_err(|e| e.to_string())?;
 
@@ -827,7 +830,7 @@ impl SyncService {
                             )
                             .bind(local_event_id)
                             .bind(&clean)
-                            .execute(pool)
+                            .execute(&mut *tx)
                             .await
                             .map_err(|e| e.to_string())?;
                         }
@@ -855,7 +858,7 @@ impl SyncService {
                     )
                     .bind(local_event_id)
                     .bind(name)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -867,7 +870,7 @@ impl SyncService {
                                 )
                                 .bind(is_bob)
                                 .bind(id)
-                                .execute(pool)
+                                .execute(&mut *tx)
                                 .await
                                 .map_err(|e| e.to_string())?;
                             }
@@ -879,7 +882,7 @@ impl SyncService {
                             .bind(local_event_id)
                             .bind(name)
                             .bind(is_bob)
-                            .execute(pool)
+                            .execute(&mut *tx)
                             .await
                             .map_err(|e| e.to_string())?;
                         }
@@ -888,57 +891,54 @@ impl SyncService {
             }
         }
 
-        // 4. Sync Atlet (Idempotent update or insert)
+        // 4. Sync Atlet (idempotent update or insert).
+        // The web's `public_detail_id` is the key: a number for an individual entry, "B_<id>" for
+        // a team entry; team members get "MEMBER_<team>_<id>" so drawing and rosters skip them
+        // (same codes as the old local app). An empty `kode_atlet` / `nik` is "no code", never a
+        // match: matching '' merged every athlete without a code into one row. A name only matches
+        // a row of the same contingent that is not linked to a web entry yet, and no local row is
+        // claimed twice in one pull.
+        let mut claimed: std::collections::HashSet<i64> = std::collections::HashSet::new();
         if let Some(atlets_data) = body.get("atlets").and_then(|a| a.as_array()) {
             for a_item in atlets_data {
-                let mut nama = a_item
-                    .get("nama_atlet")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let perguruan_name = a_item
-                    .get("perguruan")
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_uppercase();
-                let utusan_name = a_item
-                    .get("utusan")
-                    .and_then(|u| u.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_uppercase();
-                let nt_name = a_item
-                    .get("nomor_tanding")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .trim();
-                let nik = a_item
-                    .get("nik")
-                    .and_then(|n| n.as_str())
-                    .map(|s| s.trim().to_string());
-                let kode_atlet = a_item
-                    .get("kode_atlet")
-                    .and_then(|k| k.as_str())
-                    .map(|s| s.trim().to_string());
-                let public_detail_id = a_item.get("public_detail_id").and_then(|p| p.as_i64());
-                let is_priority = a_item
-                    .get("is_priority")
-                    .and_then(|ip| ip.as_bool())
-                    .unwrap_or(false);
+                let text = |key: &str| {
+                    a_item.get(key).and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+                };
+                let kode_atlet = text("kode_atlet");
+                let nik = text("nik");
+                let perguruan_name = text("perguruan").map(|s| s.to_uppercase()).unwrap_or_default();
+                let utusan_name = text("utusan").map(|s| s.to_uppercase()).unwrap_or_default();
+                let nt_name = text("nomor_tanding").unwrap_or_default();
+                let public_detail_id = match a_item.get("public_detail_id") {
+                    Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+                    Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+                    _ => None,
+                };
+                let is_member = a_item.get("is_beregu_member").and_then(|b| b.as_bool()).unwrap_or(false);
+                let beregu_id = a_item.get("beregu_id").and_then(|b| b.as_i64());
+                let is_priority = a_item.get("is_priority").and_then(|ip| ip.as_bool()).unwrap_or(false);
 
+                let mut nama = text("nama_atlet").unwrap_or_default();
                 if nama.is_empty() {
-                    nama = if let Some(ref k) = kode_atlet {
-                        format!("ATLET {}", k)
-                    } else {
-                        "-".to_string()
+                    nama = match &kode_atlet {
+                        Some(k) => format!("ATLET {}", k),
+                        None => "-".to_string(),
                     };
                 }
-
                 if nt_name.is_empty() {
                     continue;
                 }
+
+                // Member code = "MEMBER_" + the team entry's code ("B_<team>") + "_" + its id,
+                // the format the old local app stored (e.g. MEMBER_B_4_1).
+                let additional_code_val: Option<String> = if is_member {
+                    public_detail_id.as_ref().map(|p| match beregu_id {
+                        Some(b) => format!("MEMBER_B_{b}_{p}"),
+                        None => format!("MEMBER_{p}"),
+                    })
+                } else {
+                    public_detail_id.clone()
+                };
 
                 // Resolve Perguruan ID
                 let perguruan_id: Option<i64> = if !perguruan_name.is_empty() {
@@ -947,7 +947,7 @@ impl SyncService {
                     )
                     .bind(local_event_id)
                     .bind(&perguruan_name)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?
                 } else {
@@ -961,7 +961,7 @@ impl SyncService {
                     )
                     .bind(local_event_id)
                     .bind(&utusan_name)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?
                 } else {
@@ -973,8 +973,8 @@ impl SyncService {
                     "SELECT id FROM backend_nomortanding WHERE event_id = ? AND nama_nomor_tanding = ?"
                 )
                 .bind(local_event_id)
-                .bind(nt_name)
-                .fetch_optional(pool)
+                .bind(&nt_name)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(|e| e.to_string())?;
 
@@ -982,63 +982,61 @@ impl SyncService {
                     continue;
                 };
 
-                let additional_code_val = public_detail_id.map(|id| id.to_string());
-
-                // Find existing athlete:
-                // a. By additional_code
+                // Candidate rows of this category, first one not yet claimed in this pull.
                 let mut existing_atlet_id: Option<i64> = None;
-                if let Some(ref add_code) = additional_code_val {
-                    existing_atlet_id = sqlx::query_scalar(
-                        "SELECT id FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id = ? AND additional_code = ?"
+                let mut lookups: Vec<(&str, String)> = Vec::new();
+                if let Some(code) = &additional_code_val {
+                    lookups.push(("additional_code = ?", code.clone()));
+                }
+                if is_member {
+                    // a member stored with its bare id by an earlier desktop pull: repair it
+                    if let Some(p) = &public_detail_id {
+                        lookups.push(("additional_code = ?", p.clone()));
+                    }
+                }
+                if let Some(k) = &kode_atlet {
+                    lookups.push(("kode_atlet = ?", k.clone()));
+                }
+                for (cond, val) in lookups {
+                    let ids: Vec<i64> = sqlx::query_scalar(&format!(
+                        "SELECT id FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id = ? AND {cond} ORDER BY id"
+                    ))
+                    .bind(local_event_id)
+                    .bind(nomor_tanding_id)
+                    .bind(&val)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    if let Some(id) = ids.into_iter().find(|id| !claimed.contains(id)) {
+                        existing_atlet_id = Some(id);
+                        break;
+                    }
+                }
+                if existing_atlet_id.is_none() && nama != "-" && !nama.starts_with("ATLET ") {
+                    // An athlete typed in locally: same name and contingent, not linked to the web.
+                    // A team member may also be a row of the same team stored by the old local
+                    // app with another member suffix.
+                    let member_prefix = match (is_member, beregu_id) {
+                        (true, Some(b)) => format!("MEMBER\\_B\\_{b}\\_%"),
+                        _ => String::new(),
+                    };
+                    let ids: Vec<i64> = sqlx::query_scalar(
+                        "SELECT id FROM backend_atlet
+                          WHERE event_id = ? AND nomor_tanding_id = ? AND LOWER(nama_atlet) = LOWER(?)
+                            AND utusan_id IS ?
+                            AND (COALESCE(additional_code, '') = '' OR (? != '' AND additional_code LIKE ? ESCAPE '\\'))
+                          ORDER BY id"
                     )
                     .bind(local_event_id)
                     .bind(nomor_tanding_id)
-                    .bind(add_code)
-                    .fetch_optional(pool)
+                    .bind(&nama)
+                    .bind(utusan_id)
+                    .bind(&member_prefix)
+                    .bind(&member_prefix)
+                    .fetch_all(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
-                }
-
-                // b. By kode_atlet
-                if existing_atlet_id.is_none() {
-                    if let Some(ref k_code) = kode_atlet {
-                        existing_atlet_id = sqlx::query_scalar(
-                            "SELECT id FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id = ? AND kode_atlet = ?"
-                        )
-                        .bind(local_event_id)
-                        .bind(nomor_tanding_id)
-                        .bind(k_code)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    }
-                }
-
-                // c. By nama + utusan
-                if existing_atlet_id.is_none() && nama != "-" && !nama.starts_with("ATLET ") {
-                    if let Some(u_id) = utusan_id {
-                        existing_atlet_id = sqlx::query_scalar(
-                            "SELECT id FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id = ? AND LOWER(nama_atlet) = LOWER(?) AND utusan_id = ?"
-                        )
-                        .bind(local_event_id)
-                        .bind(nomor_tanding_id)
-                        .bind(&nama)
-                        .bind(u_id)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    }
-                    if existing_atlet_id.is_none() {
-                        existing_atlet_id = sqlx::query_scalar(
-                            "SELECT id FROM backend_atlet WHERE event_id = ? AND nomor_tanding_id = ? AND LOWER(nama_atlet) = LOWER(?)"
-                        )
-                        .bind(local_event_id)
-                        .bind(nomor_tanding_id)
-                        .bind(&nama)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    }
+                    existing_atlet_id = ids.into_iter().find(|id| !claimed.contains(id));
                 }
 
                 match existing_atlet_id {
@@ -1054,14 +1052,14 @@ impl SyncService {
                         .bind(additional_code_val.as_deref())
                         .bind(is_priority)
                         .bind(a_id)
-                        .execute(pool)
+                        .execute(&mut *tx)
                         .await
                         .map_err(|e| e.to_string())?;
-
+                        claimed.insert(a_id);
                         updated_count += 1;
                     }
                     None => {
-                        sqlx::query(
+                        let res = sqlx::query(
                             "INSERT INTO backend_atlet (event_id, nama_atlet, nik, kode_atlet, additional_code, is_priority, perguruan_id, utusan_id, nomor_tanding_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                         )
                         .bind(local_event_id)
@@ -1073,16 +1071,17 @@ impl SyncService {
                         .bind(perguruan_id)
                         .bind(utusan_id)
                         .bind(nomor_tanding_id)
-                        .execute(pool)
+                        .execute(&mut *tx)
                         .await
                         .map_err(|e| e.to_string())?;
-
+                        claimed.insert(res.last_insert_rowid());
                         created_count += 1;
                     }
                 }
             }
         }
 
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan data tarikan: {}", e))?;
         // 5. Download Utusan Logos
         let mut logo_count = 0;
         let media_dir = Self::get_media_dir(db_path).join("logo_utusan");
@@ -1285,7 +1284,7 @@ impl SyncService {
                  LEFT JOIN backend_atlet a2 ON d.atlet2_id = a2.id \
                  LEFT JOIN backend_perguruan p2 ON a2.perguruan_id = p2.id \
                  LEFT JOIN backend_utusan u2 ON a2.utusan_id = u2.id \
-                 WHERE d.bagan_id = ? ORDER BY d.round ASC, d.urutan ASC"
+                 WHERE d.bagan_id = ? AND COALESCE(d.team, 0) = 0 ORDER BY d.round ASC, d.urutan ASC"
             )
             .bind(b_id)
             .fetch_all(pool)
@@ -1607,14 +1606,22 @@ impl SyncService {
         .await
         .map_err(|e| format!("Gagal memuat kode event: {}", e))?;
 
-        // 1. Gather all finished DetailBagan
+        // 1. Gather all finished DetailBagan (bouts inside a team match are not on the web), in
+        //    the order they were played: pools, then the Final bagan, then the referchange, round
+        //    by round. The web moves each winner on with the athletes it has at that moment, so a
+        //    semifinal sent before the pool finals reached the final without athletes.
         let finished_matches = sqlx::query(
             "SELECT d.id, d.bagan_id, d.round, d.urutan, d.score1, d.score2, d.scorekecil1, d.scorekecil2, \
-             d.vr1, d.vr2, d.kata1, d.kata2, d.selesai, d.pemenang \
+             d.vr1, d.vr2, d.kata1, d.kata2, d.selesai, d.pemenang, \
+             COALESCE(b.pool, 1) AS b_pool, COALESCE(b.nama_bagan, '') AS b_nama, \
+             COALESCE(b.round_robin, 0) AS b_rr, b.nomor_tanding_id AS b_nt \
              FROM backend_detailbagan d \
              JOIN backend_bagan b ON d.bagan_id = b.id \
-             WHERE b.event_id = ? AND d.selesai = 1 \
-             ORDER BY d.id ASC"
+             WHERE b.event_id = ? AND d.selesai = 1 AND COALESCE(d.team, 0) = 0 \
+             ORDER BY \
+               CASE WHEN UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(b.nama_bagan, '')) LIKE '%REPECHAGE%' THEN 2 \
+                    WHEN COALESCE(b.pool, 1) = 0 OR UPPER(COALESCE(b.nama_bagan, '')) LIKE '%FINAL' THEN 1 ELSE 0 END, \
+               d.round ASC, d.bagan_id ASC, d.urutan ASC"
         )
         .bind(local_event_id)
         .fetch_all(pool)
@@ -1645,27 +1652,22 @@ impl SyncService {
 
             let kode_realtime = format!("{}-{}-{}", event_code, b_id, d_id);
 
-            // Compute next match. The final (round 4) has none: round 5 rows are not a bout the
-            // winner plays, and sending one made the web put the champion there instead of
-            // setting juara 1 / 2.
-            let next_round = round + 1;
-            let next_urutan = (urutan + 1) / 2;
-            let next_db_id: Option<i64> = if round >= 4 {
-                None
-            } else {
-                sqlx::query_scalar(
-                    "SELECT id FROM backend_detailbagan WHERE bagan_id = ? AND round = ? AND urutan = ?"
-                )
-                .bind(b_id)
-                .bind(next_round)
-                .bind(next_urutan)
-                .fetch_optional(pool)
-                .await
-                .unwrap_or(None)
+            // Where the winner went: the same rules as the live result (pool winner -> the
+            // Final bagan, repechage cascade, round robin has none).
+            let b_pool: i32 = m_row.get("b_pool");
+            let b_nama: String = m_row.get::<String, _>("b_nama").to_uppercase();
+            let b_rr: bool = m_row.get("b_rr");
+            let b_nt: Option<i64> = m_row.get("b_nt");
+            let is_repechage = b_nama.contains("REFERCHANGE") || b_nama.contains("REPECHAGE");
+            let next = {
+                let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+                crate::db::DatabaseManager::live_next_target(
+                    &mut conn, b_id, round as i64, urutan as i64, b_rr, is_repechage,
+                    crate::db::pool_slot_of(b_pool, &b_nama), b_nt,
+                ).await
             };
-
-            let next_kr = next_db_id.map(|nid| format!("{}-{}-{}", event_code, b_id, nid));
-            let target_slot = if urutan % 2 == 1 { "atlet1" } else { "atlet2" };
+            let next_kr = next.map(|(nb, nid, _, _)| format!("{}-{}-{}", event_code, nb, nid));
+            let target_slot = next.map(|(_, _, slot, _)| slot).unwrap_or(if urutan % 2 == 1 { "atlet1" } else { "atlet2" });
 
             results_payload.push(serde_json::json!({
                 "kode_realtime": kode_realtime,
@@ -1844,7 +1846,7 @@ impl SyncService {
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
-            let failed = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE event_id = ? AND status = 'failed'")
+            let failed = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE event_id = ? AND status IN ('failed', 'abandoned')")
                 .bind(eid)
                 .fetch_one(pool)
                 .await
@@ -1865,7 +1867,7 @@ impl SyncService {
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
-            let failed = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE status = 'failed'")
+            let failed = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE status IN ('failed', 'abandoned')")
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
@@ -1901,10 +1903,10 @@ impl SyncService {
 
         let rows = if status_clean == "failed" {
             if let Some(eid) = event_id {
-                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE event_id = ? AND status = 'failed' ORDER BY id ASC LIMIT ?")
+                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE event_id = ? AND status IN ('failed', 'abandoned') ORDER BY id ASC LIMIT ?")
                     .bind(eid).bind(limit).fetch_all(pool).await
             } else {
-                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE status = 'failed' ORDER BY id ASC LIMIT ?")
+                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE status IN ('failed', 'abandoned') ORDER BY id ASC LIMIT ?")
                     .bind(limit).fetch_all(pool).await
             }
         } else if status_clean == "pending" {
@@ -2030,7 +2032,7 @@ impl SyncService {
         // Claim it, so the background worker does not send the same row at the same time.
         let claimed = sqlx::query(
             "UPDATE backend_syncqueue SET status = 'processing', updated_at = CURRENT_TIMESTAMP
-             WHERE id = ? AND status IN ('pending', 'failed')"
+             WHERE id = ? AND status IN ('pending', 'failed', 'abandoned')"
         )
         .bind(item_id)
         .execute(pool)
@@ -2102,7 +2104,7 @@ impl SyncService {
     ) -> Result<usize, String> {
         let items: Vec<i64> = if let Some(eid) = event_id {
             sqlx::query_scalar(
-                "SELECT id FROM backend_syncqueue WHERE event_id = ? AND status = 'failed' ORDER BY id ASC"
+                "SELECT id FROM backend_syncqueue WHERE event_id = ? AND status IN ('failed', 'abandoned') ORDER BY id ASC"
             )
             .bind(eid)
             .fetch_all(pool)
@@ -2110,7 +2112,7 @@ impl SyncService {
             .unwrap_or_default()
         } else {
             sqlx::query_scalar(
-                "SELECT id FROM backend_syncqueue WHERE status = 'failed' ORDER BY id ASC"
+                "SELECT id FROM backend_syncqueue WHERE status IN ('failed', 'abandoned') ORDER BY id ASC"
             )
             .fetch_all(pool)
             .await
@@ -2320,7 +2322,28 @@ impl SyncService {
                         break;
                     }
 
-                    let is_unrecoverable = status.as_u16() == 400 || status.as_u16() == 404 || new_retry >= 5;
+                    // The web is there but cannot answer right now (5xx while it restarts or is
+                    // deployed, 408/429 under load): like no connection, never a reason to give
+                    // up. Keep the row and stop here (strict FIFO) until the next tick.
+                    let code = status.as_u16();
+                    if status.is_server_error() || code == 408 || code == 429 {
+                        let _ = sqlx::query(
+                            "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                        )
+                        .bind(new_retry)
+                        .bind(&err_msg)
+                        .bind(item_id)
+                        .execute(pool)
+                        .await;
+                        failed_count += 1;
+                        warn!("SyncQueue #{} to {} returned {}, retried later: {}", item_id, endpoint, status, err_msg);
+                        break;
+                    }
+
+                    // The web refused the message itself (400 bad payload, 404 bout not on the
+                    // web, other 4xx after 5 tries): skip it so later matches are not blocked.
+                    // It stays visible under "Gagal" and is sent again by "Kirim ulang".
+                    let is_unrecoverable = code == 400 || code == 404 || new_retry >= 5;
 
                     let final_status = if is_unrecoverable { "abandoned" } else { "failed" };
                     let _ = sqlx::query(

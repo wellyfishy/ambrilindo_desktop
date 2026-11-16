@@ -163,7 +163,7 @@ pub fn evaluate(file: &LicenseFile, now: i64, device_id: &str, key: &VerifyingKe
     }
     if file.last_seen > 0 && now < file.last_seen - CLOCK_TOLERANCE_SECS {
         st.state = "clock_tampered".into();
-        st.message = Some("Jam komputer mundur dari pemakaian terakhir. Perbaiki tanggal/jam, lalu klik Perbarui (butuh internet).".into());
+        st.message = Some("Jam komputer mundur dari pemakaian terakhir. Perbaiki tanggal/jam komputer; lisensi aktif lagi dengan sendirinya.".into());
         return st;
     }
     if payload.expires_at.is_some_and(|exp| now > exp) {
@@ -309,7 +309,13 @@ pub fn init(config_dir: PathBuf) -> LicenseStatus {
 }
 
 pub fn current() -> LicenseStatus {
-    status_cell().read().unwrap().clone()
+    let st = status_cell().read().unwrap().clone();
+    // A clock that went back locks the license; once the date/time is corrected it must unlock
+    // again without a restart (the status was only re-read at start-up and on online refresh).
+    if st.state == "clock_tampered" && DIR.get().is_some() {
+        return reload();
+    }
+    st
 }
 
 /// Credentials for the web sync API: the signed token and this device id, only while the license is
@@ -566,6 +572,22 @@ mod tests {
         let st = evaluate(&file_with(token, last_seen), last_seen - 3 * 24 * 3600, DEV, &key);
         assert_eq!(st.state, "clock_tampered");
         assert!(check(&st, Module::Kata, last_seen).is_err());
+    }
+
+    #[test]
+    fn corrected_clock_unlocks_again() {
+        // A license marked clock_tampered is active again as soon as the clock is back past
+        // the last use: nothing else (restart, internet) is needed.
+        let key = test_signing_key().verifying_key();
+        let token = sign(&payload(DEV, &["kata"], None));
+        let last_seen = 10_000_000;
+        let file = file_with(token, last_seen);
+        let back = evaluate(&file, last_seen - 3 * 24 * 3600, DEV, &key);
+        assert_eq!(back.state, "clock_tampered");
+        assert!(!back.message.unwrap_or_default().contains("internet"), "fixing the clock is enough");
+        let fixed = evaluate(&file, last_seen + 60, DEV, &key);
+        assert_eq!(fixed.state, "active");
+        assert!(check(&fixed, Module::Kata, last_seen + 60).is_ok());
     }
 
     #[test]

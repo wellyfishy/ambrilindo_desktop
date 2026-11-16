@@ -1761,24 +1761,26 @@ async fn dispatch_command_api(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let db = state.db.lock().await;
+    // Commands that never touch the database answer without taking the DB lock: every LAN
+    // request waits for that lock, so the network probe (hundreds of ms, seconds with several
+    // adapters) used to hold up every tablet and operator laptop while it ran.
     match cmd.as_str() {
         "check_ip_availability" => {
             let list = check_ip_availability(true).await;
-            (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": list }))).into_response()
+            return (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": list }))).into_response();
         },
         // Only the host laptop itself may stop its server (via Tauri IPC). A LAN
         // device stopping it would cut off every other operator and tablet.
-        "stop_arena_server" | "start_arena_server" => (
+        "stop_arena_server" | "start_arena_server" => return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({ "status": "error", "message": "Server hanya bisa dinyalakan/dihentikan dari laptop host." })),
         ).into_response(),
         // Operator laptops follow the host's license: they may read it, never change it.
-        "get_license_status" => (
+        "get_license_status" => return (
             StatusCode::OK,
             Json(serde_json::json!({ "status": "success", "data": crate::license::current() })),
         ).into_response(),
-        "activate_license" | "refresh_license" | "deactivate_license" => (
+        "activate_license" | "refresh_license" | "deactivate_license" => return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({ "status": "error", "message": "Lisensi hanya bisa diatur dari laptop host / solo." })),
         ).into_response(),
@@ -1788,12 +1790,16 @@ async fn dispatch_command_api(
             let owner_label = get_str_val(&payload, &["ownerLabel", "owner_label"]).unwrap_or_default();
             let force = get_bool_val(&payload, &["force"]).unwrap_or(false);
             if tatami <= 0 || owner_id.is_empty() {
-                (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "tatami dan ownerId wajib diisi" }))).into_response()
-            } else {
-                let res = crate::tatami_claim::claim(tatami, &owner_id, &owner_label, force);
-                (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": res }))).into_response()
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "status": "error", "message": "tatami dan ownerId wajib diisi" }))).into_response();
             }
+            let res = crate::tatami_claim::claim(tatami, &owner_id, &owner_label, force);
+            return (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": res }))).into_response();
         },
+        _ => {}
+    }
+
+    let db = state.db.lock().await;
+    match cmd.as_str() {
         // Stop from the Tatami channel (no matchId), or a control panel closing without a
         // finished save (matchId: cleared only while that match is still the running one).
         "clear_tatami_running" => {

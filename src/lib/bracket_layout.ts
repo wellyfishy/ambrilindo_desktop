@@ -385,6 +385,9 @@ export function computePodium(
 
   if (bronzeFromRepechage) {
     // 3A/3B only from the saved podium (written by the referchange)
+  } else if (meta.poolCount === 4 && !meta.isFinalBagan && !meta.isRepechageBagan) {
+    // 4-pool preliminary: its round 4 is a quarterfinal, so its bouts decide no medal;
+    // the podium (saved from the Final bagan) is all there is.
   } else if (meta.poolCount === 2 && !meta.isFinalBagan) {
     const semi = matches.find((m) => m.round === 4);
     if (semi && semi.selesai && semi.pemenang) {

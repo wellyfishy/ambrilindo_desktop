@@ -6,6 +6,7 @@
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { DetailBaganItem, BaganItem, SaveMatchInput, TeamMatchInfo, AssignBoutAthletesInput } from "$lib/types";
   import ControlPanelView from "$lib/components/ControlPanelView.svelte";
+  import { clearLiveDraft } from "$lib/liveDraft";
 
   let matchId = $derived(Number(page.url.searchParams.get("matchId") || "0"));
   let baganId = $derived(Number(page.url.searchParams.get("baganId") || "0"));
@@ -372,6 +373,7 @@
     }
     try {
       await invoke("save_match_result", { input });
+      clearLiveDraft(input.match_id);
       // Notify parent bracket window to reload data
       try {
         await emit("bracket_updated", {

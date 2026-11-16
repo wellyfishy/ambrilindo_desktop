@@ -26,6 +26,7 @@
   import BracketTree from "./BracketTree.svelte";
   import BracketPaperPage from "./BracketPaperPage.svelte";
   import { computePodium, deriveBracketMeta, groupRounds } from "$lib/bracket_layout";
+  import { clearLiveDraft } from "$lib/liveDraft";
 
   interface Props {
     baganId: number;
@@ -469,6 +470,7 @@
   async function handleSaveMatchResult(input: SaveMatchInput) {
     try {
       await invoke("save_match_result", { input });
+      clearLiveDraft(input.match_id);
       activeMatchForControl = null;
       await loadBracketData();
     } catch (err: any) {

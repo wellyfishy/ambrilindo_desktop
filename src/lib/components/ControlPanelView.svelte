@@ -12,6 +12,7 @@
   import { playWarningSound, playFinishSound, unlockAudio } from "$lib/sounds";
   import { startTicker, type Ticker } from "$lib/ticker";
   import { broadcastLiveMatch, initLiveSync, connectTatamiSocket, type TatamiSocket } from "$lib/liveSync";
+  import { saveLiveDraft, loadLiveDraft, clearLiveDraft, draftHasProgress } from "$lib/liveDraft";
   import { license, loadLicense, disciplineOf, canOpenDiscipline, lockedMessage, type LicenseModule } from "$lib/license.svelte";
 
   interface Props {
@@ -583,7 +584,52 @@
 
     timerMs = selectedPresetSeconds * 1000;
     isTimerRunning = false;
+
+    restoreDraft(m);
   }
+
+  /** A running score kept on this computer (panel closed by accident, app crash): pick it up
+   *  where it stopped, timer paused. A bout already finished in the DB drops its draft. */
+  function restoreDraft(m: DetailBaganItem) {
+    restoredDraftAt = null;
+    if (m.selesai) {
+      clearLiveDraft(m.id);
+    } else {
+      const d = loadLiveDraft(m.id);
+      if (d && draftHasProgress(d, selectedPresetSeconds * 1000)) {
+        isTimerRunning = false;
+        akaScore = d.akaScore;
+        aoScore = d.aoScore;
+        akaSenshu = d.akaSenshu;
+        aoSenshu = d.aoSenshu;
+        akaPenalties = { ...akaPenalties, ...d.akaPenalties };
+        aoPenalties = { ...aoPenalties, ...d.aoPenalties };
+        hasVr1 = d.hasVr1;
+        hasVr2 = d.hasVr2;
+        isHantei = d.isHantei;
+        matchWinner = d.matchWinner || "";
+        timerMs = d.timerMs;
+        if (d.kataAkaName) kataAkaName = d.kataAkaName;
+        if (d.kataAoName) kataAoName = d.kataAoName;
+        if (d.akaJudgeScores?.length) akaJudgeScores = judgeIdx.map((i) => d.akaJudgeScores[i] ?? "");
+        if (d.aoJudgeScores?.length) aoJudgeScores = judgeIdx.map((i) => d.aoJudgeScores[i] ?? "");
+        boardAkaScore = d.boardAkaScore;
+        boardAoScore = d.boardAoScore;
+        isScorePublished = d.isScorePublished;
+        manualFlags = d.manualFlags;
+        restoredDraftAt = d.savedAt;
+      }
+    }
+  }
+
+  /** When the running score was picked up from this computer's draft (shown to the operator). */
+  let restoredDraftAt = $state<number | null>(null);
+  // The notice goes away by itself after a few seconds (it can also be closed)
+  $effect(() => {
+    if (!restoredDraftAt) return;
+    const t = setTimeout(() => (restoredDraftAt = null), 8000);
+    return () => clearTimeout(t);
+  });
 
   $effect(() => {
     const currentKey = `${match.id}_${match.atlet1_nama || ""}_${match.atlet2_nama || ""}_${match.kata1 || ""}_${match.kata2 || ""}`;
@@ -1753,6 +1799,19 @@
     // A window that does not hold the tatami must not overwrite the owner's scoreboard.
     if (claimStatus !== "owned") return;
 
+    // Keep the running score on this computer until it is saved (see liveDraft.ts)
+    if (!isMatchFinished) {
+      saveLiveDraft(match.id, {
+        akaScore, aoScore, akaSenshu, aoSenshu,
+        akaPenalties: { ...akaPenalties }, aoPenalties: { ...aoPenalties },
+        hasVr1, hasVr2, isHantei, matchWinner, timerMs,
+        kataAkaName, kataAoName,
+        akaJudgeScores: [...akaJudgeScores], aoJudgeScores: [...aoJudgeScores],
+        boardAkaScore, boardAoScore, isScorePublished,
+        manualFlags: manualFlags ? { ...manualFlags } : null,
+      });
+    }
+
     // Universal broadcast to local IPC, local BroadcastChannel, and LAN WebSocket relay
     broadcastLiveMatch($state.snapshot(payload));
     if (tatamiSocket) {
@@ -1960,6 +2019,8 @@
       isScorePublished = false;
       manualFlags = null;
     }
+    // the lines above reset the score from the DB: take the running draft again
+    restoreDraft(match);
 
     // Broadcast initial state immediately
     setTimeout(() => {
@@ -2155,6 +2216,26 @@
         </button>
       {/if}
     </div>
+  </div>
+{/if}
+
+{#if restoredDraftAt}
+  <div
+    class="fixed top-3 left-1/2 -translate-x-1/2 z-[150] flex items-center gap-3 bg-[#181a20] border border-amber-400/30 rounded-xl pl-4 pr-2 py-2 shadow-2xl"
+    role="status"
+    aria-atomic="true"
+  >
+    <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0" aria-hidden="true"></span>
+    <span class="text-xs font-semibold text-amber-200 whitespace-nowrap">
+      Skor dipulihkan dari jam {new Date(restoredDraftAt).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}. Timer dijeda.
+    </span>
+    <button
+      type="button"
+      onclick={() => (restoredDraftAt = null)}
+      class="h-8 px-2.5 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/[0.08] rounded-lg transition-colors cursor-pointer"
+    >
+      Tutup
+    </button>
   </div>
 {/if}
 

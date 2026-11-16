@@ -1043,6 +1043,174 @@ async fn qa_bracket_groups_follow_the_roster() {
     }
 }
 
+// ---- categories split into pools ----------------------------------------------------
+
+/// Adds `n` entries to a new tournament category of `event` (spread over 12 new contingents).
+pub(crate) async fn make_category(s: &TestServer, event: i64, name: &str, n: usize) -> i64 {
+    let cat = s.ok("create_category", json!({ "input": { "event_id": event, "nama_nomor_tanding": name, "is_bob": false, "has_vr": false } })).await;
+    let cat_id = cat["id"].as_i64().expect("category id");
+    add_entries(s, event, cat_id, name, 0, n).await;
+    cat_id
+}
+
+async fn add_entries(s: &TestServer, event: i64, cat_id: i64, name: &str, from: usize, n: usize) {
+    let mut contingents = Vec::new();
+    for u in 0..12 {
+        let c = s.ok("create_contingent", json!({ "eventId": event, "namaUtusan": format!("{name} K{from}-{u}") })).await;
+        contingents.push(c["id"].as_i64().unwrap());
+    }
+    for i in from..from + n {
+        s.ok("create_athlete", json!({ "input": {
+            "event_id": event, "nama_atlet": format!("{name} ATLET {i:03}"), "is_priority": false,
+            "utusan_id": contingents[i % 12], "nomor_tanding_id": cat_id,
+        } })).await;
+    }
+}
+
+pub(crate) async fn category_bagans(s: &TestServer, event: i64, cat_id: i64) -> Vec<Value> {
+    bagans(s, event).await.into_iter().filter(|b| b["nomor_tanding_id"].as_i64() == Some(cat_id)).collect()
+}
+
+/// Plays every bout of one category (Aka always wins) until nothing is left to play.
+pub(crate) async fn play_category(s: &TestServer, event: i64, cat_id: i64) {
+    for _ in 0..12 {
+        let mut progressed = false;
+        for b in category_bagans(s, event, cat_id).await {
+            for m in details(s, b["id"].as_i64().unwrap()).await.iter().filter(|m| playable(m)) {
+                let (code, body) = play(s, &b, m).await;
+                assert_eq!(code, 200, "{} r{}: {body}", b["nama_bagan"], m["round"]);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            return;
+        }
+    }
+}
+
+pub(crate) fn bout(ms: &[Value], round: i64, urutan: i64) -> Value {
+    ms.iter().find(|m| m["round"].as_i64() == Some(round) && m["urutan"].as_i64() == Some(urutan)).cloned().expect("bout")
+}
+
+pub(crate) fn winner_loser(m: &Value) -> (i64, i64) {
+    let (a1, a2) = (m["atlet1_id"].as_i64().unwrap(), m["atlet2_id"].as_i64().unwrap());
+    if m["pemenang"].as_str() == Some("1") { (a1, a2) } else { (a2, a1) }
+}
+
+pub(crate) fn pool_named<'a>(bs: &'a [Value], suffix: &str) -> &'a Value {
+    bs.iter().find(|b| b["nama_bagan"].as_str().unwrap_or("").ends_with(suffix)).unwrap_or_else(|| panic!("no bagan {suffix}"))
+}
+
+/// 33–64 entries: four pools whose winners play semifinals (A vs B, C vs D) in the Final
+/// bagan; its semifinal losers are the bronzes, and the web is told the same placement.
+#[tokio::test]
+async fn qa_four_pool_category_plays_semifinals_in_final_bagan() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    sqlx::query("UPDATE backend_event SET is_live_sync_enabled = 1 WHERE id = ?").bind(PORPROV).execute(&pool).await.unwrap();
+
+    let cat = make_category(&s, PORPROV, "QA EMPAT POOL", 40).await;
+    s.ok("execute_drawing_bagan", json!({ "eventId": PORPROV, "categoryIds": [cat], "shuffleType": "random" })).await;
+    let bs = category_bagans(&s, PORPROV, cat).await;
+    assert_eq!(bs.len(), 5, "final + 4 pools");
+    let final_b = bs.iter().find(|b| b["pool"].as_i64() == Some(0)).expect("final bagan").clone();
+    let final_id = final_b["id"].as_i64().unwrap();
+
+    play_category(&s, PORPROV, cat).await;
+
+    let mut pool_winners = Vec::new();
+    let mut pool_losers = Vec::new();
+    for suffix in ["Pool A", "Pool B", "Pool C", "Pool D"] {
+        let p = pool_named(&bs, suffix);
+        let r4 = bout(&details(&s, p["id"].as_i64().unwrap()).await, 4, 1);
+        assert_eq!(r4["selesai"].as_bool(), Some(true), "{suffix} round 4 played");
+        let (w, l) = winner_loser(&r4);
+        pool_winners.push(w);
+        pool_losers.push((l, r4["id"].as_i64().unwrap(), p["id"].as_i64().unwrap()));
+    }
+    let fm = details(&s, final_id).await;
+    let (semi1, semi2, fin) = (bout(&fm, 3, 1), bout(&fm, 3, 2), bout(&fm, 4, 1));
+    assert_eq!((semi1["atlet1_id"].as_i64(), semi1["atlet2_id"].as_i64()), (Some(pool_winners[0]), Some(pool_winners[1])), "semi 1 = A vs B");
+    assert_eq!((semi2["atlet1_id"].as_i64(), semi2["atlet2_id"].as_i64()), (Some(pool_winners[2]), Some(pool_winners[3])), "semi 2 = C vs D");
+    let (s1w, s1l) = winner_loser(&semi1);
+    let (s2w, s2l) = winner_loser(&semi2);
+    assert_eq!((fin["atlet1_id"].as_i64(), fin["atlet2_id"].as_i64()), (Some(s1w), Some(s2w)), "final = semi winners");
+    let (j1, j2) = winner_loser(&fin);
+
+    let podium: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT juara_1_id, juara_2_id, juara_3a_id, juara_3b_id FROM backend_bagan WHERE id = ?")
+            .bind(final_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(podium, (Some(j1), Some(j2), Some(s1l), Some(s2l)), "final bagan podium");
+    for (l, _, _) in &pool_losers {
+        assert!(![j1, j2, s1l, s2l].contains(l), "quarterfinal loser {l} must not be on the podium");
+    }
+    // live sync: each pool winner is sent to the right semifinal slot of the Final bagan
+    let code: String = sqlx::query_scalar("SELECT COALESCE(kode_event, 'EV' || id) FROM backend_event WHERE id = ?")
+        .bind(PORPROV).fetch_one(&pool).await.unwrap();
+    let rows: Vec<String> = sqlx::query_scalar("SELECT payload FROM backend_syncqueue WHERE endpoint = 'api/result/' AND event_id = ?")
+        .bind(PORPROV).fetch_all(&pool).await.unwrap();
+    let payloads: Vec<Value> = rows.iter().filter_map(|p| serde_json::from_str(p).ok()).collect();
+    for (i, (_, match_id, pool_bagan)) in pool_losers.iter().enumerate() {
+        let kr = format!("{code}-{pool_bagan}-{match_id}");
+        let p = payloads.iter().rev().find(|p| p["kode_realtime"] == kr.as_str()).unwrap_or_else(|| panic!("no result row for {kr}"));
+        let semi = if i < 2 { &semi1 } else { &semi2 };
+        assert_eq!(p["next_kode_realtime"], format!("{code}-{final_id}-{}", semi["id"]).as_str(), "pool {i} next bout");
+        assert_eq!(p["target_slot"], if i % 2 == 0 { "atlet1" } else { "atlet2" }, "pool {i} slot");
+    }
+    // only the Final bagan's final sends the podium, never a pool's round 4
+    let finals: Vec<String> = sqlx::query_scalar("SELECT payload FROM backend_syncqueue WHERE endpoint = 'api/final-result/' AND event_id = ?")
+        .bind(PORPROV).fetch_all(&pool).await.unwrap();
+    for (_, _, pool_bagan) in &pool_losers {
+        let prefix = format!("{code}-{pool_bagan}-");
+        assert!(!finals.iter().any(|p| p.contains(&prefix)), "pool bagan {pool_bagan} sent a podium");
+    }
+    assert!(finals.iter().any(|p| p.contains(&format!("{code}-{final_id}-{}", fin["id"]))), "final sends the podium");
+}
+
+/// 17–32 entries: two pools whose winners meet in the final; the pools' losing
+/// semifinalists are the bronzes (unchanged behaviour).
+#[tokio::test]
+async fn qa_two_pool_category_meets_in_final() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let cat = make_category(&s, PORPROV, "QA DUA POOL", 20).await;
+    s.ok("execute_drawing_bagan", json!({ "eventId": PORPROV, "categoryIds": [cat], "shuffleType": "random" })).await;
+    let bs = category_bagans(&s, PORPROV, cat).await;
+    assert_eq!(bs.len(), 3, "final + 2 pools");
+    play_category(&s, PORPROV, cat).await;
+
+    let mut wl = Vec::new();
+    for suffix in ["Pool A", "Pool B"] {
+        let p = pool_named(&bs, suffix);
+        wl.push(winner_loser(&bout(&details(&s, p["id"].as_i64().unwrap()).await, 4, 1)));
+    }
+    let final_id = bs.iter().find(|b| b["pool"].as_i64() == Some(0)).unwrap()["id"].as_i64().unwrap();
+    let fin = bout(&details(&s, final_id).await, 4, 1);
+    assert_eq!((fin["atlet1_id"].as_i64(), fin["atlet2_id"].as_i64()), (Some(wl[0].0), Some(wl[1].0)), "final = A vs B");
+    let (j1, j2) = winner_loser(&fin);
+    let podium: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT juara_1_id, juara_2_id, juara_3a_id, juara_3b_id FROM backend_bagan WHERE id = ?")
+            .bind(final_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(podium, (Some(j1), Some(j2), Some(wl[0].1), Some(wl[1].1)));
+}
+
+/// More than 64 entries cannot be drawn: the drawing is refused as a whole and the
+/// category's existing bagans stay as they were (no athlete silently left out).
+#[tokio::test]
+async fn qa_drawing_refuses_more_than_64_entries() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let cat = make_category(&s, PORPROV, "QA BESAR", 20).await;
+    s.ok("execute_drawing_bagan", json!({ "eventId": PORPROV, "categoryIds": [cat], "shuffleType": "random" })).await;
+    let before: Vec<i64> = category_bagans(&s, PORPROV, cat).await.iter().filter_map(|b| b["id"].as_i64()).collect();
+
+    add_entries(&s, PORPROV, cat, "QA BESAR", 20, 50).await;
+    let (code, body) = s.cmd("execute_drawing_bagan", json!({ "eventId": PORPROV, "categoryIds": [cat], "shuffleType": "random" })).await;
+    assert_ne!(code, 200, "70 entries must be refused: {body}");
+    assert!(body.to_string().contains("70 atlet"), "error names the category size: {body}");
+    let after: Vec<i64> = category_bagans(&s, PORPROV, cat).await.iter().filter_map(|b| b["id"].as_i64()).collect();
+    assert_eq!(before, after, "existing bagans untouched");
+}
+
 /// With a referchange, the main bracket's Juara 3A/3B come from the referchange only (empty
 /// until it is decided), never from the semifinal losers.
 #[tokio::test]

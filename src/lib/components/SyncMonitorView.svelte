@@ -536,7 +536,8 @@
     if (status === "failed") return { label: "Gagal", cls: "text-rose-300", dot: "bg-rose-400" };
     if (status === "pending" || status === "processing") return { label: "Tertunda", cls: "text-amber-300", dot: "bg-amber-400" };
     if (status === "synced") return { label: "Terkirim", cls: "text-emerald-300", dot: "bg-emerald-400" };
-    if (status === "abandoned") return { label: "Dibatalkan", cls: "text-zinc-400", dot: "bg-zinc-500" };
+    // refused by the web (e.g. bout not pushed yet): counted under "Gagal", sent again on demand
+    if (status === "abandoned") return { label: "Ditolak web", cls: "text-rose-300", dot: "bg-rose-400" };
     return { label: status, cls: "text-zinc-400", dot: "bg-zinc-500" };
   }
 </script>
@@ -873,8 +874,8 @@
                 {/if}
               </td>
               <td class="px-4 py-2.5">
-                <span class="inline-flex items-center gap-1.5 text-xs font-semibold {st.cls}">
-                  <span class="w-2 h-2 rounded-full {st.dot}" aria-hidden="true"></span>
+                <span class="inline-flex items-center gap-1.5 text-xs font-semibold whitespace-nowrap {st.cls}">
+                  <span class="w-2 h-2 rounded-full shrink-0 {st.dot}" aria-hidden="true"></span>
                   {st.label}
                 </span>
               </td>
@@ -885,7 +886,7 @@
               </td>
               <td class="px-4 py-2 select-none">
                 <div class="flex items-center justify-end gap-1">
-                  {#if item.status === "failed" || item.status === "pending"}
+                  {#if item.status === "failed" || item.status === "pending" || item.status === "abandoned"}
                     <button
                       type="button"
                       onclick={() => handleRetrySingle(item)}

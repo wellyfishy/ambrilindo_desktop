@@ -10,7 +10,7 @@
 //!
 //! Case ids (A = auth, B = bulk, C = live) match the test plan.
 
-use crate::qa_tests::{bagans, details, ids, play, playable};
+use crate::qa_tests::{bagans, bout, category_bagans, details, ids, make_category, play, play_category, playable, pool_named, winner_loser};
 use crate::sync::{test_auth, SyncService};
 use crate::test_support::{server_on_real_copy, TestServer, WebServer, WEB_TEST_LEGACY_TOKEN};
 use serde_json::{json, Value};
@@ -692,4 +692,380 @@ print('J=' + json.dumps([t.is_active, t.current_atlet_aka, t.current_match_label
     r.drain().await;
     let t = tatami(&r);
     assert_eq!(t[0], json!(false), "D3 stopped tatami idle on the web: {t}");
+}
+
+// ---------------------------------------------------------------------------------------
+// E. Tarik atlet (pull) correctness
+// ---------------------------------------------------------------------------------------
+
+/// Desktop rows of one category of the test event: (name, contingent, kode_atlet, additional_code).
+async fn pulled_rows(r: &Rig, nt_name: &str) -> Vec<(String, Option<String>, Option<String>, Option<String>)> {
+    sqlx::query_as(
+        "SELECT a.nama_atlet, u.nama_utusan, a.kode_atlet, a.additional_code FROM backend_atlet a
+           JOIN backend_nomortanding nt ON a.nomor_tanding_id = nt.id
+           LEFT JOIN backend_utusan u ON a.utusan_id = u.id
+          WHERE nt.event_id = ? AND nt.nama_nomor_tanding = ? ORDER BY a.nama_atlet, u.nama_utusan",
+    )
+    .bind(EVENT)
+    .bind(nt_name)
+    .fetch_all(&r.pool)
+    .await
+    .unwrap()
+}
+
+/// E1 athletes without an athlete code (empty `kode_atlet` from the web) and namesakes of
+/// different contingents each stay their own entry; E2 team members are stored as `MEMBER_*`
+/// rows, so a team category draws one entry per team; E3 a second pull changes nothing, and
+/// repairs a member row an older pull stored with its bare id.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_e_pull_keeps_every_entry() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    let out = r.web.shell(&format!(
+        r#"import json
+from backend.models import *
+ev = Event.objects.get(pk={})
+ntb = NomorTanding.objects.create(event=ev, nama_nomor_tanding="E2E KUMITE BEREGU PUTRA", is_bob=False)
+nts = NomorTanding.objects.create(event=ev, nama_nomor_tanding="E2E KUMITE NAMA SAMA", is_bob=False)
+us = [Utusan.objects.create(event=ev, nama_utusan=f"E2E KONTINGEN {{c}}") for c in "XYZ"]
+member = None
+for u in us[:2]:
+    b = Beregu.objects.create(event=ev, utusan=u, nomor_tanding=ntb, nama_regu=f"REGU {{u.nama_utusan[-1]}}")
+    for i in range(3):
+        a = Atlet.objects.create(event=ev, nama_atlet=f"ANGGOTA {{u.nama_utusan[-1]}}{{i}}", utusan=u)
+        member = DetailAtlet.objects.create(event=ev, atlet=a, nomor_tanding=ntb, utusan=u, beregu=b)
+for u in us[:2]:
+    a = Atlet.objects.create(event=ev, nama_atlet="ANDI PRATAMA", utusan=u)
+    DetailAtlet.objects.create(event=ev, atlet=a, nomor_tanding=nts, utusan=u)
+for n, u in (("CITRA", us[0]), ("DEWI", us[1]), ("EKA", us[2])):
+    a = Atlet.objects.create(event=ev, nama_atlet=n, utusan=u)
+    DetailAtlet.objects.create(event=ev, atlet=a, nomor_tanding=nts, utusan=u)
+print("J=" + json.dumps(dict(member=member.pk, beregu=member.beregu_id)))
+"#,
+        r.event_a
+    ));
+    let seed: Value = serde_json::from_str(out.lines().rev().find_map(|l| l.strip_prefix("J=")).expect("seed")).unwrap();
+
+    SyncService::pull_athletes_from_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("pull");
+
+    // E1: five entries, namesakes kept apart by contingent, no empty codes stored
+    let same = pulled_rows(&r, "E2E KUMITE NAMA SAMA").await;
+    let names: Vec<(String, Option<String>)> = same.iter().map(|x| (x.0.clone(), x.1.clone())).collect();
+    assert_eq!(
+        names,
+        vec![
+            ("ANDI PRATAMA".into(), Some("E2E KONTINGEN X".into())),
+            ("ANDI PRATAMA".into(), Some("E2E KONTINGEN Y".into())),
+            ("CITRA".into(), Some("E2E KONTINGEN X".into())),
+            ("DEWI".into(), Some("E2E KONTINGEN Y".into())),
+            ("EKA".into(), Some("E2E KONTINGEN Z".into())),
+        ],
+        "E1 every entry pulled once: {same:?}"
+    );
+    assert!(same.iter().all(|x| x.2.is_none()), "E1 empty athlete code stored as none: {same:?}");
+
+    // E2: two team entries + six MEMBER_ rows; drawing sees two entries
+    let team = pulled_rows(&r, "E2E KUMITE BEREGU PUTRA").await;
+    let members: Vec<_> = team.iter().filter(|x| x.3.as_deref().is_some_and(|c| c.starts_with("MEMBER_"))).collect();
+    let entries: Vec<_> = team.iter().filter(|x| !x.3.as_deref().is_some_and(|c| c.starts_with("MEMBER_"))).collect();
+    assert_eq!(members.len(), 6, "E2 six members: {team:?}");
+    assert_eq!(entries.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), vec!["REGU X", "REGU Y"], "E2 team entries: {team:?}");
+    let eligible = r.desk.ok("get_drawing_eligible_categories", json!({ "eventId": EVENT })).await;
+    let cat = eligible.as_array().unwrap().iter().find(|c| c["nama_nomor_tanding"] == "E2E KUMITE BEREGU PUTRA").expect("team category");
+    assert_eq!(cat["athlete_count"].as_i64(), Some(2), "E2 one drawing entry per team: {cat}");
+
+    // E3: an older pull stored a member with its bare id; pulling again repairs it, adds nothing
+    let bare = seed["member"].as_i64().unwrap().to_string();
+    let code = format!("MEMBER_B_{}_{}", seed["beregu"], bare);
+    let n = sqlx::query("UPDATE backend_atlet SET additional_code = ? WHERE additional_code = ?")
+        .bind(&bare)
+        .bind(&code)
+        .execute(&r.pool)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(n, 1, "E3 member row {code} exists");
+    let res = SyncService::pull_athletes_from_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("second pull");
+    assert_eq!(res.created_count, 0, "E3 second pull creates nothing: {}", res.message);
+    assert_eq!(pulled_rows(&r, "E2E KUMITE NAMA SAMA").await, same, "E3 same rows after a second pull");
+    assert_eq!(pulled_rows(&r, "E2E KUMITE BEREGU PUTRA").await, team, "E3 member repaired, team unchanged");
+
+    // E4: a member row stored by the old local app (same team, other suffix) is reused
+    let n = sqlx::query("UPDATE backend_atlet SET additional_code = ? WHERE additional_code = ?")
+        .bind(format!("MEMBER_B_{}_9", seed["beregu"]))
+        .bind(&code)
+        .execute(&r.pool)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(n, 1, "E4 legacy member row");
+    let res = SyncService::pull_athletes_from_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("third pull");
+    assert_eq!(res.created_count, 0, "E4 legacy member reused: {}", res.message);
+    assert_eq!(pulled_rows(&r, "E2E KUMITE BEREGU PUTRA").await, team, "E4 team unchanged");
+
+    // E5: the pulled teams play a team match whose candidates are each team's members
+    let cat = cat["id"].as_i64().unwrap();
+    r.desk.ok("execute_drawing_bagan", json!({ "eventId": EVENT, "categoryIds": [cat], "shuffleType": "random" })).await;
+    let b = bagans(&r.desk, EVENT).await.into_iter().find(|b| b["nomor_tanding_id"].as_i64() == Some(cat)).expect("team bagan");
+    let m = details(&r.desk, b["id"].as_i64().unwrap()).await.into_iter().find(playable).expect("team bout");
+    let info = r.desk.ok("get_team_match_info", json!({ "matchId": m["id"] })).await;
+    let names = |k: &str| {
+        let mut v: Vec<String> = info[k].as_array().unwrap().iter().filter(|c| c["same_nomor"] == true)
+            .map(|c| c["nama_atlet"].as_str().unwrap().to_string()).collect();
+        v.sort();
+        v
+    };
+    let (aka, ao) = (names("candidate_atlets_aka"), names("candidate_atlets_ao"));
+    assert_eq!(aka.len(), 3, "E5 Aka team members: {info}");
+    assert_eq!(ao.len(), 3, "E5 Ao team members: {info}");
+    assert!(aka.iter().chain(ao.iter()).all(|n| n.starts_with("ANGGOTA ")), "E5 only members: {aka:?} {ao:?}");
+}
+
+// ---------------------------------------------------------------------------------------
+// F. Web temporarily failing
+// ---------------------------------------------------------------------------------------
+
+/// A local server that answers every request with `502 Bad Gateway` (web restarting/deploying).
+async fn bad_gateway() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 65536];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock.write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 11\r\nconnection: close\r\n\r\nBad Gateway").await;
+            });
+        }
+    });
+    url
+}
+
+/// F1 5xx answers never make a result give up: it waits (FIFO) and is sent once the web is
+/// back. F2 a result the web refused (404, bout not pushed yet) counts as "Gagal" and
+/// "Kirim ulang semua" sends it again.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_f_web_errors_never_lose_results() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+
+    // F1
+    let bagan = r.fresh_bagan(5, 8).await;
+    r.push(&bagan).await;
+    SyncService::set_sync_config(Some(&r.db_path), "custom", Some(bad_gateway().await)).unwrap();
+    let m = r.next_playable(&bagan).await.unwrap();
+    r.finish(&bagan, &m).await;
+    let kode = r.kode(bagan["id"].as_i64().unwrap(), m["id"].as_i64().unwrap());
+    let result_row = || async { r.queue().await.into_iter().filter(|x| x.endpoint == "api/result/" && x.payload.contains(&kode)).last().unwrap() };
+    for _ in 0..40 {
+        let _ = SyncService::process_sync_queue(&r.pool, Some(&r.db_path)).await;
+        let row = result_row().await;
+        let retries: i64 = sqlx::query_scalar("SELECT retry_count FROM backend_syncqueue WHERE id = ?").bind(row.id).fetch_one(&r.pool).await.unwrap();
+        if retries >= 8 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    let row = result_row().await;
+    assert_eq!(row.status, "failed", "F1 after many 502 answers the result still waits: {row:?}");
+    assert!(row.error.as_deref().unwrap_or("").contains("502"), "F1 error shown: {row:?}");
+    SyncService::set_sync_config(Some(&r.db_path), "custom", Some(r.web.base.clone())).unwrap();
+    r.drain().await;
+    assert_eq!(result_row().await.status, "synced", "F1 sent once the web is back");
+    let web = r.web_py(&format!("print('J=' + json.dumps(d('{kode}')))"));
+    assert_eq!(web["selesai"], true, "F1 web has the result: {web}");
+
+    // F2: a bout of a bagan that was never pushed
+    let unpushed = r.fresh_bagan(5, 8).await;
+    let m2 = r.next_playable(&unpushed).await.unwrap();
+    r.finish(&unpushed, &m2).await;
+    let kode2 = r.kode(unpushed["id"].as_i64().unwrap(), m2["id"].as_i64().unwrap());
+    r.drain().await;
+    let row2 = r.queue().await.into_iter().filter(|x| x.endpoint == "api/result/" && x.payload.contains(&kode2)).last().unwrap();
+    assert_eq!(row2.status, "abandoned", "F2 404 skipped: {row2:?}");
+    let stats = SyncService::get_queue_stats(&r.pool, Some(EVENT)).await.unwrap();
+    assert!(stats.failed_count >= 1, "F2 refused row counted under Gagal: {stats:?}");
+    r.push(&unpushed).await;
+    let sent = SyncService::retry_all_failed(&r.pool, Some(&r.db_path), Some(EVENT)).await.unwrap();
+    assert!(sent >= 1, "F2 Kirim ulang semua sends the refused row");
+    let row2 = r.queue().await.into_iter().find(|x| x.id == row2.id).unwrap();
+    assert_eq!(row2.status, "synced", "F2 refused row sent after the bagan was pushed: {row2:?}");
+}
+
+// ---------------------------------------------------------------------------------------
+// G. Corrections and recovery reach the web
+// ---------------------------------------------------------------------------------------
+
+/// Web podium of one bagan as names (j1, j2, j3a, j3b).
+fn web_podium(r: &Rig, web_bagan: i64) -> Value {
+    r.web_py(&format!(
+        "b = Bagan.objects.get(pk={web_bagan})\n\
+f = lambda x: x.atlet.nama_atlet if x and x.atlet else None\n\
+print('J=' + json.dumps([f(b.juara_1), f(b.juara_2), f(b.juara_3a), f(b.juara_3b)]))"
+    ))
+}
+
+async fn save(r: &Rig, bagan: &Value, m: &Value, selesai: bool) -> (u16, Value) {
+    let input = if selesai {
+        json!({ "match_id": m["id"], "bagan_id": bagan["id"], "score1": "3", "score2": "1", "pemenang": "1",
+                "vr1": false, "vr2": false, "hantei": false, "selesai": true })
+    } else {
+        json!({ "match_id": m["id"], "bagan_id": bagan["id"], "score1": "0", "score2": "0", "pemenang": "",
+                "vr1": false, "vr2": false, "hantei": false, "selesai": false })
+    };
+    r.desk.cmd("save_match_result", json!({ "input": input })).await
+}
+
+/// G1 a reopened bout is open again on the web and its winner leaves the next bout;
+/// G2 a bout whose next bout is played cannot be reopened, so nothing is sent;
+/// G3 reopening the final clears the web podium, finishing it again restores it.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_g_reopen_reaches_the_web() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    let bagan = r.fresh_bagan(5, 8).await;
+    let bid = bagan["id"].as_i64().unwrap();
+    r.push(&bagan).await;
+
+    // G1
+    let m = r.next_playable(&bagan).await.unwrap();
+    r.finish(&bagan, &m).await;
+    r.drain().await;
+    let k = r.kode(bid, m["id"].as_i64().unwrap());
+    let web_next = |r: &Rig| {
+        r.web_py(&format!(
+            "x = DetailBagan.objects.filter(kode_realtime='{k}').first()\n\
+nx = DetailBagan.objects.filter(bagan=x.bagan, round=x.round + 1, urutan=(x.urutan + 1) // 2).first()\n\
+print('J=' + json.dumps(dict(selesai=x.selesai, pemenang=x.pemenang, slot=nx.atlet1_id if x.urutan % 2 == 1 else nx.atlet2_id)))"
+        ))
+    };
+    let before = web_next(&r);
+    assert!(before["selesai"] == true && !before["slot"].is_null(), "G1 finished on the web first: {before}");
+    let (c, body) = save(&r, &bagan, &m, false).await;
+    assert_eq!(c, 200, "G1 reopen saved: {body}");
+    r.drain().await;
+    let after = web_next(&r);
+    assert_eq!(after["selesai"], false, "G1 open again on the web: {after}");
+    assert!(after["pemenang"].is_null() && after["slot"].is_null(), "G1 winner removed on the web: {after}");
+    let reopen_rows: Vec<_> = r.queue().await.into_iter().filter(|x| x.endpoint == "api/reopen/").collect();
+    assert!(!reopen_rows.is_empty() && reopen_rows.iter().all(|x| x.status == "synced"), "G1 reopen sent: {reopen_rows:?}");
+
+    // play the whole bagan
+    for _ in 0..20 {
+        let Some(m) = r.next_playable(&bagan).await else { break };
+        r.finish(&bagan, &m).await;
+    }
+    r.drain().await;
+    let web_bagan: i64 = r
+        .web_py(&format!("print('J=' + json.dumps(DetailBagan.objects.get(kode_realtime='{k}').bagan_id))"))
+        .as_i64()
+        .unwrap();
+    let podium = web_podium(&r, web_bagan);
+    assert!(!podium[0].is_null() && !podium[1].is_null(), "G3 podium on the web: {podium}");
+
+    // G2: the first bout's winner already played on
+    let first = details(&r.desk, bid).await.into_iter().find(|x| x["id"] == m["id"]).unwrap();
+    let rows_before = r.queue().await.len();
+    let (c, _) = save(&r, &bagan, &first, false).await;
+    assert_ne!(c, 200, "G2 reopening a bout whose next bout is played is refused");
+    assert_eq!(r.queue().await.len(), rows_before, "G2 nothing queued");
+
+    // G3: reopen the final, then finish it again
+    let fin = details(&r.desk, bid).await.into_iter().find(|x| x["round"] == 4 && x["urutan"] == 1).unwrap();
+    let (c, body) = save(&r, &bagan, &fin, false).await;
+    assert_eq!(c, 200, "G3 final reopened: {body}");
+    r.drain().await;
+    let cleared = web_podium(&r, web_bagan);
+    assert!(cleared[0].is_null() && cleared[1].is_null(), "G3 web podium cleared: {cleared}");
+    let fin = details(&r.desk, bid).await.into_iter().find(|x| x["id"] == fin["id"]).unwrap();
+    r.finish(&bagan, &fin).await;
+    r.drain().await;
+    let restored = web_podium(&r, web_bagan);
+    assert_eq!((restored[0].clone(), restored[1].clone()), (podium[0].clone(), podium[1].clone()), "G3 podium restored: {restored}");
+}
+
+/// G4 "Kirim ulang semua hasil" after a 2-pool and a 4-pool category were played offline:
+/// pool winners reach the Final bagan on the web, no finished bout lacks its athletes, and
+/// the podium matches the desktop.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_g_force_results_for_pool_categories() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    SyncService::toggle_live_sync(&r.pool, EVENT, false).await.unwrap();
+    for (name, n, semis) in [("E2E FORCE DUA POOL", 20usize, false), ("E2E FORCE EMPAT POOL", 40, true)] {
+        let cat = make_category(&r.desk, EVENT, name, n).await;
+        r.desk.ok("execute_drawing_bagan", json!({ "eventId": EVENT, "categoryIds": [cat], "shuffleType": "random" })).await;
+        let bs = category_bagans(&r.desk, EVENT, cat).await;
+        let bagan_ids: Vec<i64> = bs.iter().filter_map(|b| b["id"].as_i64()).collect();
+        SyncService::push_bagan_to_hosted(&r.pool, Some(&r.db_path), EVENT, Some(bagan_ids)).await.unwrap();
+        play_category(&r.desk, EVENT, cat).await;
+        SyncService::force_sync_results_to_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("force results");
+
+        let final_b = bs.iter().find(|b| b["pool"].as_i64() == Some(0)).unwrap();
+        let fm = details(&r.desk, final_b["id"].as_i64().unwrap()).await;
+        let fin = bout(&fm, 4, 1);
+        let (j1, j2) = winner_loser(&fin);
+        let name_of = |id: i64| if fin["atlet1_id"].as_i64() == Some(id) { fin["atlet1_nama"].clone() } else { fin["atlet2_nama"].clone() };
+        let web = r.web_py(&format!(
+            "f = lambda x: x.atlet.nama_atlet if x and x.atlet else None\n\
+fb = Bagan.objects.get(event_id={ev}, nama_bagan='{name} - Final')\n\
+r4 = DetailBagan.objects.get(bagan=fb, round=4, urutan=1)\n\
+r3 = [[f(x.atlet1), f(x.atlet2), x.selesai] for x in DetailBagan.objects.filter(bagan=fb, round=3).order_by('urutan')]\n\
+empty = DetailBagan.objects.filter(bagan__event_id={ev}, bagan__nama_bagan__startswith='{name}', selesai=True, atlet1__isnull=True, atlet2__isnull=True).count()\n\
+print('J=' + json.dumps(dict(r4=[f(r4.atlet1), f(r4.atlet2), r4.selesai], r3=r3, empty=empty, j1=f(fb.juara_1), j2=f(fb.juara_2))))",
+            ev = r.event_a
+        ));
+        assert_eq!(web["empty"], 0, "{name}: no finished bout without athletes on the web: {web}");
+        assert_eq!(web["r4"][2], true, "{name}: final finished on the web: {web}");
+        assert_eq!((web["r4"][0].clone(), web["r4"][1].clone()), (fin["atlet1_nama"].clone(), fin["atlet2_nama"].clone()), "{name}: final athletes: {web}");
+        if semis {
+            assert_eq!(web["r3"][0][0], bout(&fm, 3, 1)["atlet1_nama"], "{name}: semifinal 1 on the web: {web}");
+            assert_eq!(web["r3"][1][1], bout(&fm, 3, 2)["atlet2_nama"], "{name}: semifinal 2 on the web: {web}");
+        }
+        assert_eq!((web["j1"].clone(), web["j2"].clone()), (name_of(j1), name_of(j2)), "{name}: podium: {web}");
+        let _ = pool_named(&bs, "Pool B");
+    }
+}
+
+/// G5 bouts inside a team match are not pushed: they all sit in round 10, so the web merged
+/// them into one row per urutan.
+#[tokio::test]
+#[ignore]
+async fn web_e2e_g_team_child_bouts_not_pushed() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    let find = |bs: Vec<Value>| bs.into_iter().find(|b| b["nama_bagan"].as_str() == Some("KUMITE BEREGU PUTRA"));
+    let mut b = find(bagans(&r.desk, EVENT).await);
+    if b.is_none() {
+        let cats = r.desk.ok("get_drawing_eligible_categories", json!({ "eventId": EVENT })).await;
+        let cat = cats.as_array().unwrap().iter().find(|c| c["nama_nomor_tanding"] == "KUMITE BEREGU PUTRA").expect("team category")["id"].clone();
+        r.desk.ok("execute_drawing_bagan", json!({ "eventId": EVENT, "categoryIds": [cat], "shuffleType": "random" })).await;
+        b = find(bagans(&r.desk, EVENT).await);
+    }
+    let b = b.expect("team bagan");
+    let bid = b["id"].as_i64().unwrap();
+    let parents: Vec<Value> = details(&r.desk, bid).await.into_iter().filter(playable).take(2).collect();
+    assert_eq!(parents.len(), 2, "two team matches");
+    for p in &parents {
+        r.desk.ok("get_team_match_info", json!({ "matchId": p["id"] })).await; // creates the child bouts
+    }
+    let child_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backend_detailbagan WHERE bagan_id = ? AND team = 1")
+        .bind(bid).fetch_one(&r.pool).await.unwrap();
+    assert!(child_rows >= 6, "child bouts exist on the desktop: {child_rows}");
+    let main_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backend_detailbagan WHERE bagan_id = ? AND COALESCE(team, 0) = 0")
+        .bind(bid).fetch_one(&r.pool).await.unwrap();
+    r.push(&b).await;
+    let web = r.web_py(&format!(
+        "fb = Bagan.objects.get(event_id={}, kode='{}')\n\
+print('J=' + json.dumps(dict(r10=DetailBagan.objects.filter(bagan=fb, round=10).count(), all=DetailBagan.objects.filter(bagan=fb).count())))",
+        r.event_a,
+        b["kode"].as_str().unwrap()
+    ));
+    assert_eq!(web["r10"], 0, "G5 no team child bouts on the web: {web}");
+    assert_eq!(web["all"].as_i64(), Some(main_rows), "G5 every bracket bout pushed: {web}");
 }
