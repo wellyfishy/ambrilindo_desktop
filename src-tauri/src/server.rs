@@ -827,6 +827,24 @@ async fn submit_judge_score_api(
     (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
 }
 
+/// A required database id of the payload (first of `keys` present), or a 400 response naming
+/// `keys[0]`. Missing ids used to mean row 1, so a LAN laptop with no event (or day / tatami)
+/// selected read or changed another event's data.
+fn required_id(payload: &serde_json::Value, keys: &[&str]) -> Result<i64, axum::response::Response> {
+    match get_i64_val(payload, keys) {
+        Some(id) if id > 0 => Ok(id),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "status": "error", "message": format!("{} wajib diisi", keys[0]) })),
+        )
+            .into_response()),
+    }
+}
+
+fn required_event_id(payload: &serde_json::Value) -> Result<i64, axum::response::Response> {
+    required_id(payload, &["eventId", "event_id"])
+}
+
 fn get_i64_val(payload: &serde_json::Value, keys: &[&str]) -> Option<i64> {
     for k in keys {
         if let Some(v) = payload.get(*k) {
@@ -1864,14 +1882,14 @@ async fn dispatch_command_api(
             }
         },
         "get_tatamis" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_tatamis(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "create_tatami" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let t_num = get_i32_val(&payload, &["tatamiNumber", "tatami_number", "number"]).unwrap_or(1);
             match db.create_tatami(ev_id, t_num).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
@@ -1894,14 +1912,14 @@ async fn dispatch_command_api(
             }
         },
         "get_categories" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_categories(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_enriched_categories" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_enriched_categories(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -1948,14 +1966,14 @@ async fn dispatch_command_api(
             }
         },
         "get_drawing_eligible_categories" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_drawing_eligible_categories(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_drawing_eligible_festival_categories" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_drawing_eligible_festival_categories(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2010,7 +2028,7 @@ async fn dispatch_command_api(
             }
         },
         "execute_drawing_bagan" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let cat_ids = serde_json::from_value::<Vec<i64>>(payload.get("categoryIds").or(payload.get("category_ids")).cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
             let shuffle_type = get_str_val(&payload, &["shuffleType", "shuffle_type"]).unwrap_or_else(|| "random".into());
             let vr_cat_ids = serde_json::from_value::<Vec<i64>>(payload.get("vrCategoryIds").or(payload.get("vr_category_ids")).cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
@@ -2025,7 +2043,7 @@ async fn dispatch_command_api(
             }
         },
         "execute_drawing_festival_bagan" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let cat_ids = serde_json::from_value::<Vec<i64>>(payload.get("categoryIds").or(payload.get("category_ids")).cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
             let shuffle_type = get_str_val(&payload, &["shuffleType", "shuffle_type"]).unwrap_or_else(|| "random".into());
             match db.execute_drawing_festival_bagan(ev_id, cat_ids, &shuffle_type).await {
@@ -2039,7 +2057,7 @@ async fn dispatch_command_api(
             }
         },
         "delete_all_bagans" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.delete_all_bagans(ev_id).await {
                 Ok(()) => {
                     if let Some(app) = &state.app_handle {
@@ -2051,7 +2069,7 @@ async fn dispatch_command_api(
             }
         },
         "delete_all_festival_bagans" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.delete_all_festival_bagans(ev_id).await {
                 Ok(count) => {
                     if let Some(app) = &state.app_handle {
@@ -2063,7 +2081,7 @@ async fn dispatch_command_api(
             }
         },
         "delete_category_bagans" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let cat_id = get_i64_val(&payload, &["categoryId", "category_id"]).unwrap_or(0);
             let force = payload.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             match db.delete_category_bagans(ev_id, cat_id, force).await {
@@ -2082,14 +2100,14 @@ async fn dispatch_command_api(
             }
         },
         "delete_all_athletes" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.delete_all_athletes(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_bagans" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_bagans(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2197,14 +2215,14 @@ async fn dispatch_command_api(
             }
         },
         "get_summary_juara" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_summary_juara(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_summary_bagan" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_summary_bagan(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2233,14 +2251,14 @@ async fn dispatch_command_api(
             }
         },
         "get_athletes" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_athletes(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_enriched_athletes" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_enriched_athletes(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2289,14 +2307,14 @@ async fn dispatch_command_api(
         },
         
         "get_enriched_contingents" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_enriched_contingents(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "create_contingent" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let nama = get_str_val(&payload, &["namaUtusan", "nama_utusan", "nama"]).unwrap_or_default();
             let logo = get_str_val(&payload, &["logo"]);
             match db.create_contingent(ev_id, nama, logo).await {
@@ -2351,14 +2369,14 @@ async fn dispatch_command_api(
             }
         },
         "get_enriched_perguruans" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_enriched_perguruans(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "create_perguruan" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let nama = get_str_val(&payload, &["namaPerguruan", "nama_perguruan", "nama"]).unwrap_or_default();
             match db.create_perguruan(ev_id, nama).await {
                 Ok(v) => {
@@ -2419,28 +2437,28 @@ async fn dispatch_command_api(
             }
         },
         "get_perguruans" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_perguruans(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_contingents" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_contingents(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_timetable_editor_data" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_timetable_editor_data(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "save_timetable_data" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match serde_json::from_value::<SaveTimetablePayload>(payload.get("payload").unwrap_or(&payload).clone()) {
                 Ok(p) => match db.save_timetable_data(ev_id, p).await {
                     Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
@@ -2450,7 +2468,7 @@ async fn dispatch_command_api(
             }
         },
         "add_timetable_day" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.add_timetable_day(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2464,21 +2482,21 @@ async fn dispatch_command_api(
             }
         },
         "reset_timetable" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.reset_timetable_data(ev_id).await {
                 Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_festival_roster_data" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_festival_roster_data(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_festival_booklet_data" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let tatami_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]);
             match db.get_festival_booklet_data(ev_id, tatami_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
@@ -2486,14 +2504,14 @@ async fn dispatch_command_api(
             }
         },
         "get_festival_format" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_festival_format(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "set_festival_format" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let format = get_str_val(&payload, &["format"]).unwrap_or_default();
             let delete_bagans = get_bool_val(&payload, &["deleteBagans", "delete_bagans"]).unwrap_or(false);
             match db.set_festival_format(ev_id, format, delete_bagans).await {
@@ -2507,7 +2525,7 @@ async fn dispatch_command_api(
             }
         },
         "save_festival_roster_state" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             // The app sends { eventId, rosterState }; older callers send "state" or the bare state.
             let state_val = payload
                 .get("rosterState")
@@ -2524,7 +2542,7 @@ async fn dispatch_command_api(
             }
         },
         "auto_pair_festival_category" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let nt_id = get_i64_val(&payload, &["nomorTandingId", "nomor_tanding_id"]);
             match db.auto_pair_festival_category(ev_id, nt_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
@@ -2532,14 +2550,14 @@ async fn dispatch_command_api(
             }
         },
         "get_festival_mix_groups" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_festival_mix_groups(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "save_festival_mix_groups" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let groups_val = payload.get("mixGroups").or(payload.get("mix_groups")).cloned().unwrap_or(serde_json::Value::Array(vec![]));
             match serde_json::from_value::<Vec<crate::models::FestivalMixGroup>>(groups_val) {
                 Ok(groups) => match db.save_festival_mix_groups(ev_id, groups).await {
@@ -2550,7 +2568,7 @@ async fn dispatch_command_api(
             }
         },
         "mix_festival_categories" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let source_ids = serde_json::from_value::<Vec<i64>>(payload.get("sourceIds").or(payload.get("source_ids")).cloned().unwrap_or(serde_json::Value::Array(vec![]))).unwrap_or_default();
             let target_id = get_i64_val(&payload, &["targetId", "target_id"]);
             let name = get_str_val(&payload, &["newName", "new_name"]).unwrap_or_default();
@@ -2561,14 +2579,14 @@ async fn dispatch_command_api(
             }
         },
         "get_kop_surat" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_kop_surat(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "save_kop_surat" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let org = get_str_val(&payload, &["namaOrganisasi", "nama_organisasi"]).unwrap_or_default();
             let almt = get_str_val(&payload, &["alamat"]).unwrap_or_default();
             let kontak = get_str_val(&payload, &["kontak"]).unwrap_or_default();
@@ -2593,9 +2611,9 @@ async fn dispatch_command_api(
             }
         },
         "get_tatami_booklet_data" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
-            let d_id = get_i64_val(&payload, &["dayId", "day_id"]).unwrap_or(1);
-            let t_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
+            let d_id = match required_id(&payload, &["dayId", "day_id"]) { Ok(v) => v, Err(r) => return r };
+            let t_id = match required_id(&payload, &["tatamiId", "tatami_id"]) { Ok(v) => v, Err(r) => return r };
             match db.get_tatami_booklet_data(ev_id, d_id, t_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2859,7 +2877,7 @@ async fn dispatch_command_api(
             }
         },
         "get_wasits" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_wasits(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2882,8 +2900,8 @@ async fn dispatch_command_api(
             }
         },
         "get_tatami_panel_overview" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
-            let tatami_id = get_i64_val(&payload, &["tatamiId", "tatami_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
+            let tatami_id = match required_id(&payload, &["tatamiId", "tatami_id"]) { Ok(v) => v, Err(r) => return r };
             match db.get_tatami_panel_overview(ev_id, tatami_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
@@ -2922,7 +2940,7 @@ async fn dispatch_command_api(
             }
         },
         "export_tournament_excel" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_tournament_excel_data(ev_id).await {
                 Ok(data) => match crate::excel_exporter::generate_tournament_workbook(&data) {
                     Ok(bytes) => {
@@ -2943,21 +2961,21 @@ async fn dispatch_command_api(
             }
         },
         "get_marshalling_overview" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_marshalling_overview(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_results_booklet_data" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_results_booklet_data(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
         "get_bob_candidates" => {
-            let ev_id = get_i64_val(&payload, &["eventId", "event_id"]).unwrap_or(1);
+            let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             match db.get_bob_candidates(ev_id).await {
                 Ok(v) => (StatusCode::OK, Json(serde_json::json!({ "status": "success", "data": v }))).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),

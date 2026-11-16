@@ -718,20 +718,8 @@ async fn open_control_panel_window(
     }
 
     let win_label = format!("control-panel-{}", match_id);
-    let mut t_num = tatami.unwrap_or(1);
-
-    // Defensive normalization: if tatami is passed as DB PK (>= 20), resolve to tatami_number
-    if t_num >= 20 {
-        if let Ok(pool) = state.db.lock().await.get_pool() {
-            if let Ok(Some(resolved)) = sqlx::query_scalar::<_, i32>("SELECT tatami_number FROM backend_tatami WHERE id = ?")
-                .bind(t_num)
-                .fetch_optional(pool)
-                .await
-            {
-                t_num = resolved as i64;
-            }
-        }
-    }
+    // Always a tatami number (callers resolve a match's assigned tatami id to its number first).
+    let t_num = tatami.unwrap_or(1);
 
     // Set when this laptop is an operator tambahan: the window must talk to the host,
     // and the host (not this laptop's DB) records the running match.

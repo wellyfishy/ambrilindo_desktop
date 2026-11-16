@@ -483,8 +483,10 @@
 
   function resolveTatamiNumber(assignedTatamiId: number | null | undefined): number {
     if (!assignedTatamiId) return 1;
-    const found = tatamis?.find((t) => t.id === assignedTatamiId || t.tatami_number === assignedTatamiId);
-    return found?.tatami_number ?? (assignedTatamiId < 20 ? assignedTatamiId : 1);
+    // assigned_tatami_id is a database id, never a tatami number: comparing it with numbers (or
+    // treating a small id as a number) opened the panel on the wrong tatami.
+    const found = tatamis?.find((t) => t.id === assignedTatamiId);
+    return found?.tatami_number ?? 1;
   }
 
   async function handleOpenMatchControl(match: DetailBaganItem) {

@@ -1320,3 +1320,31 @@ async fn qa_podium_sent_when_it_changes() {
     let last = sent.last().unwrap();
     assert_ne!(last["juara_3a"], bronze_before, "corrected bronze sent: {last}");
 }
+
+/// A5/A6: a LAN command without an event id is refused (400) instead of reading or changing
+/// event 1, and nothing is written.
+#[tokio::test]
+async fn qa_lan_commands_need_an_event_id() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let count = || async {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM backend_tatami WHERE event_id = 1").fetch_one(&pool).await.unwrap()
+    };
+    let before = count().await;
+
+    let (c, body) = s.cmd("create_tatami", json!({ "tatamiNumber": 9 })).await;
+    assert_eq!(c, 400, "create_tatami without eventId: {body}");
+    assert_eq!(count().await, before, "no tatami written to event 1");
+
+    for (cmd, payload) in [
+        ("get_categories", json!({})),
+        ("get_bagans", json!({ "eventId": null })),
+        ("get_tatami_panel_overview", json!({ "eventId": PORPROV })),
+    ] {
+        let (c, body) = s.cmd(cmd, payload).await;
+        assert_eq!(c, 400, "{cmd} without its id: {body}");
+    }
+    // With the id the same command works.
+    let (c, body) = s.cmd("get_categories", json!({ "eventId": PORPROV })).await;
+    assert_eq!(c, 200, "get_categories with eventId: {body}");
+}
