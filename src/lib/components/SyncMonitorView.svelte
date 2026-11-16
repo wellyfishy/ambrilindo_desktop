@@ -55,9 +55,17 @@
   // Filter & Search
   let statusFilter = $state<string>("all");
   let searchKeyword = $state<string>("");
-  let autoRefresh = $state<boolean>(true);
-  let isRefreshing = $state<boolean>(false);
-  let refreshTimer: any = null;
+  // The backend announces every queue change (sync_queue_changed): the page is always live.
+  let autoSend = $state<boolean>(true);
+  let isTogglingAutoSend = $state<boolean>(false);
+  let isSendingNow = $state<boolean>(false);
+  /** Oldest row the web has not taken yet (strict FIFO: it holds everything behind it). */
+  let heldRow = $state<SyncQueueEntry | null>(null);
+  /** 'failed' rows still in the queue (old 'abandoned' rows are not). */
+  let failedInQueue = $state<number>(0);
+  /** When the worker tries the held row again (epoch seconds, from the change event). */
+  let retryAt = $state<number>(0);
+  let nowSecs = $state<number>(Math.floor(Date.now() / 1000));
 
   // Action Spinners
   let isPinging = $state<boolean>(false);
@@ -66,7 +74,6 @@
   let isPulling = $state<boolean>(false);
   let isPushing = $state<boolean>(false);
   let isForceSyncing = $state<boolean>(false);
-  let isRetryingAll = $state<boolean>(false);
 
   // Modals
   let showLinkModal = $state<boolean>(false);
@@ -134,7 +141,6 @@
   let selectedBaganIds = $state<number[]>([]);
 
   let showForceSyncModal = $state<boolean>(false);
-  let showClearAllModal = $state<boolean>(false);
   let showPayloadModal = $state<boolean>(false);
   let selectedPayloadJson = $state<string>("");
   let selectedPayloadId = $state<number | null>(null);
@@ -148,7 +154,6 @@
   async function loadAllSyncData() {
     if (!eventId) return;
     try {
-      isRefreshing = true;
       const cfg = await invoke<SyncConfig>("get_sync_config");
       syncConfig = cfg;
 
@@ -173,47 +178,80 @@
       bagans = bList;
 
       authStatus = await invoke("get_sync_auth_status");
+      autoSend = await invoke<boolean>("get_sync_auto_send");
+      // 'failed' rows wait at the head; old 'abandoned' rows are outside the queue.
+      const failed = await invoke<SyncQueueEntry[]>("get_sync_queue_items", { eventId, statusFilter: "failed", limit: 200 });
+      const inQueue = failed.filter((x) => x.status === "failed").sort((a, b) => a.id - b.id);
+      failedInQueue = inQueue.length;
+      heldRow = inQueue[0] ?? null;
     } catch (err: any) {
       console.error("Gagal sinkron data:", err);
-    } finally {
-      isRefreshing = false;
     }
   }
 
-  function setupAutoRefresh() {
-    if (refreshTimer) clearInterval(refreshTimer);
-    if (autoRefresh) {
-      refreshTimer = setInterval(() => {
-        loadAllSyncData();
-      }, 4000);
-    }
+  // Reload on every queue change the backend announces (at most every 500 ms).
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleReload() {
+    if (reloadTimer) return;
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      loadAllSyncData();
+    }, 500);
   }
-
-  $effect(() => {
-    setupAutoRefresh();
-  });
 
   let unlistenSync: UnlistenFn | null = null;
+  // Only moves the "coba lagi dalam N detik" text while a row is held; fetches nothing.
+  let clock: ReturnType<typeof setInterval> | null = null;
+  $effect(() => {
+    const ticking = !!heldRow && autoSend;
+    if (ticking && !clock) clock = setInterval(() => (nowSecs = Math.floor(Date.now() / 1000)), 1000);
+    if (!ticking && clock) {
+      clearInterval(clock);
+      clock = null;
+    }
+  });
 
   onDestroy(() => {
-    if (refreshTimer) clearInterval(refreshTimer);
+    if (reloadTimer) clearTimeout(reloadTimer);
+    if (clock) clearInterval(clock);
     if (unlistenSync) unlistenSync();
   });
 
   onMount(async () => {
-    await loadAllSyncData();
-    setupAutoRefresh();
-
-    unlistenSync = await listen("sync_queue_changed", () => {
-      loadAllSyncData();
+    unlistenSync = await listen<{ retry_at?: number } | null>("sync_queue_changed", (e) => {
+      if (e.payload && typeof e.payload.retry_at === "number") retryAt = e.payload.retry_at;
+      scheduleReload();
     });
   });
 
+  // First load, and again when the event or the filter changes.
   $effect(() => {
-    if (eventId || statusFilter) {
-      loadAllSyncData();
-    }
+    if (eventId && statusFilter) loadAllSyncData();
   });
+
+  async function handleToggleAutoSend() {
+    isTogglingAutoSend = true;
+    try {
+      autoSend = await invoke<boolean>("set_sync_auto_send", { enabled: !autoSend });
+      toast(autoSend ? "Kirim otomatis aktif" : "Kirim otomatis dimatikan");
+    } catch (err: any) {
+      toast(`Gagal: ${err}`);
+    } finally {
+      isTogglingAutoSend = false;
+    }
+  }
+
+  async function handleSendNow() {
+    isSendingNow = true;
+    try {
+      const [sent, failed] = await invoke<[number, number]>("send_sync_queue_now");
+      toast(failed > 0 ? `${sent} terkirim, antrean masih tertahan` : `${sent} item terkirim`);
+    } catch (err: any) {
+      toast(`Gagal mengirim: ${err}`);
+    } finally {
+      isSendingNow = false;
+    }
+  }
 
   // Target Server Switch
   async function handleSetTarget(mode: "local" | "production" | "custom", customUrl?: string) {
@@ -412,18 +450,6 @@
     }
   }
 
-  // Single Item Actions
-  async function handleRetrySingle(item: SyncQueueEntry) {
-    try {
-      await invoke("retry_sync_item", { itemId: item.id });
-      toast(`Item #${item.id} terkirim`);
-      await loadAllSyncData();
-    } catch (err: any) {
-      toast(`Gagal kirim #${item.id}: ${err}`);
-      await loadAllSyncData();
-    }
-  }
-
   async function handleMarkSynced(item: SyncQueueEntry) {
     try {
       await invoke("mark_sync_item_synced", { itemId: item.id });
@@ -434,53 +460,10 @@
     }
   }
 
-  function handleDeleteSingle(item: SyncQueueEntry) {
-    openConfirmModal({
-      title: `Hapus item #${item.id}?`,
-      message: `Item ini dibuang dari antrean dan tidak akan dikirim ke web.`,
-      confirmText: "Hapus item",
-      isDestructive: true,
-      onConfirm: async () => {
-        try {
-          await invoke("delete_sync_item", { itemId: item.id });
-          toast(`Item #${item.id} dihapus`);
-          closeConfirmModal();
-          await loadAllSyncData();
-        } catch (err: any) {
-          toast(`Gagal: ${err}`);
-        }
-      },
-    });
-  }
-
-  async function handleRetryAllFailed() {
-    isRetryingAll = true;
-    try {
-      const count = await invoke<number>("retry_all_failed_sync", { eventId });
-      toast(`${count} item dikirim ulang`);
-      await loadAllSyncData();
-    } catch (err: any) {
-      toast(`Gagal kirim ulang: ${err}`);
-    } finally {
-      isRetryingAll = false;
-    }
-  }
-
   async function handleClearSynced() {
     try {
       const count = await invoke<number>("clear_synced_items", { eventId });
       toast(`${count} item dibersihkan`);
-      await loadAllSyncData();
-    } catch (err: any) {
-      toast(`Gagal: ${err}`);
-    }
-  }
-
-  async function handleConfirmClearAll() {
-    try {
-      const count = await invoke<number>("clear_all_sync_queue", { eventId });
-      toast(`Antrean (${count} item) dikosongkan`);
-      showClearAllModal = false;
       await loadAllSyncData();
     } catch (err: any) {
       toast(`Gagal: ${err}`);
@@ -522,6 +505,8 @@
   );
 
   let isLinked = $derived(!!eventMapping.hosted_event_id);
+  /** Rows the web has not taken yet ('pending' + 'failed'; old 'abandoned' rows are not counted). */
+  let unsentCount = $derived(queueStats.pending_count + failedInQueue);
   let liveOn = $derived(!!activeEvent?.is_live_sync_enabled);
   let targetName = $derived(
     syncConfig.mode === "production" ? "Production" : syncConfig.mode === "local" ? "Dev lokal" : "Server kustom"
@@ -538,7 +523,7 @@
     if (status === "failed") return { label: "Gagal", cls: "text-rose-300", dot: "bg-rose-400" };
     if (status === "pending" || status === "processing") return { label: "Tertunda", cls: "text-amber-300", dot: "bg-amber-400" };
     if (status === "synced") return { label: "Terkirim", cls: "text-emerald-300", dot: "bg-emerald-400" };
-    // refused by the web (e.g. bout not pushed yet): counted under "Gagal", sent again on demand
+    // left over from the old sender, which skipped refused rows; outside the queue now (Lewati)
     if (status === "abandoned") return { label: "Ditolak web", cls: "text-rose-300", dot: "bg-rose-400" };
     return { label: status, cls: "text-zinc-400", dot: "bg-zinc-500" };
   }
@@ -559,31 +544,6 @@
       </p>
     </div>
 
-    <div class="flex items-center gap-2 shrink-0 self-start sm:self-auto">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={autoRefresh}
-        onclick={() => (autoRefresh = !autoRefresh)}
-        class="h-9 px-3.5 font-semibold text-xs rounded-xl border transition-colors flex items-center gap-2 cursor-pointer bg-white/[0.04] text-zinc-300 border-white/[0.1] hover:bg-white/[0.08]"
-      >
-        <span class="relative inline-block w-7 h-4 rounded-full transition {autoRefresh ? 'bg-emerald-500' : 'bg-zinc-600'}">
-          <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all {autoRefresh ? 'left-3.5' : 'left-0.5'}"></span>
-        </span>
-        <span>Perbarui otomatis</span>
-      </button>
-      <button
-        type="button"
-        onclick={() => loadAllSyncData()}
-        aria-label="Segarkan antrean"
-        title="Segarkan antrean"
-        class="w-9 h-9 flex items-center justify-center rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/[0.1] transition-colors cursor-pointer"
-      >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-      </button>
-    </div>
   </div>
 
   {#if authStatus.mode === "none"}
@@ -599,11 +559,10 @@
       <div class="flex items-start gap-2.5 text-sm text-rose-100 min-w-0">
         <svg class="w-4 h-4 mt-0.5 shrink-0 text-rose-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
         <span class="min-w-0">
-          <span class="block font-semibold">Web menolak komputer ini. Pengiriman dijeda 5 menit.</span>
+          <span class="block font-semibold">Web menolak komputer ini. Pengiriman dijeda 5 menit, atau tekan "Kirim sekarang" di antrean.</span>
           <span class="block text-xs text-rose-200/80 mt-0.5 select-text break-words">{authStatus.blocked_reason}</span>
         </span>
       </div>
-      <button type="button" onclick={handleRetryAllFailed} disabled={isRetryingAll} class="shrink-0 h-9 px-3.5 bg-white/[0.06] hover:bg-white/[0.12] text-white font-semibold text-xs rounded-xl border border-white/[0.15] transition-colors disabled:opacity-50 cursor-pointer">Coba lagi sekarang</button>
     </div>
   {:else if authStatus.mode === "legacy"}
     <p class="mt-3 text-xs text-zinc-500 shrink-0">Memakai token lama, bukan lisensi. Aktifkan lisensi supaya sinkron tetap jalan setelah token lama dimatikan.</p>
@@ -772,9 +731,54 @@
   </section>
 
   <!-- Queue -->
-  <div class="flex items-center gap-2.5 mt-6 shrink-0">
+  <div class="flex flex-wrap items-center gap-2.5 mt-6 shrink-0">
     <h3 class="text-sm font-bold text-white">Antrean kirim</h3>
     <span class="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1] tabular-nums">{queueStats.total_count}</span>
+    <div class="ml-auto flex items-center gap-2">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={autoSend}
+        onclick={handleToggleAutoSend}
+        disabled={isTogglingAutoSend}
+        class="h-9 px-3.5 font-semibold text-xs rounded-xl border transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 {autoSend ? 'bg-emerald-500/[0.06] text-emerald-200 border-emerald-500/40' : 'bg-white/[0.04] text-zinc-300 border-white/[0.1] hover:bg-white/[0.08]'}"
+      >
+        <span class="relative inline-block w-7 h-4 rounded-full transition {autoSend ? 'bg-emerald-500' : 'bg-zinc-600'}">
+          <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all {autoSend ? 'left-3.5' : 'left-0.5'}"></span>
+        </span>
+        <span>Kirim otomatis</span>
+      </button>
+      {#if unsentCount > 0}
+        <button
+          type="button"
+          onclick={handleSendNow}
+          disabled={isSendingNow}
+          class="h-9 px-4 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl shadow-md transition-colors disabled:opacity-50 cursor-pointer"
+        >
+          {isSendingNow ? "Mengirim…" : "Kirim sekarang"}
+        </button>
+      {/if}
+    </div>
+  </div>
+
+  <!-- One line: what the sender is doing now -->
+  <div class="mt-2 text-xs flex flex-wrap items-center gap-x-2 gap-y-1 shrink-0" role="status" aria-live="polite">
+    {#if !autoSend}
+      <span class="text-amber-300">Kirim otomatis mati.</span>
+      <span class="text-zinc-400">{unsentCount > 0 ? `${unsentCount} item menunggu "Kirim sekarang".` : "Tidak ada yang menunggu."}</span>
+    {:else if heldRow}
+      <span class="text-rose-300 min-w-0">
+        Antrean tertahan di #{heldRow.id} /{heldRow.endpoint}{heldRow.last_error ? `: ${heldRow.last_error}` : ""}
+      </span>
+      {#if retryAt > nowSecs}<span class="text-zinc-400 tabular-nums">· coba lagi dalam {retryAt - nowSecs} detik</span>{/if}
+      {#if heldRow.last_error?.includes("404") && isLinked}
+        <button type="button" onclick={() => (showPushBaganModal = true)} class="h-7 px-2.5 bg-white/[0.06] hover:bg-white/[0.12] text-white font-semibold rounded-lg transition-colors cursor-pointer">Kirim bagan</button>
+      {/if}
+    {:else if unsentCount > 0}
+      <span class="text-amber-300">Mengirim {unsentCount} item…</span>
+    {:else}
+      <span class="text-emerald-300">Semua terkirim.</span>
+    {/if}
   </div>
 
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 my-3 shrink-0" role="radiogroup" aria-label="Filter antrean">
@@ -821,16 +825,6 @@
         </button>
       {/if}
     </div>
-    {#if queueStats.failed_count > 0}
-      <button
-        type="button"
-        onclick={handleRetryAllFailed}
-        disabled={isRetryingAll}
-        class="h-9 px-3.5 bg-white text-black hover:bg-zinc-200 font-bold text-xs rounded-xl transition-colors shadow-md disabled:opacity-50 cursor-pointer"
-      >
-        {isRetryingAll ? "Mengirim…" : `Kirim ulang yang gagal (${queueStats.failed_count})`}
-      </button>
-    {/if}
     {#if queueStats.synced_count > 0}
       <button
         type="button"
@@ -891,14 +885,6 @@
                   {#if item.status === "failed" || item.status === "pending" || item.status === "abandoned"}
                     <button
                       type="button"
-                      onclick={() => handleRetrySingle(item)}
-                      aria-label={`Kirim item #${item.id}`}
-                      class="h-8 px-2.5 bg-white/[0.06] hover:bg-white/[0.12] text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-                    >
-                      Kirim
-                    </button>
-                    <button
-                      type="button"
                       onclick={() => handleMarkSynced(item)}
                       aria-label={`Lewati item #${item.id}`}
                       title="Tandai terkirim tanpa mengirim"
@@ -915,15 +901,6 @@
                     class="w-9 h-9 flex items-center justify-center rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
                   >
                     <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" /></svg>
-                  </button>
-                  <button
-                    type="button"
-                    onclick={() => handleDeleteSingle(item)}
-                    aria-label={`Hapus item #${item.id}`}
-                    title="Hapus dari antrean"
-                    class="w-9 h-9 flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-300 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                  >
-                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                   </button>
                 </div>
               </td>
