@@ -90,11 +90,13 @@
     isDeletingBagan = true;
     deleteBaganError = "";
     try {
-      await invoke("delete_category_bagans", {
-        eventId: deleteEventId,
-        categoryId: deleteCategoryId,
-        force: deleteNeedsResultsConfirm && deleteResultsConfirmed,
-      });
+      const force = deleteNeedsResultsConfirm && deleteResultsConfirmed;
+      if (isRepechageBagan) {
+        // Only the referchange goes; the main bracket stays and gets its juara 3 back.
+        await invoke("delete_repechage_bagan", { baganId: (currentBaganInfo ?? baganInfo)?.id ?? baganId, force });
+      } else {
+        await invoke("delete_category_bagans", { eventId: deleteEventId, categoryId: deleteCategoryId, force });
+      }
       showDeleteBagan = false;
       onShowToast(`Bagan ${baganName} dihapus`, "success");
       onBaganUpdated?.();
@@ -2119,8 +2121,13 @@
     <div class="bg-[#181a20] border border-white/10 rounded-2xl p-6 shadow-2xl w-full max-w-md text-zinc-200 space-y-4">
       <h3 class="text-sm font-black uppercase tracking-wider font-mono text-white">Hapus bagan?</h3>
       <p class="text-xs text-zinc-300 leading-relaxed">
-        Bagan <strong class="text-white">{baganName}</strong> akan dihapus, termasuk pool dan final nomor ini bila ada.
-        Atletnya tetap terdaftar dan nomor ini bisa diundi lagi dari menu Drawing.
+        {#if isRepechageBagan}
+          Hanya bagan <strong class="text-white">{baganName}</strong> yang dihapus. Bagan utama nomor ini tetap ada,
+          dan juara 3 kembali ke atlet yang kalah di semifinal.
+        {:else}
+          Bagan <strong class="text-white">{baganName}</strong> akan dihapus, termasuk pool dan final nomor ini bila ada.
+          Atletnya tetap terdaftar dan nomor ini bisa diundi lagi dari menu Drawing.
+        {/if}
       </p>
       {#if deleteBaganError}
         <p class="text-xs text-red-300">{deleteBaganError}</p>

@@ -2080,6 +2080,24 @@ async fn dispatch_command_api(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
             }
         },
+        "delete_repechage_bagan" => {
+            let bagan_id = match required_id(&payload, &["baganId", "bagan_id"]) { Ok(v) => v, Err(r) => return r };
+            let force = payload.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            match db.delete_repechage_bagan(bagan_id, force).await {
+                Ok(()) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "bracket".into(),
+                        payload: serde_json::json!({ "type": "bracket_updated" }),
+                    });
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
         "delete_category_bagans" => {
             let ev_id = match required_event_id(&payload) { Ok(v) => v, Err(r) => return r };
             let cat_id = get_i64_val(&payload, &["categoryId", "category_id"]).unwrap_or(0);

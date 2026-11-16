@@ -445,6 +445,21 @@ async fn delete_all_festival_bagans(
     res
 }
 
+/// Deletes one referchange bagan; the category's other bagans and results stay.
+#[tauri::command]
+async fn delete_repechage_bagan(
+    bagan_id: i64,
+    force: Option<bool>,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let res = db.delete_repechage_bagan(bagan_id, force.unwrap_or(false)).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
+}
+
 #[tauri::command]
 async fn delete_category_bagans(
     event_id: i64,
@@ -2459,6 +2474,7 @@ pub fn run() {
             delete_all_bagans,
             delete_all_festival_bagans,
             delete_category_bagans,
+            delete_repechage_bagan,
             delete_all_athletes,
             reset_total_tournament,
             delete_event,

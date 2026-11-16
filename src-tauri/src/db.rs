@@ -3474,6 +3474,157 @@ impl DatabaseManager {
         Ok(())
     }
 
+    /// Juara 3A/3B of a category written back from its own played bouts, as `save_match_result`
+    /// writes them when there is no referchange: the semifinal losers of the main / Final bagan
+    /// (urutan 1 -> 3A, 2 -> 3B), or with 2 pools each pool's round-4 loser (A -> 3A, B -> 3B, on
+    /// the Final and on that pool). A place whose deciding bout is not finished is empty.
+    async fn bronze_from_semifinals(conn: &mut sqlx::SqliteConnection, nomor_tanding_id: i64) -> Result<(), String> {
+        async fn loser(conn: &mut sqlx::SqliteConnection, bagan_id: i64, round: i64, urutan: i64) -> Option<i64> {
+            let row: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
+                "SELECT atlet1_id, atlet2_id, pemenang FROM backend_detailbagan
+                  WHERE bagan_id = ? AND round = ? AND urutan = ? AND selesai = 1 ORDER BY id LIMIT 1",
+            )
+            .bind(bagan_id)
+            .bind(round)
+            .bind(urutan)
+            .fetch_optional(&mut *conn)
+            .await
+            .ok()?;
+            let (a1, a2, p) = row?;
+            match p.as_deref().map(str::trim) {
+                Some("1") => a2,
+                Some("2") => a1,
+                _ => None,
+            }
+        }
+
+        let bagans: Vec<(i64, i32, Option<String>)> = sqlx::query_as(
+            "SELECT id, pool, nama_bagan FROM backend_bagan WHERE nomor_tanding_id = ?
+               AND NOT (UPPER(COALESCE(nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(nama_bagan, '')) LIKE '%REPECHAGE%')",
+        )
+        .bind(nomor_tanding_id)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| format!("Gagal memuat bagan kategori: {}", e))?;
+        sqlx::query(
+            "UPDATE backend_bagan SET juara_3a_id = NULL, juara_3b_id = NULL WHERE nomor_tanding_id = ?
+               AND NOT (UPPER(COALESCE(nama_bagan, '')) LIKE '%REFERCHANGE%' OR UPPER(COALESCE(nama_bagan, '')) LIKE '%REPECHAGE%')",
+        )
+        .bind(nomor_tanding_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("Gagal mengosongkan juara 3: {}", e))?;
+
+        let pools: Vec<(i64, usize, usize)> = bagans
+            .iter()
+            .filter_map(|(id, pool, name)| {
+                pool_slot_of(*pool, &name.clone().unwrap_or_default().to_uppercase()).map(|(i, n)| (*id, i, n))
+            })
+            .collect();
+        let main = match Self::final_bagan_of(&mut *conn, Some(nomor_tanding_id)).await {
+            Some(b) => Some(b),
+            None => Self::main_bagan_of(&mut *conn, Some(nomor_tanding_id)).await,
+        };
+
+        let mut writes: Vec<(&str, i64, Option<i64>)> = Vec::new();
+        if pools.iter().any(|(_, _, n)| *n == 2) {
+            for (pool_bagan, idx, _) in &pools {
+                let col = if *idx == 0 { "juara_3a_id" } else { "juara_3b_id" };
+                let l = loser(&mut *conn, *pool_bagan, 4, 1).await;
+                writes.push((col, *pool_bagan, l));
+                if let Some(fb) = main {
+                    writes.push((col, fb, l));
+                }
+            }
+        } else if let Some(mb) = main {
+            writes.push(("juara_3a_id", mb, loser(&mut *conn, mb, 3, 1).await));
+            writes.push(("juara_3b_id", mb, loser(&mut *conn, mb, 3, 2).await));
+        }
+        for (col, bagan_id, atlet) in writes {
+            sqlx::query(&format!("UPDATE backend_bagan SET {col} = ? WHERE id = ?"))
+                .bind(atlet)
+                .bind(bagan_id)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| format!("Gagal memperbarui juara 3: {}", e))?;
+        }
+        Ok(())
+    }
+
+    /// Deletes one referchange bagan only. The category's other bagans stay, and their Juara 3A/3B
+    /// go back to the semifinal losers (`bronze_from_semifinals`). With live sync on, the corrected
+    /// podium is sent to the web. Without `force`, a referchange with a finished bout is kept.
+    pub async fn delete_repechage_bagan(&self, bagan_id: i64, force: bool) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let row: Option<(Option<i64>, Option<String>, Option<i64>)> =
+            sqlx::query_as("SELECT nomor_tanding_id, nama_bagan, event_id FROM backend_bagan WHERE id = ?")
+                .bind(bagan_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("Gagal memuat bagan: {}", e))?;
+        let Some((nt_id, name, event_id)) = row else {
+            return Err("Bagan tidak ditemukan.".to_string());
+        };
+        let upper = name.unwrap_or_default().to_uppercase();
+        if !(upper.contains("REFERCHANGE") || upper.contains("REPECHAGE")) {
+            return Err("Hanya bagan referchange yang bisa dihapus sendiri. Bagan utama dihapus per kategori.".to_string());
+        }
+        if !force {
+            let finished: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backend_detailbagan WHERE bagan_id = ? AND selesai = 1")
+                .bind(bagan_id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("Gagal memeriksa partai: {}", e))?;
+            if finished > 0 {
+                return Err(format!(
+                    "Referchange tidak dihapus: sudah ada {} partai selesai. Konfirmasi penghapusan hasil bila memang ingin dihapus.",
+                    finished
+                ));
+            }
+        }
+
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        Self::purge_bout_dependents(&mut *tx, "SELECT ?", bagan_id).await?;
+        sqlx::query("DELETE FROM backend_detailbagan WHERE bagan_id = ?")
+            .bind(bagan_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus partai referchange: {}", e))?;
+        sqlx::query("DELETE FROM backend_bagan WHERE id = ?")
+            .bind(bagan_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal menghapus bagan referchange: {}", e))?;
+
+        if let Some(nt) = nt_id {
+            Self::bronze_from_semifinals(&mut *tx, nt).await?;
+            // The web keeps the referchange's bronze until it hears the corrected podium.
+            let ev: Option<(Option<String>, bool)> = sqlx::query_as(
+                "SELECT kode_event, COALESCE(is_live_sync_enabled, 0) FROM backend_event WHERE id = ?",
+            )
+            .bind(event_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+            if let (Some((kode, true)), Some(ev_id)) = (ev, event_id) {
+                // Same event code as `save_match_result` uses for kode_realtime.
+                let ev_code = kode.unwrap_or_else(|| format!("EV{}", ev_id));
+                let podium_bagan = match Self::final_bagan_of(&mut *tx, Some(nt)).await {
+                    Some(b) => Some(b),
+                    None => Self::main_bagan_of(&mut *tx, Some(nt)).await,
+                };
+                if let Some(pb) = podium_bagan {
+                    if let Some(payload) = Self::podium_payload(&mut *tx, &ev_code, pb).await {
+                        Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/final-result/", payload).await;
+                    }
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan perubahan: {}", e))?;
+        Ok(())
+    }
+
     /// Executes tournament bracket drawing for selected categories
     pub async fn execute_drawing_bagan(
         &self,

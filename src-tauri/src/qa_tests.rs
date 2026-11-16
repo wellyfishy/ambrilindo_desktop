@@ -1348,3 +1348,83 @@ async fn qa_lan_commands_need_an_event_id() {
     let (c, body) = s.cmd("get_categories", json!({ "eventId": PORPROV })).await;
     assert_eq!(c, 200, "get_categories with eventId: {body}");
 }
+
+/// Deleting a referchange removes only that bagan: the main bracket and its results stay, and
+/// its Juara 3A/3B go back to the semifinal losers (sent to the web as a podium).
+#[tokio::test]
+async fn qa_delete_referchange_keeps_main_bracket() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    sqlx::query("UPDATE backend_event SET is_live_sync_enabled = 1 WHERE id = ?").bind(PORPROV).execute(&pool).await.unwrap();
+    let cat = make_category(&s, PORPROV, "QA HAPUS BABAK TAMBAHAN", 16).await;
+    s.ok("execute_drawing_bagan", json!({ "eventId": PORPROV, "categoryIds": [cat], "shuffleType": "random" })).await;
+    let main = category_bagans(&s, PORPROV, cat).await[0].clone();
+    let main_id = main["id"].as_i64().unwrap();
+    play_category(&s, PORPROV, cat).await;
+    let ms = details(&s, main_id).await;
+    let semi_losers = (winner_loser(&bout(&ms, 3, 1)).1, winner_loser(&bout(&ms, 3, 2)).1);
+    let finished_main = ms.iter().filter(|m| m["selesai"].as_bool() == Some(true)).count();
+
+    s.ok("generate_repechage_bracket", json!({ "mainBaganId": main_id })).await;
+    play_category(&s, PORPROV, cat).await;
+    let rep = category_bagans(&s, PORPROV, cat).await.into_iter().find(is_referchange).expect("referchange");
+    let rep_id = rep["id"].as_i64().unwrap();
+    let podium_rows = || async {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM backend_syncqueue WHERE endpoint = 'api/final-result/' AND event_id = ?")
+            .bind(PORPROV).fetch_one(&pool).await.unwrap()
+    };
+    let rows_before = podium_rows().await;
+
+    // The main bracket cannot be deleted through this command.
+    let (c, _) = s.cmd("delete_repechage_bagan", json!({ "baganId": main_id, "force": true })).await;
+    assert_ne!(c, 200, "main bagan refused");
+    // A played referchange needs the explicit confirmation.
+    let (c, _) = s.cmd("delete_repechage_bagan", json!({ "baganId": rep_id })).await;
+    assert_ne!(c, 200, "played referchange kept without force");
+    let (c, body) = s.cmd("delete_repechage_bagan", json!({ "baganId": rep_id, "force": true })).await;
+    assert_eq!(c, 200, "delete referchange: {body}");
+
+    let left = category_bagans(&s, PORPROV, cat).await;
+    assert_eq!(left.iter().map(|b| b["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![main_id], "only the main bagan is left");
+    let ms = details(&s, main_id).await;
+    assert_eq!(ms.iter().filter(|m| m["selesai"].as_bool() == Some(true)).count(), finished_main, "main results kept");
+    let bronze: (Option<i64>, Option<i64>) = sqlx::query_as("SELECT juara_3a_id, juara_3b_id FROM backend_bagan WHERE id = ?")
+        .bind(main_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(bronze, (Some(semi_losers.0), Some(semi_losers.1)), "juara 3 = semifinal losers again");
+    assert!(podium_rows().await > rows_before, "corrected podium queued for the web");
+}
+
+/// Same with 2 pools: after deleting the referchange, Juara 3A/3B are each pool's round-4 loser
+/// again, on the Final bagan.
+#[tokio::test]
+async fn qa_delete_referchange_two_pools_restores_pool_bronze() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let cat = make_category(&s, PORPROV, "QA HAPUS BABAK TAMBAHAN DUA POOL", 20).await;
+    s.ok("execute_drawing_bagan", json!({ "eventId": PORPROV, "categoryIds": [cat], "shuffleType": "random" })).await;
+    let bs = category_bagans(&s, PORPROV, cat).await;
+    assert_eq!(bs.len(), 3, "final + 2 pools");
+    let final_id = bs.iter().find(|b| b["pool"].as_i64() == Some(0)).unwrap()["id"].as_i64().unwrap();
+    play_category(&s, PORPROV, cat).await;
+    let losers: Vec<i64> = pool_round4_losers(&s, &bs).await;
+
+    s.ok("generate_repechage_bracket", json!({ "mainBaganId": final_id })).await;
+    play_category(&s, PORPROV, cat).await;
+    let rep = category_bagans(&s, PORPROV, cat).await.into_iter().find(is_referchange).expect("referchange");
+    let (c, body) = s.cmd("delete_repechage_bagan", json!({ "baganId": rep["id"], "force": true })).await;
+    assert_eq!(c, 200, "delete referchange: {body}");
+    assert_eq!(category_bagans(&s, PORPROV, cat).await.len(), 3, "final and pools kept");
+    let bronze: (Option<i64>, Option<i64>) = sqlx::query_as("SELECT juara_3a_id, juara_3b_id FROM backend_bagan WHERE id = ?")
+        .bind(final_id).fetch_one(&pool).await.unwrap();
+    assert_eq!(bronze, (Some(losers[0]), Some(losers[1])), "juara 3 = pool A / B round-4 losers");
+}
+
+/// Round-4 losers of Pool A and Pool B, in that order.
+async fn pool_round4_losers(s: &TestServer, bs: &[Value]) -> Vec<i64> {
+    let mut out = Vec::new();
+    for suffix in ["Pool A", "Pool B"] {
+        let p = pool_named(bs, suffix);
+        out.push(winner_loser(&bout(&details(s, p["id"].as_i64().unwrap()).await, 4, 1)).1);
+    }
+    out
+}
