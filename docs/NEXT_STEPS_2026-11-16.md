@@ -14,6 +14,17 @@ Lanjutan dari audit (`docs/AUDIT_DESKTOP_WEB_2026-11-16.md`, satu folder dengan 
 
 ---
 
+## Selesai (17 Nov, bagian 2): antrean sinkron FIFO ketat + "Kirim otomatis"
+
+- **Kirim di latar belakang, sampai terkirim, FIFO ketat.** Partai yang ditolak web (404 "Ditolak web", 400, 4xx lain) tidak lagi dilewati: baris itu menahan antrean dan dicoba lagi (jeda 2, 4, 8 … 60 detik). 404 karena bagan belum dikirim akan lewat sendiri setelah "Kirim bagan". "Lewati" untuk baris yang memang tidak akan pernah diterima web. Ini menjawab keputusan **K4**.
+- **Saklar "Kirim otomatis"** di Sinkronisasi web (disimpan di `sync_target.json`, default nyala). Kalau mati, antrean tetap terisi tapi baru dikirim lewat "Kirim sekarang".
+- **Halaman selalu real-time:** tanpa "Perbarui otomatis" dan tombol segarkan; halaman memuat ulang sendiri saat antrean berubah (juga dari laptop LAN).
+- **Tombol yang dihapus:** "Kirim" per baris dan hapus per baris (bisa mengacak urutan), "Coba lagi sekarang" dan "Kirim ulang yang gagal" (sama-sama diganti "Kirim sekarang").
+- Tes: `web_e2e_c_unknown_bout_holds_the_queue`, `web_e2e_c_auto_send_off_waits_for_kirim_sekarang`, F2 diperbarui, unit `queue_fingerprint_changes_only_with_the_queue`, `retry_backs_off_up_to_a_minute`.
+- **Cek manual:** matikan internet saat pertandingan → antrean menunggu berurutan lalu jalan sendiri; matikan/nyalakan "Kirim otomatis"; biarkan halaman terbuka sambil menyimpan hasil dari laptop LAN.
+
+---
+
 ## Selesai (17 Nov): hapus referchange, cetak, drawing manual dengan pool, data TEST REALTIME
 
 | | Perbaikan | Tes |
@@ -95,8 +106,8 @@ Data turnamen (`tournament_data/db.sqlite3`) ikut di repo desktop. File `.env` t
 **Cek bahwa semuanya hijau sebelum mulai mengubah apa pun:**
 ```bash
 cd ambrilindo_desktop/src-tauri
-cargo test --lib                                          # 86 lulus
-cargo test --lib web_e2e -- --ignored --test-threads=1    # 20 lulus (butuh repo web + venv)
+cargo test --lib                                          # 88 lulus
+cargo test --lib web_e2e -- --ignored --test-threads=1    # 21 lulus (butuh repo web + venv)
 cd ..
 npx vitest run                                            # 22 lulus
 npx svelte-check                                          # 0 error
@@ -166,7 +177,7 @@ Centang satu per satu:
 | K1 | Lisensi kedaluwarsa di tengah event | a) tetap kunci (sekarang) b) masa tenggang 48 jam khusus Kata/Kumite c) peringatan H-7 / H-3 di aplikasi | Sekarang: panel yang sudah terbuka tetap jalan, partai berikutnya tidak bisa dibuka. Ini disengaja (`license.rs` tes `expiry_locks_immediately`). Opsi b/c cukup diubah di `license::check()`; Drawing dan sinkron tetap ketat. |
 | K2 | Target hosting web | Fly.io atau VPS Nevacloud | Menentukan cara deploy di 1.1. Pilih satu supaya tidak ada dua versi live. |
 | K3 | Token sinkron lama | Matikan `SYNC_ALLOW_LEGACY_TOKEN` di web | Cek dulu di admin web (Lisensi Desktop / audit log) bahwa tidak ada lagi panggilan "legacy". Token lama bisa mengakses semua event, termasuk menghapus bagan lewat full push. |
-| K4 | Ditolak web (404) | Biarkan manual (sekarang) atau kirim ulang otomatis setelah "Kirim bagan" | Hasil yang tiba sebelum bagan dikirim akan 404. Sekarang perlu klik "Kirim ulang yang gagal". |
+| K4 | ~~Ditolak web (404)~~ **Selesai** | Antrean FIFO ketat: baris 404 menahan antrean dan lewat sendiri setelah "Kirim bagan" | Lihat "Selesai (17 Nov, bagian 2)". |
 
 ---
 
