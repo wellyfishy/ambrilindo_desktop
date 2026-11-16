@@ -10,7 +10,7 @@ Lanjutan dari audit (`docs/AUDIT_DESKTOP_WEB_2026-11-16.md`, satu folder dengan 
 | `ambrilindo_desktop` | `acf1312` | Pool 4, batas 64 atlet, tarik atlet, antrean sinkron, buka ulang ke web, kirim ulang hasil, draft skor, dispatcher LAN, jam lisensi |
 | `ambrilindo_desktop` | (commit ini) | Dokumen ini + salinan laporan audit |
 
-**Belum di `main` (branch `claude/stoic-keller-xehhxw` di kedua repo):** semua perbaikan di bagian "Selesai" di bawah. Web: `8c2f612b`, `fa2fabba`, `bc02c8d7`, `792c23a6`. Desktop: `7b6963b` sampai commit terakhir branch. **Merge kedua branch ke `main` dulu** sebelum langkah 1.1/1.2. Kalau tidak, `git pull` di laptop dan `fly deploy` akan memakai kode lama tanpa perbaikan ini.
+**Sudah di `main` (17 Nov):** semua perbaikan di bagian "Selesai" di bawah ada di `main` kedua repo (fast-forward dari branch `claude/stoic-keller-xehhxw`). Cukup `git pull` di `main`. Urutan tetap: **deploy web dulu** (1.1), baru build dan bagikan exe (1.2).
 
 ---
 
@@ -97,7 +97,7 @@ SQLITE_PATH=/tmp/web_test.sqlite3 DEBUG=true ../venv/Scripts/python manage.py te
 ## 1. WAJIB sebelum event berikutnya
 
 ### 1.1 Deploy web DULU
-> Deploy commit web yang sudah berisi `8c2f612b` (setelah merge), bukan `b6a57d4d`.
+> Deploy `main` web terbaru (berisi `8c2f612b` … `792c23a6`), bukan `b6a57d4d`.
 Push ke `main` **tidak** otomatis deploy (repo web tidak punya CI). Desktop baru memanggil `api/reopen/`, yang baru ada di web `b6a57d4d`.
 - **Fly.io:** dari `ambrilindo_web_pub`, jalankan `fly deploy`. Container menjalankan `migrate` sendiri, dan tidak ada migrasi baru.
 - **VPS Nevacloud:** ikuti `deploy/MIGRASI_NEVACLOUD.md` di repo web (kirim kode → `docker compose up -d --build`).
