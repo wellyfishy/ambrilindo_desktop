@@ -878,6 +878,25 @@ impl DatabaseManager {
     }
 
     /// The Final bagan of a category split into pools (never its referchange).
+    /// The bagan that holds the category's podium for a bout of `bagan_id`: the Final bracket for a
+    /// pool or referchange bout (the main bracket when there is no Final), else the bracket itself.
+    async fn podium_bagan_for(
+        conn: &mut sqlx::SqliteConnection,
+        bagan_id: i64,
+        is_pool_bracket: bool,
+        is_repechage: bool,
+        nomor_tanding_id: Option<i64>,
+    ) -> Option<i64> {
+        if is_pool_bracket || is_repechage {
+            match Self::final_bagan_of(&mut *conn, nomor_tanding_id).await {
+                Some(b) => Some(b),
+                None => Self::main_bagan_of(&mut *conn, nomor_tanding_id).await,
+            }
+        } else {
+            Some(bagan_id)
+        }
+    }
+
     async fn final_bagan_of(conn: &mut sqlx::SqliteConnection, nomor_tanding_id: Option<i64>) -> Option<i64> {
         sqlx::query_scalar(
             "SELECT id FROM backend_bagan
@@ -4480,6 +4499,14 @@ impl DatabaseManager {
             .map_err(|e| format!("Gagal memuat status partai: {}", e))?
             .unwrap_or(false);
 
+        // The category's podium before this save: a finished bout that changes it (semifinal,
+        // pool round 4, referchange, round robin, or a corrected result) sends it to the web.
+        let podium_bagan = Self::podium_bagan_for(&mut *tx, bagan_id, is_pool_bracket, is_repechage, nomor_tanding_id).await;
+        let podium_before = match podium_bagan {
+            Some(pb) => Self::podium_fields(&mut *tx, pb).await,
+            None => None,
+        };
+
         // 2. Update current match in backend_detailbagan
         sqlx::query(
             r#"
@@ -5194,6 +5221,14 @@ impl DatabaseManager {
                             final_payload.insert("kode_realtime".into(), serde_json::json!(&kode_realtime));
                             Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/final-result/", serde_json::Value::Object(final_payload)).await;
                         }
+                    } else if let Some(pb) = podium_bagan {
+                        // Any other bout that changed the podium (bronze from a semifinal, pool
+                        // round 4 or referchange; round robin places; a corrected result).
+                        if Self::podium_fields(&mut *tx, pb).await != podium_before {
+                            if let Some(payload) = Self::podium_payload(&mut *tx, &ev_code, pb).await {
+                                Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/final-result/", payload).await;
+                            }
+                        }
                     }
                 } else if is_live_sync_enabled && !input.selesai && was_finished && !is_team_child_bout {
                     // A finished bout reopened: the web reopens it too and takes its winner back
@@ -5213,13 +5248,6 @@ impl DatabaseManager {
 
                     // The bout may have decided medals (final, semifinal, pool round 4,
                     // referchange, round robin): send the category's podium as it is now.
-                    let podium_bagan = if is_pool_bracket || is_repechage {
-                        Self::final_bagan_of(&mut *tx, nomor_tanding_id).await.or(
-                            Self::main_bagan_of(&mut *tx, nomor_tanding_id).await,
-                        )
-                    } else {
-                        Some(bagan_id)
-                    };
                     if let Some(pb) = podium_bagan {
                         if let Some(payload) = Self::podium_payload(&mut *tx, &ev_code, pb).await {
                             Self::enqueue_live_sync(&mut *tx, Some(ev_id), "api/final-result/", payload).await;

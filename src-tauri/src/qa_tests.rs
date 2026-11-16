@@ -1261,3 +1261,62 @@ async fn qa_referchange_decides_bronze_of_main_bracket() {
             .unwrap();
     assert_eq!((main_a, main_b), (rep_a, rep_b), "main bracket bronze must mirror the referchange");
 }
+
+/// Live sync sends the podium whenever a bout changes it, not only after the final: the
+/// semifinal losers' bronze, and again when a semifinal result is corrected. A bout that does
+/// not change the podium (round 1) sends none.
+#[tokio::test]
+async fn qa_podium_sent_when_it_changes() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    sqlx::query("UPDATE backend_event SET is_live_sync_enabled = 1 WHERE id = ?").bind(PORPROV).execute(&pool).await.unwrap();
+    let cat = make_category(&s, PORPROV, "QA PODIUM LIVE", 8).await;
+    s.ok("execute_drawing_bagan", json!({ "eventId": PORPROV, "categoryIds": [cat], "shuffleType": "random" })).await;
+    let bs = category_bagans(&s, PORPROV, cat).await;
+    assert_eq!(bs.len(), 1, "one bracket, no pools");
+    let b = bs[0].clone();
+    let bid = b["id"].as_i64().unwrap();
+    let code: String = sqlx::query_scalar("SELECT COALESCE(kode_event, 'EV' || id) FROM backend_event WHERE id = ?")
+        .bind(PORPROV).fetch_one(&pool).await.unwrap();
+    let prefix = format!("\"{code}-{bid}-");
+    let podiums = || async {
+        let rows: Vec<String> = sqlx::query_scalar("SELECT payload FROM backend_syncqueue WHERE endpoint = 'api/final-result/' AND event_id = ? ORDER BY id")
+            .bind(PORPROV).fetch_all(&pool).await.unwrap();
+        rows.into_iter().filter(|p| p.contains(&prefix)).map(|p| serde_json::from_str::<Value>(&p).unwrap()).collect::<Vec<_>>()
+    };
+
+    // Everything before the final, in bracket order.
+    let mut first = true;
+    loop {
+        let ms = details(&s, bid).await;
+        let Some(m) = ms.iter().filter(|m| playable(m) && m["round"].as_i64().unwrap_or(0) < 4)
+            .min_by_key(|m| (m["round"].as_i64(), m["urutan"].as_i64())).cloned() else { break };
+        let (c, body) = play(&s, &b, &m).await;
+        assert_eq!(c, 200, "play {}: {body}", m["id"]);
+        if first {
+            assert!(podiums().await.is_empty(), "a round-{} bout sent a podium", m["round"]);
+            first = false;
+        }
+    }
+    let ms = details(&s, bid).await;
+    let (semi1, semi2) = (bout(&ms, 3, 1), bout(&ms, 3, 2));
+    assert!(semi1["selesai"].as_bool() == Some(true) && semi2["selesai"].as_bool() == Some(true), "both semifinals played");
+    assert_ne!(bout(&ms, 4, 1)["selesai"].as_bool(), Some(true), "final not played yet");
+
+    let sent = podiums().await;
+    let last = sent.last().expect("bronze sent after the semifinals");
+    assert_eq!(last["juara_1"], "", "no champion before the final: {last}");
+    assert_ne!(last["juara_3a"], "", "bronze sent: {last}");
+    let bronze_before = last["juara_3a"].clone();
+
+    // Correct semifinal 1: the other athlete wins, so the bronze changes on the web too.
+    let input = json!({
+        "match_id": semi1["id"], "bagan_id": bid, "score1": "1", "score2": "3",
+        "pemenang": "2", "vr1": false, "vr2": false, "hantei": false, "selesai": true,
+    });
+    let (c, body) = s.cmd("save_match_result", json!({ "input": input })).await;
+    assert_eq!(c, 200, "correct semifinal: {body}");
+    let sent = podiums().await;
+    let last = sent.last().unwrap();
+    assert_ne!(last["juara_3a"], bronze_before, "corrected bronze sent: {last}");
+}

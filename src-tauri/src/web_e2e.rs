@@ -1147,3 +1147,52 @@ async fn web_e2e_h_push_prunes_only_desktop_brackets() {
     assert_eq!(exists(&r, format!("event_id={ev}, kode='{old_kode}'")), false, "H3 old bracket removed from the web");
     assert_eq!(exists(&r, format!("pk={web_made}")), true, "H3 web-made bracket kept by a partial push");
 }
+
+/// #10: the referchange decides the bronze after the final. Its result reaches the web podium
+/// live, without "Kirim ulang semua hasil".
+#[tokio::test]
+#[ignore]
+async fn web_e2e_h_referchange_bronze_reaches_the_web() {
+    let _g = E2E.lock().await;
+    let Some(r) = rig().await else { return };
+    let bagan = r.fresh_bagan(5, 8).await;
+    let bid = bagan["id"].as_i64().unwrap();
+    r.push(&bagan).await;
+    for _ in 0..20 {
+        let Some(m) = r.next_playable(&bagan).await else { break };
+        r.finish(&bagan, &m).await;
+    }
+    r.drain().await;
+
+    let res = r.desk.ok("generate_repechage_bracket", json!({ "mainBaganId": bid })).await;
+    let rep = bagans(&r.desk, EVENT)
+        .await
+        .into_iter()
+        .find(|b| b["nomor_tanding_id"] == bagan["nomor_tanding_id"] && crate::qa_tests::is_referchange(b))
+        .unwrap_or_else(|| panic!("referchange bracket: {res}"));
+    r.push(&rep).await;
+    for _ in 0..20 {
+        let Some(m) = r.next_playable(&rep).await else { break };
+        r.finish(&rep, &m).await;
+    }
+    let q = r.drain().await;
+    assert!(q.iter().all(|x| x.status == "synced"), "H4 everything sent: {:?}", statuses(&q));
+
+    let names: Vec<Option<String>> = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT a.nama_atlet, b.nama_atlet FROM backend_bagan m \
+         LEFT JOIN backend_atlet a ON m.juara_3a_id = a.id LEFT JOIN backend_atlet b ON m.juara_3b_id = b.id WHERE m.id = ?",
+    )
+    .bind(bid)
+    .fetch_one(&r.pool)
+    .await
+    .map(|(a, b)| vec![a, b])
+    .unwrap();
+    assert!(names.iter().all(|n| n.is_some()), "H4 desktop bronze decided by the referchange: {names:?}");
+    let k = r.kode(bid, r.desk_match(bid, 4, 1).await.unwrap()["id"].as_i64().unwrap());
+    let web_bagan: i64 = r
+        .web_py(&format!("print('J=' + json.dumps(DetailBagan.objects.get(kode_realtime='{k}').bagan_id))"))
+        .as_i64()
+        .unwrap();
+    let podium = web_podium(&r, web_bagan);
+    assert_eq!((podium[2].as_str(), podium[3].as_str()), (names[0].as_deref(), names[1].as_deref()), "H4 web bronze = referchange: {podium}");
+}
