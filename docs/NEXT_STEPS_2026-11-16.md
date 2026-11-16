@@ -10,6 +10,8 @@ Lanjutan dari audit (`docs/AUDIT_DESKTOP_WEB_2026-11-16.md`, satu folder dengan 
 | `ambrilindo_desktop` | `acf1312` | Pool 4, batas 64 atlet, tarik atlet, antrean sinkron, buka ulang ke web, kirim ulang hasil, draft skor, dispatcher LAN, jam lisensi |
 | `ambrilindo_desktop` | (commit ini) | Dokumen ini + salinan laporan audit |
 
+**Belum di `main` (branch `claude/stoic-keller-xehhxw` di kedua repo):** perbaikan B6/B7/B8/B9, web `8c2f612b` dan desktop `7b6963b`. **Merge kedua branch ke `main` dulu** sebelum langkah 1.1/1.2. Kalau tidak, `git pull` di laptop dan `fly deploy` akan memakai kode lama tanpa perbaikan ini.
+
 ---
 
 ## Selesai (sesi lanjutan 16 Nov): B6, B7, B8, B9
@@ -79,6 +81,7 @@ SQLITE_PATH=/tmp/web_test.sqlite3 DEBUG=true ../venv/Scripts/python manage.py te
 ## 1. WAJIB sebelum event berikutnya
 
 ### 1.1 Deploy web DULU
+> Deploy commit web yang sudah berisi `8c2f612b` (setelah merge), bukan `b6a57d4d`.
 Push ke `main` **tidak** otomatis deploy (repo web tidak punya CI). Desktop baru memanggil `api/reopen/`, yang baru ada di web `b6a57d4d`.
 - **Fly.io:** dari `ambrilindo_web_pub`, jalankan `fly deploy`. Container menjalankan `migrate` sendiri, dan tidak ada migrasi baru.
 - **VPS Nevacloud:** ikuti `deploy/MIGRASI_NEVACLOUD.md` di repo web (kirim kode → `docker compose up -d --build`).
@@ -90,6 +93,10 @@ Tutup aplikasi Ambrilindo dulu; kalau masih jalan, build gagal dengan "Access is
 cd ambrilindo_desktop
 npm run tauri build
 ```
+**Setelah exe baru terpasang:** buka Sinkronisasi untuk setiap event yang aktif dan pastikan event web-nya masih tampil. Exe baru tidak lagi membaca mapping lama (file app lama dan kunci `local_<id>` tanpa mode). Event yang hanya terhubung lewat mapping lama akan tampil belum terhubung: hubungkan ulang. (File `tournament_data/event_mapping.json` di repo sudah memakai format baru, tapi file di PC event bisa berbeda.)
+
+Event yang atletnya dibuat lokal (bukan hasil Tarik atlet, misalnya event 1–4, 12, 13, 16, 17) sekarang dicocokkan di web dengan nama **dan** kontingen. Kalau nama kontingen di desktop dan di web ditulis berbeda, push membuat atlet baru di web, bukan memakai yang lama. Periksa sekali setelah push pertama event seperti ini.
+
 Bagikan exe hanya setelah 1.1 selesai. Kalau desktop baru bertemu web lama, pesan buka ulang muncul sebagai "Ditolak web" dan bisa dikirim ulang setelah web diperbarui.
 
 ### 1.3 Uji coba sebelum event (pakai event uji, bukan event asli)
