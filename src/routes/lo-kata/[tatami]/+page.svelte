@@ -621,10 +621,10 @@
 
   <!-- Sheet of the tapped bout: kata entry (kata) or the athletes (kumite) -->
   {#if editMatch}
-    <div class="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs" role="presentation" onclick={closeSheet}>
+    <div class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs" role="presentation" onclick={closeSheet}>
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
-        class="w-full sm:max-w-xl bg-[#181a20] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[92vh]"
+        class="w-full sm:max-w-xl bg-[#181a20] border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[85dvh]"
         role="dialog"
         aria-modal="true"
         tabindex="-1"

@@ -3659,6 +3659,24 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         info!("Serving venue mobile web frontend from {:?}", build_dir);
         let serve_dir = ServeDir::new(&build_dir).fallback(ServeFile::new(index_file));
         router = router.fallback_service(serve_dir);
+    } else if let Some(app) = state.app_handle.clone() {
+        // No `build` folder next to the exe (portable copy): serve the frontend Tauri
+        // embedded at build time (`frontendDist`), so phones and tablets still get the
+        // web app. The resolver falls back to index.html for client-side routes.
+        info!("Frontend build directory not found, serving the embedded frontend");
+        router = router.fallback(move |uri: axum::http::Uri| {
+            let app = app.clone();
+            async move {
+                match app.asset_resolver().get(uri.path().to_string()) {
+                    Some(asset) => (
+                        [(axum::http::header::CONTENT_TYPE, asset.mime_type)],
+                        asset.bytes,
+                    )
+                        .into_response(),
+                    None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+                }
+            }
+        });
     } else {
         info!("Frontend build directory not found, serving API only");
     }

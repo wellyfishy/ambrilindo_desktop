@@ -364,17 +364,20 @@
       {/each}
     </div>
 
-    <!-- Big Action Launch Button -->
+    <!-- Big Action Launch Button: pinned to the bottom of the screen on phones (clear of
+         Safari's toolbar and the home indicator), in the normal flow from sm up -->
+    <div class="sticky bottom-0 z-10 -mx-4 px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] bg-[#0c0e12]/95 backdrop-blur-sm border-t border-white/[0.06] sm:static sm:mx-0 sm:px-0 sm:pt-4 sm:pb-0 sm:bg-transparent sm:backdrop-blur-none sm:border-0">
     <button
       type="button"
       onclick={handleNavigate}
-      class="w-full h-12 bg-white hover:bg-zinc-200 active:scale-[0.99] text-black font-black text-xs sm:text-sm rounded-2xl shadow-xl flex items-center justify-center gap-2 transition-all mt-4 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+      class="w-full h-12 bg-white hover:bg-zinc-200 active:scale-[0.99] text-black font-black text-xs sm:text-sm rounded-2xl shadow-xl flex items-center justify-center gap-2 transition-all cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/50"
     >
       <span class="truncate">Buka {activeRoleInfo.title}{activeRoleInfo.allTatami ? "" : ` • Tatami ${selectedTatami}`}</span>
       <svg class="w-4 h-4 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
         <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
       </svg>
     </button>
+    </div>
   </main>
 
   <!-- Clean Minimal Footer -->

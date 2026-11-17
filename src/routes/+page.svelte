@@ -758,7 +758,7 @@
   <title>Ambrilindo — {activeChannel.name}</title>
 </svelte:head>
 
-<div class="app-shell h-screen w-screen bg-[#0d0e12] text-zinc-200 flex overflow-hidden font-sans select-none">
+<div class="app-shell h-dvh w-screen bg-[#0d0e12] text-zinc-200 flex overflow-hidden font-sans select-none">
   {#if isBrowserClient}
     <!-- Dedicated Web Browser Venue Mobile & Tablet Portal (auth.html inspired) -->
     <VenueWebPortal />
