@@ -182,6 +182,7 @@ async fn pick_and_mount_database(
 
     let mut db = state.db.lock().await;
     db.mount_database(&path_buf).await?;
+    remember_database(&app, &path_buf);
     let events = db.get_events().await?;
 
     let db_path_str = path_buf.to_string_lossy().to_string();
@@ -242,13 +243,40 @@ async fn backup_database_to_file(
     Ok(Some(saved))
 }
 
+/// The last database the operator mounted is remembered in the app config folder
+/// (tied to the app identifier, so it survives rebuilds, renames and a moved exe)
+/// and mounted again on the next start.
+fn last_database_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_config_dir().ok().map(|dir| dir.join("last_database.txt"))
+}
+
+fn remember_database(app: &tauri::AppHandle, path: &std::path::Path) {
+    let Some(file) = last_database_file(app) else { return };
+    // absolute(), not canonicalize(): canonicalize adds a `\\?\` prefix the sqlite URL does not take
+    let full = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&file, full.to_string_lossy().as_bytes()) {
+        tracing::warn!("Could not remember the database path: {e}");
+    }
+}
+
+fn remembered_database(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let text = std::fs::read_to_string(last_database_file(app)?).ok()?;
+    let path = std::path::PathBuf::from(text.trim());
+    path.is_file().then_some(path)
+}
+
 #[tauri::command]
 async fn mount_database_path(
+    app: tauri::AppHandle,
     path: String,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<DatabaseSummary, String> {
     let mut db = state.db.lock().await;
     db.mount_database(&path).await?;
+    remember_database(&app, std::path::Path::new(&path));
     let events = db.get_events().await?;
     let media_path_str = db
         .get_media_dir()
@@ -264,17 +292,23 @@ async fn mount_database_path(
 
 #[tauri::command]
 async fn auto_mount_default_database(
+    app: tauri::AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Option<DatabaseSummary>, String> {
-    let candidates = [
-        "tournament_data/db.sqlite3",
-        "../tournament_data/db.sqlite3",
-        "../../tournament_data/db.sqlite3",
-        "db.sqlite3",
-    ];
+    let mut candidates: Vec<std::path::PathBuf> = remembered_database(&app).into_iter().collect();
+    candidates.extend(
+        [
+            "tournament_data/db.sqlite3",
+            "../tournament_data/db.sqlite3",
+            "../../tournament_data/db.sqlite3",
+            "db.sqlite3",
+        ]
+        .iter()
+        .map(std::path::PathBuf::from),
+    );
 
-    for candidate in candidates {
-        let p = std::path::Path::new(candidate);
+    for candidate in &candidates {
+        let p = candidate.as_path();
         if p.exists() {
             let mut db = state.db.lock().await;
             if db.mount_database(p).await.is_ok() {
@@ -1383,26 +1417,53 @@ async fn project_scoreboard(
 
     let win_label = format!("scoreboard-tatami-{}", tatami_number);
 
-    // If window already exists, bring it forward and update position
+    // If window already exists, move it to the chosen monitor and bring it forward
     if let Some(win) = app.get_webview_window(&win_label) {
-        let _ = win.set_position(tauri::Position::Physical(*monitor.position()));
-        let _ = win.set_fullscreen(true);
-        let _ = win.set_focus();
+        place_fullscreen_on_monitor(&win, monitor);
         let _ = app.emit("scoreboard_status_changed", ());
         return Ok(());
     }
 
+    // Built hidden and windowed: fullscreen always applies to the monitor the window is
+    // on, and the builder's position is in logical units (monitor positions are physical),
+    // so a window built fullscreen landed on the main monitor. It is moved first, in
+    // physical pixels, then made fullscreen and shown.
     let url = format!("/scoreboard?tatami={}{}", tatami_number, host_query_param(host_url.as_deref()));
-    let _win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
+    let win = WebviewWindowBuilder::new(&app, &win_label, WebviewUrl::App(url.into()))
         .title(format!("Scoreboard Arena Tatami {}", tatami_number))
-        .position(monitor.position().x as f64, monitor.position().y as f64)
-        .inner_size(monitor.size().width as f64, monitor.size().height as f64)
-        .fullscreen(true)
+        .visible(false)
         .build()
         .map_err(|e| format!("Gagal membuka jendela scoreboard: {}", e))?;
+    place_fullscreen_on_monitor(&win, monitor);
 
     let _ = app.emit("scoreboard_status_changed", ());
     Ok(())
+}
+
+/// Puts `win` fullscreen on `monitor`. A fullscreen window ignores moves, so it leaves
+/// fullscreen first; the window is placed well inside the target monitor (Windows picks
+/// the fullscreen monitor by overlap) before going fullscreen again.
+fn place_fullscreen_on_monitor(win: &tauri::WebviewWindow, monitor: &tauri::Monitor) {
+    let pos = monitor.position();
+    let _ = win.set_fullscreen(false);
+    let _ = win.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: 800, height: 600 }));
+    let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+        x: pos.x + 50,
+        y: pos.y + 50,
+    }));
+    let _ = win.set_fullscreen(true);
+    let _ = win.show();
+    let _ = win.set_focus();
+
+    if let Ok(Some(now)) = win.current_monitor() {
+        if now.position() != pos {
+            tracing::warn!(
+                "Scoreboard window landed on monitor at {:?}, expected {:?}",
+                now.position(),
+                pos
+            );
+        }
+    }
 }
 
 #[tauri::command]
@@ -2621,52 +2682,31 @@ pub fn run() {
 
                         let db_arc = state.db.clone();
                         let server_bcast = state.server_broadcast.clone();
+                        let live_cache = state.live_tatami_cache.clone();
                         let app_clone = app.clone();
 
+                        // Safety net for windows the app closes itself (the panel's own
+                        // beforeunload does not run then). Only the tatami still running this
+                        // match is cleared and told; a finished match, a tatami that already
+                        // moved on, or the festival window touch no tatami at all.
                         tauri::async_runtime::spawn(async move {
-                            let (pool_opt, _path) = {
+                            let cleared = {
                                 let db = db_arc.lock().await;
-                                (db.get_pool_cloned(), db.get_active_db_path_cloned())
-                            };
-                            if let Some(pool) = pool_opt {
-                                let tatami_num: Option<i64> = if match_id > 0 {
-                                    sqlx::query_scalar("SELECT tatami_number FROM backend_tatami WHERE detail_bagan_id = ? LIMIT 1")
-                                        .bind(match_id)
-                                        .fetch_optional(&pool)
-                                        .await
-                                        .unwrap_or(None)
-                                } else {
+                                db.release_closed_panel_match(match_id).await.unwrap_or_else(|e| {
+                                    tracing::warn!("Control panel close cleanup failed: {e}");
                                     None
-                                };
-
-                                if match_id > 0 {
-                                    let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id = ?")
-                                        .bind(match_id)
-                                        .execute(&pool)
-                                        .await;
-                                    let _ = sqlx::query("UPDATE backend_detailbagan SET assigned_tatami_id = NULL WHERE id = ? AND selesai = 0")
-                                        .bind(match_id)
-                                        .execute(&pool)
-                                        .await;
-                                }
-
-                                let close_payload = serde_json::json!({
-                                    "tatami": tatami_num.unwrap_or(1),
-                                    "matchId": match_id,
-                                    "isFinished": true,
-                                    "isClosed": true,
-                                    "isTimerRunning": false
-                                });
-                                let _ = app_clone.emit("tatami_live_state", &close_payload);
-                                let _ = app_clone.emit("bracket_updated", serde_json::json!({ "type": "bracket_updated" }));
-                                let _ = server_bcast.send(crate::server::ArenaMessage {
-                                    tatami_pk: 0,
-                                    channel: "bracket".to_string(),
-                                    payload: serde_json::json!({
-                                        "type": "tatami_live_state",
-                                        "payload": close_payload
-                                    }),
-                                });
+                                })
+                            };
+                            if let Some((tatami, running)) = cleared {
+                                server::announce_tatami_cleared(
+                                    Some(&app_clone),
+                                    &server_bcast,
+                                    &live_cache,
+                                    tatami as i64,
+                                    Some(running),
+                                    false,
+                                )
+                                .await;
                             }
                         });
                     }

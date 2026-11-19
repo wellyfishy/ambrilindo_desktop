@@ -5521,6 +5521,35 @@ impl DatabaseManager {
         Ok(Some(running))
     }
 
+    /// A control panel window on this laptop closed: if its match is still the one linked to
+    /// a tatami, that tatami (and only that one) stops running it. Returns `(tatami, match)`
+    /// when something was cleared, so the caller announces it to that tatami's devices.
+    ///
+    /// Finished matches, a match whose tatami has already moved on to the next bout, and the
+    /// festival window (match 0) clear nothing: previously the lookup fell back to tatami 1
+    /// and closing a panel on tatami 2 sent tatami 1's tablets back to "waiting".
+    pub async fn release_closed_panel_match(&self, match_id: i64) -> Result<Option<(i32, i64)>, String> {
+        if match_id <= 0 {
+            return Ok(None);
+        }
+        let pool = self.get_pool()?;
+        let tatami: Option<i64> = sqlx::query_scalar(
+            "SELECT tatami_number FROM backend_tatami WHERE detail_bagan_id = ? AND tatami_number IS NOT NULL LIMIT 1",
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat tatami partai: {}", e))?;
+        let Some(tatami) = tatami.filter(|t| *t > 0) else {
+            return Ok(None);
+        };
+        let tatami = tatami as i32;
+        Ok(self
+            .clear_tatami_running(None, tatami, Some(match_id))
+            .await?
+            .map(|cleared| (tatami, cleared)))
+    }
+
     pub async fn notify_match_running(&self, match_id: i64, tatami_number: i32) -> Result<(), String> {
         let pool = self.get_pool()?;
 
@@ -6371,6 +6400,15 @@ impl DatabaseManager {
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Gagal memuat bagan untuk summary: {}", e))?;
+        // A REFERCHANGE / repechage bracket is not a class of its own: its bronze is written to
+        // the main bracket, so only the main class is listed (as pools are behind their final).
+        let all_raw_bagans: Vec<BaganSummaryRow> = all_raw_bagans
+            .into_iter()
+            .filter(|b| {
+                let n = b.nama_bagan.as_deref().unwrap_or_default().to_uppercase();
+                !n.contains("REFERCHANGE") && !n.contains("REPECHAGE")
+            })
+            .collect();
 
         let mut cat_count_map: HashMap<i64, usize> = HashMap::new();
         let mut cat_has_final: HashMap<i64, bool> = HashMap::new();
@@ -6439,6 +6477,7 @@ impl DatabaseManager {
             logo: Option<String>,
             _perguruan_id: Option<i64>,
             nama_perguruan: Option<String>,
+            additional_code: Option<String>,
         }
 
         let mut athlete_map: HashMap<i64, AthleteAffiliation> = HashMap::new();
@@ -6446,7 +6485,7 @@ impl DatabaseManager {
             let id_list: Vec<String> = needed_athlete_ids.iter().map(|id| id.to_string()).collect();
             let sql = format!(
                 r#"
-                SELECT a.id, a.nama_atlet, a.utusan_id AS _utusan_id, u.nama_utusan, u.logo, a.perguruan_id AS _perguruan_id, p.nama_perguruan
+                SELECT a.id, a.nama_atlet, a.utusan_id AS _utusan_id, u.nama_utusan, u.logo, a.perguruan_id AS _perguruan_id, p.nama_perguruan, a.additional_code
                 FROM backend_atlet a
                 LEFT JOIN backend_utusan u ON a.utusan_id = u.id
                 LEFT JOIN backend_perguruan p ON a.perguruan_id = p.id
@@ -6460,6 +6499,32 @@ impl DatabaseManager {
                 .unwrap_or_default();
             for a in athletes {
                 athlete_map.insert(a.id, a);
+            }
+        }
+
+        // Members of team entries, keyed by the team's code ("B_<team>"): rows coded
+        // "MEMBER_B_<team>_<n>" in this event, in registration order.
+        let mut team_members: HashMap<String, Vec<String>> = HashMap::new();
+        let member_rows: Vec<(Option<String>, String)> = sqlx::query_as(
+            "SELECT nama_atlet, additional_code FROM backend_atlet
+              WHERE event_id = ? AND additional_code LIKE 'MEMBER!_B!_%' ESCAPE '!' ORDER BY id",
+        )
+        .bind(event_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for (nama, code) in member_rows {
+            // MEMBER_<team code>_<n> -> <team code>; the team code itself may contain "_"
+            // (web: B_4, PORPROV import: B_PORPROV26_BRU_KATA_PA), so only the last part is cut.
+            let team = code
+                .strip_prefix("MEMBER_")
+                .and_then(|rest| rest.rsplit_once('_'))
+                .filter(|(team, n)| team.starts_with("B_") && n.chars().all(|c| c.is_ascii_digit()))
+                .map(|(team, _)| team.to_string());
+            if let Some(team) = team {
+                if let Some(n) = nama.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+                    team_members.entry(team).or_default().push(n);
+                }
             }
         }
 
@@ -6498,6 +6563,7 @@ impl DatabaseManager {
                         utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
                         logo: atlet.logo.clone(),
                         is_uncounted: is_single,
+                        members: Vec::new(),
                     });
                 }
             }
@@ -6514,6 +6580,7 @@ impl DatabaseManager {
                         utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
                         logo: atlet.logo.clone(),
                         is_uncounted: false,
+                        members: Vec::new(),
                     });
                 }
             }
@@ -6530,6 +6597,7 @@ impl DatabaseManager {
                         utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
                         logo: atlet.logo.clone(),
                         is_uncounted: false,
+                        members: Vec::new(),
                     });
                 }
             }
@@ -6546,7 +6614,17 @@ impl DatabaseManager {
                         utusan_nama: atlet.nama_utusan.clone().unwrap_or_else(|| "-".to_string()),
                         logo: atlet.logo.clone(),
                         is_uncounted: false,
+                        members: Vec::new(),
                     });
+                }
+            }
+
+            // Team winners: list their members under the team name
+            for w in winners.iter_mut() {
+                if let Some(code) = athlete_map.get(&w.athlete_id).and_then(|a| a.additional_code.as_deref()) {
+                    if let Some(names) = team_members.get(code) {
+                        w.members = names.clone();
+                    }
                 }
             }
 
@@ -7565,6 +7643,7 @@ impl DatabaseManager {
                                 utusan_nama: nama_u.unwrap_or_else(|| "-".to_string()),
                                 logo,
                                 is_uncounted: false,
+                                members: Vec::new(),
                             });
                         }
                     }
@@ -12757,6 +12836,164 @@ mod delete_event_tests {
         // Deleting it again reports a clear error instead of succeeding silently.
         assert!(db.delete_event(target).await.is_err());
 
+        drop(pool);
+    }
+}
+
+#[cfg(test)]
+mod closed_panel_tests {
+    //! Closing a control panel window must only ever touch the tatami that still runs its
+    //! match (regression: closing tatami 2's panel sent tatami 1's tablets to "waiting").
+    use crate::test_support::real_db_copy;
+
+    async fn linked(pool: &sqlx::SqlitePool, tatami_row: i64) -> Option<i64> {
+        sqlx::query_scalar("SELECT detail_bagan_id FROM backend_tatami WHERE id = ?")
+            .bind(tatami_row)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn closing_a_panel_only_clears_its_own_tatami() {
+        let Some(t) = real_db_copy().await else { return };
+        let pool = t.pool();
+
+        // An event with tatami 1 and tatami 2, and three unplayed matches of that event.
+        let Some((event_id, t1_row, t2_row)): Option<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT a.event_id, a.id, b.id FROM backend_tatami a JOIN backend_tatami b
+             ON a.event_id = b.event_id AND a.tatami_number = 1 AND b.tatami_number = 2 LIMIT 1",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap() else {
+            eprintln!("skip: no event with tatami 1 and 2");
+            return;
+        };
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT d.id FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id
+             WHERE b.event_id = ? AND d.selesai = 0 ORDER BY d.id LIMIT 3",
+        )
+        .bind(event_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        if ids.len() < 3 {
+            eprintln!("skip: not enough unplayed matches");
+            return;
+        }
+        let (on_t1, on_t2, unlinked) = (ids[0], ids[1], ids[2]);
+        // Clear the tatami links of every other event's rows that might point at these matches.
+        sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE detail_bagan_id IN (?, ?, ?)")
+            .bind(on_t1).bind(on_t2).bind(unlinked)
+            .execute(&pool).await.unwrap();
+        sqlx::query("UPDATE backend_tatami SET detail_bagan_id = ? WHERE id = ?").bind(on_t1).bind(t1_row).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE backend_tatami SET detail_bagan_id = ? WHERE id = ?").bind(on_t2).bind(t2_row).execute(&pool).await.unwrap();
+
+        // Festival window (match 0) and a match no tatami runs: nothing happens.
+        assert_eq!(t.db.release_closed_panel_match(0).await.unwrap(), None);
+        assert_eq!(t.db.release_closed_panel_match(unlinked).await.unwrap(), None);
+        assert_eq!(linked(&pool, t1_row).await, Some(on_t1), "tatami 1 must keep its match");
+        assert_eq!(linked(&pool, t2_row).await, Some(on_t2));
+
+        // A finished match whose window closes late: nothing happens either.
+        sqlx::query("UPDATE backend_tatami SET detail_bagan_id = NULL WHERE id = ?").bind(t2_row).execute(&pool).await.unwrap();
+        assert_eq!(t.db.release_closed_panel_match(on_t2).await.unwrap(), None);
+        assert_eq!(linked(&pool, t1_row).await, Some(on_t1), "closing tatami 2's old panel must not touch tatami 1");
+
+        // Tatami 2 closes the match it still runs: only tatami 2 is cleared.
+        sqlx::query("UPDATE backend_tatami SET detail_bagan_id = ? WHERE id = ?").bind(on_t2).bind(t2_row).execute(&pool).await.unwrap();
+        assert_eq!(t.db.release_closed_panel_match(on_t2).await.unwrap(), Some((2, on_t2)));
+        assert_eq!(linked(&pool, t2_row).await, None);
+        assert_eq!(linked(&pool, t1_row).await, Some(on_t1), "tatami 1 must keep its match");
+
+        // The window event fires twice (close requested + destroyed): the second is a no-op.
+        assert_eq!(t.db.release_closed_panel_match(on_t2).await.unwrap(), None);
+        assert_eq!(linked(&pool, t1_row).await, Some(on_t1));
+
+        drop(pool);
+    }
+}
+
+#[cfg(test)]
+mod summary_team_members_tests {
+    use crate::test_support::real_db_copy;
+
+    /// Juara per bagan lists main classes only: no REFERCHANGE / repechage bracket.
+    #[tokio::test]
+    async fn referchange_brackets_are_not_listed() {
+        let Some(t) = real_db_copy().await else { return };
+        let pool = t.pool();
+        let events: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT event_id FROM backend_bagan WHERE UPPER(nama_bagan) LIKE '%REFERCHANGE%' OR UPPER(nama_bagan) LIKE '%REPECHAGE%'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        if events.is_empty() {
+            eprintln!("skip: no referchange bracket");
+            return;
+        }
+        for ev in events {
+            let summary = t.db.get_summary_bagan(ev).await.unwrap();
+            for b in &summary.bagans {
+                let n = b.nama_bagan.to_uppercase();
+                assert!(!n.contains("REFERCHANGE") && !n.contains("REPECHAGE"), "listed: {}", b.nama_bagan);
+            }
+        }
+        drop(pool);
+    }
+
+    /// Juara per bagan: a team winner lists its members (MEMBER_B_<team>_<n>); an individual
+    /// or a team without known members lists none.
+    #[tokio::test]
+    async fn team_winners_list_their_members() {
+        let Some(t) = real_db_copy().await else { return };
+        let pool = t.pool();
+        // Every gold won by a team entry ("B_..."): short web codes (B_4) and long imported
+        // ones (B_PORPROV26_BRU_KATA_PA) alike.
+        let rows: Vec<(i64, i64, String)> = sqlx::query_as(
+            "SELECT b.event_id, b.id, a.additional_code FROM backend_bagan b
+               JOIN backend_atlet a ON a.id = b.juara_1_id
+              WHERE a.additional_code LIKE 'B!_%' ESCAPE '!'
+              ORDER BY b.event_id, b.id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        if rows.is_empty() {
+            eprintln!("skip: no team winner");
+            return;
+        }
+        let mut checked_with_members = 0;
+        let mut summaries = std::collections::HashMap::new();
+        for (event_id, bagan_id, team_code) in rows {
+            // MEMBER_<team code>_<digits>
+            let all: Vec<(String, String)> = sqlx::query_as(
+                "SELECT TRIM(nama_atlet), additional_code FROM backend_atlet WHERE event_id = ? AND additional_code LIKE 'MEMBER!_%' ESCAPE '!' ORDER BY id",
+            )
+            .bind(event_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            let prefix = format!("MEMBER_{team_code}_");
+            let expected: Vec<String> = all
+                .into_iter()
+                .filter(|(_, c)| c.strip_prefix(&prefix).is_some_and(|n| !n.is_empty() && n.chars().all(|ch| ch.is_ascii_digit())))
+                .map(|(n, _)| n)
+                .collect();
+            if !summaries.contains_key(&event_id) {
+                summaries.insert(event_id, t.db.get_summary_bagan(event_id).await.unwrap());
+            }
+            let summary = &summaries[&event_id];
+            let Some(bagan) = summary.bagans.iter().find(|b| b.id == bagan_id) else { continue };
+            let Some(gold) = bagan.winners.iter().find(|w| w.juara == "1") else { continue };
+            assert_eq!(gold.members, expected, "members of {team_code} (bagan {bagan_id})");
+            if !expected.is_empty() {
+                checked_with_members += 1;
+            }
+        }
+        eprintln!("team golds with members checked: {checked_with_members}");
         drop(pool);
     }
 }

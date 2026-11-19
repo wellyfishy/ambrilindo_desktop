@@ -389,7 +389,7 @@ async fn web_e2e_b_bulk() {
     r.finish(&bagan, &m2).await;
     assert!(r.queue().await.is_empty(), "live sync off queues nothing");
     SyncService::force_sync_results_to_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("B5 force results");
-    b_sse.expect("bulk_sync_completed", 15).await;
+    b_sse.expect("bagan_updated", 15).await;
     let web = r.web_py(&format!(
         "print('J=' + json.dumps([d('{}'), d('{}')]))",
         r.kode(b_id, m1["id"].as_i64().unwrap()),
@@ -399,6 +399,32 @@ async fn web_e2e_b_bulk() {
     for w in web.as_array().unwrap() {
         assert_eq!((w["selesai"].clone(), w["score1"].clone(), w["pemenang"].clone()), (json!(true), saved["score1"].clone(), json!("1")), "B5 {w}");
     }
+
+    // B5b force sync is a mirror: the web ends up exactly like the desktop.
+    let m2_id = m2["id"].as_i64().unwrap();
+    let k2 = r.kode(b_id, m2_id);
+    let wb = r.web_py(&format!("print('J=' + json.dumps(d('{k2}')['bagan']))")).as_i64().unwrap();
+    // (a) a result undone on the desktop, (b) a bout only the web has, (c) a champion only the
+    // web has (the desktop's juara 3B of this bagan is empty).
+    sqlx::query("UPDATE backend_detailbagan SET selesai = 0, pemenang = NULL, score1 = NULL, score2 = NULL WHERE id = ?")
+        .bind(m2_id).execute(&r.pool).await.unwrap();
+    sqlx::query("UPDATE backend_bagan SET juara_3b_id = NULL WHERE id = ?").bind(b_id).execute(&r.pool).await.unwrap();
+    r.web_py(&format!(
+        "b = Bagan.objects.get(pk={wb})
+DetailBagan.objects.create(bagan=b, round=99, urutan=1, kode_realtime='STALE-{wb}')
+x = DetailBagan.objects.filter(bagan=b).exclude(atlet1=None).first()
+b.juara_3b = x.atlet1
+b.save(update_fields=['juara_3b'])
+print('J=' + json.dumps(b.juara_3b_id))"
+    ));
+    SyncService::force_sync_results_to_hosted(&r.pool, Some(&r.db_path), EVENT).await.expect("B5b mirror");
+    let after = r.web_py(&format!(
+        "b = Bagan.objects.get(pk={wb})
+print('J=' + json.dumps(dict(m2=d('{k2}'), stale=DetailBagan.objects.filter(bagan=b, round=99).count(), j3b=b.juara_3b_id)))"
+    ));
+    assert_eq!((after["m2"]["selesai"].clone(), after["m2"]["pemenang"].clone()), (json!(false), json!(null)), "B5b undone result cleared: {after}");
+    assert_eq!(after["stale"], json!(0), "B5b stale bout removed");
+    assert_eq!(after["j3b"], json!(null), "B5b stale champion cleared");
 
     // B6 no mapping: an error before any request.
     SyncService::remove_event_mapping(Some(&r.db_path), EVENT).unwrap();

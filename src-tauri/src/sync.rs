@@ -1177,6 +1177,20 @@ impl SyncService {
         local_event_id: i64,
         bagan_ids: Option<Vec<i64>>,
     ) -> Result<String, String> {
+        Self::push_bagans(pool, db_path, local_event_id, bagan_ids, false).await
+    }
+
+    /// `mirror` (full push only): the web is made to match this event exactly. Besides what a
+    /// full push does (every bracket, bout, athlete, score and champion; brackets no longer here
+    /// are removed), bouts that are no longer in a bracket are removed and champions that are
+    /// empty here are cleared there. Older webs ignore the flag and do a plain full push.
+    async fn push_bagans(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+        local_event_id: i64,
+        bagan_ids: Option<Vec<i64>>,
+        mirror: bool,
+    ) -> Result<String, String> {
         let sync_cfg = Self::get_sync_config(db_path);
         let mapping =
             Self::get_event_mapping(db_path, local_event_id, None, &sync_cfg.mode);
@@ -1361,6 +1375,7 @@ impl SyncService {
             "bagans": bagans_payload,
             "is_full_sync": is_full_sync,
             "known_kodes": known_kodes,
+            "mirror": mirror && is_full_sync,
         });
 
         let client = TimedClient::new(std::time::Duration::from_secs(30));
@@ -1562,6 +1577,20 @@ impl SyncService {
 
     /// Force synchronizes finished matches and champions snapshot to web server
     pub async fn force_sync_results_to_hosted(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+        local_event_id: i64,
+    ) -> Result<String, String> {
+        // "Kirim ulang semua hasil" makes the web match this laptop exactly: every bracket,
+        // bout, score, winner and champion, with stale bouts, brackets and champions removed.
+        // A web without mirror support does a plain full push (brackets still pruned).
+        Self::push_bagans(pool, db_path, local_event_id, None, true).await
+    }
+
+    /// Results-only resend (api/sync/force-results/): finished bouts and the champions that
+    /// are set. No longer used by the button (kept for older webs, should one be needed).
+    #[allow(dead_code)]
+    pub async fn force_sync_results_only(
         pool: &Pool<Sqlite>,
         db_path: Option<&PathBuf>,
         local_event_id: i64,

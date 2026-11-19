@@ -442,6 +442,8 @@ export interface SummaryBaganWinner {
   utusan_nama: string;
   logo: string | null;
   is_uncounted: boolean;
+  /** Team entries (beregu): member names when known */
+  members?: string[];
 }
 
 export interface SummaryBaganItem {

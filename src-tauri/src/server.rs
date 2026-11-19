@@ -3718,7 +3718,7 @@ pub async fn start_server(state: Arc<AppState>) -> Result<SocketAddr, String> {
         .unwrap_or(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), DEFAULT_PORT));
 
     info!(
-        "Ambrilindo Arena Server bound successfully on http://0.0.0.0:{}",
+        "Ambrilindo Karate System server bound successfully on http://0.0.0.0:{}",
         DEFAULT_PORT
     );
 

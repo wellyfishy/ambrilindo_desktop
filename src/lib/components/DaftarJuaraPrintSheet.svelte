@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { SummaryBaganItem, SummaryBaganWinner } from "$lib/types";
+  import type { BaganDaysResult, SummaryBaganItem, SummaryBaganWinner } from "$lib/types";
+  import { groupJuaraByDay } from "$lib/juaraDays";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
 
   interface Props {
@@ -10,6 +11,8 @@
     customLogoAmbrilindo?: string;
     showBadge?: boolean;
     logoMap?: Record<string, string>;
+    /** Jadwal days: when given, the list is split per day under a "DAY n" header */
+    baganDays?: BaganDaysResult | null;
   }
 
   let {
@@ -20,6 +23,7 @@
     customLogoAmbrilindo = AMBRILINDO_LOGO_DATA_URL,
     showBadge = true,
     logoMap = {},
+    baganDays = null,
   }: Props = $props();
 
   function getWinnerAffiliation(w?: SummaryBaganWinner): string {
@@ -32,6 +36,33 @@
     return perguruan || kontingen || "-";
   }
 
+  /** A team (beregu) category: one of its winners has a member list. */
+  function isTeamCategory(cat: SummaryBaganItem): boolean {
+    return cat.winners.some((w) => (w.members?.length ?? 0) > 0);
+  }
+
+  /** Member grid columns: 3 for short names, 2 when a name is long. */
+  function memberCols(names: string[]): string {
+    return names.some((n) => n.length > 24) ? "grid-cols-2" : "grid-cols-3";
+  }
+
+  // Per Jadwal day; within a day team (beregu) categories first, one full-width card each,
+  // then individual ones, two per row.
+  let dayGroups = $derived(
+    groupJuaraByDay(bagans, baganDays).map((g) => ({
+      ...g,
+      teams: g.bagans.filter(isTeamCategory),
+      individuals: g.bagans.filter((b) => !isTeamCategory(b)),
+    }))
+  );
+
+  const PODIUM: { key: string; label: string; badge: string }[] = [
+    { key: "1", label: "1", badge: "bg-amber-400 text-slate-950" },
+    { key: "2", label: "2", badge: "bg-slate-300 text-slate-950" },
+    { key: "3a", label: "3A", badge: "bg-amber-700 text-white" },
+    { key: "3b", label: "3B", badge: "bg-amber-700 text-white" },
+  ];
+
   function getCategoryNameClass(name: string): string {
     const len = (name || "").trim().length;
     if (len > 60) {
@@ -43,6 +74,44 @@
     }
   }
 </script>
+
+<!-- Team (beregu) card: one band per podium place - medal, team and kontingen on the left,
+     the members in a grid on the right. A name too long for its cell ends in "…". -->
+{#snippet teamCard(cat: SummaryBaganItem)}
+  <div class="border border-slate-300 rounded p-2 bg-white break-inside-avoid" style="break-inside: avoid; page-break-inside: avoid;">
+    <div class="border-b border-slate-300 pb-1 mb-1 flex items-start gap-2">
+      <span class="text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-slate-900 text-white shrink-0 mt-0.5">{cat.kode}</span>
+      <span class="font-black text-black uppercase flex-1 break-words whitespace-normal {getCategoryNameClass(cat.nama_bagan)}">{cat.nama_bagan}</span>
+    </div>
+    <div class="divide-y divide-slate-200">
+      {#each PODIUM as place}
+        {@const w = cat.winners.find((x) => x.juara === place.key)}
+        <div class="flex items-start gap-2 py-1">
+          <span class="w-5 h-4 rounded-full {place.badge} font-black text-[8.5px] flex items-center justify-center shrink-0 mt-px">{place.label}</span>
+          <div class="w-[42%] min-w-0 shrink-0 flex items-start gap-1.5">
+            {#if w?.logo && logoMap[w.logo]}
+              <img src={logoMap[w.logo]} alt="" class="object-contain shrink-0 mt-px" style="width: 14px; height: 14px; max-width: 14px; max-height: 14px;" width="14" height="14"
+                onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
+            {/if}
+            <div class="min-w-0">
+              <div class="text-[10.5px] font-black leading-tight {w ? 'text-black' : 'text-slate-400'} truncate">{w?.nama_atlet || "-"}</div>
+              {#if w}
+                <div class="text-[9px] font-semibold text-slate-600 leading-tight truncate">{getWinnerAffiliation(w)}</div>
+              {/if}
+            </div>
+          </div>
+          {#if w?.members?.length}
+            <div class="flex-1 min-w-0 grid {memberCols(w.members)} gap-x-3 gap-y-px text-[9.5px] leading-tight text-black">
+              {#each w.members as m, i}
+                <span class="truncate" title={m}><span class="text-slate-500 font-mono">{i + 1}.</span> {m}</span>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  </div>
+{/snippet}
 
 <div class="daftar-juara-sheet font-sans text-slate-900 bg-white">
   <!-- Semantic Table structure for recurring header/footer on every printed page -->
@@ -103,8 +172,27 @@
               Belum ada nomor pertandingan yang diselesaikan.
             </div>
           {:else}
+            {#each dayGroups as group, gi (group.key)}
+            {#if group.label}
+              <!-- Day header: kept with the first card below it -->
+              <div class="flex items-center gap-2 {gi > 0 ? 'mt-4' : ''} mb-2" style="break-after: avoid; page-break-after: avoid;">
+                <span class="px-2 py-0.5 rounded bg-slate-900 text-white text-[11px] font-black uppercase tracking-wider shrink-0">{group.label.split(",")[0]}</span>
+                {#if group.label.includes(",")}
+                  <span class="text-[11px] font-bold text-slate-700 uppercase tracking-wide">{group.label.split(",").slice(1).join(",").trim()}</span>
+                {/if}
+                <span class="flex-1 border-t-2 border-slate-900"></span>
+                <span class="text-[10px] font-mono font-bold text-slate-500 shrink-0">{group.bagans.length} kelas</span>
+              </div>
+            {/if}
+            {#if group.teams.length > 0}
+              <div class="space-y-2 mb-2.5 print:mb-2">
+                {#each group.teams as cat (cat.id)}
+                  {@render teamCard(cat)}
+                {/each}
+              </div>
+            {/if}
             <div class="grid grid-cols-2 gap-2.5 print:gap-2 print:grid-cols-2">
-              {#each bagans as cat}
+              {#each group.individuals as cat}
                 {@const w1 = cat.winners.find((w) => w.juara === "1")}
                 {@const w2 = cat.winners.find((w) => w.juara === "2")}
                 {@const w3a = cat.winners.find((w) => w.juara === "3a")}
@@ -210,6 +298,7 @@
                 </div>
               {/each}
             </div>
+            {/each}
           {/if}
         </td>
       </tr>

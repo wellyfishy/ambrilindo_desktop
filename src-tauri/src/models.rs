@@ -839,6 +839,10 @@ pub struct SummaryBaganWinner {
     pub utusan_nama: String,
     pub logo: Option<String>,
     pub is_uncounted: bool,
+    /// Team entries (beregu): the members' names, when the team's members are known
+    /// (pulled from the web as MEMBER_B_<team>_<n>). Empty for individuals.
+    #[serde(default)]
+    pub members: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

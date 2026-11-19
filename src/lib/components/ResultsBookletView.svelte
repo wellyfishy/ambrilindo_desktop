@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiCall, getConnectionConfig } from "$lib/api_client";
+  import type { BaganDaysResult } from "$lib/types";
   import type {
     BracketGroup,
     ResultsBookletData,
@@ -48,6 +49,8 @@
   // Jadwal: the roster page and the Day -> Tatami order of the bracket attachment
   let timetable = $state<TimetableEditorData | null>(null);
   let bracketGroups = $state<BracketGroup[]>([]);
+  // Jadwal day of each bagan: Juara per bagan is listed per day
+  let baganDays = $state<BaganDaysResult | null>(null);
   let rosterCategories = $derived(
     timetable ? (timetable.festival_session ? timetable.categories.filter((c) => !c.is_festival) : timetable.categories) : []
   );
@@ -181,6 +184,26 @@
   let topKontingen = $derived(bookletData?.standings_kontingen?.[0]);
   let topPerguruan = $derived(bookletData?.standings_perguruan?.[0]);
   let totalKategori = $derived(bookletData?.category_winners?.length || 0);
+
+  // Juara per bagan follows the day choice of "Lampiran resmi": with Day 1 only, only the
+  // classes played on Day 1 are listed (a class on no Jadwal day counts as "Belum terjadwal").
+  let juaraBagans = $derived.by(() => {
+    const list = bookletData?.category_winners ?? [];
+    const days = coverSettings?.lampiranDays ?? null;
+    if (mode !== "hasil" || !days) return list;
+    const dayOf = new Map<number, Set<string>>();
+    for (const g of bracketGroups) {
+      for (const id of g.bagan_ids) {
+        if (!dayOf.has(id)) dayOf.set(id, new Set());
+        dayOf.get(id)!.add(String(g.day_id));
+      }
+    }
+    return list.filter((b) => {
+      const ds = dayOf.get(b.id);
+      if (!ds || ds.size === 0) return days.includes("none");
+      return [...ds].some((d) => days.includes(d));
+    });
+  });
   let top3Kontingen = $derived(bookletData?.standings_kontingen?.slice(0, 3) || []);
   let top3Perguruan = $derived(bookletData?.standings_perguruan?.slice(0, 3) || []);
   let totalMedaliEmas = $derived(bookletData?.standings_kontingen?.reduce((acc, k) => acc + (k.gold || 0), 0) || 0);
@@ -244,12 +267,14 @@ $effect(() => {
       }
 
       // Jadwal roster + Day -> Tatami bracket order (a booklet still prints without them)
-      const [tt, groups] = await Promise.all([
+      const [tt, groups, days] = await Promise.all([
         apiCall<TimetableEditorData>("get_timetable_editor_data", { eventId }).catch(() => null),
         apiCall<BracketGroup[]>("get_bracket_groups", { eventId }).catch(() => []),
+        apiCall<BaganDaysResult>("get_bagan_days", { eventId }).catch(() => null),
       ]);
       timetable = tt;
       bracketGroups = groups || [];
+      baganDays = days;
       if (tt?.kop_surat?.logo) allLogos.push(tt.kop_surat.logo);
 
       if (allLogos.length > 0) {
@@ -912,7 +937,8 @@ ${inlinedCss}
               </div>
               <div class="paper-sheet paper-sheet-portrait">
                 <DaftarJuaraPrintSheet
-                  bagans={bookletData.category_winners}
+                  bagans={juaraBagans}
+                  {baganDays}
                   eventName={editableEventName}
                   pageLabel="Halaman 3 • Rekapan Podium Seluruh Kategori"
                   {logoMap}

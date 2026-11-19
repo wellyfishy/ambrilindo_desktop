@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "$lib/api_client";
-  import type { SummaryBaganResult, SummaryBaganItem, SummaryBaganWinner } from "$lib/types";
+  import type { BaganDaysResult, SummaryBaganResult, SummaryBaganItem, SummaryBaganWinner } from "$lib/types";
+  import { groupJuaraByDay } from "$lib/juaraDays";
   import { printWithOrientation } from "$lib/print_helper";
   import { resolveMediaLogos } from "$lib/media_helper";
   import DaftarJuaraPrintSheet from "./DaftarJuaraPrintSheet.svelte";
@@ -16,6 +17,8 @@
   let isLoading = $state(true);
   let errorMessage = $state<string | null>(null);
   let summaryData = $state<SummaryBaganResult | null>(null);
+  // Jadwal day of each bagan: the list (and its printout) is split per day
+  let baganDays = $state<BaganDaysResult | null>(null);
   let logoMap = $state<Record<string, string>>({});
 
   // Filters & Search
@@ -36,7 +39,12 @@
     isLoading = true;
     errorMessage = null;
     try {
-      summaryData = await invoke<SummaryBaganResult>("get_summary_bagan", { eventId });
+      const [summary, days] = await Promise.all([
+        invoke<SummaryBaganResult>("get_summary_bagan", { eventId }),
+        invoke<BaganDaysResult>("get_bagan_days", { eventId }).catch(() => null),
+      ]);
+      summaryData = summary;
+      baganDays = days;
       if (summaryData?.bagans) {
         const allLogos: string[] = [];
         for (const b of summaryData.bagans) {
@@ -294,9 +302,18 @@
         </button>
       </div>
     {:else}
+      {#each groupJuaraByDay(filteredBagans, baganDays) as group, gi (group.key)}
+      {#if group.label}
+        <!-- Day header -->
+        <div class="flex items-center gap-3 {gi > 0 ? 'mt-6' : ''} mb-3">
+          <h3 class="text-sm font-bold text-white">{group.label}</h3>
+          <span class="flex-1 border-t border-white/[0.08]"></span>
+          <span class="text-xs text-zinc-500">{group.bagans.length} kelas</span>
+        </div>
+      {/if}
       <!-- Main Bagan Cards Grid (Screen Mode) -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5 items-start">
-        {#each filteredBagans as bagan (bagan.id)}
+        {#each group.bagans as bagan (bagan.id)}
           {@const div = getDivision(bagan)}
           {@const kata = isKata(bagan)}
 
@@ -369,6 +386,12 @@
                         <span class="text-[13px] font-semibold text-white truncate block select-text" title={winner.nama_atlet}>
                           {winner.nama_atlet}
                         </span>
+                        {#if winner.members?.length}
+                          <!-- Team (beregu): its members on one compact line -->
+                          <span class="text-[11px] text-zinc-400 leading-snug line-clamp-2 select-text" title={winner.members.join(", ")}>
+                            {winner.members.join(" · ")}
+                          </span>
+                        {/if}
                         {#if winner.is_uncounted}
                           <span class="text-[11px] text-amber-300/90 block">
                             Tanpa lawan
@@ -389,6 +412,7 @@
           </div>
         {/each}
       </div>
+      {/each}
     {/if}
   </div>
 
@@ -399,6 +423,7 @@
       eventName={summaryData?.event_name || eventName}
       pageLabel="Daftar Juara Seluruh Nomor Tanding"
       {logoMap}
+      {baganDays}
     />
   </section>
 </div>
