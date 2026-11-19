@@ -140,6 +140,11 @@
   }
 
   const CLAIM_HEARTBEAT_MS = 3000;
+  // While this window holds its tatami it re-sends its live state now and then, so a
+  // tablet, VR screen or stick monitor that got a stale state (host restart, a dropped
+  // message, a wrong "closed" from elsewhere) recovers by itself within a few seconds.
+  // Receivers ignore an identical state, so this changes nothing on their screens.
+  const LIVE_RESEND_MS = 5000;
   const claimOwnerId =
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -280,6 +285,9 @@
       requestClaim(tatami, true);
     });
     const heartbeat = setInterval(() => requestClaim(tatami), CLAIM_HEARTBEAT_MS);
+    const liveResend = setInterval(() => {
+      if (claimStatus === "owned" && tatami === activeTatami) broadcastLiveState();
+    }, LIVE_RESEND_MS);
     const socket = connectTatamiSocket("admin-control", tatami, handleSocketMessage, (sock) => {
       if (claimStatus === "owned") {
         broadcastLiveState();
@@ -296,6 +304,7 @@
     window.addEventListener("beforeunload", releaseOnUnload);
     return () => {
       clearInterval(heartbeat);
+      clearInterval(liveResend);
       window.removeEventListener("beforeunload", releaseOnUnload);
       socket.close();
       if (tatamiSocket === socket) tatamiSocket = null;
@@ -405,7 +414,10 @@
 
   /** Open a review for a corner (from the operator, or the coach's tablet) */
   // The timer keeps running: stopping it stays the operator's call.
+  // Every new request sounds the warning alarm (same sound as the 15 s warning),
+  // whether the coach or the operator asked for it.
   function startVrChallenge(side: VrSide, points?: number, reason?: string) {
+    if (vrChallenges[side]?.status !== "in_progress") playWarningChime();
     setVrChallenge(side, {
       side,
       reason: reason || vrReason(points),
@@ -482,8 +494,7 @@
       }
       return;
     }
-    // New request from the coach: alert the operator (same sound as the 15 s warning)
-    playWarningChime();
+    // New request from the coach (startVrChallenge sounds the alarm)
     startVrChallenge(side, points, data.reason);
   }
 

@@ -155,6 +155,9 @@
   // its closing animation plays.
   let winnerBanner = $state("");
   let winnerView = $state<"1" | "2" | "3">("1");
+  // True when the board moved on to another match while the banner was up: the banner
+  // is then cut at once instead of playing its closing wipe with the new match's names.
+  let winnerInstant = $state(false);
 
   // Kata preparation countdown (35 s). The board counts down on its own from
   // the remaining time it is sent and only re-syncs when it drifts.
@@ -274,9 +277,36 @@
   }
   // One request per corner: AKA and AO can be under review at the same time
   let vrRequests = $state<{ aka: ScoreboardVrChallenge | null; ao: ScoreboardVrChallenge | null }>({ aka: null, ao: null });
-  // Cards to draw: AO on the left, AKA on the right
-  let vrCards = $derived([vrRequests.ao, vrRequests.aka].filter((r): r is ScoreboardVrChallenge => !!r));
   let vrSafetyTimer: any = null;
+  // One banner column per corner (as in Ambrilindo Local): a score for that corner,
+  // else its VR request. So AKA's score and AO's VR show side by side; when AKA's
+  // banner ends, AO's VR stays on its own. AO left, AKA right.
+  type BannerColumn =
+    | { key: string; side: "aka" | "ao"; kind: "score"; entry: ScoreboardBannerEntry }
+    | { key: string; side: "aka" | "ao"; kind: "vr"; vr: ScoreboardVrChallenge };
+  let bannerColumns = $derived.by((): BannerColumn[] => {
+    const scores = currentBanner ? bannerEntries : [];
+    const cols: BannerColumn[] = [];
+    for (const side of ["ao", "aka"] as const) {
+      const entry = scores.find((e) => e.side === side);
+      const vr = vrRequests[side];
+      if (entry) cols.push({ key: `score-${side}`, side, kind: "score", entry });
+      else if (vr) cols.push({ key: `vr-${side}`, side, kind: "vr", vr });
+    }
+    return cols;
+  });
+  // VR shows on the same banner as a score (as in Ambrilindo Local): gold title,
+  // big subtitle, AO left / AKA right when both corners are under review.
+  const VR_POINT_NAMES = ["", "YUKO (1 POINT)", "WAZA-ARI (2 POINT)", "IPPON (3 POINT)"];
+  function vrTitle(vr: ScoreboardVrChallenge): string {
+    return vr.status === "accepted" && vr.points ? `VR +${vr.points} POINT` : "VIDEO REVIEW";
+  }
+  function vrSubtitle(vr: ScoreboardVrChallenge): string {
+    if (vr.status === "accepted") return "ACCEPTED";
+    if (vr.status === "rejected") return "DECLINED";
+    if (vr.status === "minai") return "MINAI (INCONCLUSIVE)";
+    return vr.reason || VR_POINT_NAMES[vr.points ?? 0] || "REQUESTED";
+  }
   let vrChimeTimer: any = null;
   // VR logo next to the score while a corner still has its card (kumite with VR only)
   let vrEnabled = $state(false);
@@ -397,19 +427,11 @@
     const prevMs = timerMs;
     timerMs = Math.max(0, timerMs - delta);
 
-    // Alarm thresholds checking with auto-rearm if time increases
+    // Alarm thresholds checking with auto-rearm if time increases. Sound only: no
+    // banner at 30 s / 15 s / 0 s (it flashed and was wiped by the next live update).
     if (alarmSettings.alarm30s && prevMs > 30000 && timerMs <= 30000 && !alarmTriggered30s) {
       playWarningAlarm(30);
       alarmTriggered30s = true;
-      currentBanner = {
-        id: Date.now(),
-        side: "aka",
-        title: "PERINGATAN",
-        subtitle: "30 DETIK TERSISA",
-        durationMs: 1800,
-      };
-      if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
-      bannerDismissTimer = setTimeout(() => { currentBanner = null; bannerDismissTimer = null; }, 1800);
     } else if (timerMs > 30000) {
       alarmTriggered30s = false;
     }
@@ -417,15 +439,6 @@
     if (alarmSettings.alarm15s && prevMs > 15000 && timerMs <= 15000 && !alarmTriggered15s) {
       playWarningAlarm(15);
       alarmTriggered15s = true;
-      currentBanner = {
-        id: Date.now(),
-        side: "aka",
-        title: "ATOSHIBARAKU",
-        subtitle: "15 DETIK TERSISA",
-        durationMs: 1800,
-      };
-      if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
-      bannerDismissTimer = setTimeout(() => { currentBanner = null; bannerDismissTimer = null; }, 1800);
     } else if (timerMs > 15000) {
       alarmTriggered15s = false;
     }
@@ -433,15 +446,6 @@
     if (alarmSettings.alarm0s && prevMs > 0 && timerMs <= 0 && !alarmTriggered0s) {
       playEndBuzzer();
       alarmTriggered0s = true;
-      currentBanner = {
-        id: Date.now(),
-        side: "aka",
-        title: "WAKTU HABIS",
-        subtitle: "PARTAI SELESAI",
-        durationMs: 2200,
-      };
-      if (bannerDismissTimer) clearTimeout(bannerDismissTimer);
-      bannerDismissTimer = setTimeout(() => { currentBanner = null; bannerDismissTimer = null; }, 2200);
     } else if (timerMs > 0) {
       alarmTriggered0s = false;
     }
@@ -503,8 +507,86 @@
     });
   });
 
+  // ==================== MATCH TRANSITION ====================
+  // When the board moves to another match (matchId changes), five horizontal strips
+  // of the Ambrilindo artwork slide in from the right, top strip first, cover the
+  // board, and slide away to the left. The new match's data is held back until the strips cover the
+  // board, so the old match never shows the new names. Not on the first match after
+  // opening, not on the operator's muted preview, and not when only a name is fixed.
+  const TRANSITION_IMG = "/img/match-transition.webp";
+  const STRIPS = 5;
+  const STRIP_MS = 560;
+  const STRIP_STAGGER_MS = 85;
+  const COVER_MS = STRIP_MS + (STRIPS - 1) * STRIP_STAGGER_MS;
+  const HOLD_MS = 650;
+  let transitionPhase = $state<"" | "in" | "out">("");
+  let transitionQueue: any[] = [];
+  let transitionTimers: ReturnType<typeof setTimeout>[] = [];
+  let shownMatchId: string | null = null;
+  // True only while the strips are still coming in (new data is queued then)
+  let transitionHolding = false;
+
+  // Preload, so the first transition on a TV over Wi-Fi does not show empty strips
+  $effect(() => {
+    if (!muted) new Image().src = TRANSITION_IMG;
+  });
+
+  function startMatchTransition(data: any) {
+    transitionQueue = [data];
+    transitionPhase = "in";
+    transitionTimers.push(
+      setTimeout(() => {
+        // Board fully covered: put the new match in underneath
+        const queued = transitionQueue;
+        transitionQueue = [];
+        transitionHolding = false;
+        queued.forEach(applyNow);
+        transitionTimers.push(
+          setTimeout(() => {
+            transitionPhase = "out";
+            transitionTimers.push(setTimeout(() => (transitionPhase = ""), COVER_MS + 50));
+          }, HOLD_MS)
+        );
+      }, COVER_MS + 30)
+    );
+    transitionHolding = true;
+  }
   function applyLiveState(data: any) {
     if (!data) return;
+    if (transitionHolding) {
+      transitionQueue.push(data);
+      return;
+    }
+    const id = data.matchId != null && data.matchId !== "" ? String(data.matchId) : null;
+    if (!muted && transitionPhase === "" && id !== null && shownMatchId !== null && id !== shownMatchId) {
+      startMatchTransition(data);
+      return;
+    }
+    applyNow(data);
+  }
+
+  function applyNow(data: any) {
+    if (!data) return;
+    // A different match arriving while the winner banner is up: drop the banner
+    // without animation before the new names are applied, so the old winner's banner
+    // never shows the next match's athletes.
+    if (winnerBanner) {
+      const matchKey = (c: unknown, r: unknown, n: unknown, a: unknown, b: unknown) =>
+        [c, r, n, a, b].map((v) => String(v ?? "")).join("|");
+      const current = matchKey(categoryName, matchRound, matchNumber, akaName, aoName);
+      const incoming = matchKey(
+        data.category || categoryName,
+        data.round || matchRound,
+        data.matchNumber ?? matchNumber,
+        data.aka?.name || akaName,
+        data.ao?.name || aoName,
+      );
+      if (incoming !== current) {
+        winnerInstant = true;
+        winnerBanner = "";
+      }
+    }
+    if (data.matchId != null && data.matchId !== "") shownMatchId = String(data.matchId);
     if (data.tatami) tatamiNumber = Number(data.tatami);
     const wasJudgePanel = isKata && showKataScoreOverlay;
     const wasTotalVisible = showKataTotal && !holdKataTotal;
@@ -568,6 +650,7 @@
     if (data.winnerBanner !== undefined) {
       const w = String(data.winnerBanner || "");
       if (w === "1" || w === "2" || w === "3") {
+        if (!winnerBanner) winnerInstant = false;
         winnerView = w;
         winnerBanner = w;
       } else {
@@ -702,6 +785,7 @@
     if (vrSafetyTimer) clearTimeout(vrSafetyTimer);
     if (holdKataTotalTimer) clearTimeout(holdKataTotalTimer);
     if (prepFrame !== null) cancelAnimationFrame(prepFrame);
+    transitionTimers.forEach(clearTimeout);
   });
 </script>
 
@@ -794,10 +878,10 @@
   {#if winnerBanner}
     {#if winnerView === "3"}
       <!-- Draw (hikiwake) -->
-      <div class="sb-winner sb-winner-draw" role="status" transition:wipe|global={{ from: "center" }}>
-        <div class="sb-winner-ribbon" in:fly|global={riseIn(0)} out:fade|global={{ duration: 180 }}>HIKIWAKE</div>
-        <div class="sb-draw-title" in:fly|global={riseIn(1)} out:fade|global={{ duration: 180 }}>SERI</div>
-        <div class="sb-draw-names" in:fly|global={riseIn(2)} out:fade|global={{ duration: 180 }}>
+      <div class="sb-winner sb-winner-draw" role="status" transition:wipe|global={{ from: "center", duration: winnerInstant ? 0 : 750 }}>
+        <div class="sb-winner-ribbon" in:fly|global={riseIn(0)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>HIKIWAKE</div>
+        <div class="sb-draw-title" in:fly|global={riseIn(1)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>SERI</div>
+        <div class="sb-draw-names" in:fly|global={riseIn(2)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>
           <span class="sb-draw-chip aka">{akaName}</span>
           {#if winnerScoreVisible}
             <span class="sb-draw-score">{akaShownScore} – {aoShownScore}</span>
@@ -806,7 +890,7 @@
           {/if}
           <span class="sb-draw-chip ao">{aoName}</span>
         </div>
-        <div class="sb-winner-foot" in:fly|global={riseIn(3)} out:fade|global={{ duration: 180 }}>
+        <div class="sb-winner-foot" in:fly|global={riseIn(3)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>
           {categoryName} · {matchRound} · PARTAI {matchNumber}
         </div>
       </div>
@@ -814,11 +898,11 @@
       <div
         class="sb-winner sb-winner-{winnerInfo.side}"
         role="status"
-        transition:wipe|global={{ from: winnerView === "1" ? "top" : "bottom" }}
+        transition:wipe|global={{ from: winnerView === "1" ? "top" : "bottom", duration: winnerInstant ? 0 : 750 }}
       >
         <div class="sb-winner-shine" aria-hidden="true"></div>
 
-        <div class="sb-winner-head" in:fly|global={riseIn(0)} out:fade|global={{ duration: 180 }}>
+        <div class="sb-winner-head" in:fly|global={riseIn(0)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>
           <span class="sb-winner-ribbon">
             <svg class="sb-winner-trophy" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
               <path d="M10 2a1 1 0 011 1v1h3a1 1 0 011 1v2a3 3 0 01-3 3h-1.1a4.99 4.99 0 01-1.9 3.1V15h2a1 1 0 110 2H8a1 1 0 110-2h2v-1.9A4.99 4.99 0 018.1 10H7a3 3 0 01-3-3V5a1 1 0 011-1h3V3a1 1 0 011-1z" />
@@ -829,7 +913,7 @@
         </div>
 
         <div class="sb-winner-body">
-          <div class="sb-winner-logo" in:fly|global={riseIn(1)} out:fade|global={{ duration: 180 }}>
+          <div class="sb-winner-logo" in:fly|global={riseIn(1)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>
             <img
               src={formatLogoUrl(winnerInfo.logo)}
               alt="Logo {winnerInfo.label}"
@@ -837,7 +921,7 @@
             />
           </div>
 
-          <div class="sb-winner-info" in:fly|global={riseIn(2)} out:fade|global={{ duration: 180 }}>
+          <div class="sb-winner-info" in:fly|global={riseIn(2)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>
             {#if isTeamMatch && winnerInfo.teamName}
               <div class="sb-winner-team">TIM {winnerInfo.teamName}</div>
             {/if}
@@ -849,7 +933,7 @@
           </div>
 
           <!-- Same width as the logo so the name stays centred on the screen -->
-          <div class="sb-winner-side" in:fly|global={riseIn(1)} out:fade|global={{ duration: 180 }}>
+          <div class="sb-winner-side" in:fly|global={riseIn(1)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>
             {#if winnerScoreVisible}
               <div class="sb-winner-score">
                 <span class="sb-winner-score-main">{winnerInfo.score}</span>
@@ -860,7 +944,7 @@
           </div>
         </div>
 
-        <div class="sb-winner-foot" in:fly|global={riseIn(3)} out:fade|global={{ duration: 180 }}>
+        <div class="sb-winner-foot" in:fly|global={riseIn(3)} out:fade|global={{ duration: winnerInstant ? 0 : 180 }}>
           {categoryName} · {matchRound} · PARTAI {matchNumber}
         </div>
       </div>
@@ -959,51 +1043,66 @@
 
   <!-- ==================== ARENA: AKA (top) / AO (bottom) ==================== -->
   <main class="sb-arena" class:has-judges={showJudgePanel}>
-    {#if hanteiMode && !currentBanner}
+    {#if hanteiMode && bannerColumns.length === 0}
       <div class="sb-hantei" role="status" transition:bannerPop|global={{ duration: 280 }}>
         <div class="sb-hantei-title">HANTEI</div>
         <div class="sb-hantei-sub">KEPUTUSAN JURI</div>
       </div>
     {/if}
-    {#if currentBanner && bannerView}
-      <!-- bannerView keeps the last banner's content while it animates out -->
+    {#if bannerColumns.length > 0}
+      <!-- Scores and Video Review share one banner: one column per corner -->
       <div
         class="sb-banner-overlay"
-        class:is-dual={bannerEntries.length > 1}
+        class:is-dual={bannerColumns.length > 1}
         role="alert"
         aria-live="assertive"
         transition:bannerPop|global={{ duration: 280 }}
       >
-        {#each bannerEntries as entry (entry.side)}
-          <div
-            class="sb-banner-col is-{entry.side}"
-            class:has-flags={(entry.judges ?? 0) > 0}
-            in:bannerPop={{ duration: 280 }}
-          >
-            <div class="sb-banner-side-badge">
-              <span>{entry.side === "aka" ? "AKA" : "AO"}</span>
-              <span class="sb-banner-side-sep">/</span>
-              <span>{entry.side === "aka" ? akaName : aoName}</span>
-            </div>
-            <div class="sb-banner-title">{entry.title}</div>
-            <div class="sb-banner-subtitle">{entry.subtitle}</div>
-            {#if (entry.judges ?? 0) > 0}
-              <!-- One flag per judge who called this point -->
-              <div class="sb-banner-flags">
-                {#each Array.from({ length: Math.min(4, entry.judges ?? 0) }) as _, i (i)}
-                  <img
-                    src="/img/{entry.side}_flag.png"
-                    alt="Bendera {entry.side === 'aka' ? 'AKA' : 'AO'}"
-                    class="sb-banner-flag"
-                    style="--i: {i}"
-                  />
-                {/each}
+        {#each bannerColumns as col (col.key)}
+          {#if col.kind === "score"}
+            {@const entry = col.entry}
+            <div
+              class="sb-banner-col is-{entry.side}"
+              class:has-flags={(entry.judges ?? 0) > 0}
+              in:bannerPop={{ duration: 280 }}
+            >
+              <div class="sb-banner-side-badge">
+                <span>{entry.side === "aka" ? "AKA" : "AO"}</span>
+                <span class="sb-banner-side-sep">/</span>
+                <span>{entry.side === "aka" ? akaName : aoName}</span>
               </div>
-              {#if entry.title !== "HANTEI"}
-                <div class="sb-banner-judges">{entry.judges} JURI</div>
+              <div class="sb-banner-title">{entry.title}</div>
+              <div class="sb-banner-subtitle">{entry.subtitle}</div>
+              {#if (entry.judges ?? 0) > 0}
+                <!-- One flag per judge who called this point -->
+                <div class="sb-banner-flags">
+                  {#each Array.from({ length: Math.min(4, entry.judges ?? 0) }) as _, i (i)}
+                    <img
+                      src="/img/{entry.side}_flag.png"
+                      alt="Bendera {entry.side === 'aka' ? 'AKA' : 'AO'}"
+                      class="sb-banner-flag"
+                      style="--i: {i}"
+                    />
+                  {/each}
+                </div>
+                {#if entry.title !== "HANTEI"}
+                  <div class="sb-banner-judges">{entry.judges} JURI</div>
+                {/if}
               {/if}
-            {/if}
-          </div>
+            </div>
+          {:else}
+            {@const vr = col.vr}
+            <!-- Video Review: same banner as a score -->
+            <div class="sb-banner-col sb-vr-col is-{vr.side} is-vr-{vr.status}" in:bannerPop={{ duration: 280 }}>
+              <div class="sb-banner-side-badge">
+                <span>{vr.side === "aka" ? "AKA" : "AO"}</span>
+                <span class="sb-banner-side-sep">/</span>
+                <span>{vr.side === "aka" ? akaName : aoName}</span>
+              </div>
+              <div class="sb-banner-title">{vrTitle(vr)}</div>
+              <div class="sb-banner-subtitle" use:fitText={vrSubtitle(vr)}>{vrSubtitle(vr)}</div>
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -1092,36 +1191,24 @@
       </div>
   </footer>
 
-  <!-- ==================== VIDEO REVIEW (VR) OVERLAY: one card per corner ==================== -->
-  {#if vrCards.length > 0}
-    <div class="sb-vr-backdrop" class:is-dual={vrCards.length > 1}>
-      {#each vrCards as vr (vr.side)}
-        <div class="sb-vr-card is-{vr.status} sb-vr-side-{vr.side}">
-          <div class="sb-vr-pill">
-            <span class="sb-vr-dot"></span>
-            VIDEO REVIEW
-          </div>
-          <div class="sb-vr-corner">{vr.side === "aka" ? "AKA" : "AO"}</div>
-          <div class="sb-vr-athlete">{vr.side === "aka" ? akaName : aoName}</div>
-          {#if vr.status === "in_progress" && (vr.reason || vr.points)}
-            <div class="sb-vr-reason">{vr.reason || `${["", "YUKO", "WAZA-ARI", "IPPON"][vr.points ?? 0]} (${vr.points} POINT)`}</div>
-          {/if}
-          <div class="sb-vr-status">
-            {#if vr.status === "in_progress"}
-              <span class="sb-vr-pending">SEDANG DITINJAU</span>
-            {:else if vr.status === "accepted"}
-              <span class="sb-vr-accepted">✓ DITERIMA{vr.points ? ` · ${vr.points} POINT` : ""}</span>
-            {:else if vr.status === "minai"}
-              <span class="sb-vr-minai">MINAI</span>
-            {:else}
-              <span class="sb-vr-rejected">✕ DITOLAK</span>
-            {/if}
-          </div>
-        </div>
-      {/each}
-    </div>
-  {/if}
 </div>
+
+<!-- Match transition: five horizontal strips of the Ambrilindo artwork -->
+{#if transitionPhase}
+  <div class="sb-mt sb-mt-{transitionPhase}" aria-hidden="true">
+    {#each Array(STRIPS) as _, i}
+      <div
+        class="sb-mt-strip"
+        style="top: {(i * 100) / STRIPS}%; height: {100 / STRIPS + 0.2}%; animation-delay: {i * STRIP_STAGGER_MS}ms; animation-duration: {STRIP_MS}ms;"
+      >
+        <div
+          class="sb-mt-art"
+          style="background-image: url('{TRANSITION_IMG}'); top: {-(i * 100) / STRIPS}cqh;"
+        ></div>
+      </div>
+    {/each}
+  </div>
+{/if}
 </div>
 
 <style>
@@ -2305,39 +2392,66 @@
 .sb-arena.has-judges .sb-club-name,
 .sb-arena.has-judges .sb-kata-title { font-size: 6cqh; }
 
-/* ==================== VIDEO REVIEW OVERLAY ==================== */
-.sb-vr-backdrop {
+/* ==================== MATCH TRANSITION ==================== */
+/* Five horizontal strips of one image slide in from the right (top strip first),
+   hold over the board, then slide out to the left in the same order. Transform only. */
+.sb-mt {
   position: absolute;
   inset: 0;
-  z-index: 70;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3cqh;
-  padding: 3cqh;
-  background-color: rgba(0, 0, 0, 0.9);
-  font-family: var(--sb-display);
-  text-transform: uppercase;
+  z-index: 90;
+  overflow: hidden;
+  pointer-events: none;
+}
+.sb-mt-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  background: #050505;
+  transform: translate3d(101%, 0, 0);
+  animation-timing-function: cubic-bezier(0.77, 0, 0.18, 1);
+  animation-fill-mode: both;
+  will-change: transform;
+}
+.sb-mt-in .sb-mt-strip { animation-name: sb-mt-slide-in; }
+.sb-mt-out .sb-mt-strip { animation-name: sb-mt-slide-out; }
+/* Glowing red edge leading each strip in, and trailing it out */
+.sb-mt-strip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0.3cqw;
+  background: #ff1a1a;
+  box-shadow: 0 0 2.2cqh 0.6cqh rgba(255, 26, 26, 0.75);
+  z-index: 1;
+}
+.sb-mt-out .sb-mt-strip::after { left: auto; right: 0; }
+.sb-mt-art {
+  position: absolute;
+  left: 0;
+  width: 100cqw;
+  height: 100cqh;
+  background-size: cover;
+  background-position: center;
+}
+@keyframes sb-mt-slide-in {
+  from { transform: translate3d(101%, 0, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+@keyframes sb-mt-slide-out {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-101%, 0, 0); }
 }
 
-.sb-vr-card {
-  width: 100%;
-  max-width: 160cqh;
-  padding: 4cqh 5cqh;
-  border-radius: 2.4cqh;
-  border: 0.8cqh solid;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2cqh;
-}
-.sb-vr-side-aka { background-color: var(--sb-aka-deep); border-color: var(--sb-aka); }
-.sb-vr-side-ao { background-color: var(--sb-ao-deep); border-color: var(--sb-ao); }
-.sb-vr-card.is-accepted { background-color: #065f46; border-color: #34d399; }
-.sb-vr-card.is-rejected { background-color: #4c0519; border-color: #fb7185; }
-.sb-vr-card.is-minai { background-color: #451a03; border-color: var(--sb-gold); }
-.sb-vr-minai { color: var(--sb-gold); }
+/* ==================== VIDEO REVIEW BANNER ====================
+   Same banner as a score (as in Ambrilindo Local). The subtitle is longer than a
+   point name ("WAZA-ARI (2 POINT)"), so it starts smaller and fitText shrinks it
+   further when it still does not fit its column. */
+.sb-vr-col .sb-banner-subtitle { font-size: 15cqh; max-width: 100%; }
+.sb-banner-overlay.is-dual .sb-vr-col .sb-banner-subtitle { font-size: 9.5cqh; }
+.sb-vr-col.is-vr-in_progress .sb-banner-subtitle { animation: sbTimerAlert 0.9s infinite alternate; }
 
 /* VR card logo, left of the score box while the card is still available */
 .sb-vr-logo {
@@ -2352,68 +2466,6 @@
   transform: scale(0.8);
 }
 
-.sb-vr-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 1.2cqh;
-  font-size: 4cqh;
-  font-weight: 700;
-  line-height: 1;
-  padding: 1cqh 2.4cqh;
-  border-radius: 9999px;
-  background-color: rgba(0, 0, 0, 0.45);
-}
-
-.sb-vr-dot {
-  width: 2cqh;
-  height: 2cqh;
-  border-radius: 9999px;
-  background-color: var(--sb-warn);
-  animation: sbTimerAlert 0.7s infinite alternate;
-}
-
-.sb-vr-corner {
-  font-size: 16cqh;
-  font-weight: 700;
-  line-height: 0.9;
-}
-
-.sb-vr-athlete {
-  font-size: 6cqh;
-  font-weight: 500;
-  line-height: 1;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sb-vr-reason {
-  font-size: 8cqh;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--sb-gold);
-  background-color: rgba(0, 0, 0, 0.45);
-  padding: 2cqh 4cqh;
-  border-radius: 1.6cqh;
-  max-width: 100%;
-}
-
-.sb-vr-status {
-  font-size: 7cqh;
-  font-weight: 700;
-  line-height: 1;
-}
-
-/* AKA and AO under review at the same time: two cards side by side */
-.sb-vr-backdrop.is-dual .sb-vr-card { flex: 1; max-width: none; min-width: 0; padding: 3cqh 3cqh; }
-.sb-vr-backdrop.is-dual .sb-vr-corner { font-size: 12cqh; }
-.sb-vr-backdrop.is-dual .sb-vr-athlete { font-size: 4.6cqh; }
-.sb-vr-backdrop.is-dual .sb-vr-reason { font-size: 6cqh; padding: 1.6cqh 2.4cqh; }
-.sb-vr-backdrop.is-dual .sb-vr-status { font-size: 5.4cqh; }
-.sb-vr-pending { color: var(--sb-gold); animation: sbTimerAlert 0.9s infinite alternate; }
-.sb-vr-accepted { color: #6ee7b7; }
-.sb-vr-rejected { color: #fda4af; }
 
 @media (prefers-reduced-motion: reduce) {
   .sb-root * {
