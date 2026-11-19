@@ -180,7 +180,7 @@
 </script>
 
 <svelte:head>
-  <title>Portal Lapangan &bull; Ambrilindo Arena</title>
+  <title>Portal Lapangan &bull; Ambrilindo Karate System</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 </svelte:head>
 
@@ -190,16 +190,10 @@
   <!-- Brand & Live Host Header -->
   <header class="max-w-2xl mx-auto w-full flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-4 shrink-0">
     <div class="flex items-center space-x-3 min-w-0">
-      <div class="w-9 h-9 rounded-xl bg-white text-black font-black flex items-center justify-center text-sm shadow-md shrink-0">
-        <svg class="w-5 h-5 text-black" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/>
-          <path d="M12 8v8"/>
-          <path d="M8 12h8"/>
-        </svg>
-      </div>
+      <img src="/img/ambrilindo-mark.png" alt="" class="w-9 h-9 object-contain shrink-0" aria-hidden="true" />
       <div>
         <div class="flex items-center space-x-2">
-          <h1 class="text-sm sm:text-base font-black text-white tracking-wider uppercase">AMBRILINDO ARENA</h1>
+          <h1 class="text-sm sm:text-base font-black text-white tracking-wider uppercase">AMBRILINDO KARATE SYSTEM</h1>
           <span class="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-white/[0.06] text-zinc-300 border border-white/[0.1]">
             v3.0
           </span>

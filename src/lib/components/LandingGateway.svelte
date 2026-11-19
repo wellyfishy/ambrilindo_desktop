@@ -209,13 +209,9 @@
   <!-- Top bar: brand + database + license -->
   <header class="w-full max-w-5xl mx-auto px-6 pt-6 pb-5 flex flex-wrap items-center justify-between gap-4 border-b border-white/[0.08]">
     <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-xl bg-red-600 text-white flex items-center justify-center shadow-md shrink-0" aria-hidden="true">
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" />
-        </svg>
-      </div>
+      <img src="/img/ambrilindo-mark.png" alt="" class="w-10 h-10 object-contain shrink-0" aria-hidden="true" />
       <div class="leading-tight">
-        <h1 class="text-lg font-black text-white tracking-tight">AMBRILINDO ARENA</h1>
+        <h1 class="text-lg font-black text-white tracking-tight">AMBRILINDO KARATE SYSTEM</h1>
         <span class="text-xs font-mono text-zinc-500">v3.0</span>
       </div>
     </div>

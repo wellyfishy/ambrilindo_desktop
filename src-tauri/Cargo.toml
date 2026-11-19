@@ -55,3 +55,12 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Quick builds for testing (`build-fast.bat`): same optimisation level, but no
+# whole-program LTO, parallel codegen and incremental compilation, so a rebuild
+# after a small change takes a fraction of the full release build.
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
