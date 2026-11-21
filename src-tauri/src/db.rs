@@ -744,7 +744,7 @@ impl DatabaseManager {
     /// `backend_syncqueue` (retry_count, created_at, updated_at) as well as the desktop's own
     /// table, and stamps a `msg_id` so the web drops a resend of the same row. A failed insert
     /// never fails the save that triggered it, but it is logged instead of swallowed.
-    async fn enqueue_live_sync(
+    pub(crate) async fn enqueue_live_sync(
         conn: &mut sqlx::SqliteConnection,
         event_id: Option<i64>,
         endpoint: &str,
@@ -799,15 +799,40 @@ impl DatabaseManager {
         match row {
             Some((match_id, bagan_id, round, urutan, false, category, aka, ao, kode_event)) => {
                 let ev_code = kode_event.unwrap_or_else(|| format!("EV{}", event_id));
-                serde_json::json!({
+                let mut label = format!("Babak {} - Partai #{}", round, urutan);
+                let mut payload = serde_json::json!({
                     "tatami_number": tatami_number,
                     "is_active": true,
                     "category_name": category.unwrap_or_default(),
-                    "match_label": format!("Babak {} - Partai #{}", round, urutan),
                     "atlet_aka": aka.unwrap_or_else(|| "-".into()),
                     "atlet_ao": ao.unwrap_or_else(|| "-".into()),
                     "kode_realtime": format!("{}-{}-{}", ev_code, bagan_id, match_id),
-                })
+                });
+                // A team match: which bout is on (first unplayed) and the bouts won so far.
+                let bouts: Vec<(bool, Option<String>)> = sqlx::query_as(
+                    "SELECT COALESCE(c.selesai, 0), c.pemenang FROM backend_matchup m JOIN backend_detailbagan c ON c.id = m.db_id
+                      WHERE m.detail_bagan_id = ? ORDER BY m.round",
+                )
+                .bind(match_id)
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap_or_default();
+                if !bouts.is_empty() {
+                    let total = bouts.len();
+                    let played = bouts.iter().filter(|b| b.0).count();
+                    let won = |w: &str| bouts.iter().filter(|b| b.0 && b.1.as_deref() == Some(w)).count();
+                    let (aka_w, ao_w) = (won("1"), won("2"));
+                    let current = (played + 1).min(total);
+                    label = format!("{label} · Beregu P{current}/{total}");
+                    let obj = payload.as_object_mut().expect("object");
+                    obj.insert("team_bout".into(), serde_json::json!(current));
+                    obj.insert("team_total".into(), serde_json::json!(total));
+                    obj.insert("team_score_aka".into(), serde_json::json!(aka_w));
+                    obj.insert("team_score_ao".into(), serde_json::json!(ao_w));
+                    obj.insert("current_score".into(), serde_json::json!(format!("{aka_w}-{ao_w}")));
+                }
+                payload["match_label"] = serde_json::json!(label);
+                payload
             }
             _ => serde_json::json!({
                 "tatami_number": tatami_number,
@@ -1591,13 +1616,23 @@ impl DatabaseManager {
                 id
             }
             None => {
+                // Its own kode (next free number). Left empty, `get_bagans` would renumber every
+                // bagan of the event, shifting the kodes the web matches bagans by.
+                let max_code: Option<i64> = sqlx::query_scalar(
+                    "SELECT MAX(CAST(kode AS INTEGER)) FROM backend_bagan WHERE event_id = ? AND kode GLOB '[0-9]*'"
+                )
+                .bind(event_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| format!("Gagal memuat kode bagan: {}", e))?;
+                let kode = format!("{:03}", max_code.unwrap_or(0) + 1);
                 let row: (i64,) = sqlx::query_as(
                     r#"
                     INSERT INTO backend_bagan (
                         event_id, nama_bagan, nomor_tanding_id, tipe_tanding,
-                        round_robin, pool, is_bob, has_vr
+                        round_robin, pool, is_bob, has_vr, kode
                     )
-                    VALUES (?, ?, ?, ?, 0, 3, 0, ?)
+                    VALUES (?, ?, ?, ?, 0, 3, 0, ?, ?)
                     RETURNING id
                     "#
                 )
@@ -1606,6 +1641,7 @@ impl DatabaseManager {
                 .bind(nomor_tanding_id)
                 .bind(&tipe_tanding)
                 .bind(has_vr)
+                .bind(&kode)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|e| format!("Gagal membuat bagan repechage baru: {}", e))?;
@@ -3610,6 +3646,28 @@ impl DatabaseManager {
     /// Deletes one referchange bagan only. The category's other bagans stay, and their Juara 3A/3B
     /// go back to the semifinal losers (`bronze_from_semifinals`). With live sync on, the corrected
     /// podium is sent to the web. Without `force`, a referchange with a finished bout is kept.
+    /// Generate (or regenerate) a referchange, then queue its category's push to the web
+    /// (live sync on + linked event). Used by the app and the LAN API alike.
+    pub async fn generate_repechage_and_queue(&self, main_bagan_id: i64) -> Result<RepechageResult, String> {
+        let mut res = self.generate_repechage_bracket(main_bagan_id).await?;
+        let pool = self.get_pool()?;
+        let category = crate::sync::SyncService::category_of(pool, main_bagan_id).await;
+        let line = crate::sync::SyncService::queue_category_push(pool, self.get_db_path(), category).await;
+        if !line.is_empty() {
+            res.message = format!("{}\n{}", res.message, line);
+        }
+        Ok(res)
+    }
+
+    /// Delete a referchange, then queue its category's push so the web drops it too.
+    pub async fn delete_repechage_and_queue(&self, bagan_id: i64, force: bool) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let category = crate::sync::SyncService::category_of(pool, bagan_id).await;
+        self.delete_repechage_bagan(bagan_id, force).await?;
+        let _ = crate::sync::SyncService::queue_category_push(pool, self.get_db_path(), category).await;
+        Ok(())
+    }
+
     pub async fn delete_repechage_bagan(&self, bagan_id: i64, force: bool) -> Result<(), String> {
         let pool = self.get_pool()?;
         let row: Option<(Option<i64>, Option<String>, Option<i64>)> =
@@ -4538,6 +4596,23 @@ impl DatabaseManager {
 
         let (_match_id, bagan_id, round_num, urutan_num, a1_id, a2_id, is_team_child_bout) = current_match;
 
+        // A bout of a team match that is already decided cannot change on its own: the team
+        // result (and the web) would keep the old totals. "Reset control panel" undoes the team.
+        if is_team_child_bout {
+            let parent_done: bool = sqlx::query_scalar(
+                "SELECT COALESCE(p.selesai, 0) FROM backend_matchup m JOIN backend_detailbagan p ON p.id = m.detail_bagan_id
+                  WHERE m.db_id = ? LIMIT 1",
+            )
+            .bind(input.match_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Gagal memuat partai beregu: {}", e))?
+            .unwrap_or(false);
+            if parent_done {
+                return Err("Beregu ini sudah selesai. Pakai \"Reset control panel\" untuk membatalkan hasil beregu dulu.".to_string());
+            }
+        }
+
         // Winner is AKA ("1") or AO ("2"); a bout inside a team match may also end
         // hikiwake ("3"). Empty only for an open bout or a round-robin draw. Anything else
         // would mark the bout finished with nobody advancing.
@@ -5222,30 +5297,30 @@ impl DatabaseManager {
                 }
             }
         }
-        } else if is_team_child_bout && input.selesai {
-            // Auto-advance tatami to next unfinished team bout if available
-            let next_bout_id: Option<i64> = sqlx::query_scalar(
-                r#"
-                SELECT m.db_id FROM backend_matchup m
-                JOIN backend_detailbagan db ON m.db_id = db.id
-                WHERE m.detail_bagan_id = (SELECT detail_bagan_id FROM backend_matchup WHERE db_id = ?)
-                  AND db.selesai = 0
-                  AND m.db_id != ?
-                ORDER BY m.round ASC LIMIT 1
-                "#
-            )
-            .bind(input.match_id)
-            .bind(input.match_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None);
-
-            if let Some(nid) = next_bout_id {
+        } else if is_team_child_bout {
+            // The tatami holds the team match (the parent), never one of its bouts: the web knows
+            // only the parent. Each saved bout updates the team progress on the web's live tatami.
+            let parent: Option<i64> = sqlx::query_scalar("SELECT detail_bagan_id FROM backend_matchup WHERE db_id = ? LIMIT 1")
+                .bind(input.match_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .unwrap_or(None);
+            if let Some(pid) = parent {
                 let _ = sqlx::query("UPDATE backend_tatami SET detail_bagan_id = ? WHERE detail_bagan_id = ?")
-                    .bind(nid)
+                    .bind(pid)
                     .bind(input.match_id)
                     .execute(&mut *tx)
                     .await;
+                let tatamis: Vec<(i64, i64)> = sqlx::query_as(
+                    "SELECT event_id, tatami_number FROM backend_tatami WHERE detail_bagan_id = ? AND event_id IS NOT NULL AND tatami_number IS NOT NULL",
+                )
+                .bind(pid)
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap_or_default();
+                for (ev, num) in tatamis {
+                    Self::enqueue_tatami_status(&mut tx, ev, num).await;
+                }
             }
         }
 
@@ -5566,6 +5641,19 @@ impl DatabaseManager {
         } else {
             tatami_number
         };
+
+        // A bout inside a team match runs as its team match: the tatami and the web follow the
+        // parent (the web has no row for the bouts, so their status would be refused with 404).
+        let match_id: i64 = sqlx::query_scalar(
+            "SELECT m.detail_bagan_id FROM backend_matchup m JOIN backend_detailbagan c ON c.id = m.db_id
+              WHERE m.db_id = ? AND COALESCE(c.team, 0) = 1 LIMIT 1",
+        )
+        .bind(match_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(match_id);
 
         // 1. Link the match to the tatami of ITS event only (every event has its own tatami 1, 2, ...).
         let match_event: Option<i64> = sqlx::query_scalar(
@@ -6301,9 +6389,7 @@ impl DatabaseManager {
                 .then_with(|| b.bronze.cmp(&a.bronze))
                 .then_with(|| a.nama.to_lowercase().cmp(&b.nama.to_lowercase()))
         });
-        for (idx, item) in utusan_standings.iter_mut().enumerate() {
-            item.rank = idx + 1;
-        }
+        assign_medal_ranks(&mut utusan_standings);
 
         // 9. Sort and assign ranks to Perguruan standings
         let mut perguruan_standings: Vec<StandingItem> = perguruan_map.into_values().collect();
@@ -6316,9 +6402,7 @@ impl DatabaseManager {
                 .then_with(|| b.bronze.cmp(&a.bronze))
                 .then_with(|| a.nama.to_lowercase().cmp(&b.nama.to_lowercase()))
         });
-        for (idx, item) in perguruan_standings.iter_mut().enumerate() {
-            item.rank = idx + 1;
-        }
+        assign_medal_ranks(&mut perguruan_standings);
 
         Ok(SummaryJuaraResult {
             event_name,
@@ -9316,7 +9400,81 @@ impl DatabaseManager {
     }
 
     /// Finalizes a team match: computes final aggregate scores, advances winning team in bracket tree, enqueues sync
-    pub async fn finish_team_match(&self, parent_match_id: i64, winner_override: Option<String>) -> Result<(), String> {
+    /// "Reset control panel" of a team match: every bout's result is cleared (the roster stays)
+    /// and, when the team match was already decided, its result is undone through the normal
+    /// reopen path (winner taken back from the next round, podium, web `api/reopen/`). Refused
+    /// when the winner already played on. The tatami keeps the team match, with 0-0 on the web.
+    pub async fn reset_team_match(&self, parent_match_id: i64) -> Result<(), String> {
+        let pool = self.get_pool()?;
+        let parent: Option<(i64, bool, bool, bool)> = sqlx::query_as(
+            "SELECT bagan_id, COALESCE(selesai, 0), vr1, vr2 FROM backend_detailbagan WHERE id = ? AND COALESCE(team, 0) = 0",
+        )
+        .bind(parent_match_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat partai beregu: {}", e))?;
+        let Some((bagan_id, finished, vr1, vr2)) = parent else {
+            return Err("Partai beregu tidak ditemukan.".to_string());
+        };
+        // 1. Undo the team result first: it checks that nothing later stands on it.
+        if finished {
+            self.save_match_result(SaveMatchInput {
+                match_id: parent_match_id,
+                bagan_id,
+                score1: None,
+                score2: None,
+                scorekecil1: None,
+                scorekecil2: None,
+                pemenang: None,
+                kata1: None,
+                kata2: None,
+                vr1,
+                vr2,
+                hantei: false,
+                selesai: false,
+                juri_scores1: None,
+                juri_scores2: None,
+            })
+            .await?;
+        }
+        // 2. Clear every bout of the team match.
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Gagal memulai transaksi: {}", e))?;
+        sqlx::query(
+            "UPDATE backend_detailbagan
+                SET selesai = 0, pemenang = NULL, score1 = NULL, score2 = NULL, scorekecil1 = NULL, scorekecil2 = NULL,
+                    hantei = 0, vr1 = 0, vr2 = 0, kata1 = NULL, kata2 = NULL, juri_scores1 = NULL, juri_scores2 = NULL
+              WHERE id IN (SELECT db_id FROM backend_matchup WHERE detail_bagan_id = ?)",
+        )
+        .bind(parent_match_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Gagal mengosongkan partai beregu: {}", e))?;
+        // 3. A tatami still holding one of its bouts holds the team match; tell the web (0-0).
+        let _ = sqlx::query(
+            "UPDATE backend_tatami SET detail_bagan_id = ? WHERE detail_bagan_id IN (SELECT db_id FROM backend_matchup WHERE detail_bagan_id = ?)",
+        )
+        .bind(parent_match_id)
+        .bind(parent_match_id)
+        .execute(&mut *tx)
+        .await;
+        let tatamis: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT event_id, tatami_number FROM backend_tatami WHERE detail_bagan_id = ? AND event_id IS NOT NULL AND tatami_number IS NOT NULL",
+        )
+        .bind(parent_match_id)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_default();
+        for (ev, num) in tatamis {
+            Self::enqueue_tatami_status(&mut tx, ev, num).await;
+        }
+        tx.commit().await.map_err(|e| format!("Gagal menyimpan reset beregu: {}", e))?;
+        Ok(())
+    }
+
+    /// `allow_unplayed`: the operator confirmed that the bouts left unplayed are not fought
+    /// (kiken / disqualification). Without it a team result the remaining bouts could still
+    /// change is refused (a 2-1 with two bouts to go was saved as final once).
+    pub async fn finish_team_match(&self, parent_match_id: i64, winner_override: Option<String>, allow_unplayed: bool) -> Result<(), String> {
         let pool = self.get_pool()?;
 
         // 1. Tally the bouts (wins, then total points)
@@ -9325,10 +9483,11 @@ impl DatabaseManager {
             score1: Option<String>,
             score2: Option<String>,
             pemenang: Option<String>,
+            selesai: bool,
         }
 
         let bouts: Vec<ChildBoutTally> = sqlx::query_as(
-            "SELECT db.score1, db.score2, db.pemenang FROM backend_matchup m JOIN backend_detailbagan db ON m.db_id = db.id WHERE m.detail_bagan_id = ? ORDER BY m.round ASC"
+            "SELECT db.score1, db.score2, db.pemenang, COALESCE(db.selesai, 0) AS selesai FROM backend_matchup m JOIN backend_detailbagan db ON m.db_id = db.id WHERE m.detail_bagan_id = ? ORDER BY m.round ASC"
         )
         .bind(parent_match_id)
         .fetch_all(pool)
@@ -9340,7 +9499,7 @@ impl DatabaseManager {
         let mut t_aka_points = 0;
         let mut t_ao_points = 0;
         let parse = |v: &Option<String>| v.as_deref().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
-        for b in &bouts {
+        for b in bouts.iter().filter(|b| b.selesai) {
             match b.pemenang.as_deref() {
                 Some("1") => t_aka_score += 1,
                 Some("2") => t_ao_score += 1,
@@ -9348,6 +9507,15 @@ impl DatabaseManager {
             }
             t_aka_points += parse(&b.score1);
             t_ao_points += parse(&b.score2);
+        }
+
+        // 1b. Bouts not played yet that could still change the winner.
+        let unplayed: Vec<usize> = bouts.iter().enumerate().filter(|(_, b)| !b.selesai).map(|(i, _)| i + 1).collect();
+        if !allow_unplayed && !unplayed.is_empty() && ((t_aka_score - t_ao_score) as i64).unsigned_abs() as usize <= unplayed.len() {
+            let list = unplayed.iter().map(|n| format!("P{n}")).collect::<Vec<_>>().join(", ");
+            return Err(format!(
+                "Hasil beregu belum pasti: {list} belum dimainkan (skor {t_aka_score}-{t_ao_score}).                  Mainkan dulu, atau centang \"sisa partai tidak dimainkan\" bila tim lawan kiken/diskualifikasi."
+            ));
         }
 
         // 2. Winner: the operator's choice, else wins, else total points. A full tie needs a
@@ -12385,6 +12553,22 @@ mod festival_format_tests {
         assert!(!helper_is_putri_name("FESTIVAL PRA PEMULA - KATA PERORANGAN PUTRA"));
         assert!(!helper_is_putri_name("KUMITE PIALA WALIKOTA PA"));
         assert!(!helper_is_putri_name("OLYMPIC KATA PUTRA"));
+    }
+}
+
+/// Medal table ranks (juara umum), on a list already sorted by gold, silver, bronze: equal
+/// medal counts share a rank and the next one follows without a gap (7, 7, 8, 8): a recap,
+/// as the organisers asked. The Juara umum channel and the results booklet both read these ranks.
+fn assign_medal_ranks(items: &mut [StandingItem]) {
+    let mut prev: Option<(i64, i64, i64)> = None;
+    let mut rank = 0;
+    for item in items.iter_mut() {
+        let key = (item.gold, item.silver, item.bronze);
+        if prev != Some(key) {
+            rank += 1;
+            prev = Some(key);
+        }
+        item.rank = rank;
     }
 }
 

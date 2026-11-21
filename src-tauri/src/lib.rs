@@ -4,6 +4,7 @@ pub mod db;
 pub mod excel_exporter;
 pub mod license;
 pub mod models;
+pub mod pdf_export;
 pub mod referee;
 pub mod server;
 pub mod sync;
@@ -14,6 +15,8 @@ pub mod test_support;
 mod qa_tests;
 #[cfg(test)]
 mod web_e2e;
+#[cfg(test)]
+mod sync_queue_tests;
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -489,7 +492,7 @@ async fn delete_repechage_bagan(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    let res = db.delete_repechage_bagan(bagan_id, force.unwrap_or(false)).await;
+    let res = db.delete_repechage_and_queue(bagan_id, force.unwrap_or(false)).await;
     if res.is_ok() {
         notify_bracket_changed(&state);
     }
@@ -629,7 +632,7 @@ async fn generate_repechage_bracket(
 ) -> Result<models::RepechageResult, String> {
     let res = {
         let db = state.db.lock().await;
-        db.generate_repechage_bracket(main_bagan_id).await?
+        db.generate_repechage_and_queue(main_bagan_id).await?
     };
     let _ = app.emit("bracket_updated", ());
     Ok(res)
@@ -1314,10 +1317,25 @@ async fn delete_team_bout(
 async fn finish_team_match(
     parent_match_id: i64,
     winner_override: Option<String>,
+    allow_unplayed: Option<bool>,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
     let db = state.db.lock().await;
-    let res = db.finish_team_match(parent_match_id, winner_override).await;
+    let res = db.finish_team_match(parent_match_id, winner_override, allow_unplayed.unwrap_or(false)).await;
+    if res.is_ok() {
+        notify_bracket_changed(&state);
+    }
+    res
+}
+
+/// "Reset control panel" of a team match: clears every bout and undoes a decided result.
+#[tauri::command]
+async fn reset_team_match(
+    parent_match_id: i64,
+    state: tauri::State<'_, DesktopState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let res = db.reset_team_match(parent_match_id).await;
     if res.is_ok() {
         notify_bracket_changed(&state);
     }
@@ -1611,6 +1629,13 @@ async fn toggle_live_sync(
     let db = state.db.lock().await;
     let pool = db.get_pool()?;
     sync::SyncService::toggle_live_sync(pool, local_event_id, enabled).await
+}
+
+#[tauri::command]
+async fn get_sync_queue_heads(state: tauri::State<'_, DesktopState>) -> Result<Vec<sync::SyncQueueHead>, String> {
+    let db = state.db.lock().await;
+    let pool = db.get_pool()?;
+    sync::SyncService::get_queue_heads(pool).await
 }
 
 #[tauri::command]
@@ -2338,93 +2363,46 @@ async fn create_bob_bagan(
     res
 }
 
+/// "Simpan PDF", step 1: the save dialog opens at once, before the (slow) page is prepared.
+#[tauri::command]
+async fn choose_pdf_save_path(app: tauri::AppHandle, suggested_filename: Option<String>) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let default_name = suggested_filename.unwrap_or_else(|| "Buku_Hasil_Turnamen.pdf".to_string());
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter("PDF Document (*.pdf)", &["pdf"])
+            .set_file_name(&default_name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    match picked {
+        Some(p) => Ok(Some(p.into_path().map_err(|e| e.to_string())?.to_string_lossy().to_string())),
+        None => Ok(None),
+    }
+}
+
+/// "Simpan PDF", step 2: renders the page to `target_path` (asked first when missing) and opens it.
 #[tauri::command]
 async fn export_html_to_pdf(
     app: tauri::AppHandle,
     html_content: String,
     suggested_filename: Option<String>,
+    target_path: Option<String>,
+    assets: Option<std::collections::HashMap<String, String>>,
 ) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-
-    // 1. Locate msedge.exe on Windows
-    let edge_paths = [
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-    ];
-    let edge_exe = edge_paths
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .ok_or_else(|| "Microsoft Edge tidak ditemukan di sistem ini untuk rendering PDF.".to_string())?;
-
-    // 2. Open Save File dialog
-    let default_name = suggested_filename.unwrap_or_else(|| {
-        format!(
-            "Buku_Hasil_Turnamen_{}.pdf",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        )
-    });
-
-    let file = app
-        .dialog()
-        .file()
-        .add_filter("PDF Document (*.pdf)", &["pdf"])
-        .set_file_name(&default_name)
-        .blocking_save_file();
-
-    let Some(file_path) = file else {
-        return Ok(None);
+    let target = match target_path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => p,
+        None => match choose_pdf_save_path(app, suggested_filename).await? {
+            Some(p) => p,
+            None => return Ok(None),
+        },
     };
-
-    let target_path_buf = file_path.into_path().map_err(|e| e.to_string())?;
-    let target_path = target_path_buf.to_string_lossy().to_string();
-
-    // 3. Create temporary HTML file
-    let temp_dir = std::env::temp_dir();
-    let temp_file_name = format!(
-        "ambrilindo_booklet_{}.html",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-    let temp_html_path = temp_dir.join(temp_file_name);
-    std::fs::write(&temp_html_path, html_content)
-        .map_err(|e| format!("Gagal menulis temporary HTML: {}", e))?;
-
-    // 4. Ensure target directory exists
-    if let Some(parent) = target_path_buf.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    // 5. Run Edge headless print-to-pdf
-    let file_url = format!("file:///{}", temp_html_path.to_string_lossy().replace('\\', "/"));
-    let output = tokio::process::Command::new(edge_exe)
-        .arg("--headless")
-        .arg("--disable-gpu")
-        .arg("--no-pdf-header-footer")
-        .arg(format!("--print-to-pdf={}", target_path))
-        .arg(&file_url)
-        .output()
-        .await
-        .map_err(|e| format!("Gagal menjalankan Edge PDF printer: {}", e))?;
-
-    // 6. Clean up temporary HTML
-    let _ = std::fs::remove_file(&temp_html_path);
-
-    if !target_path_buf.exists() {
-        return Err(format!(
-            "Edge selesai tanpa membuat file PDF. Output: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    // 7. Open file with system default viewer
-    let _ = std::process::Command::new("explorer").arg(&target_path).spawn();
-
-    Ok(Some(target_path))
+    let target_buf = std::path::PathBuf::from(&target);
+    pdf_export::render_html_to_pdf(&html_content, &assets.unwrap_or_default(), &target_buf).await?;
+    let _ = std::process::Command::new("explorer").arg(&target).spawn();
+    Ok(Some(target))
 }
 
 
@@ -2578,6 +2556,7 @@ pub fn run() {
             add_team_bout,
             delete_team_bout,
             finish_team_match,
+            reset_team_match,
             play_buzzer,
             get_available_monitors,
             project_scoreboard,
@@ -2596,6 +2575,7 @@ pub fn run() {
             force_sync_results_to_hosted,
             toggle_live_sync,
             get_sync_queue_stats,
+            get_sync_queue_heads,
             get_sync_queue_items,
             mark_sync_item_synced,
             send_sync_queue_now,
@@ -2660,7 +2640,8 @@ pub fn run() {
             get_results_booklet_data,
             get_bob_candidates,
             create_bob_bagan,
-            export_html_to_pdf
+            export_html_to_pdf,
+            choose_pdf_save_path
         ])
         .on_window_event(|window, event| {
             match event {

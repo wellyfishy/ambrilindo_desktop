@@ -100,7 +100,8 @@ impl Rig {
             if !q.iter().any(|r| matches!(r.status.as_str(), "pending" | "processing")) && !q.iter().any(|r| r.status == "failed") {
                 return q;
             }
-            if q.iter().any(|r| r.status == "failed") && SyncService::auth_status().blocked_reason.is_some() {
+            let paused = SyncService::auth_status().blocked_reason.is_some() || !SyncService::active_event_blocks().is_empty();
+            if q.iter().any(|r| r.status == "failed") && paused {
                 return q;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -282,6 +283,8 @@ async fn web_e2e_a_refusals_pause_queue() {
     let q = r.drain().await;
     assert_eq!(statuses(&q), vec![("api/status/".into(), "failed".into()), ("api/result/".into(), "pending".into())], "A3 halted after 403: {q:?}");
     assert!(q[0].error.as_deref().unwrap_or("").contains("403"), "A3 -> 403: {:?}", q[0].error);
+    assert!(SyncService::auth_status().blocked_reason.is_none(), "A3 only this event is paused, not the queue");
+    assert!(SyncService::active_event_blocks().iter().any(|b| b.0 == EVENT), "A3 event paused");
 
     // The admin grants the event on the web ("Lisensi Desktop" page), then "Coba lagi".
     r.web
@@ -320,7 +323,7 @@ async fn web_e2e_b_bulk() {
     ev_sse.expect("bagan_synced", 15).await;
     let desk: (i64, i64) = sqlx::query_as(
         "SELECT (SELECT COUNT(*) FROM backend_bagan WHERE event_id = ?), \
-                (SELECT COUNT(*) FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id WHERE b.event_id = ?)",
+                (SELECT COUNT(*) FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id WHERE b.event_id = ? AND COALESCE(d.team, 0) = 0)",
     )
     .bind(EVENT)
     .bind(EVENT)
@@ -707,7 +710,7 @@ async fn web_e2e_c_team_child_bouts_not_sent() {
     let Some(r) = rig().await else { return };
     let child: Option<(i64, i64)> = sqlx::query_as(
         "SELECT d.id, d.bagan_id FROM backend_detailbagan d JOIN backend_bagan b ON d.bagan_id = b.id \
-         WHERE b.event_id = ? AND d.team = 1 AND d.selesai = 0 AND d.atlet1_id IS NOT NULL AND d.atlet2_id IS NOT NULL LIMIT 1",
+         JOIN backend_matchup m ON m.db_id = d.id JOIN backend_detailbagan p ON p.id = m.detail_bagan_id          WHERE b.event_id = ? AND d.team = 1 AND d.selesai = 0 AND p.selesai = 0 AND d.atlet1_id IS NOT NULL AND d.atlet2_id IS NOT NULL LIMIT 1",
     )
     .bind(EVENT)
     .fetch_optional(&r.pool)
@@ -1240,7 +1243,12 @@ async fn web_e2e_h_referchange_bronze_reaches_the_web() {
         .into_iter()
         .find(|b| b["nomor_tanding_id"] == bagan["nomor_tanding_id"] && crate::qa_tests::is_referchange(b))
         .unwrap_or_else(|| panic!("referchange bracket: {res}"));
-    r.push(&rep).await;
+    // No "Kirim bagan": generating queued the category's push, ahead of the referchange results.
+    let q = r.drain().await;
+    assert!(
+        q.iter().any(|x| x.endpoint == "api/sync/push-bagan/" && x.status == "synced"),
+        "H4 referchange bracket sent through the queue: {:?}", statuses(&q)
+    );
     for _ in 0..20 {
         let Some(m) = r.next_playable(&rep).await else { break };
         r.finish(&rep, &m).await;

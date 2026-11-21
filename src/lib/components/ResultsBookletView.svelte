@@ -18,7 +18,7 @@
   import ResultCoverSheet from "$lib/components/ResultCoverSheet.svelte";
   import BracketPaperPage from "$lib/components/BracketPaperPage.svelte";
   import { computePodium, deriveBracketMeta, isFestivalName, winnersToPodium } from "$lib/bracket_layout";
-  import { formatTanggalIndonesia, loadCoverSettings, resolveCoverText, type CoverSettings } from "$lib/cover_settings";
+  import { formatTanggalIndonesia, loadCoverSettings, resolveCoverText, signatureOf, type CoverSettings } from "$lib/cover_settings";
 
   interface Props {
     eventId: number;
@@ -149,6 +149,8 @@
   // ones saved for this event (or the defaults) are used.
   let savedCoverSettings = $derived(loadCoverSettings(eventId));
   let cover = $derived<CoverSettings>(coverSettings ?? savedCoverSettings);
+  /** Signature under the recap pages (Cetak → Tanda tangan) */
+  let signature = $derived(signatureOf(cover));
   let coverText = $derived.by(() => {
     const base = resolveCoverText(cover, {
       namaEvent: editableEventName || bookletData?.event_info?.nama_event || eventName,
@@ -347,34 +349,59 @@ $effect(() => {
     );
   }
 
-  async function preparePrintHtml(mode: "combined" | "portrait" | "landscape"): Promise<string> {
+  /**
+   * The page as one HTML document for headless Edge. Images are encoded once per distinct
+   * source and sent beside the HTML as `assets` (the page refers to `assets/img_N.ext`):
+   * a booklet shows the same contingent logos hundreds of times, and inlining each copy made
+   * one HTML of hundreds of MB that froze the app. The work yields to the UI between images.
+   */
+  async function preparePrintHtml(
+    mode: "combined" | "portrait" | "landscape"
+  ): Promise<{ html: string; assets: Record<string, string> }> {
     const container = document.querySelector(".booklet-workspace-container");
-    if (!container) return "";
+    if (!container) return { html: "", assets: {} };
     const cloned = container.cloneNode(true) as HTMLElement;
     cloned.querySelectorAll(".no-print").forEach((el) => el.remove());
 
-    // In-memory Canvas inliner: ensures any non-data-URL images are serialized to base64
-    if (typeof document !== "undefined") {
-      const origImgs = container.querySelectorAll("img");
-      const cloneImgs = cloned.querySelectorAll("img");
-      for (let i = 0; i < origImgs.length; i++) {
-        const orig = origImgs[i] as HTMLImageElement;
-        const clone = cloneImgs[i] as HTMLImageElement;
-        if (clone && !clone.src.startsWith("data:") && orig.naturalWidth > 0 && orig.naturalHeight > 0) {
+    const assets: Record<string, string> = {};
+    const nameBySrc = new Map<string, string>();
+    const origImgs = container.querySelectorAll("img");
+    const cloneImgs = cloned.querySelectorAll("img");
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    for (let i = 0; i < origImgs.length; i++) {
+      const orig = origImgs[i] as HTMLImageElement;
+      const clone = cloneImgs[i] as HTMLImageElement;
+      if (!clone) continue;
+      const src = orig.currentSrc || orig.src;
+      if (!src) continue;
+      let name = nameBySrc.get(src);
+      if (name === undefined) {
+        name = "";
+        if (src.startsWith("data:")) {
+          const ext = src.startsWith("data:image/jpeg") ? "jpg" : src.startsWith("data:image/svg") ? "svg" : "png";
+          name = `img_${nameBySrc.size}.${ext}`;
+          assets[name] = src;
+        } else if (ctx && orig.naturalWidth > 0 && orig.naturalHeight > 0) {
           try {
-            const canvas = document.createElement("canvas");
             canvas.width = orig.naturalWidth;
             canvas.height = orig.naturalHeight;
-            const ctx = canvas.getContext("2d");
-            if (ctx) {
-              ctx.drawImage(orig, 0, 0);
-              // Photos (e.g. the cover background) as JPEG: a 2000 px PNG is ~4 MB.
-              const isLargePhoto = orig.naturalWidth * orig.naturalHeight > 1_000_000;
-              clone.src = isLargePhoto ? canvas.toDataURL("image/jpeg", 0.9) : canvas.toDataURL("image/png");
-            }
-          } catch (_) {}
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(orig, 0, 0);
+            // Photos (e.g. the cover background) as JPEG: a 2000 px PNG is ~4 MB.
+            const isLargePhoto = orig.naturalWidth * orig.naturalHeight > 1_000_000;
+            name = `img_${nameBySrc.size}.${isLargePhoto ? "jpg" : "png"}`;
+            assets[name] = isLargePhoto ? canvas.toDataURL("image/jpeg", 0.9) : canvas.toDataURL("image/png");
+          } catch (_) {
+            name = "";
+          }
+          // let the spinner (and the rest of the app) breathe between encodes
+          await new Promise((r) => setTimeout(r, 0));
         }
+        nameBySrc.set(src, name);
       }
+      if (name) clone.setAttribute("src", `assets/${name}`);
+      clone.removeAttribute("srcset");
     }
 
     // Extract compiled CSS rules from document.styleSheets (Tailwind + component styles)
@@ -399,7 +426,7 @@ $effect(() => {
 
     inlinedCss = await inlineFontFaces(inlinedCss);
 
-    return `<!DOCTYPE html>
+    const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -527,6 +554,7 @@ ${inlinedCss}
   </main>
 </body>
 </html>`;
+    return { html, assets };
   }
 
   async function handleExportPdf() {
@@ -536,7 +564,6 @@ ${inlinedCss}
 
     try {
       const printPart = viewFilter === "portrait" ? "portrait" : viewFilter === "landscape" ? "landscape" : "combined";
-      const htmlContent = await preparePrintHtml(printPart);
       const cleanEventName = (editableEventName || "Turnamen").replace(/[^a-zA-Z0-9]/g, "_");
       const suggestedFilename =
         mode === "roster_bagan" && selectedGroup
@@ -549,11 +576,21 @@ ${inlinedCss}
       } catch (_) {}
 
       if (isTauri) {
+        // Where to save first: the dialog opens at once, the page is prepared afterwards.
+        const targetPath = await apiCall<string | null>("choose_pdf_save_path", {
+          suggestedFilename,
+          suggested_filename: suggestedFilename,
+        });
+        if (!targetPath) return;
+        const { html: htmlContent, assets } = await preparePrintHtml(printPart);
         const savedPath = await apiCall<string | null>("export_html_to_pdf", {
           htmlContent,
           html_content: htmlContent,
           suggestedFilename,
           suggested_filename: suggestedFilename,
+          targetPath,
+          target_path: targetPath,
+          assets,
         });
 
         if (savedPath) {
@@ -561,11 +598,12 @@ ${inlinedCss}
           setTimeout(() => { exportSuccessMessage = null; }, 6000);
         }
       } else {
+        const { html: htmlContent, assets } = await preparePrintHtml(printPart);
         const host = hostAddress || getConnectionConfig().hostUrl || window.location.origin;
         const res = await fetch(`${host.replace(/\/$/, "")}/api/export/html-to-pdf`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ html_content: htmlContent, filename: suggestedFilename }),
+          body: JSON.stringify({ html_content: htmlContent, filename: suggestedFilename, assets }),
         });
 
         if (!res.ok) {
@@ -922,6 +960,7 @@ ${inlinedCss}
                   pageLabelKontingen="Halaman 2 • Rekapitulasi Medali Kontingen"
                   pageLabelPerguruan="Halaman 2B • Rekapitulasi Medali Perguruan"
                   {logoMap}
+                  {signature}
                 />
               </div>
             </section>
@@ -942,6 +981,7 @@ ${inlinedCss}
                   eventName={editableEventName}
                   pageLabel="Halaman 3 • Rekapan Podium Seluruh Kategori"
                   {logoMap}
+                  {signature}
                 />
               </div>
             </section>

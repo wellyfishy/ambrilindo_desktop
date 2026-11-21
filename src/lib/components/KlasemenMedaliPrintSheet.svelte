@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { StandingItem } from "$lib/types";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
+  import type { SignatureInfo } from "$lib/cover_settings";
+  import SignatureBlock from "./SignatureBlock.svelte";
 
   interface Props {
     standingsKontingen: StandingItem[];
@@ -18,6 +20,8 @@
     customLogoAmbrilindo?: string;
     showBadge?: boolean;
     logoMap?: Record<string, string>;
+    /** Signature under each recap table (results booklet) */
+    signature?: SignatureInfo | null;
   }
 
   let {
@@ -36,6 +40,7 @@
     customLogoAmbrilindo = AMBRILINDO_LOGO_DATA_URL,
     showBadge = true,
     logoMap = {},
+    signature = null,
   }: Props = $props();
 
   // Computed totals for Kontingen
@@ -201,6 +206,7 @@
                 </tfoot>
               </table>
             </div>
+            {#if signature}<SignatureBlock {signature} />{/if}
           </td>
         </tr>
       </tbody>
@@ -342,6 +348,7 @@
                 </tfoot>
               </table>
             </div>
+            {#if signature}<SignatureBlock {signature} />{/if}
           </td>
         </tr>
       </tbody>

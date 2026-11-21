@@ -105,6 +105,9 @@ const LOCAL_WINDOW_COMMANDS = new Set([
   "close_scoreboard",
   "get_available_monitors",
   "get_running_scoreboards",
+  // "Simpan PDF": the save dialog and Edge run on this computer, not on the host
+  "choose_pdf_save_path",
+  "export_html_to_pdf",
 ]);
 
 export function isClientMode(): boolean {

@@ -345,24 +345,34 @@
     }
   }
 
-  async function handleFinishTeamMatch(winnerOverride?: string) {
+  // Errors go back to the finish modal (it shows them); success closes the window.
+  async function handleFinishTeamMatch(winnerOverride?: string, allowUnplayed?: boolean) {
     if (!teamMatchInfo) return;
+    await invoke("finish_team_match", {
+      parentMatchId: teamMatchInfo.parent_match_id,
+      winnerOverride: winnerOverride || null,
+      allowUnplayed: !!allowUnplayed,
+    });
     try {
-      await invoke("finish_team_match", {
-        parentMatchId: teamMatchInfo.parent_match_id,
-        winnerOverride: winnerOverride || null,
+      await emit("bracket_updated", {
+        matchId: teamMatchInfo.parent_match_id,
+        baganId,
       });
-      try {
-        await emit("bracket_updated", {
-          matchId: teamMatchInfo.parent_match_id,
-          baganId,
-        });
-      } catch (_) {}
-      alert("Pertandingan Beregu Selesai! Skor akhir dan bagan turnamen telah diperbarui.");
-      await handleCloseWindow();
-    } catch (err: any) {
-      alert("Gagal menyelesaikan pertandingan beregu: " + (err?.message || err));
-    }
+    } catch (_) {}
+    alert("Pertandingan Beregu Selesai! Skor akhir dan bagan turnamen telah diperbarui.");
+    await handleCloseWindow();
+  }
+
+  /** "Reset control panel": every bout cleared, a decided team result undone (web too). */
+  async function handleResetTeamMatch() {
+    if (!teamMatchInfo) return;
+    const boutIds = teamMatchInfo.bouts.map((b) => b.bout_id);
+    await invoke("reset_team_match", { parentMatchId: teamMatchInfo.parent_match_id });
+    for (const id of boutIds) clearLiveDraft(id);
+    try {
+      await emit("bracket_updated", { matchId: teamMatchInfo.parent_match_id, baganId });
+    } catch (_) {}
+    await loadMatchData({ followActiveBout: true });
   }
 
   async function handleSaveMatchResult(input: SaveMatchInput) {
@@ -479,6 +489,7 @@
       onDeleteBout={handleDeleteBout}
       onAssignBoutAthletes={handleAssignBoutAthletes}
       onFinishTeamMatch={handleFinishTeamMatch}
+      onResetTeamMatch={handleResetTeamMatch}
     />
   {/if}
 </div>

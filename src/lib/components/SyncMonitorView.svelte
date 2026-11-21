@@ -63,6 +63,19 @@
   let heldRow = $state<SyncQueueEntry | null>(null);
   /** 'failed' rows still in the queue (old 'abandoned' rows are not). */
   let failedInQueue = $state<number>(0);
+  /** Held head of every event with live sync on (the sender keeps FIFO per event). */
+  type QueueHead = {
+    event_id: number | null;
+    event_name: string;
+    item_id: number;
+    endpoint: string;
+    last_error: string | null;
+    retry_count: number;
+    waiting: number;
+    paused_until: number | null;
+  };
+  let queueHeads = $state<QueueHead[]>([]);
+  let disablingLiveFor = $state<number | null>(null);
   /** When the worker tries the held row again (epoch seconds, from the change event). */
   let retryAt = $state<number>(0);
   let nowSecs = $state<number>(Math.floor(Date.now() / 1000));
@@ -184,6 +197,7 @@
       const inQueue = failed.filter((x) => x.status === "failed").sort((a, b) => a.id - b.id);
       failedInQueue = inQueue.length;
       heldRow = inQueue[0] ?? null;
+      queueHeads = await invoke<QueueHead[]>("get_sync_queue_heads");
     } catch (err: any) {
       console.error("Gagal sinkron data:", err);
     }
@@ -450,6 +464,21 @@
     }
   }
 
+  /** Turns live sync off for another event whose rows the web refuses, from this page. */
+  async function disableLiveFor(head: QueueHead) {
+    if (head.event_id == null) return;
+    disablingLiveFor = head.event_id;
+    try {
+      await invoke("toggle_live_sync", { localEventId: head.event_id, enabled: false });
+      toast(`Live sync ${head.event_name || `event #${head.event_id}`} dimatikan`);
+      await loadAllSyncData();
+    } catch (err: any) {
+      toast(`Gagal: ${err}`);
+    } finally {
+      disablingLiveFor = null;
+    }
+  }
+
   async function handleMarkSynced(item: SyncQueueEntry) {
     try {
       await invoke("mark_sync_item_synced", { itemId: item.id });
@@ -505,6 +534,8 @@
   );
 
   let isLinked = $derived(!!eventMapping.hosted_event_id);
+  let thisHead = $derived(queueHeads.find((h) => h.event_id === eventId) ?? null);
+  let otherHeads = $derived(queueHeads.filter((h) => h.event_id !== eventId));
   /** Rows the web has not taken yet ('pending' + 'failed'; old 'abandoned' rows are not counted). */
   let unsentCount = $derived(queueStats.pending_count + failedInQueue);
   let liveOn = $derived(!!activeEvent?.is_live_sync_enabled);
@@ -523,6 +554,8 @@
     if (status === "failed") return { label: "Gagal", cls: "text-rose-300", dot: "bg-rose-400" };
     if (status === "pending" || status === "processing") return { label: "Tertunda", cls: "text-amber-300", dot: "bg-amber-400" };
     if (status === "synced") return { label: "Terkirim", cls: "text-emerald-300", dot: "bg-emerald-400" };
+    // already on the web through "Kirim ulang semua hasil"
+    if (status === "superseded") return { label: "Diganti kirim ulang", cls: "text-zinc-400", dot: "bg-zinc-500" };
     // left over from the old sender, which skipped refused rows; outside the queue now (Lewati)
     if (status === "abandoned") return { label: "Ditolak web", cls: "text-rose-300", dot: "bg-rose-400" };
     return { label: status, cls: "text-zinc-400", dot: "bg-zinc-500" };
@@ -770,7 +803,9 @@
       <span class="text-rose-300 min-w-0">
         Antrean tertahan di #{heldRow.id} /{heldRow.endpoint}{heldRow.last_error ? `: ${heldRow.last_error}` : ""}
       </span>
-      {#if retryAt > nowSecs}<span class="text-zinc-400 tabular-nums">· coba lagi dalam {retryAt - nowSecs} detik</span>{/if}
+      {#if thisHead?.paused_until && thisHead.paused_until > nowSecs}
+        <span class="text-zinc-400 tabular-nums">· event ini dijeda {thisHead.paused_until - nowSecs} detik</span>
+      {:else if retryAt > nowSecs}<span class="text-zinc-400 tabular-nums">· coba lagi dalam {retryAt - nowSecs} detik</span>{/if}
       {#if heldRow.last_error?.includes("404") && isLinked}
         <button type="button" onclick={() => (showPushBaganModal = true)} class="h-7 px-2.5 bg-white/[0.06] hover:bg-white/[0.12] text-white font-semibold rounded-lg transition-colors cursor-pointer">Kirim bagan</button>
       {/if}
@@ -780,6 +815,26 @@
       <span class="text-emerald-300">Semua terkirim.</span>
     {/if}
   </div>
+
+  <!-- Other events held by the web (they do not hold this event's rows) -->
+  {#each otherHeads as head (head.item_id)}
+    <div class="mt-1.5 text-xs flex flex-wrap items-center gap-x-2 gap-y-1 shrink-0" role="status">
+      <span class="text-amber-300 min-w-0 select-text break-words">
+        Event lain tertahan: <span class="font-semibold">{head.event_name || "tanpa event"}</span> di #{head.item_id} /{head.endpoint}{head.last_error ? `: ${head.last_error}` : ""}
+      </span>
+      <span class="text-zinc-400 tabular-nums">· {head.waiting} item menunggu</span>
+      {#if head.event_id != null}
+        <button
+          type="button"
+          onclick={() => disableLiveFor(head)}
+          disabled={disablingLiveFor === head.event_id}
+          class="h-7 px-2.5 bg-white/[0.06] hover:bg-white/[0.12] text-white font-semibold rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+        >
+          Matikan live sync event itu
+        </button>
+      {/if}
+    </div>
+  {/each}
 
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 my-3 shrink-0" role="radiogroup" aria-label="Filter antrean">
     {#each statusTabs as tab (tab.key)}

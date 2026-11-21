@@ -216,6 +216,21 @@
     }
   }
 
+  async function handleSignatureFile(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      // PNG keeps the strokes sharp; 900 px is plenty for a 60 mm wide signature.
+      settings.ttdImage = await readImage(file, 900, "image/png");
+      settings.ttdEnabled = true;
+    } catch (err: any) {
+      onShowToast?.(`Gagal memuat tanda tangan: ${err?.message || err}`);
+    } finally {
+      input.value = "";
+    }
+  }
+
   function resetCover() {
     clearCoverSettings(eventId, coverDoc);
     settings = defaultCoverSettings();
@@ -443,6 +458,70 @@
               ></textarea>
             </label>
             <p class="text-[11px] text-zinc-500">Latar, logo, label, nama event dan tanggal mengikuti sampul pembuka.</p>
+          {/if}
+        </div>
+
+        <div class="pt-4 border-t border-white/[0.08] space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-semibold text-zinc-200">Tanda tangan</span>
+            <label class="inline-flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+              <input type="checkbox" bind:checked={settings.ttdEnabled} class="w-4 h-4 accent-white cursor-pointer" />
+              Sertakan
+            </label>
+          </div>
+          {#if settings.ttdEnabled}
+            <p class="text-[11px] text-zinc-500">Di bawah klasemen kontingen, klasemen perguruan, dan daftar juara.</p>
+            <label class="block">
+              <span class="text-xs text-zinc-400">Jabatan</span>
+              <input
+                type="text"
+                value={settings.ttdJabatan ?? ""}
+                oninput={(e) => (settings.ttdJabatan = (e.currentTarget as HTMLInputElement).value || null)}
+                placeholder="Technical Delegate"
+                class="mt-1 w-full bg-[#181a20] text-sm text-white px-2.5 py-1.5 rounded-lg border border-white/[0.1] focus:border-white/30 outline-none placeholder:text-zinc-500 select-text"
+              />
+            </label>
+            <label class="block">
+              <span class="text-xs text-zinc-400">Nama</span>
+              <input
+                type="text"
+                value={settings.ttdNama ?? ""}
+                oninput={(e) => (settings.ttdNama = (e.currentTarget as HTMLInputElement).value || null)}
+                placeholder="Nama lengkap dan gelar"
+                class="mt-1 w-full bg-[#181a20] text-sm text-white px-2.5 py-1.5 rounded-lg border border-white/[0.1] focus:border-white/30 outline-none placeholder:text-zinc-500 select-text"
+              />
+            </label>
+            <label class="block">
+              <span class="text-xs text-zinc-400">Tempat, tanggal (opsional)</span>
+              <input
+                type="text"
+                value={settings.ttdTempatTanggal ?? ""}
+                oninput={(e) => (settings.ttdTempatTanggal = (e.currentTarget as HTMLInputElement).value || null)}
+                placeholder="Tana Paser, 21 November 2026"
+                class="mt-1 w-full bg-[#181a20] text-sm text-white px-2.5 py-1.5 rounded-lg border border-white/[0.1] focus:border-white/30 outline-none placeholder:text-zinc-500 select-text"
+              />
+            </label>
+            <div>
+              <span class="text-xs text-zinc-400">Gambar tanda tangan</span>
+              {#if settings.ttdImage}
+                <div class="mt-1 flex items-center gap-2">
+                  <div class="flex-1 h-16 rounded-lg bg-white flex items-center justify-center overflow-hidden">
+                    <img src={settings.ttdImage} alt="Tanda tangan" class="max-h-14 max-w-full object-contain" />
+                  </div>
+                  <button
+                    type="button"
+                    onclick={() => (settings.ttdImage = null)}
+                    class="h-9 px-3 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] transition"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              {/if}
+              <label class="mt-1 h-9 px-3.5 inline-flex items-center bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl hover:bg-white/[0.08] transition cursor-pointer">
+                {settings.ttdImage ? "Ganti gambar" : "Unggah gambar"}
+                <input type="file" accept="image/png,image/jpeg,image/webp" class="hidden" onchange={handleSignatureFile} />
+              </label>
+            </div>
           {/if}
         </div>
       {/if}

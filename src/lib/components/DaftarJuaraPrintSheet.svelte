@@ -2,6 +2,8 @@
   import type { BaganDaysResult, SummaryBaganItem, SummaryBaganWinner } from "$lib/types";
   import { groupJuaraByDay } from "$lib/juaraDays";
   import { FORKI_LOGO_DATA_URL, AMBRILINDO_LOGO_DATA_URL } from "$lib/assets_base64";
+  import type { SignatureInfo } from "$lib/cover_settings";
+  import SignatureBlock from "./SignatureBlock.svelte";
 
   interface Props {
     bagans: SummaryBaganItem[];
@@ -13,6 +15,8 @@
     logoMap?: Record<string, string>;
     /** Jadwal days: when given, the list is split per day under a "DAY n" header */
     baganDays?: BaganDaysResult | null;
+    /** Signature after the last category (results booklet) */
+    signature?: SignatureInfo | null;
   }
 
   let {
@@ -24,6 +28,7 @@
     showBadge = true,
     logoMap = {},
     baganDays = null,
+    signature = null,
   }: Props = $props();
 
   function getWinnerAffiliation(w?: SummaryBaganWinner): string {
@@ -300,6 +305,7 @@
             </div>
             {/each}
           {/if}
+          {#if signature}<SignatureBlock {signature} />{/if}
         </td>
       </tr>
     </tbody>

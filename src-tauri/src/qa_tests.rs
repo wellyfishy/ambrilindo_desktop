@@ -411,7 +411,10 @@ async fn qa_porprov_team_kumite_bouts() {
     }
     let info = s.ok("get_team_match_info", json!({ "matchId": pid })).await;
     assert_eq!((info["team_aka_score"].as_i64(), info["team_ao_score"].as_i64()), (Some(2), Some(1)));
-    s.ok("finish_team_match", json!({ "parentMatchId": pid })).await;
+    // 2-1 with two bouts to go is not decided yet: only with the operator's confirmation
+    let (code, body) = s.cmd("finish_team_match", json!({ "parentMatchId": pid })).await;
+    assert_ne!(code, 200, "undecided 2-1 refused: {body}");
+    s.ok("finish_team_match", json!({ "parentMatchId": pid, "allowUnplayed": true })).await;
     let ms = details(&s, bid).await;
     let p = ms.iter().find(|m| m["id"].as_i64() == Some(pid)).unwrap();
     assert_eq!(p["pemenang"], "1");
@@ -429,7 +432,7 @@ async fn qa_porprov_team_kumite_bouts() {
     assert_ne!(code, 200, "1-1 with equal points must ask for a deciding bout: {body}");
     let extra = s.ok("add_team_bout", json!({ "parentMatchId": nid })).await;
     assert!(extra["bout_id"].as_i64().is_some(), "deciding bout can be added");
-    s.ok("finish_team_match", json!({ "parentMatchId": nid, "winnerOverride": "2" })).await;
+    s.ok("finish_team_match", json!({ "parentMatchId": nid, "winnerOverride": "2", "allowUnplayed": true })).await;
 }
 
 // ---- referee panel & chief referee approval -----------------------------------------
@@ -1545,4 +1548,231 @@ async fn qa_manual_drawing_pool_refusals() {
     let (c, _) = run(manual_pool_slots(&[&ids[..3], &ids[3..4]]), 2).await;
     assert_ne!(c, 200, "an athlete not placed");
     assert!(category_bagans(&s, PORPROV, cat).await.is_empty(), "nothing written");
+}
+
+/// Team match control panel (beregu), on the PORPROV copy's KUMITE BEREGU PUTRA round-2 bout
+/// 30606 (Kukar 2-1 Mahulu, saved as finished with P4-P5 unplayed, Kukar moved to 30610):
+/// "Reset control panel" clears every bout and undoes the result (winner taken back, web told);
+/// the tatami holds the team match, with its progress for the web; an undecided 2-1 needs the
+/// operator's confirmation; a decided team match locks its bouts.
+#[tokio::test]
+async fn qa_team_match_reset_progress_and_guards() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let parent: i64 = 30606;
+    let Some((bid, done)) = sqlx::query_as::<_, (i64, bool)>("SELECT bagan_id, selesai FROM backend_detailbagan WHERE id = ?")
+        .bind(parent).fetch_optional(&pool).await.unwrap() else { return };
+    if !done {
+        return; // the copy no longer holds the finished 2-1 (already reset)
+    }
+    sqlx::query("UPDATE backend_event SET is_live_sync_enabled = 1 WHERE id = ?").bind(PORPROV).execute(&pool).await.unwrap();
+    let rows_since = |since: i64, endpoint: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>("SELECT payload FROM backend_syncqueue WHERE id > ? AND endpoint = ? ORDER BY id")
+                .bind(since).bind(endpoint).fetch_all(&pool).await.unwrap()
+        }
+    };
+    let max_q = || async { sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM backend_syncqueue").fetch_one(&pool).await.unwrap() };
+
+    // A bout of a decided team match is locked.
+    let bouts = s.ok("get_team_match_info", json!({ "matchId": parent })).await["bouts"].as_array().unwrap().clone();
+    let b1 = bouts[0]["bout_id"].as_i64().unwrap();
+    let (code, body) = s.cmd("save_match_result", json!({ "input": { "match_id": b1, "bagan_id": bid, "score1": "1", "score2": "0",
+        "pemenang": "1", "vr1": false, "vr2": false, "hantei": false, "selesai": true }})).await;
+    assert_ne!(code, 200, "a bout of a finished team match is locked: {body}");
+
+    // Reset control panel: result undone, bouts cleared, winner out of round 3, web told.
+    let q0 = max_q().await;
+    s.ok("reset_team_match", json!({ "parentMatchId": parent })).await;
+    let ms = details(&s, bid).await;
+    let p = ms.iter().find(|m| m["id"].as_i64() == Some(parent)).unwrap();
+    assert_eq!((p["selesai"].as_bool(), p["pemenang"].is_null()), (Some(false), true), "team result undone: {p}");
+    let semi = ms.iter().find(|m| m["id"].as_i64() == Some(30610)).unwrap();
+    assert!(semi["atlet1_id"].is_null(), "winner taken back from the semifinal: {semi}");
+    let info = s.ok("get_team_match_info", json!({ "matchId": parent })).await;
+    assert!(info["bouts"].as_array().unwrap().iter().all(|b| b["selesai"] == false && b["pemenang"].is_null()), "every bout cleared: {info}");
+    assert!(!info["bouts"].as_array().unwrap().iter().any(|b| b["atlet1_id"].is_null() && b["atlet2_id"].is_null()), "roster kept");
+    let reopen = rows_since(q0, "api/reopen/").await;
+    assert_eq!(reopen.len(), 1, "web told to reopen");
+    assert!(reopen[0].contains(&format!("-{bid}-{parent}")), "reopen of the team match itself: {}", reopen[0]);
+
+    // Running: a bout id runs as its team match (tatami + web status use the parent).
+    let q1 = max_q().await;
+    s.ok("notify_match_running", json!({ "matchId": b1, "tatami": 1 })).await;
+    let held: Option<i64> = sqlx::query_scalar("SELECT detail_bagan_id FROM backend_tatami WHERE event_id = ? AND tatami_number = 1")
+        .bind(PORPROV).fetch_one(&pool).await.unwrap();
+    assert_eq!(held, Some(parent), "tatami holds the team match");
+    let status = rows_since(q1, "api/status/").await;
+    assert!(status.iter().all(|p| p.contains(&format!("-{bid}-{parent}\""))), "status uses the team match's kode: {status:?}");
+    let ts = rows_since(q1, "api/sync/tatami-status/").await;
+    assert!(ts.last().unwrap().contains("Beregu P1/5") && ts.last().unwrap().contains("\"current_score\":\"0-0\""), "progress 0-0: {:?}", ts.last());
+
+    // Bouts 1-3: 2-1 for AKA; each save updates the web's progress.
+    let q2 = max_q().await;
+    for (bt, w) in bouts.iter().take(3).zip(["1", "1", "2"]) {
+        s.ok("save_match_result", json!({ "input": { "match_id": bt["bout_id"], "bagan_id": bid, "score1": if w == "1" { "3" } else { "0" },
+            "score2": if w == "2" { "2" } else { "1" }, "pemenang": w, "vr1": false, "vr2": false, "hantei": false, "selesai": true }})).await;
+    }
+    let held: Option<i64> = sqlx::query_scalar("SELECT detail_bagan_id FROM backend_tatami WHERE event_id = ? AND tatami_number = 1")
+        .bind(PORPROV).fetch_one(&pool).await.unwrap();
+    assert_eq!(held, Some(parent), "tatami stays on the team match between bouts");
+    let ts = rows_since(q2, "api/sync/tatami-status/").await;
+    assert_eq!(ts.len(), 3, "one progress update per saved bout");
+    assert!(ts[2].contains("Beregu P4/5") && ts[2].contains("\"current_score\":\"2-1\""), "{}", ts[2]);
+    assert!(rows_since(q2, "api/result/").await.is_empty(), "bouts are never sent as results");
+
+    // 2-1 with P4-P5 to go is not decided: refused unless the operator confirms.
+    let (code, body) = s.cmd("finish_team_match", json!({ "parentMatchId": parent, "winnerOverride": "1" })).await;
+    assert_ne!(code, 200, "undecided 2-1 refused: {body}");
+    assert!(body.to_string().contains("P4, P5"), "{body}");
+    s.ok("finish_team_match", json!({ "parentMatchId": parent, "winnerOverride": "1", "allowUnplayed": true })).await;
+    let ms = details(&s, bid).await;
+    assert_eq!(ms.iter().find(|m| m["id"].as_i64() == Some(30610)).unwrap()["atlet1_id"], ms.iter().find(|m| m["id"].as_i64() == Some(parent)).unwrap()["atlet1_id"], "winner advances");
+
+    // A winner who already played on blocks the reset.
+    sqlx::query("UPDATE backend_detailbagan SET selesai = 1, pemenang = '1' WHERE id = 30610").execute(&pool).await.unwrap();
+    let (code, body) = s.cmd("reset_team_match", json!({ "parentMatchId": parent })).await;
+    assert_ne!(code, 200, "reset refused while the semifinal stands on it: {body}");
+}
+
+/// Plays one team match through its control panel path: AKA (or AO) wins the first three bouts,
+/// then "Selesaikan Beregu". Returns the bout ids of the team match.
+async fn play_team_match(s: &TestServer, bagan_id: i64, parent: i64, winner: &str) -> Vec<i64> {
+    let info = s.ok("get_team_match_info", json!({ "matchId": parent })).await;
+    assert_eq!(info["is_team_match"], true, "team match {parent}: {info}");
+    let bouts: Vec<i64> = info["bouts"].as_array().unwrap().iter().map(|b| b["bout_id"].as_i64().unwrap()).collect();
+    for bt in bouts.iter().take(3) {
+        s.ok("save_match_result", json!({ "input": { "match_id": bt, "bagan_id": bagan_id,
+            "score1": if winner == "1" { "3" } else { "0" }, "score2": if winner == "2" { "3" } else { "0" },
+            "pemenang": winner, "vr1": false, "vr2": false, "hantei": false, "selesai": true }})).await;
+    }
+    // 3-0 with 2 bouts left is decided: no confirmation needed
+    s.ok("finish_team_match", json!({ "parentMatchId": parent })).await;
+    bouts
+}
+
+/// Kumite beregu down to its referchange: every team match (main bracket and referchange) is
+/// played as a team match with its own bouts. The bouts (round 10, urutan 1..5) never count as
+/// referchange bouts: the referchange is generated from the team results, its winners become
+/// Juara 3A/3B of the main bracket, and "Reset control panel" on a referchange bronze match
+/// takes that bronze back.
+#[tokio::test]
+async fn qa_team_kumite_through_referchange() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let pool = s.pool().await;
+    let Some(bid) = sqlx::query_scalar::<_, i64>("SELECT id FROM backend_bagan WHERE event_id = ? AND nama_bagan = 'KUMITE BEREGU PUTRA'")
+        .bind(PORPROV).fetch_optional(&pool).await.unwrap() else { return };
+    // Start from a clean round 2 (the copy may hold a finished 2-1 there).
+    for m in details(&s, bid).await {
+        if m["round"].as_i64() == Some(2) && m["selesai"] == true && m["team"] != true {
+            s.ok("reset_team_match", json!({ "parentMatchId": m["id"] })).await;
+        }
+    }
+    // Main bracket: AKA wins every team match, round by round.
+    for _ in 0..4 {
+        let ms = details(&s, bid).await;
+        let open: Vec<i64> = ms.iter()
+            .filter(|m| m["team"] != true && m["round"].as_i64().unwrap_or(0) <= 4 && playable(m))
+            .map(|m| m["id"].as_i64().unwrap()).collect();
+        if open.is_empty() { break; }
+        for pid in open { play_team_match(&s, bid, pid, "1").await; }
+    }
+    let ms = details(&s, bid).await;
+    let fin = bout(&ms, 4, 1);
+    assert_eq!(fin["selesai"], true, "final played: {fin}");
+    let champs: (Option<i64>, Option<i64>) = sqlx::query_as("SELECT juara_1_id, juara_2_id FROM backend_bagan WHERE id = ?")
+        .bind(bid).fetch_one(&pool).await.unwrap();
+    assert!(champs.0.is_some() && champs.1.is_some(), "juara 1/2 set: {champs:?}");
+
+    // Referchange from the team results.
+    let info = s.ok("get_repechage_info", json!({ "baganId": bid })).await;
+    assert_eq!(info["can_generate"], true, "referchange can be generated: {info}");
+    s.ok("generate_repechage_bracket", json!({ "mainBaganId": bid })).await;
+    let cat = fin_category(&s, bid).await;
+    let rep = bagans(&s, PORPROV).await.into_iter()
+        .find(|b| b["nomor_tanding_id"] == cat && is_referchange(b)).expect("referchange bagan");
+    let rid = rep["id"].as_i64().unwrap();
+    let rep_ms = details(&s, rid).await;
+    assert!(rep_ms.iter().all(|m| m["round"].as_i64().unwrap() < 10), "fresh referchange has only chain bouts");
+
+    // Play the referchange as team matches (AO wins, to tell them apart from the main bracket).
+    let mut first_rep_parent = None;
+    for _ in 0..6 {
+        let open: Vec<i64> = details(&s, rid).await.iter()
+            .filter(|m| m["team"] != true && m["round"].as_i64().unwrap() < 10 && playable(m))
+            .map(|m| m["id"].as_i64().unwrap()).collect();
+        if open.is_empty() { break; }
+        for pid in open {
+            let bouts = play_team_match(&s, rid, pid, "2").await;
+            assert_eq!(bouts.len(), 5, "referchange team match has its 5 bouts");
+            first_rep_parent.get_or_insert(pid);
+        }
+    }
+    let rep_ms = details(&s, rid).await;
+    let chain: Vec<&Value> = rep_ms.iter().filter(|m| m["team"] != true).collect();
+    assert!(chain.iter().all(|m| m["selesai"] == true || m["atlet1_id"].is_null() || m["atlet2_id"].is_null()), "every playable referchange match played");
+    assert!(rep_ms.iter().filter(|m| m["team"] == true).all(|m| m["round"].as_i64() == Some(10)), "team bouts sit in round 10 only");
+    // Bronze: the last match of each chain -> Juara 3A / 3B of the main bracket.
+    let bronze: (Option<i64>, Option<i64>) = sqlx::query_as("SELECT juara_3a_id, juara_3b_id FROM backend_bagan WHERE id = ?")
+        .bind(bid).fetch_one(&pool).await.unwrap();
+    for (urutan, got) in [(1, bronze.0), (2, bronze.1)] {
+        let last = chain.iter().filter(|m| m["urutan"].as_i64() == Some(urutan) && m["selesai"] == true)
+            .max_by_key(|m| m["round"].as_i64()).copied();
+        if let Some(last) = last {
+            assert_eq!(got, last["atlet2_id"].as_i64(), "juara 3 of chain {urutan} = winner of its last team match: {last}");
+        }
+    }
+    assert!(bronze.0.is_some() || bronze.1.is_some(), "bronze decided by the referchange: {bronze:?}");
+
+    // Reports do not choke on team bouts inside a referchange.
+    s.ok("get_results_booklet_data", json!({ "eventId": PORPROV })).await;
+    s.ok("get_summary_juara", json!({ "eventId": PORPROV })).await;
+
+    // "Reset control panel" on a referchange bronze match takes that bronze back.
+    let last_a = chain.iter().filter(|m| m["urutan"].as_i64() == Some(1) && m["selesai"] == true)
+        .max_by_key(|m| m["round"].as_i64()).copied();
+    if let Some(last_a) = last_a {
+        s.ok("reset_team_match", json!({ "parentMatchId": last_a["id"] })).await;
+        let j3a: Option<i64> = sqlx::query_scalar("SELECT juara_3a_id FROM backend_bagan WHERE id = ?").bind(bid).fetch_one(&pool).await.unwrap();
+        assert_ne!(j3a, last_a["atlet2_id"].as_i64(), "bronze 3A taken back after reset");
+        let info = s.ok("get_team_match_info", json!({ "matchId": last_a["id"] })).await;
+        assert!(info["bouts"].as_array().unwrap().iter().all(|b| b["selesai"] == false), "its bouts cleared");
+        // and it can be played again
+        play_team_match(&s, rid, last_a["id"].as_i64().unwrap(), "1").await;
+        let j3a: Option<i64> = sqlx::query_scalar("SELECT juara_3a_id FROM backend_bagan WHERE id = ?").bind(bid).fetch_one(&pool).await.unwrap();
+        assert_eq!(j3a, last_a["atlet1_id"].as_i64(), "replayed bronze match sets the new 3A");
+    }
+    let _ = first_rep_parent;
+}
+
+async fn fin_category(s: &TestServer, bagan_id: i64) -> Value {
+    bagans(s, PORPROV).await.into_iter().find(|b| b["id"].as_i64() == Some(bagan_id)).unwrap()["nomor_tanding_id"].clone()
+}
+
+/// Juara umum: equal medals share a rank, the next follows without a gap (7, 7, 8, 8), in the
+/// channel and the booklet alike.
+#[tokio::test]
+async fn qa_juara_umum_equal_medals_share_rank() {
+    let Some(s) = server_on_real_copy().await else { return };
+    let sum = s.ok("get_summary_juara", json!({ "eventId": PORPROV })).await;
+    let book = s.ok("get_results_booklet_data", json!({ "eventId": PORPROV })).await;
+    for (list, key) in [(&sum["utusan_standings"], "standings_kontingen"), (&sum["perguruan_standings"], "standings_perguruan")] {
+        let rows = list.as_array().unwrap();
+        for (i, r) in rows.iter().enumerate() {
+            let medals = |x: &Value| (x["gold"].as_i64(), x["silver"].as_i64(), x["bronze"].as_i64());
+            let rank = r["rank"].as_u64().unwrap() as usize;
+            if i == 0 {
+                assert_eq!(rank, 1);
+            } else if medals(r) == medals(&rows[i - 1]) {
+                assert_eq!(rank, rows[i - 1]["rank"].as_u64().unwrap() as usize, "tie shares the rank: {} / {}", rows[i - 1]["nama"], r["nama"]);
+            } else {
+                assert_eq!(rank, rows[i - 1]["rank"].as_u64().unwrap() as usize + 1, "next rank, no gap: {}", r["nama"]);
+            }
+            eprintln!("{key} {rank:>2} {} {:?}", r["nama"], medals(r));
+        }
+        let booklet: Vec<(Value, Value)> = book[key].as_array().unwrap().iter().map(|r| (r["nama"].clone(), r["rank"].clone())).collect();
+        let channel: Vec<(Value, Value)> = rows.iter().map(|r| (r["nama"].clone(), r["rank"].clone())).collect();
+        assert_eq!(booklet, channel, "booklet {key} follows the Juara umum channel");
+    }
 }

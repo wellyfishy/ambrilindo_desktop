@@ -28,6 +28,37 @@ export interface CoverSettings {
    * for brackets not scheduled on any day. null = every bracket.
    */
   lampiranDays: string[] | null;
+  /**
+   * Signature under the recap pages (klasemen kontingen, klasemen perguruan, daftar juara):
+   * e.g. the Technical Delegate. The scan (data URL) stays on this computer only.
+   */
+  ttdEnabled: boolean;
+  ttdJabatan: string | null;
+  ttdNama: string | null;
+  ttdTempatTanggal: string | null;
+  ttdImage: string | null;
+}
+
+/** What a recap page prints under its table; null = no signature. */
+export interface SignatureInfo {
+  jabatan: string;
+  nama: string;
+  tempatTanggal: string;
+  image: string | null;
+}
+
+export const DEFAULT_TTD_JABATAN = "Technical Delegate";
+
+export function signatureOf(s: CoverSettings): SignatureInfo | null {
+  if (!s.ttdEnabled) return null;
+  const nama = (s.ttdNama ?? "").trim();
+  if (!nama && !s.ttdImage) return null;
+  return {
+    jabatan: (s.ttdJabatan ?? "").trim() || DEFAULT_TTD_JABATAN,
+    nama,
+    tempatTanggal: (s.ttdTempatTanggal ?? "").trim(),
+    image: s.ttdImage,
+  };
 }
 
 export const DEFAULT_COVER_BACKGROUND = "/img/cover/cover_clean_template.png";
@@ -54,6 +85,11 @@ export function defaultCoverSettings(): CoverSettings {
     penutupJudul: null,
     penutupPesan: null,
     lampiranDays: null,
+    ttdEnabled: false,
+    ttdJabatan: null,
+    ttdNama: null,
+    ttdTempatTanggal: null,
+    ttdImage: null,
   };
 }
 

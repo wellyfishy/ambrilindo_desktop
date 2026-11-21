@@ -296,8 +296,15 @@
     return cols;
   });
   // VR shows on the same banner as a score (as in Ambrilindo Local): gold title,
-  // big subtitle, AO left / AKA right when both corners are under review.
-  const VR_POINT_NAMES = ["", "YUKO (1 POINT)", "WAZA-ARI (2 POINT)", "IPPON (3 POINT)"];
+  // AO left / AKA right when both corners are under review. A request shows the corner's
+  // VR card with the requested value under it, marked as a request ("REQUEST · WAZA-ARI 2"),
+  // so it does not read as a score already given.
+  const VR_POINT_NAMES = ["", "YUKO", "WAZA-ARI", "IPPON"];
+  function vrRequestLabel(vr: ScoreboardVrChallenge): string {
+    const n = vr.points ?? 0;
+    if (n >= 1 && n <= 3) return `REQUEST · ${VR_POINT_NAMES[n]} ${n}`;
+    return vr.reason ? `REQUEST · ${vr.reason}` : "REQUEST";
+  }
   function vrTitle(vr: ScoreboardVrChallenge): string {
     return vr.status === "accepted" && vr.points ? `VR +${vr.points} POINT` : "VIDEO REVIEW";
   }
@@ -305,7 +312,7 @@
     if (vr.status === "accepted") return "ACCEPTED";
     if (vr.status === "rejected") return "DECLINED";
     if (vr.status === "minai") return "MINAI (INCONCLUSIVE)";
-    return vr.reason || VR_POINT_NAMES[vr.points ?? 0] || "REQUESTED";
+    return "";
   }
   let vrChimeTimer: any = null;
   // VR logo next to the score while a corner still has its card (kumite with VR only)
@@ -463,6 +470,22 @@
   let akaShownScore = $derived(isKata ? akaTotalPoints : akaScore);
   let aoShownScore = $derived(isKata ? aoTotalPoints : aoScore);
   let showJudgePanel = $derived(isKata && showKataScoreOverlay);
+
+  // Kumite: an 8-point lead ends the bout (same rule as KUMITE_MAX_LEAD on the control
+  // panel). The leader's score blinks and the end buzzer sounds once, as at 00.00.
+  const KUMITE_MAX_LEAD = 8;
+  let gapWinner = $derived.by((): "aka" | "ao" | null => {
+    if (isKata) return null;
+    if (akaScore - aoScore >= KUMITE_MAX_LEAD) return "aka";
+    if (aoScore - akaScore >= KUMITE_MAX_LEAD) return "ao";
+    return null;
+  });
+  let gapBuzzedFor: "aka" | "ao" | null = null;
+  $effect(() => {
+    const w = gapWinner;
+    if (w && w !== gapBuzzedFor) playEndBuzzer();
+    gapBuzzedFor = w;
+  });
 
   // Data shown on the winner banner (AKA or AO, from winnerView)
   let winnerInfo = $derived.by(() => {
@@ -761,6 +784,8 @@
         }
         // New request: same sound as the 15 s warning
         if (req.status === "in_progress" && (!prev || prev.status !== "in_progress")) playWarningAlarm();
+        // Decision: same sound, with a green tick / yellow cross on the banner
+        if ((req.status === "accepted" || req.status === "rejected") && prev?.status !== req.status) playWarningAlarm();
         next[side] = { side, reason: req.reason || "", status: req.status, points: Number(req.points) || undefined };
       }
       vrRequests = next;
@@ -860,7 +885,11 @@
       </div>
     {/if}
 
-    <div class="sb-score-box" class:is-leading={scoreVisible && c.score > c.otherScore}>
+    <div
+      class="sb-score-box"
+      class:is-leading={scoreVisible && c.score > c.otherScore}
+      class:is-gap-win={gapWinner === c.side}
+    >
       {#if !isKata && c.senshu}
         <span class="sb-senshu" title="Senshu">S</span>
       {/if}
@@ -1100,7 +1129,17 @@
                 <span>{vr.side === "aka" ? akaName : aoName}</span>
               </div>
               <div class="sb-banner-title">{vrTitle(vr)}</div>
-              <div class="sb-banner-subtitle" use:fitText={vrSubtitle(vr)}>{vrSubtitle(vr)}</div>
+              {#if vr.status === "in_progress"}
+                <img class="sb-vr-card-big" src="/img/vr-{vr.side}.png" alt="Kartu VR {vr.side === 'aka' ? 'AKA' : 'AO'}" />
+                <div class="sb-vr-request" use:fitText={vrRequestLabel(vr)}>{vrRequestLabel(vr)}</div>
+              {:else}
+                {#if vr.status === "accepted"}
+                  <svg class="sb-vr-mark is-accepted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.5l5 5L19.5 7" /></svg>
+                {:else if vr.status === "rejected"}
+                  <svg class="sb-vr-mark is-rejected" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                {/if}
+                <div class="sb-banner-subtitle" use:fitText={vrSubtitle(vr)}>{vrSubtitle(vr)}</div>
+              {/if}
             </div>
           {/if}
         {/each}
@@ -1999,6 +2038,15 @@
   border-color: rgba(255, 255, 255, 0.9);
 }
 
+/* 8-point lead: the winner's number blinks hard until the bout changes */
+.sb-score-box.is-gap-win .sb-score-val {
+  animation: sbGapBlink 0.5s steps(1, end) infinite;
+}
+@keyframes sbGapBlink {
+  0% { opacity: 1; }
+  50% { opacity: 0.08; }
+}
+
 .sb-score-val {
   font-family: var(--sb-display);
   font-weight: 700;
@@ -2451,7 +2499,52 @@
    further when it still does not fit its column. */
 .sb-vr-col .sb-banner-subtitle { font-size: 15cqh; max-width: 100%; }
 .sb-banner-overlay.is-dual .sb-vr-col .sb-banner-subtitle { font-size: 9.5cqh; }
-.sb-vr-col.is-vr-in_progress .sb-banner-subtitle { animation: sbTimerAlert 0.9s infinite alternate; }
+/* Request: the corner's VR card, large and pulsing (no point name) */
+.sb-vr-card-big {
+  height: 30cqh;
+  width: auto;
+  margin-top: 1.5cqh;
+  object-fit: contain;
+  filter: drop-shadow(0 0 2.4cqh rgba(255, 255, 255, 0.5));
+  animation: sbVrCardPulse 0.9s ease-in-out infinite alternate;
+}
+.sb-banner-overlay.is-dual .sb-vr-card-big { height: 22cqh; }
+/* The requested value: an outlined pill under the card, so it reads as a request, not a score */
+.sb-vr-request {
+  margin-top: 1.6cqh;
+  padding: 0.6cqh 2.4cqh;
+  max-width: 100%;
+  border: 0.4cqh solid currentColor;
+  border-radius: 999px;
+  font-family: var(--sb-display);
+  font-weight: 700;
+  font-size: 7cqh;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--sb-gold);
+}
+.sb-banner-overlay.is-dual .sb-vr-request { font-size: 5cqh; }
+@keyframes sbVrCardPulse {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(0.92); opacity: 0.7; }
+}
+/* Decision: bright green tick / bright yellow cross above ACCEPTED / DECLINED */
+.sb-vr-mark {
+  width: 20cqh;
+  height: 20cqh;
+  margin-top: 1cqh;
+  animation: sbVrMarkPop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+.sb-banner-overlay.is-dual .sb-vr-mark { width: 14cqh; height: 14cqh; }
+.sb-vr-mark.is-accepted { color: #39ff6a; filter: drop-shadow(0 0 2cqh rgba(57, 255, 106, 0.75)); }
+.sb-vr-mark.is-rejected { color: #ffe600; filter: drop-shadow(0 0 2cqh rgba(255, 230, 0, 0.75)); }
+.sb-vr-col.is-vr-accepted .sb-banner-subtitle { color: #39ff6a; }
+.sb-vr-col.is-vr-rejected .sb-banner-subtitle { color: #ffe600; }
+@keyframes sbVrMarkPop {
+  from { transform: scale(0.3); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
 
 /* VR card logo, left of the score box while the card is still available */
 .sb-vr-logo {
@@ -2472,6 +2565,16 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+  /* A signal, not decoration: keep the 8-point blink and the VR card pulse on venue PCs
+     with animations turned off */
+  .sb-root .sb-score-box.is-gap-win .sb-score-val {
+    animation-duration: 0.5s !important;
+    animation-iteration-count: infinite !important;
+  }
+  .sb-root .sb-vr-card-big {
+    animation-duration: 0.9s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 </style>

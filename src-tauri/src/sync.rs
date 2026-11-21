@@ -117,6 +117,9 @@ static WORKER_KICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 const AUTH_BLOCK_SECS: i64 = 300;
 static AUTH_BLOCKED_UNTIL: AtomicI64 = AtomicI64::new(0);
 static AUTH_BLOCK_REASON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// A 403 `event_not_granted` pauses only that event: (local event id, 0 for rows without one;
+/// paused until; reason). The other events' rows keep going.
+static EVENT_BLOCKS: std::sync::Mutex<Vec<(i64, i64, String)>> = std::sync::Mutex::new(Vec::new());
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -164,6 +167,22 @@ pub struct SyncQueueStats {
     pub failed_count: i64,
     pub pending_count: i64,
     pub synced_count: i64,
+}
+
+/// One event whose queue is held: the oldest row the web refused (FIFO per event), for the
+/// Sinkronisasi page, which also shows heads of events other than the open one.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SyncQueueHead {
+    pub event_id: Option<i64>,
+    pub event_name: String,
+    pub item_id: i64,
+    pub endpoint: String,
+    pub last_error: Option<String>,
+    pub retry_count: i32,
+    /// Rows of this event the web has not taken yet (pending + failed).
+    pub waiting: i64,
+    /// Set while the event is paused after a 403 `event_not_granted` (epoch seconds).
+    pub paused_until: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -266,16 +285,24 @@ impl SyncService {
 
     /// Error text for a non-2xx response, using the server's `error` message when it sent one.
     pub async fn http_error(resp: reqwest::Response) -> String {
+        Self::http_error_with_code(resp).await.0
+    }
+
+    /// `http_error` plus the web's machine-readable `code` (e.g. `event_not_granted`), if any.
+    async fn http_error_with_code(resp: reqwest::Response) -> (String, Option<String>) {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        let server_msg = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
-            .filter(|m| !m.trim().is_empty());
-        match server_msg {
+        let body = serde_json::from_str::<serde_json::Value>(&text).ok();
+        let field = |k: &str| {
+            body.as_ref()
+                .and_then(|v| v.get(k).and_then(|e| e.as_str()).map(str::to_string))
+                .filter(|m| !m.trim().is_empty())
+        };
+        let msg = match field("error") {
             Some(m) => format!("HTTP {}: {}", status.as_u16(), m),
             None => format!("Server web mengembalikan status HTTP {}", status),
-        }
+        };
+        (msg, field("code"))
     }
 
     /// Current auth mode for the UI (`get_sync_auth_status`).
@@ -294,6 +321,9 @@ impl SyncService {
         if let Ok(mut g) = AUTH_BLOCK_REASON.lock() {
             *g = None;
         }
+        if let Ok(mut g) = EVENT_BLOCKS.lock() {
+            g.clear();
+        }
     }
 
     fn set_auth_block(reason: &str) {
@@ -301,6 +331,26 @@ impl SyncService {
         if let Ok(mut g) = AUTH_BLOCK_REASON.lock() {
             *g = Some(reason.to_string());
         }
+    }
+
+    fn set_event_block(event_key: i64, reason: &str) {
+        if let Ok(mut g) = EVENT_BLOCKS.lock() {
+            g.retain(|(e, _, _)| *e != event_key);
+            g.push((event_key, now_secs() + AUTH_BLOCK_SECS, reason.to_string()));
+        }
+    }
+
+    /// Events whose rows are paused right now (after a 403 `event_not_granted`):
+    /// (local event id or 0, paused until, reason).
+    pub fn active_event_blocks() -> Vec<(i64, i64, String)> {
+        let now = now_secs();
+        EVENT_BLOCKS
+            .lock()
+            .map(|mut g| {
+                g.retain(|(_, until, _)| *until > now);
+                g.clone()
+            })
+            .unwrap_or_default()
     }
 
     /// Loads sync target server configuration
@@ -1180,17 +1230,16 @@ impl SyncService {
         Self::push_bagans(pool, db_path, local_event_id, bagan_ids, false).await
     }
 
-    /// `mirror` (full push only): the web is made to match this event exactly. Besides what a
-    /// full push does (every bracket, bout, athlete, score and champion; brackets no longer here
-    /// are removed), bouts that are no longer in a bracket are removed and champions that are
-    /// empty here are cleared there. Older webs ignore the flag and do a plain full push.
-    async fn push_bagans(
+    /// The `api/sync/push-bagan/` payload for some (or all) bagans of an event. `replace_bouts`
+    /// lists the kodes of the pushed bagans: the web drops their bouts that are no longer here
+    /// (a regenerated referchange has new bouts). Older webs ignore it.
+    pub async fn build_bagan_push_payload(
         pool: &Pool<Sqlite>,
         db_path: Option<&PathBuf>,
         local_event_id: i64,
         bagan_ids: Option<Vec<i64>>,
         mirror: bool,
-    ) -> Result<String, String> {
+    ) -> Result<serde_json::Value, String> {
         let sync_cfg = Self::get_sync_config(db_path);
         let mapping =
             Self::get_event_mapping(db_path, local_event_id, None, &sync_cfg.mode);
@@ -1377,6 +1426,100 @@ impl SyncService {
             "known_kodes": known_kodes,
             "mirror": mirror && is_full_sync,
         });
+        Ok(payload)
+    }
+
+    /// Queues a push of these bagans (`api/sync/push-bagan/`) behind the event's live rows, so
+    /// it reaches the web before any result of their bouts and is retried while offline. Used
+    /// after a referchange is generated, regenerated or deleted. Returns false (nothing queued)
+    /// when the event has live sync off or is not linked to a web event.
+    pub async fn queue_bagan_push(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+        local_event_id: i64,
+        bagan_ids: Vec<i64>,
+    ) -> Result<bool, String> {
+        let live: bool = sqlx::query_scalar("SELECT COALESCE(is_live_sync_enabled, 0) FROM backend_event WHERE id = ?")
+            .bind(local_event_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(false);
+        let mode = Self::get_sync_config(db_path).mode;
+        if !live || Self::get_event_mapping(db_path, local_event_id, None, &mode).hosted_event_id.is_none() {
+            return Ok(false);
+        }
+        let mut payload = Self::build_bagan_push_payload(pool, db_path, local_event_id, Some(bagan_ids), false).await?;
+        // Only referchange bagans are rebuilt with new bouts (regenerate); other bagans' web
+        // bouts are left as they are.
+        let kodes: Vec<serde_json::Value> = payload["bagans"]
+            .as_array()
+            .map(|bs| {
+                bs.iter()
+                    .filter(|b| {
+                        let n = b.get("nama_bagan").and_then(|n| n.as_str()).unwrap_or("").to_uppercase();
+                        n.contains("REFERCHANGE") || n.contains("REPECHAGE")
+                    })
+                    .filter_map(|b| b.get("kode").cloned())
+                    .filter(|k| k.as_str().is_some_and(|s| !s.is_empty()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        payload["replace_bouts"] = serde_json::Value::Array(kodes);
+        let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+        crate::db::DatabaseManager::enqueue_live_sync(&mut conn, Some(local_event_id), "api/sync/push-bagan/", payload).await;
+        WORKER_KICK.store(true, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    /// (event id, nomor tanding id) of a bagan.
+    pub async fn category_of(pool: &Pool<Sqlite>, bagan_id: i64) -> Option<(i64, i64)> {
+        sqlx::query_as::<_, (Option<i64>, Option<i64>)>("SELECT event_id, nomor_tanding_id FROM backend_bagan WHERE id = ?")
+            .bind(bagan_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(e, n)| Some((e?, n?)))
+    }
+
+    /// After a referchange was generated, regenerated or deleted: queue a push of every bagan of
+    /// that category (pools, Final, referchange), so the web gets the new bracket and drops a
+    /// deleted one. Returns the line to append to the operator's message.
+    pub async fn queue_category_push(pool: &Pool<Sqlite>, db_path: Option<&PathBuf>, category: Option<(i64, i64)>) -> String {
+        let Some((event_id, nt_id)) = category else { return String::new() };
+        let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM backend_bagan WHERE event_id = ? AND nomor_tanding_id = ? ORDER BY id")
+            .bind(event_id)
+            .bind(nt_id)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return String::new();
+        }
+        match Self::queue_bagan_push(pool, db_path, event_id, ids).await {
+            Ok(true) => "Bagan dikirim ke web lewat antrean sinkronisasi.".to_string(),
+            Ok(false) => "Live sync mati atau event belum terhubung: kirim bagan ke web secara manual.".to_string(),
+            Err(e) => {
+                warn!("Antrean kirim bagan gagal: {e}");
+                format!("Bagan belum masuk antrean web: {e}")
+            }
+        }
+    }
+
+    /// `mirror` (full push only): the web is made to match this event exactly. Besides what a
+    /// full push does (every bracket, bout, athlete, score and champion; brackets no longer here
+    /// are removed), bouts that are no longer in a bracket are removed and champions that are
+    /// empty here are cleared there. Older webs ignore the flag and do a plain full push.
+    async fn push_bagans(
+        pool: &Pool<Sqlite>,
+        db_path: Option<&PathBuf>,
+        local_event_id: i64,
+        bagan_ids: Option<Vec<i64>>,
+        mirror: bool,
+    ) -> Result<String, String> {
+        let payload = Self::build_bagan_push_payload(pool, db_path, local_event_id, bagan_ids, mirror).await?;
+        let sync_cfg = Self::get_sync_config(db_path);
 
         let client = TimedClient::new(std::time::Duration::from_secs(30));
 
@@ -1584,7 +1727,45 @@ impl SyncService {
         // "Kirim ulang semua hasil" makes the web match this laptop exactly: every bracket,
         // bout, score, winner and champion, with stale bouts, brackets and champions removed.
         // A web without mirror support does a plain full push (brackets still pruned).
-        Self::push_bagans(pool, db_path, local_event_id, None, true).await
+        //
+        // The push carries everything the event's queued live rows would have sent, so once the
+        // web accepted it those rows are marked 'superseded' instead of being resent (stale
+        // "running" messages would otherwise replay on the web). Only rows queued before the push
+        // started; the newest tatami-status per tatami is still sent (the web's live tatami view).
+        let before: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM backend_syncqueue WHERE event_id = ?")
+            .bind(local_event_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+        let msg = Self::push_bagans(pool, db_path, local_event_id, None, true).await?;
+        match Self::supersede_queued_rows(pool, local_event_id, before).await {
+            Ok(0) => Ok(msg),
+            Ok(n) => Ok(format!("{msg} {n} antrean lama ditandai sudah terkirim.")),
+            Err(e) => {
+                warn!("Force sync: gagal menandai antrean lama: {e}");
+                Ok(msg)
+            }
+        }
+    }
+
+    /// Marks the event's unsent live rows up to `max_id` as 'superseded' (sent through the full
+    /// push), except the newest tatami-status of each tatami. Returns how many rows changed.
+    pub async fn supersede_queued_rows(pool: &Pool<Sqlite>, local_event_id: i64, max_id: i64) -> Result<u64, String> {
+        sqlx::query(
+            "UPDATE backend_syncqueue SET status = 'superseded', updated_at = CURRENT_TIMESTAMP \
+             WHERE event_id = ?1 AND id <= ?2 AND status IN ('pending', 'failed') \
+               AND id NOT IN ( \
+                 SELECT MAX(id) FROM backend_syncqueue \
+                 WHERE event_id = ?1 AND id <= ?2 AND endpoint LIKE '%tatami-status%' \
+                   AND status IN ('pending', 'failed') \
+                 GROUP BY COALESCE(json_extract(payload, '$.tatami_number'), '')) ",
+        )
+        .bind(local_event_id)
+        .bind(max_id)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+        .map_err(|e| format!("Gagal menandai antrean lama: {}", e))
     }
 
     /// Results-only resend (api/sync/force-results/): finished bouts and the champions that
@@ -1844,7 +2025,7 @@ impl SyncService {
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
-            let synced = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE event_id = ? AND status = 'synced'")
+            let synced = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE event_id = ? AND status IN ('synced', 'superseded')")
                 .bind(eid)
                 .fetch_one(pool)
                 .await
@@ -1863,7 +2044,7 @@ impl SyncService {
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
-            let synced = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE status = 'synced'")
+            let synced = sqlx::query_scalar("SELECT COUNT(*) FROM backend_syncqueue WHERE status IN ('synced', 'superseded')")
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
@@ -1876,6 +2057,43 @@ impl SyncService {
             pending_count,
             synced_count,
         })
+    }
+
+    /// The held head of every event with live sync on: its oldest 'failed' row (the sender
+    /// stops that event there). Events with nothing failed are not listed.
+    pub async fn get_queue_heads(pool: &Pool<Sqlite>) -> Result<Vec<SyncQueueHead>, String> {
+        let _ = Self::ensure_sync_queue_table(pool).await;
+        let rows = sqlx::query(
+            "SELECT h.event_id, COALESCE(ev.nama_event, '') AS event_name, sq.id, sq.endpoint, sq.last_error, sq.retry_count, \
+               (SELECT COUNT(*) FROM backend_syncqueue w WHERE COALESCE(w.event_id, 0) = COALESCE(h.event_id, 0) \
+                  AND w.status IN ('pending', 'processing', 'failed')) AS waiting \
+             FROM (SELECT event_id, MIN(id) AS head_id FROM backend_syncqueue WHERE status = 'failed' GROUP BY event_id) h \
+             JOIN backend_syncqueue sq ON sq.id = h.head_id \
+             LEFT JOIN backend_event ev ON ev.id = h.event_id \
+             WHERE h.event_id IS NULL OR ev.is_live_sync_enabled = 1 \
+             ORDER BY sq.id",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("Gagal memuat antrean sync: {}", e))?;
+        let blocks = Self::active_event_blocks();
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let event_id: Option<i64> = r.get("event_id");
+                let key = event_id.unwrap_or(0);
+                SyncQueueHead {
+                    event_id,
+                    event_name: r.get("event_name"),
+                    item_id: r.get("id"),
+                    endpoint: r.get("endpoint"),
+                    last_error: r.get("last_error"),
+                    retry_count: r.get("retry_count"),
+                    waiting: r.get("waiting"),
+                    paused_until: blocks.iter().find(|(e, _, _)| *e == key).map(|(_, until, _)| *until),
+                }
+            })
+            .collect())
     }
 
     /// Fetches sync queue items with optional status filtering
@@ -1907,10 +2125,10 @@ impl SyncService {
             }
         } else if status_clean == "synced" {
             if let Some(eid) = event_id {
-                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE event_id = ? AND status = 'synced' ORDER BY id DESC LIMIT ?")
+                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE event_id = ? AND status IN ('synced', 'superseded') ORDER BY id DESC LIMIT ?")
                     .bind(eid).bind(limit).fetch_all(pool).await
             } else {
-                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE status = 'synced' ORDER BY id DESC LIMIT ?")
+                sqlx::query("SELECT id, event_id, endpoint, payload, status, retry_count, last_error, created_at, updated_at FROM backend_syncqueue WHERE status IN ('synced', 'superseded') ORDER BY id DESC LIMIT ?")
                     .bind(limit).fetch_all(pool).await
             }
         } else {
@@ -2003,12 +2221,12 @@ impl SyncService {
     /// Clears all synced items
     pub async fn clear_synced_items(pool: &Pool<Sqlite>, event_id: Option<i64>) -> Result<u64, String> {
         let res = if let Some(eid) = event_id {
-            sqlx::query("DELETE FROM backend_syncqueue WHERE event_id = ? AND status = 'synced'")
+            sqlx::query("DELETE FROM backend_syncqueue WHERE event_id = ? AND status IN ('synced', 'superseded')")
                 .bind(eid)
                 .execute(pool)
                 .await
         } else {
-            sqlx::query("DELETE FROM backend_syncqueue WHERE status = 'synced'")
+            sqlx::query("DELETE FROM backend_syncqueue WHERE status IN ('synced', 'superseded')")
                 .execute(pool)
                 .await
         }.map_err(|e| format!("Gagal membersihkan data tersinkron: {}", e))?;
@@ -2053,12 +2271,14 @@ impl SyncService {
         let mut total = (0usize, 0usize);
         loop {
             run.rerun.store(false, Ordering::SeqCst);
-            let (s, f) = Self::process_sync_queue_once(pool, db_path).await?;
+            let (s, f, halted) = Self::process_sync_queue_once(pool, db_path).await?;
             total.0 += s;
             total.1 += f;
-            // Stop when nobody asked for another look, or the queue just paused/halted
-            // (a rerun right away would only repeat the same refused/offline request).
-            if !run.rerun.load(Ordering::SeqCst) || f > 0 {
+            // Stop when nobody asked for another look, or the whole queue just paused/halted
+            // (offline, license refused: a rerun right away would only repeat the same request).
+            // One event held by the web does not stop it: a row saved meanwhile for another
+            // event must still go now, not after the worker's back-off.
+            if !run.rerun.load(Ordering::SeqCst) || halted {
                 return Ok(total);
             }
         }
@@ -2067,9 +2287,11 @@ impl SyncService {
     async fn process_sync_queue_once(
         pool: &Pool<Sqlite>,
         db_path: Option<&PathBuf>,
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize, bool), String> {
         let mut synced_count = 0;
         let mut failed_count = 0;
+        // Set when the whole queue stopped (offline, license refused), not when one event is held.
+        let mut halted = false;
 
         // An item left in 'processing' (app closed or crashed mid-request) would never be
         // picked up again: put it back in the queue after a minute.
@@ -2081,28 +2303,41 @@ impl SyncService {
         .await;
 
         if AUTH_BLOCKED_UNTIL.load(Ordering::Relaxed) > now_secs() {
-            return Ok((0, 0));
+            return Ok((0, 0, true));
         }
         // No license and no legacy token: keep everything queued; the Sinkronisasi web channel says why.
         let Ok(auth) = Self::auth_headers() else {
-            return Ok((0, 0));
+            return Ok((0, 0, true));
         };
         let base_url = Self::get_sync_config(db_path).url.trim_end_matches('/').to_string();
         let client = TimedClient::new(std::time::Duration::from_secs(6));
 
+        // Strict FIFO per event: an event whose head the web refused (or that is paused after a
+        // 403 `event_not_granted`) waits, the other events' rows go on. Key 0 = rows without an event.
+        let mut held: Vec<i64> = Self::active_event_blocks().into_iter().map(|(e, _, _)| e).collect();
+
         loop {
-            // Find oldest active pending or failed item whose event has is_live_sync_enabled = 1 (or no event)
-            let row = sqlx::query(
+            // Oldest pending or failed item of an event with is_live_sync_enabled = 1 (or no
+            // event) that is not held. The ids are integers from the DB, safe to inline.
+            let held_sql = if held.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " AND COALESCE(sq.event_id, 0) NOT IN ({})",
+                    held.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+                )
+            };
+            let row = sqlx::query(&format!(
                 r#"
                 SELECT sq.id, sq.endpoint, sq.payload, sq.retry_count, sq.event_id
                 FROM backend_syncqueue sq
                 LEFT JOIN backend_event ev ON sq.event_id = ev.id
                 WHERE sq.status IN ('pending', 'failed')
-                  AND (sq.event_id IS NULL OR ev.is_live_sync_enabled = 1)
+                  AND (sq.event_id IS NULL OR ev.is_live_sync_enabled = 1){held_sql}
                 ORDER BY sq.id ASC
                 LIMIT 1
                 "#
-            )
+            ))
             .fetch_optional(pool)
             .await
             .map_err(|e| e.to_string())?;
@@ -2115,6 +2350,7 @@ impl SyncService {
             let endpoint: String = r.get("endpoint");
             let payload_str: String = r.get("payload");
             let retry_count: i32 = r.get("retry_count");
+            let event_key: i64 = r.get::<Option<i64>, _>("event_id").unwrap_or(0);
 
             // Claim the row (a manual "Coba lagi" may have taken it in the meantime).
             let claimed = sqlx::query(
@@ -2172,11 +2408,28 @@ impl SyncService {
                 }
                 Ok(resp) => {
                     let status = resp.status();
-                    let err_msg = Self::http_error(resp).await;
+                    let (err_msg, code) = Self::http_error_with_code(resp).await;
                     let new_retry = retry_count + 1;
 
-                    // 401/403: the web refused this license (not active, or the event is not granted).
-                    // Every following item would be refused too, so keep them all queued and pause.
+                    // 403 event_not_granted: only this event is refused. Pause its rows, let the
+                    // other events' rows go on.
+                    if status.as_u16() == 403 && code.as_deref() == Some("event_not_granted") {
+                        let _ = sqlx::query(
+                            "UPDATE backend_syncqueue SET status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                        )
+                        .bind(&err_msg)
+                        .bind(item_id)
+                        .execute(pool)
+                        .await;
+                        Self::set_event_block(event_key, &err_msg);
+                        held.push(event_key);
+                        failed_count += 1;
+                        warn!("SyncQueue #{} to {} refused for event {}; that event paused: {}", item_id, endpoint, event_key, err_msg);
+                        continue;
+                    }
+
+                    // Other 401/403: the web refused this license itself (not active, revoked,
+                    // released). Every following item would be refused too: keep them all queued, pause.
                     if status.as_u16() == 401 || status.as_u16() == 403 {
                         let _ = sqlx::query(
                             "UPDATE backend_syncqueue SET status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -2188,14 +2441,15 @@ impl SyncService {
                         Self::set_auth_block(&err_msg);
                         failed_count += 1;
                         warn!("SyncQueue #{} to {} refused ({}); queue paused: {}", item_id, endpoint, status, err_msg);
+                        halted = true;
                         break;
                     }
 
                     // Anything else the web answered (5xx while it restarts, 408/429 under load,
-                    // 400/404 "Ditolak web" e.g. a result sent before "Kirim bagan"): strict FIFO.
-                    // The row stays at the head as 'failed' and is retried (the worker backs off);
-                    // nothing behind it is sent first. "Lewati" is the operator's way past a row the
-                    // web will never accept.
+                    // 400/404 "Ditolak web" e.g. a result sent before "Kirim bagan"): strict FIFO
+                    // within the event. The row stays at the head as 'failed' and is retried (the
+                    // worker backs off); nothing of this event behind it is sent first, other events
+                    // go on. "Lewati" is the operator's way past a row the web will never accept.
                     let _ = sqlx::query(
                         "UPDATE backend_syncqueue SET status = 'failed', retry_count = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
                     )
@@ -2205,8 +2459,9 @@ impl SyncService {
                     .execute(pool)
                     .await;
                     failed_count += 1;
-                    warn!("SyncQueue #{} to {} returned {}, queue held: {}", item_id, endpoint, status, err_msg);
-                    break;
+                    warn!("SyncQueue #{} to {} returned {}, event {} held: {}", item_id, endpoint, status, event_key, err_msg);
+                    held.push(event_key);
+                    continue;
                 }
                 Err(e) => {
                     // No connection (venue internet down, web server unreachable) is never a
@@ -2228,12 +2483,13 @@ impl SyncService {
                     failed_count += 1;
                     warn!("SyncQueue #{} to {} connection failed: {}", item_id, endpoint, err_msg);
                     // Offline: halt until next tick (strict FIFO)
+                    halted = true;
                     break;
                 }
             }
         }
 
-        Ok((synced_count, failed_count))
+        Ok((synced_count, failed_count, halted))
     }
 
     /// Spawns the background worker. Every 2 s it:
@@ -2306,7 +2562,8 @@ impl SyncService {
         .await
         .unwrap_or_default();
         let paused = AUTH_BLOCKED_UNTIL.load(Ordering::Relaxed) > now_secs();
-        format!("{rows:?}|{paused}|{}", Self::get_auto_send(db_path))
+        let event_paused: Vec<i64> = Self::active_event_blocks().into_iter().map(|(e, _, _)| e).collect();
+        format!("{rows:?}|{paused}|{event_paused:?}|{}", Self::get_auto_send(db_path))
     }
 
     /// "Kirim otomatis" (stored in sync_target.json as `auto_send`, default on).

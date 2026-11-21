@@ -31,7 +31,9 @@
     onAddBout?: () => Promise<void> | void;
     onDeleteBout?: (boutId: number) => Promise<void> | void;
     onAssignBoutAthletes?: (input: AssignBoutAthletesInput) => Promise<void> | void;
-    onFinishTeamMatch?: (winnerOverride?: string) => Promise<void> | void;
+    onFinishTeamMatch?: (winnerOverride?: string, allowUnplayed?: boolean) => Promise<void> | void;
+    /** "Reset control panel": clears every bout of the team match and undoes a decided result */
+    onResetTeamMatch?: () => Promise<void> | void;
   }
 
   let {
@@ -51,6 +53,7 @@
     onDeleteBout = () => {},
     onAssignBoutAthletes = () => {},
     onFinishTeamMatch = () => {},
+    onResetTeamMatch = () => {},
   }: Props = $props();
 
   // Automatic Discipline Detection (No manual switching required, with manual override for festival)
@@ -692,6 +695,35 @@
 
   let isFinishTeamModalOpen = $state(false);
   let selectedTeamWinner = $state<"1" | "2" | "">("");
+  // Bouts not played yet that could still turn the result: finishing needs the operator to
+  // confirm they will not be fought (kiken / disqualification).
+  let allowUnplayed = $state(false);
+  let finishTeamError = $state("");
+  let isFinishingTeam = $state(false);
+  let unplayedBouts = $derived(teamMatchInfo ? teamMatchInfo.bouts.filter((b) => !b.selesai).map((b) => b.round) : []);
+  let teamUndecided = $derived(
+    !!teamMatchInfo &&
+      unplayedBouts.length > 0 &&
+      Math.abs(teamMatchInfo.team_aka_score - teamMatchInfo.team_ao_score) <= unplayedBouts.length
+  );
+
+  // "Reset control panel" (team match): confirmed in a warning modal
+  let isResetTeamModalOpen = $state(false);
+  let isResettingTeam = $state(false);
+  let resetTeamError = $state("");
+  async function handleConfirmResetTeam() {
+    isResettingTeam = true;
+    resetTeamError = "";
+    try {
+      await onResetTeamMatch();
+      resetAllMatchData();
+      isResetTeamModalOpen = false;
+    } catch (err: any) {
+      resetTeamError = typeof err === "string" ? err : err?.message || String(err);
+    } finally {
+      isResettingTeam = false;
+    }
+  }
 
   function openFinishTeamModal() {
     if (!teamMatchInfo) return;
@@ -706,16 +738,30 @@
     } else {
       selectedTeamWinner = "";
     }
+    allowUnplayed = false;
+    finishTeamError = "";
     isFinishTeamModalOpen = true;
   }
 
   async function handleConfirmFinishTeam() {
     if (!selectedTeamWinner) {
-      alert("Pilih tim pemenang (AKA atau AO) terlebih dahulu!");
+      finishTeamError = "Pilih tim pemenang (AKA atau AO) terlebih dahulu.";
       return;
     }
-    await onFinishTeamMatch(selectedTeamWinner);
-    isFinishTeamModalOpen = false;
+    if (teamUndecided && !allowUnplayed) {
+      finishTeamError = "Hasil belum pasti: mainkan sisa partai, atau centang bahwa sisa partai tidak dimainkan.";
+      return;
+    }
+    isFinishingTeam = true;
+    finishTeamError = "";
+    try {
+      await onFinishTeamMatch(selectedTeamWinner, teamUndecided && allowUnplayed);
+      isFinishTeamModalOpen = false;
+    } catch (err: any) {
+      finishTeamError = typeof err === "string" ? err : err?.message || String(err);
+    } finally {
+      isFinishingTeam = false;
+    }
   }
 
   // Kumite Score State
@@ -1781,7 +1827,8 @@
       teamDrawCount: teamMatchInfo?.team_draw_count || 0,
       teamAkaPoints: teamMatchInfo?.team_aka_points || 0,
       teamAoPoints: teamMatchInfo?.team_ao_points || 0,
-      activeBoutRound: teamMatchInfo?.active_bout_round || match.urutan || 1,
+      // the bout on screen (after switching bouts it is not the first unplayed one)
+      activeBoutRound: teamMatchInfo?.bouts.find((b) => b.bout_id === match.id)?.round || teamMatchInfo?.active_bout_round || match.urutan || 1,
       totalBouts: teamMatchInfo?.bouts.length || 0,
       activeBanner: activeBanner
         ? {
@@ -2520,10 +2567,21 @@
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
         </svg>
-        <span>Reset</span>
+        <span>{teamMatchInfo?.is_team_match ? "Reset partai" : "Reset"}</span>
       </button>
 
       {#if teamMatchInfo?.is_team_match}
+        <button
+          type="button"
+          onclick={() => { resetTeamError = ""; isResetTeamModalOpen = true; }}
+          class="px-3.5 py-1.5 bg-[#2b2d31] hover:bg-rose-700 border border-rose-500/40 hover:border-rose-400 text-rose-300 hover:text-white text-xs font-bold rounded-lg transition flex items-center space-x-1.5 shadow-sm active:scale-95"
+          title="Kosongkan semua partai beregu ini dan batalkan hasil beregu"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
+          </svg>
+          <span>Reset control panel</span>
+        </button>
         <button
           type="button"
           onclick={openFinishTeamModal}
@@ -3787,6 +3845,37 @@
   </div>
 {/if}
 
+<!-- ==================== RESET CONTROL PANEL (TEAM) MODAL ==================== -->
+{#if isResetTeamModalOpen && teamMatchInfo}
+  <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div class="w-full max-w-md bg-[#181a20] border border-rose-500/40 rounded-2xl p-6 shadow-2xl" role="alertdialog" aria-labelledby="reset-team-title">
+      <h3 id="reset-team-title" class="text-base font-black text-rose-300 flex items-center gap-2">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></svg>
+        Reset control panel beregu?
+      </h3>
+      <div class="mt-3 text-sm text-zinc-300 space-y-2">
+        <p>
+          Semua hasil P1–P{teamMatchInfo.bouts.length}
+          <span class="font-semibold text-white">{teamMatchInfo.team_aka_name}</span> vs
+          <span class="font-semibold text-white">{teamMatchInfo.team_ao_name}</span> dihapus. Susunan atlet tetap.
+        </p>
+        {#if teamMatchInfo.is_finished}
+          <p class="text-rose-200">Beregu ini sudah selesai: hasilnya dibatalkan, tim pemenang ditarik dari babak berikutnya, dan web ikut diperbarui.</p>
+        {/if}
+      </div>
+      {#if resetTeamError}
+        <div class="mt-3 rounded-xl border border-rose-500/40 bg-rose-500/[0.08] p-3 text-xs text-rose-100 select-text" role="alert">{resetTeamError}</div>
+      {/if}
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" onclick={() => (isResetTeamModalOpen = false)} class="h-9 px-3.5 bg-white/[0.04] text-zinc-200 border border-white/[0.1] font-semibold text-xs rounded-xl">Batal</button>
+        <button type="button" onclick={handleConfirmResetTeam} disabled={isResettingTeam} class="h-9 px-4 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-md disabled:opacity-50">
+          {isResettingTeam ? "Mereset…" : "Reset control panel"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- ==================== FINISH TEAM MATCH MODAL ==================== -->
 {#if isFinishTeamModalOpen && teamMatchInfo}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
@@ -3841,6 +3930,22 @@
             </button>
           </div>
         </div>
+
+        {#if teamUndecided}
+          <div class="rounded-xl border border-amber-500/40 bg-amber-500/[0.08] p-3 text-xs text-amber-100 space-y-2" role="alert">
+            <div class="font-bold">
+              Hasil belum pasti: {unplayedBouts.map((r) => `P${r}`).join(", ")} belum dimainkan
+              (skor {teamMatchInfo.team_aka_score}–{teamMatchInfo.team_ao_score}).
+            </div>
+            <label class="flex items-start gap-2 cursor-pointer select-none">
+              <input type="checkbox" bind:checked={allowUnplayed} class="mt-0.5 accent-amber-500" />
+              <span>Sisa partai tidak dimainkan (tim lawan kiken / diskualifikasi)</span>
+            </label>
+          </div>
+        {/if}
+        {#if finishTeamError}
+          <div class="rounded-xl border border-rose-500/40 bg-rose-500/[0.08] p-3 text-xs text-rose-100 select-text" role="alert">{finishTeamError}</div>
+        {/if}
       </div>
 
       <div class="p-3 bg-[#14161b] border-t border-[#2b2d31] flex items-center justify-end gap-2">
@@ -3854,7 +3959,8 @@
         <button
           type="button"
           onclick={handleConfirmFinishTeam}
-          class="px-5 py-2 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white text-xs font-black rounded-lg transition shadow-md flex items-center gap-1.5"
+          disabled={isFinishingTeam || (teamUndecided && !allowUnplayed)}
+          class="disabled:opacity-40 disabled:cursor-not-allowed px-5 py-2 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white text-xs font-black rounded-lg transition shadow-md flex items-center gap-1.5"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
           <span>Finalisasi & Loloskan Pemenang</span>

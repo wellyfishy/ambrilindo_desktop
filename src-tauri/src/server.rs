@@ -1154,7 +1154,7 @@ async fn get_repechage_info_api(Path(bagan_id): Path<i64>, State(state): State<A
 async fn generate_repechage_api(State(state): State<Arc<AppState>>, Json(payload): Json<serde_json::Value>) -> impl IntoResponse {
     let db = state.db.lock().await;
     let main_bagan_id = get_i64_val(&payload, &["mainBaganId", "main_bagan_id", "baganId", "bagan_id", "id"]).unwrap_or(0);
-    match db.generate_repechage_bracket(main_bagan_id).await {
+    match db.generate_repechage_and_queue(main_bagan_id).await {
         Ok(v) => {
             if let Some(app) = &state.app_handle {
                 let _ = app.emit("bracket_updated", ());
@@ -2085,7 +2085,7 @@ async fn dispatch_command_api(
         "delete_repechage_bagan" => {
             let bagan_id = match required_id(&payload, &["baganId", "bagan_id"]) { Ok(v) => v, Err(r) => return r };
             let force = payload.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            match db.delete_repechage_bagan(bagan_id, force).await {
+            match db.delete_repechage_and_queue(bagan_id, force).await {
                 Ok(()) => {
                     if let Some(app) = &state.app_handle {
                         let _ = app.emit("bracket_updated", ());
@@ -2164,7 +2164,7 @@ async fn dispatch_command_api(
         },
         "generate_repechage_bracket" => {
             let main_bagan_id = get_i64_val(&payload, &["mainBaganId", "main_bagan_id", "baganId", "bagan_id", "id"]).unwrap_or(0);
-            match db.generate_repechage_bracket(main_bagan_id).await {
+            match db.generate_repechage_and_queue(main_bagan_id).await {
                 Ok(v) => {
                     if let Some(app) = &state.app_handle {
                         let _ = app.emit("bracket_updated", ());
@@ -2694,7 +2694,25 @@ async fn dispatch_command_api(
         "finish_team_match" => {
             let p_id = get_i64_val(&payload, &["parentMatchId", "parent_match_id"]).unwrap_or(0);
             let winner = get_str_val(&payload, &["winnerOverride", "winner_override"]);
-            match db.finish_team_match(p_id, winner).await {
+            let allow_unplayed = payload.get("allowUnplayed").or_else(|| payload.get("allow_unplayed")).and_then(|v| v.as_bool()).unwrap_or(false);
+            match db.finish_team_match(p_id, winner, allow_unplayed).await {
+                Ok(_) => {
+                    if let Some(app) = &state.app_handle {
+                        let _ = app.emit("bracket_updated", ());
+                    }
+                    let _ = state.broadcast_tx.send(ArenaMessage {
+                        tatami_pk: 0,
+                        channel: "bracket".into(),
+                        payload: serde_json::json!({ "type": "bracket_updated" }),
+                    });
+                    (StatusCode::OK, Json(serde_json::json!({ "status": "success" }))).into_response()
+                },
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "status": "error", "message": e }))).into_response(),
+            }
+        },
+        "reset_team_match" => {
+            let p_id = get_i64_val(&payload, &["parentMatchId", "parent_match_id"]).unwrap_or(0);
+            match db.reset_team_match(p_id).await {
                 Ok(_) => {
                     if let Some(app) = &state.app_handle {
                         let _ = app.emit("bracket_updated", ());
@@ -3215,45 +3233,19 @@ async fn auto_assign_tatami_panel_api(
 pub struct ExportHtmlPdfInput {
     pub html_content: String,
     pub filename: Option<String>,
+    /// images sent once each (name -> data URL), referred to as `assets/<name>` in the HTML
+    #[serde(default)]
+    pub assets: std::collections::HashMap<String, String>,
 }
 
 async fn export_html_to_pdf_api(
     axum::Json(payload): axum::Json<ExportHtmlPdfInput>,
 ) -> impl IntoResponse {
-    let edge_paths = [
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-    ];
-    let edge_exe = match edge_paths.iter().find(|p| std::path::Path::new(p).exists()) {
-        Some(p) => *p,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, "Microsoft Edge tidak ditemukan di server host.".to_string()).into_response(),
-    };
-
-    let temp_dir = std::env::temp_dir();
-    let temp_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-    let temp_html_path = temp_dir.join(format!("ambrilindo_api_booklet_{}.html", temp_id));
-    let temp_pdf_path = temp_dir.join(format!("ambrilindo_api_booklet_{}.pdf", temp_id));
-
-    if let Err(e) = std::fs::write(&temp_html_path, payload.html_content) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write HTML: {}", e)).into_response();
-    }
-
-    let file_url = format!("file:///{}", temp_html_path.to_string_lossy().replace('\\', "/"));
-    let res = tokio::process::Command::new(edge_exe)
-        .arg("--headless")
-        .arg("--disable-gpu")
-        .arg("--no-pdf-header-footer")
-        .arg(format!("--print-to-pdf={}", temp_pdf_path.to_string_lossy()))
-        .arg(&file_url)
-        .output()
-        .await;
-
-    let _ = std::fs::remove_file(&temp_html_path);
-
-    match res {
-        Ok(_) if temp_pdf_path.exists() => {
-            let pdf_bytes = std::fs::read(&temp_pdf_path).unwrap_or_default();
-            let _ = std::fs::remove_file(&temp_pdf_path);
+    let pdf_path = crate::pdf_export::temp_pdf_path();
+    match crate::pdf_export::render_html_to_pdf(&payload.html_content, &payload.assets, &pdf_path).await {
+        Ok(()) => {
+            let pdf_bytes = std::fs::read(&pdf_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&pdf_path);
             let fname = payload.filename.unwrap_or_else(|| "Buku_Hasil_Turnamen.pdf".to_string());
             (
                 StatusCode::OK,
@@ -3263,9 +3255,8 @@ async fn export_html_to_pdf_api(
                 ],
                 pdf_bytes,
             ).into_response()
-        },
-        Ok(out) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Edge failed to generate PDF: {}", String::from_utf8_lossy(&out.stderr))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to spawn Edge: {}", e)).into_response(),
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
